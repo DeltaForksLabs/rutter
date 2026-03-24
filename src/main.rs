@@ -1,156 +1,257 @@
-mod framework;
-use framework::{AppLogic, RutterRunner, Widget, InputState};
-use skia_safe::Color;
-use taffy::prelude::*;
-use cosmic_text::{Editor, FontSystem, Metrics, Buffer, Edit};
-use arboard::Clipboard;
+// ============================================================
+// Rutter Framework — main.rs
+// Demo Fase 2: AppState sem editors (gerenciados pelo engine).
+// ============================================================
 
-struct FormApp {
-    name_editor: Editor<'static>,
-    email_editor: Editor<'static>,
-    pass_editor: Editor<'static>,
-    
-    email_state: InputState,
-    email_error: Option<String>,
-    
-    saved_name: String, 
+use arboard::Clipboard;
+use cosmic_text::FontSystem;
+use taffy::prelude::*;
+
+use rutter::{AppLogic, ButtonVariant, InputState, RutterRunner, Theme, Widget};
+
+// ── Estado — apenas dados da aplicação ───────────────────────
+
+#[derive(Default)]
+pub struct AppState {
+    pub username:       String,
+    pub password:       String,
+    pub status:         String,
+    pub username_state: InputState,
+    pub password_state: InputState,
 }
+
+// ── Mensagens ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-// #[warn(unused)]
-enum Message {
-    NameChanged(String),
-    EmailChanged(String),
-    PassChanged(String),
-    Submit,
-    Cancel,
+pub enum Msg {
+    UsernameChanged(String),
+    PasswordChanged(String),
+    LoginPressed,
+    ClearPressed,
 }
 
-impl AppLogic for FormApp {
-    type State = FormApp;
-    type Message = Message;
+// ── AppLogic ──────────────────────────────────────────────────
 
-    fn new(fs: &mut FontSystem) -> Self::State {
-        let mut name_ed = Editor::new(Buffer::new(fs, Metrics::new(20.0, 24.0)));
-        name_ed.insert_string("Visitante", None); 
+pub struct MyApp;
 
-        let email_ed = Editor::new(Buffer::new(fs, Metrics::new(20.0, 24.0)));
-        let pass_ed = Editor::new(Buffer::new(fs, Metrics::new(20.0, 24.0)));
-        
-        FormApp {
-            name_editor: name_ed,
-            email_editor: email_ed,
-            pass_editor: pass_ed,
-            email_state: InputState::Idle,
-            email_error: None,
-            saved_name: String::new(),
-        }
+impl AppLogic for MyApp {
+    type State   = AppState;
+    type Message = Msg;
+
+    fn new(_fs: &mut FontSystem) -> AppState {
+        AppState::default()
     }
 
-    fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message> {
-        use Widget::*;
-        
-        let px = |v: f32| LengthPercentage::length(v);
-        let pct = |v: f32| LengthPercentage::percent(v / 100.0);
-        let zero = LengthPercentageAuto::length(0.0);
-
-        Container {
-            color: Some(Color::from_rgb(240, 240, 245)),
-            radius: 0.0,
-            style: Style { size: Size { width: pct(100.0).into(), height: pct(100.0).into() }, align_items: Some(AlignItems::Center), justify_content: Some(JustifyContent::Center), ..Default::default() },
-            child: Box::new(
-                Container {
-                    color: Some(Color::WHITE),
-                    radius: 16.0,
-                    style: Style { 
-                        size: Size { width: px(400.0).into(), height: Dimension::auto() }, 
-                        padding: Rect { left: px(30.0).into(), right: px(30.0).into(), top: px(30.0).into(), bottom: px(30.0).into() },
-                        flex_direction: FlexDirection::Column,
-                        // AUMENTADO: Gap maior para acomodar labels flutuantes e erros
-                        gap: Size { width: px(0.0), height: px(30.0) },
-                        ..Default::default() 
-                    },
-                    child: Box::new(Column {
-                        // AUMENTADO: Gap interno entre widgets
-                        style: Style { size: Size::AUTO, gap: Size { width: px(0.0), height: px(20.0) }, ..Default::default() },
-                        children: vec![
-                            Text { content: "Login Seguro".into(), color: Color::BLACK, size: 24.0, style: Style::default() },
-                            
-                            Text { content: format!("Digitando: {}", state.saved_name), color: Color::from_rgb(150,150,150), size: 12.0, style: Style::default() },
-
-                            TextInput {
-                                id: 1, label: "Nome", editor: &mut state.name_editor, 
-                                on_change: Message::NameChanged, on_submit: None, state: InputState::Idle, error_msg: None, is_password: false,
-                                style: Style { size: Size { width: pct(100.0).into(), height: px(50.0).into() }, ..Default::default() }
-                            },
-
-                            TextInput {
-                                id: 2, label: "E-mail", editor: &mut state.email_editor,
-                                on_change: Message::EmailChanged, on_submit: None, state: state.email_state, error_msg: state.email_error.clone(), is_password: false,
-                                style: Style { size: Size { width: pct(100.0).into(), height: px(50.0).into() }, ..Default::default() }
-                            },
-
-                            TextInput {
-                                id: 3, label: "Senha", editor: &mut state.pass_editor,
-                                on_change: Message::PassChanged, on_submit: Some(Message::Submit), state: InputState::Idle, error_msg: None, 
-                                is_password: true, 
-                                style: Style { size: Size { width: pct(100.0).into(), height: px(50.0).into() }, ..Default::default() }
-                            },
-
-                            Row {
-                                style: Style { 
-                                    gap: Size { width: px(10.0), height: px(0.0) },
-                                    margin: Rect { top: px(10.0).into(), bottom: zero, left: zero, right: zero },
-                                    ..Default::default() 
-                                },
-                                children: vec![
-                                    Container {
-                                        color: None, radius: 0.0, style: Style { flex_grow: 1.0, ..Default::default() },
-                                        child: Box::new(Button {
-                                            text: "Cancelar", on_press: Message::Cancel, color: Color::from_rgb(180, 180, 180),
-                                            style: Style { size: Size { width: pct(100.0).into(), height: px(45.0).into() }, ..Default::default() }
-                                        })
-                                    },
-                                    Container {
-                                        color: None, radius: 0.0, style: Style { flex_grow: 1.0, ..Default::default() },
-                                        child: Box::new(Button {
-                                            text: "Entrar", on_press: Message::Submit, color: Color::from_rgb(103, 80, 164),
-                                            style: Style { size: Size { width: pct(100.0).into(), height: px(45.0).into() }, ..Default::default() }
-                                        })
-                                    },
-                                ]
-                            }
-                        ]
-                    })
-                }
-            )
-        }
-    }
-
-    fn update(state: &mut Self::State, message: Self::Message, _clipboard: &mut Clipboard) {
-        match message {
-            Message::NameChanged(txt) => state.saved_name = txt,
-            // CORREÇÃO: '_' para ignorar o valor e remover warning
-            Message::PassChanged(_) => {}, 
-            
-            Message::EmailChanged(txt) => {
-                if txt.contains('@') {
-                    state.email_state = InputState::Success;
-                    state.email_error = None;
-                } else if txt.is_empty() {
-                    state.email_state = InputState::Idle;
-                    state.email_error = None;
-                } else {
-                    state.email_state = InputState::Error;
-                    state.email_error = Some("Email inválido".into());
-                }
+    fn view<'a>(s: &'a mut AppState) -> Widget<'a, Msg> {
+        let input_style = Style {
+            size: Size {
+                width:  Dimension::length(280.0),
+                height: Dimension::length(40.0),
             },
-            Message::Submit => println!("Login enviado: {}", state.saved_name),
-            Message::Cancel => state.saved_name.clear(),
+            margin: Rect {
+                top: LengthPercentageAuto::length(16.0),
+                bottom: LengthPercentageAuto::length(0.0),
+                left: LengthPercentageAuto::length(0.0),
+                right: LengthPercentageAuto::length(0.0)
+            },
+            ..Default::default()
+        };
+
+        let btn_primary = Style {
+            size: Size {
+                width:  Dimension::length(280.0),
+                height: Dimension::length(36.0),
+            },
+            margin: Rect {
+                top: LengthPercentageAuto::length(24.0),
+                bottom: LengthPercentageAuto::length(0.0),
+                left: LengthPercentageAuto::length(0.0),
+                right: LengthPercentageAuto::length(0.0)
+            },
+            ..Default::default()
+        };
+
+        let btn_ghost = Style {
+            size: Size {
+                width:  Dimension::length(132.0),
+                height: Dimension::length(30.0),
+            },
+            margin: Rect {
+                top:   LengthPercentageAuto::length(8.0),
+                right: LengthPercentageAuto::length(8.0),
+                bottom: LengthPercentageAuto::length(0.0),
+                left: LengthPercentageAuto::length(0.0),
+            },
+            ..Default::default()
+        };
+
+        let col = Style {
+            flex_direction:  FlexDirection::Column,
+            align_items:     Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            size: Size {
+                width:  Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+
+        let status_color = if s.status.starts_with("Welcome") {
+            Some(skia_safe::Color::from_rgb(0x4e, 0xc9, 0xb0)) // success green
+        } else if s.status.starts_with("Error") {
+            Some(skia_safe::Color::from_rgb(0xf4, 0x47, 0x47)) // error red
+        } else {
+            None
+        };
+
+        Widget::Column {
+            style: col,
+            children: vec![
+                // Título
+                Widget::Text {
+                    content: "Rutter".into(),
+                    color:   None,
+                    size:    22.0,
+                    style:   Style {
+                        margin: Rect {
+                            bottom: LengthPercentageAuto::length(4.0),
+                            top: LengthPercentageAuto::length(0.0),
+                            left: LengthPercentageAuto::length(0.0),
+                            right: LengthPercentageAuto::length(0.0)
+                        },
+                        ..Default::default()
+                    },
+                },
+                // Subtítulo
+                Widget::Text {
+                    content: "Sign in to continue".into(),
+                    color:   Some(skia_safe::Color::from_rgb(0x9d, 0x9d, 0x9d)),
+                    size:    13.0,
+                    style:   Style {
+                        margin: Rect {
+                            bottom: LengthPercentageAuto::length(28.0),
+                            top: LengthPercentageAuto::length(0.0),
+                            left: LengthPercentageAuto::length(0.0),
+                            right: LengthPercentageAuto::length(0.0)
+                        },
+                        ..Default::default()
+                    },
+                },
+                // Username
+                Widget::TextInput {
+                    on_change:   Msg::UsernameChanged,
+                    on_submit:   None,
+                    style:       input_style.clone(),
+                    id:          1,
+                    label:       "Username",
+                    placeholder: "Enter your username",
+                    state:       s.username_state,
+                    error_msg:   if s.username_state == InputState::Error {
+                        Some("Username is required".into())
+                    } else { None },
+                    is_password: false,
+                },
+                // Password
+                Widget::TextInput {
+                    on_change:   Msg::PasswordChanged,
+                    on_submit:   Some(Msg::LoginPressed),
+                    style:       input_style,
+                    id:          2,
+                    label:       "Password",
+                    placeholder: "Enter your password",
+                    state:       s.password_state,
+                    error_msg:   if s.password_state == InputState::Error {
+                        Some("Password is required".into())
+                    } else { None },
+                    is_password: true,
+                },
+                // Botão Sign in
+                Widget::Button {
+                    text:     "Sign in",
+                    on_press: Msg::LoginPressed,
+                    style:    btn_primary,
+                    color:    None,
+                    variant:  ButtonVariant::Primary,
+                },
+                // Linha de ações secundárias
+                Widget::Row {
+                    style: Style {
+                        flex_direction: FlexDirection::Row,
+                        ..Default::default()
+                    },
+                    children: vec![
+                        Widget::Button {
+                            text:     "Clear",
+                            on_press: Msg::ClearPressed,
+                            style:    btn_ghost.clone(),
+                            color:    None,
+                            variant:  ButtonVariant::Ghost,
+                        },
+                        Widget::Button {
+                            text:     "Forgot?",
+                            on_press: Msg::ClearPressed, // placeholder
+                            style:    btn_ghost,
+                            color:    None,
+                            variant:  ButtonVariant::Text,
+                        },
+                    ],
+                },
+                // Status
+                Widget::Text {
+                    content: s.status.clone(),
+                    color:   status_color,
+                    size:    12.0,
+                    style:   Style {
+                        margin: Rect {
+                            top: LengthPercentageAuto::length(12.0),
+                            bottom: LengthPercentageAuto::length(0.0),
+                            left: LengthPercentageAuto::length(0.0),
+                            right: LengthPercentageAuto::length(0.0)
+                        },
+                        ..Default::default()
+                    },
+                },
+            ],
         }
     }
+
+    fn update(s: &mut AppState, msg: Msg, _: &mut Clipboard) {
+        match msg {
+            Msg::UsernameChanged(v) => {
+                s.username       = v;
+                s.username_state = InputState::Idle;
+                if !s.status.is_empty() { s.status.clear(); }
+            }
+            Msg::PasswordChanged(v) => {
+                s.password       = v;
+                s.password_state = InputState::Idle;
+            }
+            Msg::LoginPressed => {
+                if s.username.is_empty() {
+                    s.username_state = InputState::Error;
+                    s.status         = "Error: username required".into();
+                } else if s.password.is_empty() {
+                    s.password_state = InputState::Error;
+                    s.status         = "Error: password required".into();
+                } else {
+                    s.username_state = InputState::Success;
+                    s.password_state = InputState::Success;
+                    s.status         = format!("Welcome, {}!", s.username);
+                }
+            }
+            Msg::ClearPressed => {
+                s.username       = String::new();
+                s.password       = String::new();
+                s.status         = String::new();
+                s.username_state = InputState::Idle;
+                s.password_state = InputState::Idle;
+            }
+        }
+    }
+
+    fn theme() -> Theme { Theme::dark() }
 }
 
 fn main() {
-    RutterRunner::<FormApp>::run();
+    RutterRunner::<MyApp>::run();
 }
