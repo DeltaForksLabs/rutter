@@ -1,53 +1,34 @@
 // ============================================================
-// Rutter Framework — widget.rs
+// Rutter Framework — widget.rs  (Fase 3)
 //
-// MUDANÇA FASE 2:
-//   Widget::TextInput não carrega mais `&'a mut Editor<'static>`.
-//   O editor agora é gerenciado pelo RutterEngine em um
-//   HashMap<u64, InputWidgetState>, eliminando todos os
-//   problemas de lifetime invariante.
-//
-//   O widget descreve APENAS o que renderizar; o estado
-//   interno (buffers, scroll, undo) pertence ao framework.
+// Novos widgets nesta fase:
+//   Checkbox, Switch, Radio, Slider, ProgressBar, Spinner,
+//   Divider, Spacer, ScrollView, Select, Tooltip, Image
 // ============================================================
 
 use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
 
-// ── Estado visual do TextInput ────────────────────────────────
+// ── Tipos auxiliares ─────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum InputState {
-    #[default]
-    Idle,
-    Focused,
-    Error,
-    Success,
-}
-
-// ── Variante do Button ────────────────────────────────────────
+pub enum InputState { #[default] Idle, Focused, Error, Success }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ButtonVariant {
-    /// Preenchido com cor accent — ação principal.
-    #[default]
-    Primary,
-    /// Fundo transparente com borda — ação secundária.
+    #[default] Primary,
     Ghost,
-    /// Sem fundo nem borda — link ou ação terciária.
     Text,
 }
 
+/// Orientação para Divider e futuras propriedades direcionais.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Orientation { #[default] Horizontal, Vertical }
+
 // ── Árvore de widgets ─────────────────────────────────────────
 
-/// Nó imutável da árvore de UI, construído por `AppLogic::view`
-/// a cada frame que precisar de relayout.
-///
-/// O lifetime `'a` agora cobre apenas strings emprestadas
-/// (label, placeholder, text de botão). Não há mais borrows
-/// de `Editor`, o que torna a árvore trivialmente clonável
-/// e livre de invariância.
 pub enum Widget<'a, Msg> {
+    // ── Layout ────────────────────────────────────────────────
     Column {
         children: Vec<Widget<'a, Msg>>,
         style:    Style,
@@ -62,6 +43,29 @@ pub enum Widget<'a, Msg> {
         color:  Option<SkiaColor>,
         radius: f32,
     },
+
+    // ── Primitivos de layout ──────────────────────────────────
+    /// Espaço flexível — equivalente ao Spacer do Flutter.
+    Spacer { style: Style },
+    /// Linha separadora horizontal ou vertical.
+    Divider { style: Style, orientation: Orientation },
+
+    // ── Conteúdo estático ─────────────────────────────────────
+    Text {
+        content: String,
+        style:   Style,
+        color:   Option<SkiaColor>,
+        size:    f32,
+    },
+    /// Imagem raster carregada de bytes (PNG/JPEG/WebP).
+    /// `data` é o conteúdo bruto do arquivo de imagem.
+    Image {
+        data:   &'a [u8],
+        style:  Style,
+        radius: f32,
+    },
+
+    // ── Ações ─────────────────────────────────────────────────
     Button {
         text:     &'a str,
         on_press: Msg,
@@ -69,25 +73,94 @@ pub enum Widget<'a, Msg> {
         color:    Option<SkiaColor>,
         variant:  ButtonVariant,
     },
-    Text {
-        content: String,
-        style:   Style,
-        color:   Option<SkiaColor>,
-        size:    f32,
-    },
-    /// Campo de texto — não carrega mais `&mut Editor`.
-    /// O engine associa o `id` ao estado interno correspondente.
+
+    // ── Entradas ──────────────────────────────────────────────
     TextInput {
         on_change:   fn(String) -> Msg,
         on_submit:   Option<Msg>,
         style:       Style,
-        /// Identificador único estável; usado como chave no mapa
-        /// de estados internos do engine.
         id:          u64,
         label:       &'a str,
         placeholder: &'a str,
         state:       InputState,
         error_msg:   Option<String>,
         is_password: bool,
+    },
+
+    /// Caixa de seleção booleana.
+    Checkbox {
+        checked:   bool,
+        on_change: fn(bool) -> Msg,
+        label:     &'a str,
+        style:     Style,
+    },
+
+    /// Toggle animado (Switch iOS/Material).
+    Switch {
+        checked:   bool,
+        on_change: fn(bool) -> Msg,
+        style:     Style,
+    },
+
+    /// Botão de rádio — use vários com o mesmo `group_value` para
+    /// construir um grupo de seleção exclusiva.
+    Radio {
+        selected:   bool,
+        on_select:  fn() -> Msg,
+        label:      &'a str,
+        style:      Style,
+    },
+
+    /// Controle deslizante para valores contínuos.
+    Slider {
+        id:        u64,
+        value:     f32,
+        min:       f32,
+        max:       f32,
+        step:      f32,
+        on_change: fn(f32) -> Msg,
+        style:     Style,
+        label:     &'a str,
+    },
+
+    // ── Indicadores ───────────────────────────────────────────
+    /// Barra de progresso 0.0–1.0. `indeterminate = true` anima.
+    ProgressBar {
+        value:         f32,
+        indeterminate: bool,
+        style:         Style,
+    },
+
+    /// Spinner de carregamento animado.
+    Spinner {
+        id:    u64,
+        style: Style,
+    },
+
+    // ── Navegação e overlay ───────────────────────────────────
+    /// Região com scroll vertical. O filho pode ser maior que o container.
+    ScrollView {
+        id:    u64,
+        child: Box<Widget<'a, Msg>>,
+        style: Style,
+    },
+
+    /// Seletor de opções (dropdown inline).
+    /// Quando aberto, expande verticalmente no layout.
+    Select {
+        id:             u64,
+        options:        &'a [&'a str],
+        selected_index: usize,
+        on_change:      fn(usize) -> Msg,
+        style:          Style,
+        label:          &'a str,
+        placeholder:    &'a str,
+    },
+
+    /// Mostra `text` ao passar o mouse sobre o filho.
+    Tooltip {
+        child: Box<Widget<'a, Msg>>,
+        text:  &'a str,
+        style: Style,
     },
 }

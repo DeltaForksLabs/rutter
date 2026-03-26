@@ -1,21 +1,32 @@
 [package]
-name = "rutter"
-version = "0.2.0"
+name    = "rutter"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
-winit = "0.30.13"
-softbuffer = "0.4.8"
-taffy = "0.9.2"
-# Skia - a biblioteca de renderização 2D
-skia-safe = { version = "0.93.1", features = ["gl", "textlayout"] }
-# Cosmic Text - para renderização de texto robusta
-cosmic-text = { version = "0.18.2"}
-arboard = "3.6.1"
+winit       = "0.30.13"
+softbuffer  = "0.4.8"
+taffy       = "0.9.2"
+skia-safe   = { version = "0.93.1", features = ["gl", "textlayout"] }
+cosmic-text = "0.18.2"
+arboard     = "3.6.1"
+# Fase 3: decodificação de imagens PNG/JPEG/WebP
+image       = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[dev-dependencies]
+# sem deps extras — testes usam apenas a stdlib + deps acima
+
+[features]
+default = []
+
+[profile.dev-opt]
+inherits  = "dev"
+opt-level = 1
+debug     = true
 
 [profile.release]
-opt-level     = "s"       # Otimiza para tamanho binário
-lto           = true      # Link-Time Optimization (elimina código morto entre crates)
-codegen-units = 1         # Uma única unidade: permite otimizações globais
-panic         = "abort"   # Sem overhead de unwinding — adequado para binário de sistema
-strip         = true      # Remove símbolos do binário final
+opt-level     = "s"
+lto           = true
+codegen-units = 1
+panic         = "abort"
+strip         = true
