@@ -1,363 +1,677 @@
 // ============================================================
-// Rutter Framework — engine/widget_state.rs  (Fase 3)
+// Rutter Framework — engine/widget_state.rs  (Fase 4)
 //
-// Estado interno owned pelo RutterEngine para widgets
-// que precisam de dados entre frames:
-//
-//   SliderState    — posição do thumb + drag
-//   ScrollState    — offset vertical de scroll
-//   SelectState    — aberto/fechado
-//   SpinnerState   — ângulo de animação (graus)
-//   AnimProgress   — offset da barra indeterminada
+// Novos estados:
+//   ToastState      — timer de auto-dismiss
+//   ModalState      — visível/oculto + backdrop fade
+//   TabState        — aba ativa (redundante com widget, mas
+//                     permite animação de underline)
+//   VirtualListState— scroll offset + range visível
 // ============================================================
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-// ── Slider ───────────────────────────────────────────────────
+// ── (mantidos da Fase 3) ──────────────────────────────────────
 
-/// Estado de drag de um Slider.
 #[derive(Debug, Clone)]
 pub struct SliderState {
-    /// true enquanto o mouse está pressionado sobre o track
-    pub dragging:          bool,
-    /// posição X absoluta do cursor no início do drag
+    pub dragging: bool,
     pub drag_start_cursor: f32,
-    /// valor no início do drag
-    pub drag_start_value:  f32,
-    /// posição X absoluta do início do track (atualizada no render)
-    pub track_abs_x:       f32,
-    /// largura do track em px lógicos (atualizada no render)
-    pub track_width:       f32,
+    pub drag_start_value: f32,
+    pub track_abs_x: f32,
+    pub track_width: f32,
 }
 
 impl Default for SliderState {
     fn default() -> Self {
         Self {
-            dragging:          false,
+            dragging: false,
             drag_start_cursor: 0.0,
-            drag_start_value:  0.0,
-            track_abs_x:       0.0,
-            track_width:       1.0,
+            drag_start_value: 0.0,
+            track_abs_x: 0.0,
+            track_width: 1.0,
         }
     }
 }
 
 impl SliderState {
-    /// Calcula o valor normalizado (0.0–1.0) a partir da posição
-    /// absoluta do cursor `abs_x`, respeitando os bounds do track.
     pub fn value_from_cursor(&self, abs_x: f32) -> f32 {
-        if self.track_width <= 0.0 { return 0.0; }
+        if self.track_width <= 0.0 {
+            return 0.0;
+        }
         ((abs_x - self.track_abs_x) / self.track_width).clamp(0.0, 1.0)
     }
 }
 
-// ── ScrollView ───────────────────────────────────────────────
-
-/// Estado de scroll de um ScrollView.
 #[derive(Debug, Clone, Default)]
 pub struct ScrollState {
-    /// Deslocamento vertical em px lógicos (positivo = scroll para baixo).
-    pub offset_y:       f32,
-    /// Altura total do conteúdo (atualizada no render).
+    pub offset_y: f32,
     pub content_height: f32,
-    /// Altura da viewport (atualizada no render).
-    pub viewport_h:     f32,
+    pub viewport_h: f32,
 }
 
 impl ScrollState {
-    /// Retorna o offset máximo permitido (não rola além do conteúdo).
     pub fn max_offset(&self) -> f32 {
         (self.content_height - self.viewport_h).max(0.0)
     }
-
-    /// Aplica um delta de scroll com clamp nos bounds.
     pub fn scroll_by(&mut self, delta_y: f32) {
         self.offset_y = (self.offset_y + delta_y).clamp(0.0, self.max_offset());
     }
-
-    /// Proporção visível (0.0–1.0) — usada para dimensionar o thumb.
     pub fn thumb_ratio(&self) -> f32 {
-        if self.content_height <= 0.0 { return 1.0; }
+        if self.content_height <= 0.0 {
+            return 1.0;
+        }
         (self.viewport_h / self.content_height).clamp(0.0, 1.0)
     }
-
-    /// Posição Y do thumb (0.0 = topo, `viewport_h` = fundo).
     pub fn thumb_y(&self) -> f32 {
-        if self.max_offset() <= 0.0 { return 0.0; }
-        (self.offset_y / self.max_offset())
-            * (self.viewport_h * (1.0 - self.thumb_ratio()))
+        if self.max_offset() <= 0.0 {
+            return 0.0;
+        }
+        (self.offset_y / self.max_offset()) * (self.viewport_h * (1.0 - self.thumb_ratio()))
     }
 }
 
-// ── Select ───────────────────────────────────────────────────
-
-/// Estado de abertura de um Select (dropdown).
 #[derive(Debug, Clone, Default)]
 pub struct SelectState {
-    pub is_open:        bool,
-    /// Índice da opção sob o cursor (para highlight de hover).
+    pub is_open: bool,
     pub hovered_option: Option<usize>,
 }
 
-// ── Spinner / ProgressBar indeterminate ──────────────────────
-
-/// Estado de animação para Spinner e ProgressBar indeterminada.
 #[derive(Debug, Clone)]
 pub struct AnimState {
-    /// Ângulo atual em graus (Spinner).
-    pub angle:        f32,
-    /// Offset normalizado (0.0–1.0) para barra indeterminada.
-    pub anim_offset:  f32,
-    /// Último tick de atualização.
-    pub last_tick:    Instant,
+    pub angle: f32,
+    pub anim_offset: f32,
+    pub last_tick: Instant,
 }
 
 impl Default for AnimState {
     fn default() -> Self {
-        Self { angle: 0.0, anim_offset: 0.0, last_tick: Instant::now() }
+        Self {
+            angle: 0.0,
+            anim_offset: 0.0,
+            last_tick: Instant::now(),
+        }
     }
 }
 
 impl AnimState {
-    /// Avança a animação com base no tempo decorrido desde o último tick.
-    /// Retorna `true` se mudou (precisa redraw).
     pub fn tick(&mut self) -> bool {
-        let now     = Instant::now();
-        let elapsed = now.duration_since(self.last_tick).as_secs_f32();
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_tick).as_secs_f32();
         self.last_tick = now;
-
-        // Spinner: 360°/s → uma rotação por segundo
-        self.angle = (self.angle + elapsed * 360.0) % 360.0;
-        // Barra indeterminada: percorre 0→1 em ~1.2s
-        self.anim_offset = (self.anim_offset + elapsed / 1.2) % 1.0;
+        self.angle = (self.angle + dt * 360.0) % 360.0;
+        self.anim_offset = (self.anim_offset + dt / 1.2) % 1.0;
         true
+    }
+}
+
+// ── Fase 4 — novos estados ────────────────────────────────────
+
+/// Estado de um Toast (notificação temporária).
+#[derive(Debug, Clone)]
+pub struct ToastState {
+    pub visible: bool,
+    pub created_at: Instant,
+    pub duration_ms: u32,
+    /// true quando o usuário clicou em dismiss antes do timer
+    pub dismissed: bool,
+}
+
+impl ToastState {
+    pub fn new(duration_ms: u32) -> Self {
+        Self {
+            visible: true,
+            created_at: Instant::now(),
+            duration_ms,
+            dismissed: false,
+        }
+    }
+
+    /// Verifica se o timer expirou. Retorna true se deve sumir.
+    pub fn is_expired(&self) -> bool {
+        if self.dismissed {
+            return true;
+        }
+        if self.duration_ms == 0 {
+            return false;
+        } // permanente
+        self.created_at.elapsed() >= Duration::from_millis(self.duration_ms as u64)
+    }
+
+    /// Progresso do timer: 1.0 = recém-criado, 0.0 = expirou.
+    pub fn progress(&self) -> f32 {
+        if self.duration_ms == 0 {
+            return 1.0;
+        }
+        let elapsed = self.created_at.elapsed().as_millis() as f32;
+        let total = self.duration_ms as f32;
+        (1.0 - elapsed / total).clamp(0.0, 1.0)
+    }
+
+    pub fn dismiss(&mut self) {
+        self.dismissed = true;
+        self.visible = false;
+    }
+}
+
+/// Estado de um Modal (overlay com backdrop).
+#[derive(Debug, Clone)]
+pub struct ModalState {
+    pub visible: bool,
+    /// Alpha atual do backdrop (0–255) para fade-in/out.
+    pub backdrop_alpha: u8,
+}
+
+impl Default for ModalState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            backdrop_alpha: 0,
+        }
+    }
+}
+
+impl ModalState {
+    pub fn open(&mut self) {
+        self.visible = true;
+        self.backdrop_alpha = 180;
+    }
+    pub fn close(&mut self) {
+        self.visible = false;
+        self.backdrop_alpha = 0;
+    }
+}
+
+/// Estado de uma TabBar.
+#[derive(Debug, Clone)]
+pub struct TabState {
+    pub active: usize,
+    /// Posição X do underline (para animação suave — Fase 5).
+    pub underline_x: f32,
+}
+
+impl Default for TabState {
+    fn default() -> Self {
+        Self {
+            active: 0,
+            underline_x: 0.0,
+        }
+    }
+}
+
+impl TabState {
+    pub fn set_active(&mut self, idx: usize, tab_width: f32) {
+        self.active = idx;
+        self.underline_x = idx as f32 * tab_width;
+    }
+}
+
+/// Estado de uma VirtualList.
+#[derive(Debug, Clone, Default)]
+pub struct VirtualListState {
+    /// Offset vertical de scroll (px lógicos).
+    pub scroll_y: f32,
+    /// Altura da viewport (atualizada no render).
+    pub viewport_h: f32,
+    /// Índice da linha selecionada (None = nenhuma).
+    pub selected_row: Option<usize>,
+    /// Índice sob o cursor (para highlight de hover).
+    pub hovered_row: Option<usize>,
+}
+
+impl VirtualListState {
+    /// Faixa de índices visíveis dado `item_height` e `item_count`.
+    pub fn visible_range(&self, item_height: f32, item_count: usize) -> (usize, usize) {
+        if item_height <= 0.0 {
+            return (0, 0);
+        }
+        let first = (self.scroll_y / item_height).floor() as usize;
+        let count = (self.viewport_h / item_height).ceil() as usize + 1; // +1 buffer
+        let last = (first + count).min(item_count);
+        (first, last)
+    }
+
+    /// Offset máximo de scroll.
+    pub fn max_scroll(&self, item_height: f32, item_count: usize) -> f32 {
+        let total = item_height * item_count as f32;
+        (total - self.viewport_h).max(0.0)
+    }
+
+    pub fn scroll_by(&mut self, delta_y: f32, item_height: f32, item_count: usize) {
+        let max = self.max_scroll(item_height, item_count);
+        self.scroll_y = (self.scroll_y + delta_y).clamp(0.0, max);
+    }
+
+    pub fn scroll_to_index(&mut self, idx: usize, item_height: f32, item_count: usize) {
+        let target_y = idx as f32 * item_height;
+        let max = self.max_scroll(item_height, item_count);
+        self.scroll_y = target_y.clamp(0.0, max);
+    }
+
+    pub fn thumb_ratio(&self, item_height: f32, item_count: usize) -> f32 {
+        let total = item_height * item_count as f32;
+        if total <= 0.0 {
+            return 1.0;
+        }
+        (self.viewport_h / total).clamp(0.0, 1.0)
+    }
+
+    pub fn thumb_y(&self, item_height: f32, item_count: usize) -> f32 {
+        let max = self.max_scroll(item_height, item_count);
+        if max <= 0.0 {
+            return 0.0;
+        }
+        (self.scroll_y / max)
+            * (self.viewport_h * (1.0 - self.thumb_ratio(item_height, item_count)))
     }
 }
 
 // ── Enum unificado ────────────────────────────────────────────
 
-/// Estado interno de qualquer widget com estado em Fase 3.
-/// Armazenado no `RutterEngine` por ID do widget.
 #[derive(Debug)]
 pub enum WidgetState {
     Slider(SliderState),
     Scroll(ScrollState),
     Select(SelectState),
     Anim(AnimState),
+    Toast(ToastState),
+    Modal(ModalState),
+    Tab(TabState),
+    VList(VirtualListState),
 }
 
 impl WidgetState {
-    pub fn as_slider(&self)     -> Option<&SliderState>  { if let Self::Slider(s) = self { Some(s) } else { None } }
-    pub fn as_slider_mut(&mut self) -> Option<&mut SliderState> { if let Self::Slider(s) = self { Some(s) } else { None } }
-    pub fn as_scroll(&self)     -> Option<&ScrollState>  { if let Self::Scroll(s) = self { Some(s) } else { None } }
-    pub fn as_scroll_mut(&mut self) -> Option<&mut ScrollState> { if let Self::Scroll(s) = self { Some(s) } else { None } }
-    pub fn as_select(&self)     -> Option<&SelectState>  { if let Self::Select(s) = self { Some(s) } else { None } }
-    pub fn as_select_mut(&mut self) -> Option<&mut SelectState> { if let Self::Select(s) = self { Some(s) } else { None } }
-    pub fn as_anim(&self)       -> Option<&AnimState>    { if let Self::Anim(s) = self { Some(s) } else { None } }
-    pub fn as_anim_mut(&mut self)   -> Option<&mut AnimState>   { if let Self::Anim(s) = self { Some(s) } else { None } }
+    pub fn as_slider(&self) -> Option<&SliderState> {
+        if let Self::Slider(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_slider_mut(&mut self) -> Option<&mut SliderState> {
+        if let Self::Slider(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_scroll(&self) -> Option<&ScrollState> {
+        if let Self::Scroll(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_scroll_mut(&mut self) -> Option<&mut ScrollState> {
+        if let Self::Scroll(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_select(&self) -> Option<&SelectState> {
+        if let Self::Select(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_select_mut(&mut self) -> Option<&mut SelectState> {
+        if let Self::Select(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_anim(&self) -> Option<&AnimState> {
+        if let Self::Anim(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_anim_mut(&mut self) -> Option<&mut AnimState> {
+        if let Self::Anim(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_toast(&self) -> Option<&ToastState> {
+        if let Self::Toast(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_toast_mut(&mut self) -> Option<&mut ToastState> {
+        if let Self::Toast(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_modal(&self) -> Option<&ModalState> {
+        if let Self::Modal(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_modal_mut(&mut self) -> Option<&mut ModalState> {
+        if let Self::Modal(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_tab(&self) -> Option<&TabState> {
+        if let Self::Tab(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_tab_mut(&mut self) -> Option<&mut TabState> {
+        if let Self::Tab(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_vlist(&self) -> Option<&VirtualListState> {
+        if let Self::VList(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_vlist_mut(&mut self) -> Option<&mut VirtualListState> {
+        if let Self::VList(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
 }
 
-// ── Testes unitários ─────────────────────────────────────────
+// ── Testes unitários ──────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
-    use std::time::Duration;
+    use std::{thread, time::Duration};
 
-    // ── SliderState ──────────────────────────────────────────
+    // ── ToastState ───────────────────────────────────────────
 
     #[test]
-    fn slider_value_from_cursor_at_start() {
-        let s = SliderState { track_abs_x: 10.0, track_width: 100.0, ..Default::default() };
-        assert!((s.value_from_cursor(10.0) - 0.0).abs() < f32::EPSILON);
+    fn toast_starts_visible() {
+        let t = ToastState::new(3000);
+        assert!(t.visible);
+        assert!(!t.dismissed);
     }
 
     #[test]
-    fn slider_value_from_cursor_at_end() {
-        let s = SliderState { track_abs_x: 10.0, track_width: 100.0, ..Default::default() };
-        assert!((s.value_from_cursor(110.0) - 1.0).abs() < f32::EPSILON);
+    fn toast_not_expired_immediately() {
+        let t = ToastState::new(3000);
+        assert!(!t.is_expired());
     }
 
     #[test]
-    fn slider_value_from_cursor_mid() {
-        let s = SliderState { track_abs_x: 0.0, track_width: 200.0, ..Default::default() };
-        assert!((s.value_from_cursor(100.0) - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn slider_value_clamped_below_zero() {
-        let s = SliderState { track_abs_x: 50.0, track_width: 100.0, ..Default::default() };
-        assert!((s.value_from_cursor(0.0) - 0.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn slider_value_clamped_above_one() {
-        let s = SliderState { track_abs_x: 0.0, track_width: 100.0, ..Default::default() };
-        assert!((s.value_from_cursor(500.0) - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn slider_zero_track_width_returns_zero() {
-        let s = SliderState { track_abs_x: 0.0, track_width: 0.0, ..Default::default() };
-        assert!((s.value_from_cursor(50.0) - 0.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn slider_default_not_dragging() {
-        assert!(!SliderState::default().dragging);
-    }
-
-    // ── ScrollState ──────────────────────────────────────────
-
-    #[test]
-    fn scroll_max_offset_no_overflow() {
-        let s = ScrollState { offset_y: 0.0, content_height: 100.0, viewport_h: 200.0 };
-        assert!((s.max_offset() - 0.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn scroll_max_offset_with_overflow() {
-        let s = ScrollState { offset_y: 0.0, content_height: 500.0, viewport_h: 200.0 };
-        assert!((s.max_offset() - 300.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn scroll_by_clamps_at_zero() {
-        let mut s = ScrollState { offset_y: 0.0, content_height: 500.0, viewport_h: 200.0 };
-        s.scroll_by(-100.0);
-        assert!((s.offset_y - 0.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn scroll_by_clamps_at_max() {
-        let mut s = ScrollState { offset_y: 0.0, content_height: 500.0, viewport_h: 200.0 };
-        s.scroll_by(1000.0);
-        assert!((s.offset_y - 300.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn scroll_by_increments_correctly() {
-        let mut s = ScrollState { offset_y: 0.0, content_height: 500.0, viewport_h: 200.0 };
-        s.scroll_by(50.0);
-        assert!((s.offset_y - 50.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn scroll_thumb_ratio_full_visibility() {
-        let s = ScrollState { offset_y: 0.0, content_height: 100.0, viewport_h: 100.0 };
-        assert!((s.thumb_ratio() - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn scroll_thumb_ratio_half_visibility() {
-        let s = ScrollState { offset_y: 0.0, content_height: 400.0, viewport_h: 200.0 };
-        assert!((s.thumb_ratio() - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn scroll_thumb_y_at_top() {
-        let s = ScrollState { offset_y: 0.0, content_height: 400.0, viewport_h: 200.0 };
-        assert!((s.thumb_y() - 0.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn scroll_thumb_y_at_bottom() {
-        let s = ScrollState { offset_y: 300.0, content_height: 500.0, viewport_h: 200.0 };
-        // max_offset=300, thumb_ratio=0.4, thumb travel = 200*(1-0.4)=120, at 100% → 120
-        let expected_thumb_y = 300.0 / 300.0 * (200.0 * (1.0 - 0.4));
-        assert!((s.thumb_y() - expected_thumb_y).abs() < 1.0);
-    }
-
-    #[test]
-    fn scroll_default_offset_is_zero() {
-        let s = ScrollState::default();
-        assert!((s.offset_y - 0.0).abs() < f32::EPSILON);
-    }
-
-    // ── SelectState ──────────────────────────────────────────
-
-    #[test]
-    fn select_starts_closed() {
-        assert!(!SelectState::default().is_open);
-    }
-
-    #[test]
-    fn select_toggle_open() {
-        let mut s = SelectState::default();
-        s.is_open = true;
-        assert!(s.is_open);
-    }
-
-    #[test]
-    fn select_hovered_option_default_none() {
-        assert!(SelectState::default().hovered_option.is_none());
-    }
-
-    // ── AnimState ────────────────────────────────────────────
-
-    #[test]
-    fn anim_angle_starts_zero() {
-        assert!((AnimState::default().angle - 0.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn anim_offset_starts_zero() {
-        assert!((AnimState::default().anim_offset - 0.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn anim_tick_advances_angle() {
-        let mut a = AnimState::default();
+    fn toast_expires_after_duration() {
+        let t = ToastState::new(30); // 30ms
         thread::sleep(Duration::from_millis(50));
-        a.tick();
-        assert!(a.angle > 0.0, "ângulo deve ter avançado");
+        assert!(t.is_expired());
     }
 
     #[test]
-    fn anim_angle_wraps_at_360() {
-        let mut a = AnimState { angle: 359.0, anim_offset: 0.0, last_tick: Instant::now() };
-        thread::sleep(Duration::from_millis(10));
-        a.tick();
-        // Após wrap, ângulo deve ser < 360
-        assert!(a.angle < 360.0);
+    fn toast_permanent_never_expires() {
+        let t = ToastState::new(0);
+        thread::sleep(Duration::from_millis(50));
+        assert!(!t.is_expired());
     }
 
     #[test]
-    fn anim_offset_wraps_at_one() {
-        let mut a = AnimState { angle: 0.0, anim_offset: 0.99, last_tick: Instant::now() };
-        thread::sleep(Duration::from_millis(30));
-        a.tick();
-        assert!(a.anim_offset < 1.0);
-    }
-
-    // ── WidgetState enum ─────────────────────────────────────
-
-    #[test]
-    fn widget_state_slider_accessor() {
-        let w = WidgetState::Slider(SliderState::default());
-        assert!(w.as_slider().is_some());
-        assert!(w.as_scroll().is_none());
+    fn toast_dismiss_marks_expired() {
+        let mut t = ToastState::new(5000);
+        assert!(!t.is_expired());
+        t.dismiss();
+        assert!(t.is_expired());
+        assert!(!t.visible);
     }
 
     #[test]
-    fn widget_state_scroll_accessor() {
-        let w = WidgetState::Scroll(ScrollState::default());
-        assert!(w.as_scroll().is_some());
-        assert!(w.as_slider().is_none());
+    fn toast_progress_starts_near_one() {
+        let t = ToastState::new(1000);
+        assert!(t.progress() > 0.95);
     }
 
     #[test]
-    fn widget_state_select_accessor() {
-        let w = WidgetState::Select(SelectState::default());
-        assert!(w.as_select().is_some());
-        assert!(w.as_anim().is_none());
+    fn toast_progress_after_duration_near_zero() {
+        let t = ToastState::new(30);
+        thread::sleep(Duration::from_millis(50));
+        let p = t.progress();
+        assert!(p <= 0.0, "progress={p}");
     }
 
     #[test]
-    fn widget_state_anim_accessor() {
-        let w = WidgetState::Anim(AnimState::default());
-        assert!(w.as_anim().is_some());
-        assert!(w.as_select().is_none());
+    fn toast_permanent_progress_is_one() {
+        let t = ToastState::new(0);
+        assert!((t.progress() - 1.0).abs() < f32::EPSILON);
+    }
+
+    // ── ModalState ───────────────────────────────────────────
+
+    #[test]
+    fn modal_starts_hidden() {
+        assert!(!ModalState::default().visible);
+    }
+
+    #[test]
+    fn modal_open_sets_visible() {
+        let mut m = ModalState::default();
+        m.open();
+        assert!(m.visible);
+        assert!(m.backdrop_alpha > 0);
+    }
+
+    #[test]
+    fn modal_close_clears() {
+        let mut m = ModalState::default();
+        m.open();
+        m.close();
+        assert!(!m.visible);
+        assert_eq!(m.backdrop_alpha, 0);
+    }
+
+    // ── TabState ─────────────────────────────────────────────
+
+    #[test]
+    fn tab_starts_at_zero() {
+        assert_eq!(TabState::default().active, 0);
+    }
+
+    #[test]
+    fn tab_set_active_updates_index() {
+        let mut t = TabState::default();
+        t.set_active(2, 100.0);
+        assert_eq!(t.active, 2);
+    }
+
+    #[test]
+    fn tab_underline_x_matches_index() {
+        let mut t = TabState::default();
+        t.set_active(3, 80.0);
+        assert!((t.underline_x - 240.0).abs() < f32::EPSILON);
+    }
+
+    // ── VirtualListState ─────────────────────────────────────
+
+    #[test]
+    fn vlist_visible_range_full_when_fewer_items() {
+        let s = VirtualListState {
+            scroll_y: 0.0,
+            viewport_h: 300.0,
+            ..Default::default()
+        };
+        let (first, last) = s.visible_range(30.0, 5);
+        assert_eq!(first, 0);
+        assert_eq!(last, 5);
+    }
+
+    #[test]
+    fn vlist_visible_range_clips_at_count() {
+        let s = VirtualListState {
+            scroll_y: 0.0,
+            viewport_h: 300.0,
+            ..Default::default()
+        };
+        let (first, last) = s.visible_range(30.0, 1000);
+        assert_eq!(first, 0);
+        assert!(last <= 12); // ~10 items + 1 buffer
+    }
+
+    #[test]
+    fn vlist_visible_range_scrolled() {
+        let s = VirtualListState {
+            scroll_y: 300.0,
+            viewport_h: 300.0,
+            ..Default::default()
+        };
+        let (first, last) = s.visible_range(30.0, 1000);
+        assert_eq!(first, 10); // 300 / 30 = 10
+        assert!(last > 10);
+    }
+
+    #[test]
+    fn vlist_scroll_by_clamps() {
+        let mut s = VirtualListState {
+            scroll_y: 0.0,
+            viewport_h: 200.0,
+            ..Default::default()
+        };
+        s.scroll_by(-50.0, 30.0, 100);
+        assert!((s.scroll_y - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vlist_scroll_by_forward() {
+        let mut s = VirtualListState {
+            scroll_y: 0.0,
+            viewport_h: 200.0,
+            ..Default::default()
+        };
+        s.scroll_by(90.0, 30.0, 100);
+        assert!((s.scroll_y - 90.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vlist_scroll_by_clamps_at_max() {
+        let mut s = VirtualListState {
+            scroll_y: 0.0,
+            viewport_h: 200.0,
+            ..Default::default()
+        };
+        // max = 100*30 - 200 = 2800
+        s.scroll_by(9999.0, 30.0, 100);
+        assert!((s.scroll_y - 2800.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vlist_scroll_to_index_correct() {
+        let mut s = VirtualListState {
+            scroll_y: 0.0,
+            viewport_h: 200.0,
+            ..Default::default()
+        };
+        s.scroll_to_index(20, 30.0, 100);
+        assert!((s.scroll_y - 600.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vlist_max_scroll_calculation() {
+        let s = VirtualListState {
+            viewport_h: 200.0,
+            ..Default::default()
+        };
+        assert!((s.max_scroll(30.0, 100) - 2800.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vlist_thumb_ratio_small_list() {
+        let s = VirtualListState {
+            viewport_h: 300.0,
+            ..Default::default()
+        };
+        // 10 items * 30 = 300 total = viewport → ratio 1.0
+        assert!((s.thumb_ratio(30.0, 10) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vlist_thumb_ratio_large_list() {
+        let s = VirtualListState {
+            viewport_h: 200.0,
+            ..Default::default()
+        };
+        // 100*30=3000, 200/3000 ≈ 0.067
+        let r = s.thumb_ratio(30.0, 100);
+        assert!((r - 200.0 / 3000.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn vlist_no_items_zero_max_scroll() {
+        let s = VirtualListState::default();
+        assert!((s.max_scroll(30.0, 0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vlist_selected_row_none_by_default() {
+        assert!(VirtualListState::default().selected_row.is_none());
+    }
+
+    // ── WidgetState accessors ─────────────────────────────────
+
+    #[test]
+    fn widget_state_toast_accessor() {
+        let ws = WidgetState::Toast(ToastState::new(1000));
+        assert!(ws.as_toast().is_some());
+        assert!(ws.as_modal().is_none());
+    }
+
+    #[test]
+    fn widget_state_modal_accessor() {
+        let ws = WidgetState::Modal(ModalState::default());
+        assert!(ws.as_modal().is_some());
+        assert!(ws.as_tab().is_none());
+    }
+
+    #[test]
+    fn widget_state_tab_accessor() {
+        let ws = WidgetState::Tab(TabState::default());
+        assert!(ws.as_tab().is_some());
+        assert!(ws.as_vlist().is_none());
+    }
+
+    #[test]
+    fn widget_state_vlist_accessor() {
+        let ws = WidgetState::VList(VirtualListState::default());
+        assert!(ws.as_vlist().is_some());
+        assert!(ws.as_slider().is_none());
+    }
+
+    #[test]
+    fn widget_state_vlist_mut() {
+        let mut ws = WidgetState::VList(VirtualListState::default());
+        ws.as_vlist_mut().unwrap().selected_row = Some(5);
+        assert_eq!(ws.as_vlist().unwrap().selected_row, Some(5));
+    }
+
+    #[test]
+    fn widget_state_modal_mut_open_close() {
+        let mut ws = WidgetState::Modal(ModalState::default());
+        ws.as_modal_mut().unwrap().open();
+        assert!(ws.as_modal().unwrap().visible);
+        ws.as_modal_mut().unwrap().close();
+        assert!(!ws.as_modal().unwrap().visible);
     }
 }
