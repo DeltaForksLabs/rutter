@@ -1,15 +1,5 @@
 // ============================================================
-// Rutter Framework — render/hit_test.rs  (Fase 4)
-//
-// Correções de warnings do v5:
-//   • selected_index agora usada no match de Select
-//   • padrão duplicado de ScrollView consolidado
-//   • _mouse e _id prefixados onde não usados
-//
-// Novos handlers:
-//   TabPress       — clique em aba
-//   ModalDismiss   — clique no backdrop
-//   VListSelect    — clique em item da VirtualList
+// Rutter Framework — render/hit_test.rs
 // ============================================================
 
 use skia_safe::{Contains, Point, Rect as SkiaRect};
@@ -17,14 +7,20 @@ use std::collections::HashMap;
 use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::engine::widget_state::WidgetState;
-use crate::layout::{OPTION_HEIGHT, RutterContext};
+use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
 use crate::widget::Widget;
 
-// ── Resultado ────────────────────────────────────────────────
+const ACCORDION_HEADER_H: f32 = 44.0;
 
 pub enum HitResult<Msg> {
     Message(Msg),
-    InputFocus(u64),
+    InputFocus {
+        id: u64,
+        local_x: f32,
+        local_y: f32,
+        width: f32,
+        height: f32,
+    },
     SliderPress {
         id: u64,
         cursor_x: f32,
@@ -51,7 +47,19 @@ pub enum HitResult<Msg> {
     },
 }
 
-// ── Hit test ─────────────────────────────────────────────────
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollbarDragHit {
+    pub id: u64,
+    pub start_offset: f32,
+    pub viewport_h: f32,
+    pub content_h: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InputGeometry {
+    pub width: f32,
+    pub height: f32,
+}
 
 pub fn hit_test<Msg: Clone>(
     widget: &Widget<Msg>,
@@ -70,19 +78,22 @@ pub fn hit_test<Msg: Clone>(
 
     match widget {
         Widget::Button { on_press, .. } => Some(HitResult::Message(on_press.clone())),
-
-        Widget::TextInput { id, .. } => Some(HitResult::InputFocus(*id)),
-
+        Widget::TextInput { id, .. }
+        | Widget::TextArea { id, .. }
+        | Widget::SearchBar { id, .. } => Some(HitResult::InputFocus {
+            id: *id,
+            local_x: mouse.x - abs_pos.x,
+            local_y: mouse.y - abs_pos.y,
+            width: layout.size.width,
+            height: layout.size.height,
+        }),
         Widget::Checkbox {
             checked, on_change, ..
         } => Some(HitResult::Message(on_change(!checked))),
-
         Widget::Switch {
             checked, on_change, ..
         } => Some(HitResult::Message(on_change(!checked))),
-
         Widget::Radio { on_select, .. } => Some(HitResult::Message(on_select())),
-
         Widget::Slider {
             id, min, max, step, ..
         } => {
@@ -99,9 +110,6 @@ pub fn hit_test<Msg: Clone>(
                 step: *step,
             })
         }
-
-        // FIX WARNING: selected_index agora prefixado com _ (não usada aqui,
-        // é lida do AppState pelo runner).
         Widget::Select { id, options, .. } => {
             let is_open = widget_states
                 .get(id)
@@ -114,7 +122,6 @@ pub fn hit_test<Msg: Clone>(
                 } else {
                     0.0
                 };
-
             if mouse.y < abs_pos.y + closed_h {
                 return Some(HitResult::SelectToggle(*id));
             }
@@ -129,8 +136,6 @@ pub fn hit_test<Msg: Clone>(
             }
             None
         }
-
-        // FIX WARNING: padrão duplicado de ScrollView consolidado em um único arm.
         Widget::ScrollView { id, child, .. } => {
             let ids = taffy.children(node_id).unwrap();
             if let Some(r) = hit_test(child, taffy, ids[0], mouse, abs_pos, widget_states) {
@@ -138,13 +143,41 @@ pub fn hit_test<Msg: Clone>(
             }
             Some(HitResult::ScrollFocus(*id))
         }
-
         Widget::Tooltip { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
             hit_test(child, taffy, ids[0], mouse, abs_pos, widget_states)
         }
-
-        // ── Fase 4 ────────────────────────────────────────────
+        Widget::Accordion {
+            child,
+            expanded,
+            on_toggle,
+            ..
+        } => {
+            let header_rect = SkiaRect::from_xywh(
+                abs_pos.x,
+                abs_pos.y,
+                layout.size.width,
+                ACCORDION_HEADER_H.min(layout.size.height),
+            );
+            if header_rect.contains(mouse) {
+                return Some(HitResult::Message(on_toggle.clone()));
+            }
+            if *expanded {
+                let ids = taffy.children(node_id).unwrap();
+                if ids.is_empty() {
+                    return None;
+                }
+                return hit_test(
+                    child,
+                    taffy,
+                    ids[0],
+                    mouse,
+                    Point::new(abs_pos.x, abs_pos.y + ACCORDION_HEADER_H),
+                    widget_states,
+                );
+            }
+            None
+        }
         Widget::TabBar { id, tabs, .. } => {
             if tabs.is_empty() {
                 return None;
@@ -157,7 +190,6 @@ pub fn hit_test<Msg: Clone>(
                 index: idx,
             })
         }
-
         Widget::Modal {
             id,
             visible,
@@ -173,14 +205,50 @@ pub fn hit_test<Msg: Clone>(
             if child_hit.is_some() {
                 return child_hit;
             }
-            // Clicou no backdrop
             if let Some(msg) = on_dismiss.clone() {
                 Some(HitResult::Message(msg))
             } else {
                 Some(HitResult::ModalDismiss(*id))
             }
         }
+        Widget::Dialog {
+            id,
+            visible,
+            on_confirm,
+            on_cancel,
+            ..
+        } => {
+            if !visible {
+                return None;
+            }
+            let card_w = 400.0;
+            let card_h = 200.0;
+            let card_x = (layout.size.width - card_w) / 2.0;
+            let card_y = (layout.size.height - card_h) / 2.0;
+            let cancel_w = 100.0;
+            let confirm_w = 100.0;
+            let btn_h = 36.0;
+            let cancel_rect = SkiaRect::from_xywh(
+                abs_pos.x + card_x + card_w - 24.0 - confirm_w - 12.0 - cancel_w,
+                abs_pos.y + card_y + card_h - 24.0 - btn_h,
+                cancel_w,
+                btn_h,
+            );
+            let confirm_rect = SkiaRect::from_xywh(
+                abs_pos.x + card_x + card_w - 24.0 - confirm_w,
+                abs_pos.y + card_y + card_h - 24.0 - btn_h,
+                confirm_w,
+                btn_h,
+            );
 
+            if confirm_rect.contains(mouse) {
+                return Some(HitResult::Message(on_confirm.clone()));
+            }
+            if cancel_rect.contains(mouse) {
+                return Some(HitResult::Message(on_cancel.clone()));
+            }
+            Some(HitResult::ModalDismiss(*id))
+        }
         Widget::VirtualList {
             id,
             item_height,
@@ -203,7 +271,6 @@ pub fn hit_test<Msg: Clone>(
                 None
             }
         }
-
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).unwrap();
             for (i, child) in children.iter().enumerate().rev() {
@@ -213,21 +280,19 @@ pub fn hit_test<Msg: Clone>(
             }
             None
         }
-
         Widget::Container { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
             hit_test(child, taffy, ids[0], mouse, abs_pos, widget_states)
         }
-
         _ => None,
     }
 }
 
-// ── Coleta de IDs ─────────────────────────────────────────────
-
 pub fn collect_input_ids<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>) {
     match widget {
-        Widget::TextInput { id, .. } => ids.push(*id),
+        Widget::TextInput { id, .. }
+        | Widget::TextArea { id, .. }
+        | Widget::SearchBar { id, .. } => ids.push(*id),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for c in children {
                 collect_input_ids(c, ids);
@@ -236,20 +301,18 @@ pub fn collect_input_ids<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>) {
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ScrollView { child, .. }
-        | Widget::Modal { child, .. } => {
-            collect_input_ids(child, ids);
-        }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => collect_input_ids(child, ids),
         _ => {}
     }
 }
 
-/// Coleta IDs de widgets com estado interno.
 pub fn collect_stateful_ids<Msg>(widget: &Widget<Msg>, out: &mut Vec<(u64, &'static str)>) {
     match widget {
         Widget::Slider { id, .. } => out.push((*id, "slider")),
         Widget::Select { id, .. } => out.push((*id, "select")),
         Widget::Spinner { id, .. } => out.push((*id, "anim")),
-        // FIX WARNING: ScrollView tratado em único arm (sem duplicação)
         Widget::ScrollView { id, child, .. } => {
             out.push((*id, "scroll"));
             collect_stateful_ids(child, out);
@@ -258,10 +321,7 @@ pub fn collect_stateful_ids<Msg>(widget: &Widget<Msg>, out: &mut Vec<(u64, &'sta
             id,
             indeterminate: true,
             ..
-        } => {
-            out.push((*id, "anim"));
-        }
-        // Fase 4
+        } => out.push((*id, "anim")),
         Widget::TabBar { id, .. } => out.push((*id, "tab")),
         Widget::Toast { id, .. } => out.push((*id, "toast")),
         Widget::VirtualList { id, .. } => out.push((*id, "vlist")),
@@ -269,14 +329,14 @@ pub fn collect_stateful_ids<Msg>(widget: &Widget<Msg>, out: &mut Vec<(u64, &'sta
             out.push((*id, "modal"));
             collect_stateful_ids(child, out);
         }
-
+        Widget::Dialog { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. } => collect_stateful_ids(child, out),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for c in children {
                 collect_stateful_ids(c, out);
             }
-        }
-        Widget::Container { child, .. } | Widget::Tooltip { child, .. } => {
-            collect_stateful_ids(child, out);
         }
         _ => {}
     }
@@ -286,16 +346,36 @@ pub fn find_input_callbacks<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
 ) -> Option<(fn(String) -> Msg, Option<Msg>)> {
+    find_input_props(widget, target_id).map(|(cb, submit, _, _)| (cb, submit))
+}
+
+pub fn find_input_props<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+) -> Option<(fn(String) -> Msg, Option<Msg>, bool, bool)> {
     match widget {
         Widget::TextInput {
             id,
             on_change,
             on_submit,
+            is_password,
             ..
-        } if *id == target_id => Some((*on_change, on_submit.clone())),
+        } if *id == target_id => Some((*on_change, on_submit.clone(), *is_password, false)),
+        Widget::TextArea {
+            id,
+            on_change,
+            on_submit,
+            ..
+        } if *id == target_id => Some((*on_change, on_submit.clone(), false, true)),
+        Widget::SearchBar {
+            id,
+            on_change,
+            on_submit,
+            ..
+        } if *id == target_id => Some((*on_change, on_submit.clone(), false, false)),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for c in children {
-                if let Some(r) = find_input_callbacks(c, target_id) {
+                if let Some(r) = find_input_props(c, target_id) {
                     return Some(r);
                 }
             }
@@ -304,7 +384,9 @@ pub fn find_input_callbacks<Msg: Clone>(
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ScrollView { child, .. }
-        | Widget::Modal { child, .. } => find_input_callbacks(child, target_id),
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => find_input_props(child, target_id),
         _ => None,
     }
 }
@@ -326,7 +408,9 @@ pub fn find_select_callback<Msg: Clone>(
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ScrollView { child, .. }
-        | Widget::Modal { child, .. } => find_select_callback(child, target_id),
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => find_select_callback(child, target_id),
         _ => None,
     }
 }
@@ -348,232 +432,235 @@ pub fn find_slider_callback<Msg: Clone>(
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ScrollView { child, .. }
-        | Widget::Modal { child, .. } => find_slider_callback(child, target_id),
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => find_slider_callback(child, target_id),
         _ => None,
     }
 }
 
-// ── Testes ───────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::widget::{InputState, ToastKind};
-    use taffy::prelude::Style;
-
-    #[derive(Debug, Clone, PartialEq)]
-    enum M {
-        A,
-        Str(String),
-        Bool(bool),
-        Usize(usize),
-        Float(f32),
-    }
-
-    fn empty() -> HashMap<u64, WidgetState> {
-        HashMap::new()
-    }
-
-    fn input(id: u64) -> Widget<'static, M> {
-        Widget::TextInput {
+pub fn find_vlist_props<Msg>(widget: &Widget<Msg>, target_id: u64) -> Option<(f32, usize)> {
+    match widget {
+        Widget::VirtualList {
             id,
-            on_change: M::Str,
-            on_submit: None,
-            style: Style::default(),
-            label: "",
-            placeholder: "",
-            state: InputState::Idle,
-            error_msg: None,
-            is_password: false,
+            item_height,
+            item_count,
+            ..
+        } if *id == target_id => Some((*item_height, *item_count)),
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for c in children {
+                if let Some(r) = find_vlist_props(c, target_id) {
+                    return Some(r);
+                }
+            }
+            None
         }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => find_vlist_props(child, target_id),
+        _ => None,
+    }
+}
+
+pub fn find_toast_dismiss_msg<Msg: Clone>(widget: &Widget<Msg>, target_id: u64) -> Option<Msg> {
+    match widget {
+        Widget::Toast { id, on_dismiss, .. } if *id == target_id => on_dismiss.clone(),
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for c in children {
+                if let Some(r) = find_toast_dismiss_msg(c, target_id) {
+                    return Some(r);
+                }
+            }
+            None
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => find_toast_dismiss_msg(child, target_id),
+        _ => None,
+    }
+}
+
+pub fn find_input_geometry<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    target_id: u64,
+) -> Option<InputGeometry> {
+    match widget {
+        Widget::TextInput { id, .. }
+        | Widget::TextArea { id, .. }
+        | Widget::SearchBar { id, .. }
+            if *id == target_id =>
+        {
+            let layout = taffy.layout(node_id).ok()?;
+            Some(InputGeometry {
+                width: layout.size.width,
+                height: layout.size.height,
+            })
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            for (i, child) in children.iter().enumerate() {
+                if let Some(r) = find_input_geometry(child, taffy, ids[i], target_id) {
+                    return Some(r);
+                }
+            }
+            None
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            if ids.is_empty() {
+                return None;
+            }
+            find_input_geometry(child, taffy, ids[0], target_id)
+        }
+        _ => None,
+    }
+}
+
+pub fn find_scroll_focus<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+) -> Option<u64> {
+    let layout = taffy.layout(node_id).ok()?;
+    let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
+    let rect = SkiaRect::from_xywh(abs_pos.x, abs_pos.y, layout.size.width, layout.size.height);
+    if !rect.contains(mouse) {
+        return None;
     }
 
-    fn slider(id: u64) -> Widget<'static, M> {
-        Widget::Slider {
+    match widget {
+        Widget::ScrollView { id, child, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            find_scroll_focus(child, taffy, ids[0], mouse, abs_pos).or(Some(*id))
+        }
+        Widget::VirtualList { id, .. } => Some(*id),
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            for (i, child) in children.iter().enumerate().rev() {
+                if let Some(id) = find_scroll_focus(child, taffy, ids[i], mouse, abs_pos) {
+                    return Some(id);
+                }
+            }
+            None
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            if ids.is_empty() {
+                return None;
+            }
+            find_scroll_focus(child, taffy, ids[0], mouse, abs_pos)
+        }
+        _ => None,
+    }
+}
+
+pub fn find_scrollbar_drag_hit<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+) -> Option<ScrollbarDragHit> {
+    let layout = taffy.layout(node_id).ok()?;
+    let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
+    let rect = SkiaRect::from_xywh(abs_pos.x, abs_pos.y, layout.size.width, layout.size.height);
+    if !rect.contains(mouse) {
+        return None;
+    }
+
+    match widget {
+        Widget::ScrollView { id, child, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            if let Some(hit) =
+                find_scrollbar_drag_hit(child, taffy, ids[0], mouse, abs_pos, widget_states)
+            {
+                return Some(hit);
+            }
+            let s = widget_states.get(id)?.as_scroll()?;
+            if s.content_height <= s.viewport_h {
+                return None;
+            }
+            let thumb_h = (layout.size.height * s.thumb_ratio()).max(20.0);
+            let thumb_y = abs_pos.y + s.thumb_y();
+            let sb_x = abs_pos.x + layout.size.width - SCROLLBAR_W - 2.0;
+            let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
+            if thumb_rect.contains(mouse) {
+                return Some(ScrollbarDragHit {
+                    id: *id,
+                    start_offset: s.offset_y,
+                    viewport_h: s.viewport_h.max(layout.size.height),
+                    content_h: s.content_height,
+                });
+            }
+            None
+        }
+        Widget::VirtualList {
             id,
-            value: 0.5,
-            min: 0.0,
-            max: 1.0,
-            step: 0.1,
-            on_change: M::Float,
-            style: Style::default(),
-            label: "",
+            item_count,
+            item_height,
+            ..
+        } => {
+            let s = widget_states.get(id)?.as_vlist()?;
+            let total_h = *item_count as f32 * *item_height;
+            if total_h <= s.viewport_h {
+                return None;
+            }
+            let thumb_h = (layout.size.height * s.thumb_ratio(*item_height, *item_count)).max(20.0);
+            let thumb_y = abs_pos.y + s.thumb_y(*item_height, *item_count);
+            let sb_x = abs_pos.x + layout.size.width - SCROLLBAR_W - 2.0;
+            let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
+            if thumb_rect.contains(mouse) {
+                return Some(ScrollbarDragHit {
+                    id: *id,
+                    start_offset: s.scroll_y,
+                    viewport_h: s.viewport_h.max(layout.size.height),
+                    content_h: total_h,
+                });
+            }
+            None
         }
-    }
-
-    // ── collect_input_ids ─────────────────────────────────────
-
-    #[test]
-    fn inputs_not_found_in_tabbar() {
-        let w: Widget<M> = Widget::TabBar {
-            id: 1,
-            tabs: &["A", "B"],
-            active: 0,
-            on_change: M::Usize,
-            style: Style::default(),
-        };
-        let mut ids = vec![];
-        collect_input_ids(&w, &mut ids);
-        assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn inputs_found_inside_modal() {
-        let w: Widget<M> = Widget::Modal {
-            id: 1,
-            visible: true,
-            on_dismiss: None,
-            style: Style::default(),
-            child: Box::new(input(77)),
-        };
-        let mut ids = vec![];
-        collect_input_ids(&w, &mut ids);
-        assert_eq!(ids, vec![77]);
-    }
-
-    #[test]
-    fn collect_inputs_skips_virtual_list() {
-        let w: Widget<M> = Widget::VirtualList {
-            id: 3,
-            item_height: 30.0,
-            item_count: 100,
-            items: &|_| None,
-            on_select: M::Usize,
-            style: Style::default(),
-        };
-        let mut ids = vec![];
-        collect_input_ids(&w, &mut ids);
-        assert!(ids.is_empty());
-    }
-
-    // ── collect_stateful_ids ─────────────────────────────────
-
-    #[test]
-    fn stateful_finds_tabbar() {
-        let w: Widget<M> = Widget::TabBar {
-            id: 5,
-            tabs: &["X"],
-            active: 0,
-            on_change: M::Usize,
-            style: Style::default(),
-        };
-        let mut out = vec![];
-        collect_stateful_ids(&w, &mut out);
-        assert!(out.iter().any(|(id, k)| *id == 5 && *k == "tab"));
-    }
-
-    #[test]
-    fn stateful_finds_modal() {
-        let w: Widget<M> = Widget::Modal {
-            id: 7,
-            visible: false,
-            on_dismiss: None,
-            style: Style::default(),
-            child: Box::new(Widget::Spacer {
-                style: Style::default(),
-            }),
-        };
-        let mut out = vec![];
-        collect_stateful_ids(&w, &mut out);
-        assert!(out.iter().any(|(id, k)| *id == 7 && *k == "modal"));
-    }
-
-    #[test]
-    fn stateful_finds_toast() {
-        let w: Widget<M> = Widget::Toast {
-            id: 9,
-            message: "Hi",
-            kind: ToastKind::Info,
-            duration_ms: 3000,
-            on_dismiss: None,
-        };
-        let mut out = vec![];
-        collect_stateful_ids(&w, &mut out);
-        assert!(out.iter().any(|(id, k)| *id == 9 && *k == "toast"));
-    }
-
-    #[test]
-    fn stateful_finds_vlist() {
-        let w: Widget<M> = Widget::VirtualList {
-            id: 11,
-            item_height: 30.0,
-            item_count: 50,
-            items: &|_| None,
-            on_select: M::Usize,
-            style: Style::default(),
-        };
-        let mut out = vec![];
-        collect_stateful_ids(&w, &mut out);
-        assert!(out.iter().any(|(id, k)| *id == 11 && *k == "vlist"));
-    }
-
-    #[test]
-    fn stateful_progress_bar_indeterminate_registered() {
-        let w: Widget<M> = Widget::ProgressBar {
-            id: 20,
-            value: 0.0,
-            indeterminate: true,
-            style: Style::default(),
-        };
-        let mut out = vec![];
-        collect_stateful_ids(&w, &mut out);
-        assert!(out.iter().any(|(id, k)| *id == 20 && *k == "anim"));
-    }
-
-    #[test]
-    fn stateful_progress_bar_determinate_not_registered() {
-        let w: Widget<M> = Widget::ProgressBar {
-            id: 21,
-            value: 0.5,
-            indeterminate: false,
-            style: Style::default(),
-        };
-        let mut out = vec![];
-        collect_stateful_ids(&w, &mut out);
-        assert!(out.is_empty());
-    }
-
-    // ── Callbacks ────────────────────────────────────────────
-
-    #[test]
-    fn find_input_inside_modal() {
-        let w: Widget<M> = Widget::Modal {
-            id: 1,
-            visible: true,
-            on_dismiss: None,
-            style: Style::default(),
-            child: Box::new(input(42)),
-        };
-        assert!(find_input_callbacks(&w, 42).is_some());
-        assert!(find_input_callbacks(&w, 99).is_none());
-    }
-
-    #[test]
-    fn find_slider_inside_scroll() {
-        let w: Widget<M> = Widget::ScrollView {
-            id: 1,
-            style: Style::default(),
-            child: Box::new(slider(33)),
-        };
-        assert!(find_slider_callback(&w, 33).is_some());
-    }
-
-    #[test]
-    fn no_duplicate_scroll_ids_in_collect() {
-        // FIX: padrão duplicado do v5 causaria double-push do ID "scroll"
-        let w: Widget<M> = Widget::ScrollView {
-            id: 5,
-            style: Style::default(),
-            child: Box::new(Widget::Spacer {
-                style: Style::default(),
-            }),
-        };
-        let mut out = vec![];
-        collect_stateful_ids(&w, &mut out);
-        let scroll_count = out
-            .iter()
-            .filter(|(id, k)| *id == 5 && *k == "scroll")
-            .count();
-        assert_eq!(scroll_count, 1, "ID de scroll não deve aparecer duas vezes");
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            for (i, child) in children.iter().enumerate().rev() {
+                if let Some(hit) =
+                    find_scrollbar_drag_hit(child, taffy, ids[i], mouse, abs_pos, widget_states)
+                {
+                    return Some(hit);
+                }
+            }
+            None
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            if ids.is_empty() {
+                return None;
+            }
+            find_scrollbar_drag_hit(child, taffy, ids[0], mouse, abs_pos, widget_states)
+        }
+        _ => None,
     }
 }

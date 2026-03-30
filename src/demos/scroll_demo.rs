@@ -38,7 +38,7 @@ impl AppLogic for ScrollDemo {
     fn view<'a>(s: &'a mut ScrollDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Center),
+            align_items: Some(AlignItems::FlexStart),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),

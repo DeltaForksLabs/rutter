@@ -1,15 +1,12 @@
 // ============================================================
 // Rutter Framework — demos/modal_toast_demo.rs
-// Demo isolada de Widget::Modal e Widget::Toast.
-// FIX-3e: Toast ao copiar — widget id 91 reservado para copy toast.
-//         Para ativar descomente show_copy_toast() em runner.rs.
 // ============================================================
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
 use taffy::prelude::*;
 
-use rutter::widget::ToastKind;
+use rutter::widget::{ToastKind, ToastPosition};
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
 #[derive(Default)]
@@ -47,7 +44,7 @@ impl AppLogic for ModalToastDemo {
     fn view<'a>(s: &'a mut ModalToastDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Center),
+            align_items: Some(AlignItems::FlexStart),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -56,7 +53,7 @@ impl AppLogic for ModalToastDemo {
         };
         let col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Center),
+            align_items: Some(AlignItems::FlexStart),
             padding: Rect::length(32.0),
             gap: Size {
                 width: LengthPercentage::length(0.0),
@@ -81,7 +78,6 @@ impl AppLogic for ModalToastDemo {
             ..Default::default()
         };
 
-        // Modal
         let modal = Widget::Modal {
             id: 80,
             visible: s.modal_open,
@@ -144,32 +140,39 @@ impl AppLogic for ModalToastDemo {
             }),
         };
 
-        // Toasts
         let toast_info = Widget::Toast {
             id: 90,
+            visible: s.toast_info,
             message: "Informação: operação iniciada.",
             kind: ToastKind::Info,
+            position: ToastPosition::BottomLeft,
             duration_ms: 3000,
             on_dismiss: Some(Msg::DismissToast(90)),
         };
         let toast_success = Widget::Toast {
             id: 91,
+            visible: s.toast_success,
             message: "Sucesso! Dados salvos corretamente.",
             kind: ToastKind::Success,
+            position: ToastPosition::BottomRight,
             duration_ms: 3000,
             on_dismiss: Some(Msg::DismissToast(91)),
         };
         let toast_warning = Widget::Toast {
             id: 92,
+            visible: s.toast_warning,
             message: "Atenção: disco com pouco espaço.",
             kind: ToastKind::Warning,
+            position: ToastPosition::TopRight,
             duration_ms: 3000,
             on_dismiss: Some(Msg::DismissToast(92)),
         };
         let toast_error = Widget::Toast {
             id: 93,
+            visible: s.toast_error,
             message: "Erro: falha na conexão.",
             kind: ToastKind::Error,
+            position: ToastPosition::TopLeft,
             duration_ms: 3000,
             on_dismiss: Some(Msg::DismissToast(93)),
         };
@@ -212,7 +215,7 @@ impl AppLogic for ModalToastDemo {
                             variant: ButtonVariant::Primary,
                         },
                         Widget::Text {
-                            content: "Tipos de Toast:".into(),
+                            content: "Tipos de Toast (Posições diferentes):".into(),
                             color: None,
                             size: 13.0,
                             style: Style::default(),
@@ -221,16 +224,16 @@ impl AppLogic for ModalToastDemo {
                             style: row_s.clone(),
                             children: vec![
                                 Widget::Button {
-                                    text: "Info",
+                                    text: "Info (BL)",
                                     on_press: Msg::ShowInfo,
-                                    style: btn_s(80.0),
+                                    style: btn_s(100.0),
                                     color: None,
                                     variant: ButtonVariant::Ghost,
                                 },
                                 Widget::Button {
-                                    text: "Sucesso",
+                                    text: "Sucesso (BR)",
                                     on_press: Msg::ShowSuccess,
-                                    style: btn_s(90.0),
+                                    style: btn_s(120.0),
                                     color: None,
                                     variant: ButtonVariant::Ghost,
                                 },
@@ -240,16 +243,16 @@ impl AppLogic for ModalToastDemo {
                             style: row_s,
                             children: vec![
                                 Widget::Button {
-                                    text: "Aviso",
+                                    text: "Aviso (TR)",
                                     on_press: Msg::ShowWarning,
-                                    style: btn_s(80.0),
+                                    style: btn_s(100.0),
                                     color: None,
                                     variant: ButtonVariant::Ghost,
                                 },
                                 Widget::Button {
-                                    text: "Erro",
+                                    text: "Erro (TL)",
                                     on_press: Msg::ShowError,
-                                    style: btn_s(80.0),
+                                    style: btn_s(100.0),
                                     color: None,
                                     variant: ButtonVariant::Ghost,
                                 },

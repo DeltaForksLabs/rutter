@@ -44,7 +44,7 @@ impl AppLogic for ControlsDemo {
     fn view<'a>(s: &'a mut ControlsDemoState) -> Widget<'a, Msg> {
         let col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Center),
+            align_items: Some(AlignItems::FlexStart),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -58,7 +58,7 @@ impl AppLogic for ControlsDemo {
         };
         let item_row = Style {
             flex_direction: FlexDirection::Row,
-            align_items: Some(AlignItems::Center),
+            align_items: Some(AlignItems::FlexStart),
             size: Size {
                 width: Dimension::length(320.0),
                 height: Dimension::length(32.0),

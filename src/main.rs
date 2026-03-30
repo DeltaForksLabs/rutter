@@ -12,6 +12,7 @@
 //   cargo run -- scroll
 //   cargo run -- modal_toast
 //   cargo run -- vlist
+//   cargo run -- advanced
 // ============================================================
 
 mod demos;
@@ -30,6 +31,11 @@ fn main() {
         "scroll"      => demos::scroll_demo::run(),
         "modal_toast" => demos::modal_toast_demo::run(),
         "vlist"       => demos::vlist_demo::run(),
+        // "advanced"    => demos::advanced_widgets_demo::run(),
+        "accordion"   => demos::accordion_demo::run(),
+        "dialog"      => demos::dialog_demo::run(),
+        "search_bar"  => demos::search_bar_demo::run(),
+        "text_area"   => demos::text_area_demo::run(),
         _             => demos::form_demo::run(), // "form" ou qualquer outro
     }
 }

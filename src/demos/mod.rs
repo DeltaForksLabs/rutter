@@ -22,3 +22,9 @@ pub mod slider_demo;
 pub mod tab_demo;
 pub mod text_input_demo;
 pub mod vlist_demo;
+
+pub mod advanced_widgets_demo;
+pub mod accordion_demo;
+pub mod dialog_demo;
+pub mod search_bar_demo;
+pub mod text_area_demo;

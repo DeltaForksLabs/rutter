@@ -42,7 +42,7 @@ impl AppLogic for TextInputDemo {
     fn view<'a>(s: &'a mut TextInputDemoState) -> Widget<'a, Msg> {
         let col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Center),
+            align_items: Some(AlignItems::FlexStart),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),

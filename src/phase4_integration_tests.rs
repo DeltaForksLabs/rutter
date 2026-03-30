@@ -290,7 +290,7 @@ fn modal_stores_on_dismiss() {
 
 #[test]
 fn toast_stores_kind() {
-    let w: Widget<M> = Widget::Toast { id: 1, message: "hi", kind: ToastKind::Error,
+    let w: Widget<M> = Widget::Toast { id: 1, visible: true, message: "hi", kind: ToastKind::Error,
         duration_ms: 3000, on_dismiss: None };
     if let Widget::Toast { kind, .. } = w { assert_eq!(kind, ToastKind::Error); }
 }
@@ -354,7 +354,7 @@ fn modal_visible_has_child_in_taffy() {
 #[test]
 fn toast_zero_layout_size() {
     let mut taffy = taffy::TaffyTree::new();
-    let w: Widget<M> = Widget::Toast { id: 1, message: "x", kind: ToastKind::Info,
+    let w: Widget<M> = Widget::Toast { id: 1, visible: true, message: "x", kind: ToastKind::Info,
         duration_ms: 1000, on_dismiss: None };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
     let s = taffy.style(node).unwrap();
@@ -392,7 +392,7 @@ fn stateful_modal() {
 
 #[test]
 fn stateful_toast() {
-    let w: Widget<M> = Widget::Toast { id: 9, message: "x", kind: ToastKind::Success,
+    let w: Widget<M> = Widget::Toast { id: 9, visible: true, message: "x", kind: ToastKind::Success,
         duration_ms: 3000, on_dismiss: None };
     let mut out = vec![];
     collect_stateful_ids(&w, &mut out);

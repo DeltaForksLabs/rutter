@@ -54,7 +54,7 @@ impl AppLogic for TabDemo {
         };
         let content_col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Center),
+            align_items: Some(AlignItems::FlexStart),
             padding: Rect::length(32.0),
             gap: Size {
                 width: LengthPercentage::length(0.0),

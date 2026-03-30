@@ -11,7 +11,7 @@ use taffy::prelude::*;
 
 use rutter::{
     AppLogic, ButtonVariant, InputState, RutterRunner, Theme, Widget,
-    widget::{Orientation, ToastKind},
+    widget::{Orientation, ToastKind, ToastPosition},
 };
 
 // ── Estado ───────────────────────────────────────────────────
@@ -91,7 +91,7 @@ impl AppLogic for MyApp {
         };
         let content_col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Center),
+            align_items: Some(AlignItems::FlexStart),
             padding: Rect {
                 top: LengthPercentage::length(32.0),
                 left: LengthPercentage::length(0.0),
@@ -543,6 +543,7 @@ impl AppLogic for MyApp {
         // ── Toast ─────────────────────────────────────────────
         let toast = Widget::Toast {
             id: 90,
+            visible: s.toast_visible,
             message: if s.toast_msg.is_empty() {
                 "Action completed!"
             } else {
@@ -555,6 +556,7 @@ impl AppLogic for MyApp {
             },
             duration_ms: 3000,
             on_dismiss: Some(Msg::DismissToast),
+            position: ToastPosition::BottomRight
         };
 
         Widget::Column {

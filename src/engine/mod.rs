@@ -1,5 +1,5 @@
 // ============================================================
-// Rutter Framework — engine/mod.rs  (Fase 4)
+// Rutter Framework — engine/mod.rs
 // ============================================================
 
 pub mod cursor;
@@ -26,33 +26,65 @@ use crate::app::AppLogic;
 use crate::layout::{RutterContext, build_taffy_tree, compute_layout};
 use crate::render::draw_widgets;
 use crate::render::hit_test::collect_stateful_ids;
+use crate::widget::Widget;
+
+#[derive(Debug, Clone, Copy)]
+enum ToastRuntimeUpdate {
+    EnsureVisible { id: u64, duration_ms: u32 },
+    Dismiss { id: u64 },
+}
+
+fn collect_toast_runtime_updates<Msg>(widget: &Widget<Msg>, out: &mut Vec<ToastRuntimeUpdate>) {
+    match widget {
+        Widget::Toast {
+            id,
+            visible,
+            duration_ms,
+            ..
+        } => {
+            if *visible {
+                out.push(ToastRuntimeUpdate::EnsureVisible {
+                    id: *id,
+                    duration_ms: *duration_ms,
+                });
+            } else {
+                out.push(ToastRuntimeUpdate::Dismiss { id: *id });
+            }
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for child in children {
+                collect_toast_runtime_updates(child, out);
+            }
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => collect_toast_runtime_updates(child, out),
+        _ => {}
+    }
+}
 
 pub struct RutterEngine<A: AppLogic> {
     pub window: Option<Rc<Window>>,
     pub surface: Option<Surface<Rc<Window>, Rc<Window>>>,
     context: Option<Context<Rc<Window>>>,
-
     pub font_system: Rc<RefCell<FontSystem>>,
     pub swash_cache: SwashCache,
     pub font_cache: HashMap<(String, u32), Font>,
-
     pub taffy: TaffyTree<RutterContext>,
     pub last_root_node: NodeId,
     pub layout_dirty: bool,
-
     pub app_state: A::State,
-
     pub input_states: HashMap<u64, crate::input_state::InputWidgetState>,
     pub widget_states: HashMap<u64, WidgetState>,
-
     pub focused_input_id: Option<u64>,
     pub active_scroll_id: Option<u64>,
     pub drag_slider_id: Option<u64>,
-
     pub clipboard: Clipboard,
     pub modifiers: Modifiers,
     pub cursor_blink: CursorBlink,
-
     pub last_snapshot: std::time::Instant,
     pub snapshot_scheduled: bool,
     pub scale_factor: f32,
@@ -107,12 +139,10 @@ impl<A: AppLogic> RutterEngine<A> {
         self.scale_factor = scale as f32;
         self.layout_dirty = true;
     }
-
     pub fn schedule_snapshot(&mut self) {
         self.snapshot_scheduled = true;
         self.last_snapshot = std::time::Instant::now();
     }
-
     pub fn maybe_snapshot(&mut self) {
         if self.snapshot_scheduled && self.last_snapshot.elapsed().as_millis() > 500 {
             if let Some(id) = self.focused_input_id {
@@ -132,12 +162,17 @@ impl<A: AppLogic> RutterEngine<A> {
         }
     }
 
-    /// Lazy init de WidgetState para todos os widgets stateful na árvore atual.
-    /// Fase 4: inclui Toast, Modal, Tab, VList.
     pub fn ensure_widget_states(&mut self) {
-        let widget_tree = A::view(&mut self.app_state);
-        let mut stateful = Vec::new();
-        collect_stateful_ids(&widget_tree, &mut stateful);
+        let (stateful, toast_updates) = {
+            let widget_tree = A::view(&mut self.app_state);
+            let mut stateful = Vec::new();
+            let mut toast_updates = Vec::new();
+            collect_stateful_ids(&widget_tree, &mut stateful);
+            collect_toast_runtime_updates(&widget_tree, &mut toast_updates);
+            (stateful, toast_updates)
+        };
+
+        self.apply_widget_runtime_state(&toast_updates);
 
         let mut has_anim = false;
         for (id, kind) in &stateful {
@@ -164,13 +199,41 @@ impl<A: AppLogic> RutterEngine<A> {
         self.has_animated = has_anim;
     }
 
-    /// Inicializa um Toast com duração específica (override do lazy default).
+    fn apply_widget_runtime_state(&mut self, updates: &[ToastRuntimeUpdate]) {
+        for update in updates {
+            match *update {
+                ToastRuntimeUpdate::EnsureVisible { id, duration_ms } => {
+                    let restart = self
+                        .widget_states
+                        .get(&id)
+                        .and_then(|s| s.as_toast())
+                        .map(|t| {
+                            !t.visible
+                                || t.dismissed
+                                || t.is_expired()
+                                || t.duration_ms != duration_ms
+                        })
+                        .unwrap_or(true);
+                    if restart {
+                        self.widget_states
+                            .insert(id, WidgetState::Toast(ToastState::new(duration_ms)));
+                    }
+                }
+                ToastRuntimeUpdate::Dismiss { id } => {
+                    if let Some(ws) = self.widget_states.get_mut(&id) {
+                        if let Some(t) = ws.as_toast_mut() {
+                            t.dismiss();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn init_toast(&mut self, id: u64, duration_ms: u32) {
         self.widget_states
             .insert(id, WidgetState::Toast(ToastState::new(duration_ms)));
     }
-
-    /// Abre um Modal por ID.
     pub fn open_modal(&mut self, id: u64) {
         if let Some(ws) = self.widget_states.get_mut(&id) {
             if let Some(m) = ws.as_modal_mut() {
@@ -179,8 +242,6 @@ impl<A: AppLogic> RutterEngine<A> {
         }
         self.layout_dirty = true;
     }
-
-    /// Fecha um Modal por ID.
     pub fn close_modal(&mut self, id: u64) {
         if let Some(ws) = self.widget_states.get_mut(&id) {
             if let Some(m) = ws.as_modal_mut() {
@@ -220,7 +281,82 @@ impl<A: AppLogic> RutterEngine<A> {
         );
         self.last_root_node = root;
         compute_layout(&mut self.taffy, root, logical, self.font_system.clone());
+        Self::update_viewports_impl(&mut self.widget_states, &self.taffy, &widget_tree, root);
         self.layout_dirty = false;
+    }
+
+    fn update_viewports_impl<Msg>(
+        widget_states: &mut HashMap<u64, WidgetState>,
+        taffy: &TaffyTree<RutterContext>,
+        widget: &Widget<Msg>,
+        node: NodeId,
+    ) {
+        if let Ok(layout) = taffy.layout(node) {
+            match widget {
+                Widget::ScrollView { id, child, .. } => {
+                    if let Some(ws) = widget_states.get_mut(id) {
+                        if let Some(s) = ws.as_scroll_mut() {
+                            s.viewport_h = layout.size.height;
+                            if let Ok(children) = taffy.children(node) {
+                                if !children.is_empty() {
+                                    if let Ok(child_layout) = taffy.layout(children[0]) {
+                                        s.content_height = child_layout.size.height;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Ok(children) = taffy.children(node) {
+                        if !children.is_empty() {
+                            Self::update_viewports_impl(
+                                widget_states,
+                                taffy,
+                                child.as_ref(),
+                                children[0],
+                            );
+                        }
+                    }
+                }
+                Widget::VirtualList { id, .. } => {
+                    if let Some(ws) = widget_states.get_mut(id) {
+                        if let Some(s) = ws.as_vlist_mut() {
+                            s.viewport_h = layout.size.height;
+                        }
+                    }
+                }
+                Widget::Column { children, .. } | Widget::Row { children, .. } => {
+                    if let Ok(node_children) = taffy.children(node) {
+                        for (i, child) in children.iter().enumerate() {
+                            if i < node_children.len() {
+                                Self::update_viewports_impl(
+                                    widget_states,
+                                    taffy,
+                                    child,
+                                    node_children[i],
+                                );
+                            }
+                        }
+                    }
+                }
+                Widget::Container { child, .. }
+                | Widget::Tooltip { child, .. }
+                | Widget::Accordion { child, .. }
+                | Widget::Modal { child, .. }
+                | Widget::Dialog { child, .. } => {
+                    if let Ok(children) = taffy.children(node) {
+                        if !children.is_empty() {
+                            Self::update_viewports_impl(
+                                widget_states,
+                                taffy,
+                                child.as_ref(),
+                                children[0],
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     pub fn redraw(&mut self, cursor_pos: Point) {
@@ -238,11 +374,9 @@ impl<A: AppLogic> RutterEngine<A> {
         self.ensure_layout(phys);
 
         let mut widget_tree = A::view(&mut self.app_state);
-
         let mut sk =
             skia_safe::surfaces::raster_n32_premul((phys.width as i32, phys.height as i32))
                 .expect("Surface Skia falhou");
-
         sk.canvas().clear(SkiaColor::WHITE);
         sk.canvas().scale((self.scale_factor, self.scale_factor));
 

@@ -1,19 +1,9 @@
 // ============================================================
-// Rutter Framework — widget.rs  (Fase 4)
-//
-// Novos widgets:
-//   Modal      — overlay com backdrop e conteúdo filho
-//   Toast      — notificação temporária (auto-dismiss)
-//   TabBar     — navegação horizontal por abas
-//   VirtualList— render lazy de listas longas por viewport
-//
-// Mantidos da Fase 3: todos os anteriores.
+// Rutter Framework — widget.rs
 // ============================================================
 
 use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
-
-// ── Tipos auxiliares ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum InputState {
@@ -39,7 +29,6 @@ pub enum Orientation {
     Vertical,
 }
 
-/// Nível semântico do Toast — afeta cor e ícone.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ToastKind {
     #[default]
@@ -49,10 +38,16 @@ pub enum ToastKind {
     Error,
 }
 
-// ── Árvore de widgets ─────────────────────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ToastPosition {
+    TopLeft,
+    TopRight,
+    #[default]
+    BottomRight,
+    BottomLeft,
+}
 
 pub enum Widget<'a, Msg> {
-    // ── Layout ────────────────────────────────────────────────
     Column {
         children: Vec<Widget<'a, Msg>>,
         style: Style,
@@ -74,8 +69,6 @@ pub enum Widget<'a, Msg> {
         style: Style,
         orientation: Orientation,
     },
-
-    // ── Conteúdo ──────────────────────────────────────────────
     Text {
         content: String,
         style: Style,
@@ -87,8 +80,6 @@ pub enum Widget<'a, Msg> {
         style: Style,
         radius: f32,
     },
-
-    // ── Ações ─────────────────────────────────────────────────
     Button {
         text: &'a str,
         on_press: Msg,
@@ -96,8 +87,6 @@ pub enum Widget<'a, Msg> {
         color: Option<SkiaColor>,
         variant: ButtonVariant,
     },
-
-    // ── Entradas ──────────────────────────────────────────────
     TextInput {
         on_change: fn(String) -> Msg,
         on_submit: Option<Msg>,
@@ -108,6 +97,25 @@ pub enum Widget<'a, Msg> {
         state: InputState,
         error_msg: Option<String>,
         is_password: bool,
+    },
+    TextArea {
+        id: u64,
+        on_change: fn(String) -> Msg,
+        on_submit: Option<Msg>,
+        style: Style,
+        label: &'a str,
+        state: InputState,
+        placeholder: &'a str,
+        error_msg: Option<String>,
+    },
+    SearchBar {
+        id: u64,
+        on_change: fn(String) -> Msg,
+        on_submit: Option<Msg>,
+        on_search: Option<Msg>,
+        on_clear: Option<Msg>,
+        placeholder: &'a str,
+        style: Style,
     },
     Checkbox {
         checked: bool,
@@ -145,10 +153,7 @@ pub enum Widget<'a, Msg> {
         label: &'a str,
         placeholder: &'a str,
     },
-
-    // ── Indicadores ───────────────────────────────────────────
     ProgressBar {
-        /// Identificador para animação indeterminada.
         id: u64,
         value: f32,
         indeterminate: bool,
@@ -158,8 +163,6 @@ pub enum Widget<'a, Msg> {
         id: u64,
         style: Style,
     },
-
-    // ── Containers ────────────────────────────────────────────
     ScrollView {
         id: u64,
         child: Box<Widget<'a, Msg>>,
@@ -170,10 +173,14 @@ pub enum Widget<'a, Msg> {
         text: &'a str,
         style: Style,
     },
-
-    // ── Navegação — Fase 4 ────────────────────────────────────
-    /// Barra de abas horizontal.
-    /// `tabs` lista os rótulos; `active` é o índice selecionado.
+    Accordion {
+        id: u64,
+        title: &'a str,
+        expanded: bool,
+        on_toggle: Msg,
+        child: Box<Widget<'a, Msg>>,
+        style: Style,
+    },
     TabBar {
         id: u64,
         tabs: &'a [&'a str],
@@ -181,42 +188,39 @@ pub enum Widget<'a, Msg> {
         on_change: fn(usize) -> Msg,
         style: Style,
     },
-
-    // ── Overlay — Fase 4 ──────────────────────────────────────
-    /// Overlay com backdrop escuro e conteúdo filho centralizado.
-    /// Renderizado por último (acima de tudo).
     Modal {
-        /// Índice de identificação para controle de exibição.
         id: u64,
         visible: bool,
         child: Box<Widget<'a, Msg>>,
-        /// Mensagem emitida ao clicar no backdrop.
         on_dismiss: Option<Msg>,
         style: Style,
     },
-
-    // ── Notificações — Fase 4 ─────────────────────────────────
-    /// Notificação temporária que aparece na parte inferior.
-    /// O engine remove-a automaticamente após `duration_ms`.
+    Dialog {
+        id: u64,
+        title: &'a str,
+        message: &'a str,
+        confirm_label: &'a str,
+        cancel_label: &'a str,
+        visible: bool,
+        on_confirm: Msg,
+        on_cancel: Msg,
+        on_dismiss: Option<Msg>,
+        style: Style,
+        child: Box<Widget<'a, Msg>>,
+    },
     Toast {
         id: u64,
+        visible: bool,
         message: &'a str,
         kind: ToastKind,
-        /// Duração em ms (0 = permanece até dismiss manual).
+        position: ToastPosition,
         duration_ms: u32,
         on_dismiss: Option<Msg>,
     },
-
-    // ── Lista virtual — Fase 4 ────────────────────────────────
-    /// Lista que renderiza apenas os itens visíveis na viewport,
-    /// permitindo listas de milhares de itens sem custo de layout.
     VirtualList {
         id: u64,
         item_height: f32,
         item_count: usize,
-        /// Renderiza o item no índice `i` como Widget.
-        /// NOTA: retorna Option<Box<Widget>> para Fase 4.
-        /// Fase 5 migrará para closure via trait object.
         items: &'a dyn Fn(usize) -> Option<String>,
         on_select: fn(usize) -> Msg,
         style: Style,

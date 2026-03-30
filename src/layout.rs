@@ -1,5 +1,5 @@
 // ============================================================
-// Rutter Framework — layout.rs  (Fase 4)
+// Rutter Framework — layout.rs
 // ============================================================
 
 use std::cell::RefCell;
@@ -12,6 +12,8 @@ use winit::dpi::PhysicalSize;
 
 use crate::engine::widget_state::WidgetState;
 use crate::widget::Widget;
+
+const ACCORDION_HEADER_H: f32 = 44.0;
 
 pub const OPTION_HEIGHT: f32 = 32.0;
 pub const SCROLLBAR_W: f32 = 8.0;
@@ -58,21 +60,35 @@ pub fn build_taffy_tree<'a, Msg>(
                 .collect();
             taffy.new_with_children(s, &ids).unwrap()
         }
-        Widget::Container { child, style, .. } => {
+        Widget::Container { child, style, .. }
+        | Widget::ScrollView { child, style, .. }
+        | Widget::Tooltip { child, style, .. } => {
             let id = build_taffy_tree(taffy, child, fs.clone(), widget_states);
             taffy.new_with_children(style.clone(), &[id]).unwrap()
         }
-        Widget::ScrollView { child, style, .. } => {
-            let id = build_taffy_tree(taffy, child, fs.clone(), widget_states);
-            taffy.new_with_children(style.clone(), &[id]).unwrap()
+        Widget::Accordion {
+            child,
+            style,
+            expanded,
+            ..
+        } => {
+            let mut s = style.clone();
+            s.padding.top = LengthPercentage::length(ACCORDION_HEADER_H);
+            if *expanded {
+                let id = build_taffy_tree(taffy, child, fs.clone(), widget_states);
+                taffy.new_with_children(s, &[id]).unwrap()
+            } else {
+                s.size.height = Dimension::length(ACCORDION_HEADER_H);
+                taffy.new_leaf(s).unwrap()
+            }
         }
-        Widget::Tooltip { child, style, .. } => {
-            let id = build_taffy_tree(taffy, child, fs.clone(), widget_states);
-            taffy.new_with_children(style.clone(), &[id]).unwrap()
-        }
-
-        // Modal: filho ocupa todo o espaço (posição via render)
         Widget::Modal {
+            child,
+            style,
+            visible,
+            ..
+        }
+        | Widget::Dialog {
             child,
             style,
             visible,
@@ -82,7 +98,6 @@ pub fn build_taffy_tree<'a, Msg>(
                 let id = build_taffy_tree(taffy, child, fs.clone(), widget_states);
                 taffy.new_with_children(style.clone(), &[id]).unwrap()
             } else {
-                // Quando invisível, folha de tamanho zero
                 taffy
                     .new_leaf(Style {
                         size: Size::zero(),
@@ -91,8 +106,6 @@ pub fn build_taffy_tree<'a, Msg>(
                     .unwrap()
             }
         }
-
-        // Select: expande quando aberto
         Widget::Select {
             id, options, style, ..
         } => {
@@ -115,7 +128,6 @@ pub fn build_taffy_tree<'a, Msg>(
             };
             taffy.new_leaf(s).unwrap()
         }
-
         Widget::Text {
             content,
             style,
@@ -130,10 +142,10 @@ pub fn build_taffy_tree<'a, Msg>(
                 }),
             )
             .unwrap(),
-
-        // VirtualList: tamanho fixo definido pelo Style
         Widget::Button { style, .. }
         | Widget::TextInput { style, .. }
+        | Widget::TextArea { style, .. }
+        | Widget::SearchBar { style, .. }
         | Widget::Checkbox { style, .. }
         | Widget::Switch { style, .. }
         | Widget::Radio { style, .. }
@@ -145,8 +157,6 @@ pub fn build_taffy_tree<'a, Msg>(
         | Widget::Spacer { style, .. }
         | Widget::TabBar { style, .. }
         | Widget::VirtualList { style, .. } => taffy.new_leaf(style.clone()).unwrap(),
-
-        // Toast usa tamanho 0 no layout (desenhado via overlay no render)
         Widget::Toast { .. } => taffy
             .new_leaf(Style {
                 size: Size::zero(),
@@ -191,173 +201,4 @@ pub fn compute_layout(
 
 fn extract_height(_style: &Style) -> f32 {
     return 40.0;
-}
-
-// ── Testes ───────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::widget::{Orientation, ToastKind};
-    use cosmic_text::FontSystem;
-    use taffy::prelude::Style;
-
-    fn fs() -> Rc<RefCell<FontSystem>> {
-        Rc::new(RefCell::new(FontSystem::new()))
-    }
-    fn empty() -> HashMap<u64, WidgetState> {
-        HashMap::new()
-    }
-
-    #[test]
-    fn tabbar_is_leaf() {
-        let mut taffy = TaffyTree::new();
-        let w: Widget<()> = Widget::TabBar {
-            id: 1,
-            tabs: &["A", "B"],
-            active: 0,
-            on_change: |_| (),
-            style: Style::default(),
-        };
-        let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
-        assert_eq!(taffy.child_count(node), 0);
-    }
-
-    #[test]
-    fn modal_invisible_has_zero_size() {
-        let mut taffy = TaffyTree::new();
-        let w: Widget<()> = Widget::Modal {
-            id: 1,
-            visible: false,
-            on_dismiss: None,
-            style: Style::default(),
-            child: Box::new(Widget::Spacer {
-                style: Style::default(),
-            }),
-        };
-        let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
-        let style = taffy.style(node).unwrap();
-        assert_eq!(style.size.width, Dimension::length(0.0));
-        assert_eq!(style.size.height, Dimension::length(0.0));
-    }
-
-    #[test]
-    fn modal_visible_has_child() {
-        let mut taffy = TaffyTree::new();
-        let w: Widget<()> = Widget::Modal {
-            id: 1,
-            visible: true,
-            on_dismiss: None,
-            style: Style::default(),
-            child: Box::new(Widget::Spacer {
-                style: Style::default(),
-            }),
-        };
-        let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
-        assert_eq!(taffy.child_count(node), 1);
-    }
-
-    #[test]
-    fn toast_has_zero_layout_size() {
-        let mut taffy = TaffyTree::new();
-        let w: Widget<()> = Widget::Toast {
-            id: 1,
-            message: "Hi",
-            kind: ToastKind::Info,
-            duration_ms: 3000,
-            on_dismiss: None,
-        };
-        let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
-        let style = taffy.style(node).unwrap();
-        assert_eq!(style.size.width, Dimension::length(0.0));
-    }
-
-    #[test]
-    fn virtual_list_is_leaf() {
-        let mut taffy = TaffyTree::new();
-        let w: Widget<()> = Widget::VirtualList {
-            id: 1,
-            item_height: 30.0,
-            item_count: 100,
-            items: &|_| None,
-            on_select: |_| (),
-            style: Style {
-                size: Size {
-                    width: Dimension::length(300.0),
-                    height: Dimension::length(200.0),
-                },
-                ..Default::default()
-            },
-        };
-        let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
-        assert_eq!(taffy.child_count(node), 0);
-    }
-
-    #[test]
-    fn select_open_expands() {
-        use crate::engine::widget_state::{SelectState, WidgetState};
-        let mut states: HashMap<u64, WidgetState> = HashMap::new();
-        states.insert(
-            99,
-            WidgetState::Select(SelectState {
-                is_open: true,
-                hovered_option: None,
-            }),
-        );
-        let mut taffy = TaffyTree::new();
-        let base = Style {
-            size: Size {
-                width: Dimension::length(200.0),
-                height: Dimension::length(40.0),
-            },
-            ..Default::default()
-        };
-        let w: Widget<()> = Widget::Select {
-            id: 99,
-            options: &["A", "B", "C"],
-            selected_index: 0,
-            on_change: |_| (),
-            style: base,
-            label: "",
-            placeholder: "",
-        };
-        let node = build_taffy_tree(&mut taffy, &w, fs(), &states);
-        let style = taffy.style(node).unwrap();
-        let expected = 40.0 + 3.0 * OPTION_HEIGHT;
-        assert_eq!(style.size.height, Dimension::length(expected));
-    }
-
-    #[test]
-    fn column_with_all_phase4_widgets() {
-        let mut taffy = TaffyTree::new();
-        let w: Widget<()> = Widget::Column {
-            style: Style::default(),
-            children: vec![
-                Widget::TabBar {
-                    id: 1,
-                    tabs: &["A", "B"],
-                    active: 0,
-                    on_change: |_| (),
-                    style: Style::default(),
-                },
-                Widget::Divider {
-                    style: Style::default(),
-                    orientation: Orientation::Horizontal,
-                },
-                Widget::Spacer {
-                    style: Style::default(),
-                },
-                Widget::VirtualList {
-                    id: 2,
-                    item_height: 30.0,
-                    item_count: 10,
-                    items: &|_| None,
-                    on_select: |_| (),
-                    style: Style::default(),
-                },
-            ],
-        };
-        let root = build_taffy_tree(&mut taffy, &w, fs(), &empty());
-        assert_eq!(taffy.child_count(root), 4);
-    }
 }
