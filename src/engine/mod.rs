@@ -23,7 +23,7 @@ use self::widget_state::{
     VirtualListState, WidgetState,
 };
 use crate::app::AppLogic;
-use crate::layout::{RutterContext, build_taffy_tree, compute_layout};
+use crate::layout::{RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree};
 use crate::render::draw_widgets;
 use crate::render::hit_test::collect_stateful_ids;
 use crate::widget::Widget;
@@ -74,6 +74,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub swash_cache: SwashCache,
     pub font_cache: HashMap<(String, u32), Font>,
     pub taffy: TaffyTree<RutterContext>,
+    layout_tree: SyncedLayoutTree,
     pub last_root_node: NodeId,
     pub layout_dirty: bool,
     pub app_state: A::State,
@@ -104,6 +105,7 @@ impl<A: AppLogic> RutterEngine<A> {
             font_system: Rc::new(RefCell::new(fs)),
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
+            layout_tree: SyncedLayoutTree::placeholder(root),
             taffy,
             last_root_node: root,
             layout_dirty: true,
@@ -272,11 +274,10 @@ impl<A: AppLogic> RutterEngine<A> {
             (size.height as f32 / self.scale_factor) as u32,
         );
         let widget_tree = A::view(&mut self.app_state);
-        self.taffy.clear();
-        let root = build_taffy_tree(
+        let root = sync_taffy_tree(
             &mut self.taffy,
+            &mut self.layout_tree,
             &widget_tree,
-            self.font_system.clone(),
             &self.widget_states,
         );
         self.last_root_node = root;

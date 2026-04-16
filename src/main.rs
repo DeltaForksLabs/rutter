@@ -23,19 +23,19 @@ fn main() {
         .unwrap_or_else(|| "form".to_string());
 
     match demo.as_str() {
-        "text_input"  => demos::text_input_demo::run(),
-        "slider"      => demos::slider_demo::run(),
-        "progress"    => demos::progress_demo::run(),
-        "controls"    => demos::controls_demo::run(),
-        "tabs"        => demos::tab_demo::run(),
-        "scroll"      => demos::scroll_demo::run(),
+        "text_input" => demos::text_input_demo::run(),
+        "slider" => demos::slider_demo::run(),
+        "progress" => demos::progress_demo::run(),
+        "controls" => demos::controls_demo::run(),
+        "tabs" => demos::tab_demo::run(),
+        "scroll" => demos::scroll_demo::run(),
         "modal_toast" => demos::modal_toast_demo::run(),
-        "vlist"       => demos::vlist_demo::run(),
+        "vlist" => demos::vlist_demo::run(),
         // "advanced"    => demos::advanced_widgets_demo::run(),
-        "accordion"   => demos::accordion_demo::run(),
-        "dialog"      => demos::dialog_demo::run(),
-        "search_bar"  => demos::search_bar_demo::run(),
-        "text_area"   => demos::text_area_demo::run(),
-        _             => demos::form_demo::run(), // "form" ou qualquer outro
+        "accordion" => demos::accordion_demo::run(),
+        "dialog" => demos::dialog_demo::run(),
+        "search_bar" => demos::search_bar_demo::run(),
+        "text_area" => demos::text_area_demo::run(),
+        _ => demos::form_demo::run(), // "form" ou qualquer outro
     }
 }

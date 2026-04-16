@@ -5,12 +5,12 @@
 // ============================================================
 
 pub mod app;
-pub mod widget;
-pub mod theme;
-pub mod layout;
-pub mod render;
 pub mod engine;
 pub mod input_state;
+pub mod layout;
+pub mod render;
+pub mod theme;
+pub mod widget;
 
 // ── Re-exports ergonômicos ───────────────────────────────────
 pub use app::AppLogic;

@@ -13,16 +13,16 @@ use std::time::{Duration, Instant};
 /// `ControlFlow::WaitUntil`) — não por redraw, evitando o
 /// bug original onde `ControlFlow::Wait` impedia o piscar.
 pub struct CursorBlink {
-    visible:        bool,
-    last_toggle:    Instant,
+    visible: bool,
+    last_toggle: Instant,
     blink_interval: Duration,
 }
 
 impl CursorBlink {
     pub fn new() -> Self {
         Self {
-            visible:        true,
-            last_toggle:    Instant::now(),
+            visible: true,
+            last_toggle: Instant::now(),
             blink_interval: Duration::from_millis(500),
         }
     }
@@ -31,7 +31,7 @@ impl CursorBlink {
     /// (indicando que um redraw é necessário).
     pub fn tick(&mut self) -> bool {
         if Instant::now().duration_since(self.last_toggle) >= self.blink_interval {
-            self.visible     = !self.visible;
+            self.visible = !self.visible;
             self.last_toggle = Instant::now();
             true
         } else {
@@ -42,7 +42,7 @@ impl CursorBlink {
     /// Reinicia para visível. Chamar ao focar ou ao digitar para
     /// garantir que o cursor seja sempre visível após uma ação.
     pub fn reset(&mut self) {
-        self.visible     = true;
+        self.visible = true;
         self.last_toggle = Instant::now();
     }
 

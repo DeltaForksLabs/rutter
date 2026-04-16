@@ -14,13 +14,34 @@ use crate::widget::Widget;
 ///
 /// # Exemplo mínimo
 /// ```rust
+/// use arboard::Clipboard;
+/// use cosmic_text::FontSystem;
+/// use rutter::{AppLogic, Widget};
+/// use taffy::prelude::Style;
+///
+/// #[derive(Debug, Clone)]
+/// enum MyMsg {
+///     Noop,
+/// }
+///
+/// struct MyState;
 /// struct MyApp;
+///
 /// impl AppLogic for MyApp {
-///     type State   = MyState;
+///     type State = MyState;
 ///     type Message = MyMsg;
-///     fn new(fs: &mut FontSystem) -> MyState { ... }
-///     fn view<'a>(state: &'a mut MyState) -> Widget<'a, MyMsg> { ... }
-///     fn update(state: &mut MyState, msg: MyMsg, _cb: &mut Clipboard) { ... }
+///
+///     fn new(_fs: &mut FontSystem) -> MyState {
+///         MyState
+///     }
+///
+///     fn view<'a>(_state: &'a mut MyState) -> Widget<'a, MyMsg> {
+///         Widget::Spacer {
+///             style: Style::default(),
+///         }
+///     }
+///
+///     fn update(_state: &mut MyState, _msg: MyMsg, _cb: &mut Clipboard) {}
 /// }
 /// ```
 pub trait AppLogic {
@@ -38,11 +59,7 @@ pub trait AppLogic {
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message>;
 
     /// Processa uma mensagem e muta o estado.
-    fn update(
-        state:     &mut Self::State,
-        message:   Self::Message,
-        clipboard: &mut Clipboard,
-    );
+    fn update(state: &mut Self::State, message: Self::Message, clipboard: &mut Clipboard);
 
     /// Retorna o tema da aplicação.
     fn theme() -> crate::theme::Theme {

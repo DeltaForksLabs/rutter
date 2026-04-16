@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use skia_safe::{canvas::Canvas, Color as SkiaColor, Font, FontMgr, FontStyle, Paint, Point};
+use skia_safe::{Color as SkiaColor, Font, FontMgr, FontStyle, Paint, Point, canvas::Canvas};
 
 // ── Cache de fontes Skia ─────────────────────────────────────
 
@@ -20,11 +20,7 @@ use skia_safe::{canvas::Canvas, Color as SkiaColor, Font, FontMgr, FontStyle, Pa
 /// # FIX #7 — Precisão fracionária no tamanho
 /// A chave usa `f32::to_bits()` em vez de `size as u32`, evitando
 /// que 11.5px e 11.9px colidam na mesma entrada do cache.
-pub fn get_cached_font(
-    cache:  &mut HashMap<(String, u32), Font>,
-    family: &str,
-    size:   f32,
-) -> Font {
+pub fn get_cached_font(cache: &mut HashMap<(String, u32), Font>, family: &str, size: f32) -> Font {
     // to_bits() preserva precisão bit-a-bit do f32
     let key = (family.to_string(), size.to_bits());
 
@@ -51,16 +47,18 @@ pub fn get_cached_font(
 /// - `center = true`  → centraliza horizontalmente e verticalmente
 /// - `center = false` → alinha à esquerda, centralizado verticalmente
 pub fn draw_text(
-    canvas:     &Canvas,
-    text:       &str,
-    _pos:       Point,
-    size:       (f32, f32),
-    color:      SkiaColor,
-    font_size:  f32,
+    canvas: &Canvas,
+    text: &str,
+    _pos: Point,
+    size: (f32, f32),
+    color: SkiaColor,
+    font_size: f32,
     font_cache: &mut HashMap<(String, u32), Font>,
-    center:     bool,
+    center: bool,
 ) {
-    if text.is_empty() { return; }
+    if text.is_empty() {
+        return;
+    }
 
     let font = get_cached_font(font_cache, "sans-serif", font_size);
     let mut paint = Paint::default();

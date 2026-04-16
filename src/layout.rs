@@ -3,7 +3,7 @@
 // ============================================================
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
@@ -18,151 +18,375 @@ const ACCORDION_HEADER_H: f32 = 44.0;
 pub const OPTION_HEIGHT: f32 = 32.0;
 pub const SCROLLBAR_W: f32 = 8.0;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextContext {
     pub content: String,
     pub font_size: f32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncedLayoutTree {
+    node_id: NodeId,
+    key: Option<u64>,
+    style: Style,
+    context: RutterContext,
+    children: Vec<SyncedLayoutTree>,
+}
+
+impl SyncedLayoutTree {
+    pub fn placeholder(node_id: NodeId) -> Self {
+        Self {
+            node_id,
+            key: None,
+            style: Style::default(),
+            context: RutterContext::None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum RutterContext {
     #[default]
     None,
     Text(TextContext),
 }
 
-pub fn build_taffy_tree<'a, Msg>(
-    taffy: &mut TaffyTree<RutterContext>,
-    widget: &Widget<'a, Msg>,
-    fs: Rc<RefCell<FontSystem>>,
-    widget_states: &HashMap<u64, WidgetState>,
-) -> NodeId {
-    match widget {
-        Widget::Column { children, style } => {
-            let s = Style {
-                flex_direction: FlexDirection::Column,
-                ..style.clone()
-            };
-            let ids: Vec<_> = children
-                .iter()
-                .map(|c| build_taffy_tree(taffy, c, fs.clone(), widget_states))
-                .collect();
-            taffy.new_with_children(s, &ids).unwrap()
-        }
-        Widget::Row { children, style } => {
-            let s = Style {
-                flex_direction: FlexDirection::Row,
-                ..style.clone()
-            };
-            let ids: Vec<_> = children
-                .iter()
-                .map(|c| build_taffy_tree(taffy, c, fs.clone(), widget_states))
-                .collect();
-            taffy.new_with_children(s, &ids).unwrap()
-        }
-        Widget::Container { child, style, .. }
-        | Widget::ScrollView { child, style, .. }
-        | Widget::Tooltip { child, style, .. } => {
-            let id = build_taffy_tree(taffy, child, fs.clone(), widget_states);
-            taffy.new_with_children(style.clone(), &[id]).unwrap()
-        }
-        Widget::Accordion {
-            child,
+#[derive(Debug, Clone, PartialEq)]
+struct LayoutBlueprint {
+    key: Option<u64>,
+    style: Style,
+    context: RutterContext,
+    children: Vec<LayoutBlueprint>,
+}
+
+impl LayoutBlueprint {
+    fn leaf(key: Option<u64>, style: Style) -> Self {
+        Self {
+            key,
             style,
-            expanded,
-            ..
-        } => {
-            let mut s = style.clone();
-            s.padding.top = LengthPercentage::length(ACCORDION_HEADER_H);
-            if *expanded {
-                let id = build_taffy_tree(taffy, child, fs.clone(), widget_states);
-                taffy.new_with_children(s, &[id]).unwrap()
-            } else {
-                s.size.height = Dimension::length(ACCORDION_HEADER_H);
-                taffy.new_leaf(s).unwrap()
-            }
+            context: RutterContext::None,
+            children: Vec::new(),
         }
-        Widget::Modal {
-            child,
+    }
+
+    fn leaf_with_context(key: Option<u64>, style: Style, context: RutterContext) -> Self {
+        Self {
+            key,
             style,
-            visible,
-            ..
+            context,
+            children: Vec::new(),
         }
-        | Widget::Dialog {
-            child,
+    }
+
+    fn with_children(key: Option<u64>, style: Style, children: Vec<Self>) -> Self {
+        Self {
+            key,
             style,
-            visible,
-            ..
-        } => {
-            if *visible {
-                let id = build_taffy_tree(taffy, child, fs.clone(), widget_states);
-                taffy.new_with_children(style.clone(), &[id]).unwrap()
-            } else {
-                taffy
-                    .new_leaf(Style {
-                        size: Size::zero(),
-                        ..style.clone()
-                    })
-                    .unwrap()
-            }
+            context: RutterContext::None,
+            children,
         }
-        Widget::Select {
-            id, options, style, ..
-        } => {
-            let is_open = widget_states
-                .get(id)
-                .and_then(|s| s.as_select())
-                .map(|s| s.is_open)
-                .unwrap_or(false);
-            let s = if is_open {
-                let closed_h = extract_height(style);
-                Style {
-                    size: Size {
-                        height: Dimension::length(closed_h + options.len() as f32 * OPTION_HEIGHT),
-                        ..style.size
-                    },
+    }
+
+    fn from_widget<'a, Msg>(
+        widget: &Widget<'a, Msg>,
+        widget_states: &HashMap<u64, WidgetState>,
+    ) -> Self {
+        match widget {
+            Widget::Column { children, style } => {
+                let style = Style {
+                    flex_direction: FlexDirection::Column,
                     ..style.clone()
+                };
+                let children = children
+                    .iter()
+                    .map(|child| Self::from_widget(child, widget_states))
+                    .collect();
+                Self::with_children(None, style, children)
+            }
+            Widget::Row { children, style } => {
+                let style = Style {
+                    flex_direction: FlexDirection::Row,
+                    ..style.clone()
+                };
+                let children = children
+                    .iter()
+                    .map(|child| Self::from_widget(child, widget_states))
+                    .collect();
+                Self::with_children(None, style, children)
+            }
+            Widget::Container { child, style, .. } => Self::with_children(
+                None,
+                style.clone(),
+                vec![Self::from_widget(child, widget_states)],
+            ),
+            Widget::ScrollView { id, child, style } => Self::with_children(
+                Some(*id),
+                style.clone(),
+                vec![Self::from_widget(child, widget_states)],
+            ),
+            Widget::Tooltip { child, style, .. } => Self::with_children(
+                None,
+                style.clone(),
+                vec![Self::from_widget(child, widget_states)],
+            ),
+            Widget::Accordion {
+                id,
+                child,
+                style,
+                expanded,
+                ..
+            } => {
+                let mut style = style.clone();
+                style.padding.top = LengthPercentage::length(ACCORDION_HEADER_H);
+                if *expanded {
+                    Self::with_children(
+                        Some(*id),
+                        style,
+                        vec![Self::from_widget(child, widget_states)],
+                    )
+                } else {
+                    style.size.height = Dimension::length(ACCORDION_HEADER_H);
+                    Self::leaf(Some(*id), style)
                 }
-            } else {
-                style.clone()
-            };
-            taffy.new_leaf(s).unwrap()
-        }
-        Widget::Text {
-            content,
-            style,
-            size,
-            ..
-        } => taffy
-            .new_leaf_with_context(
+            }
+            Widget::Modal {
+                id,
+                child,
+                style,
+                visible,
+                ..
+            }
+            | Widget::Dialog {
+                id,
+                child,
+                style,
+                visible,
+                ..
+            } => {
+                if *visible {
+                    Self::with_children(
+                        Some(*id),
+                        style.clone(),
+                        vec![Self::from_widget(child, widget_states)],
+                    )
+                } else {
+                    Self::leaf(
+                        Some(*id),
+                        Style {
+                            size: Size::zero(),
+                            ..style.clone()
+                        },
+                    )
+                }
+            }
+            Widget::Select {
+                id, options, style, ..
+            } => {
+                let is_open = widget_states
+                    .get(id)
+                    .and_then(|s| s.as_select())
+                    .map(|s| s.is_open)
+                    .unwrap_or(false);
+                let style = if is_open {
+                    let closed_h = extract_height(style);
+                    Style {
+                        size: Size {
+                            height: Dimension::length(
+                                closed_h + options.len() as f32 * OPTION_HEIGHT,
+                            ),
+                            ..style.size
+                        },
+                        ..style.clone()
+                    }
+                } else {
+                    style.clone()
+                };
+                Self::leaf(Some(*id), style)
+            }
+            Widget::Text {
+                content,
+                style,
+                size,
+                ..
+            } => Self::leaf_with_context(
+                None,
                 style.clone(),
                 RutterContext::Text(TextContext {
                     content: content.clone(),
                     font_size: *size,
                 }),
-            )
+            ),
+            Widget::Button { style, .. }
+            | Widget::Checkbox { style, .. }
+            | Widget::Divider { style, .. }
+            | Widget::Image { style, .. }
+            | Widget::Radio { style, .. }
+            | Widget::Spacer { style, .. }
+            | Widget::Switch { style, .. } => Self::leaf(None, style.clone()),
+            Widget::ProgressBar { id, style, .. }
+            | Widget::Spinner { id, style, .. }
+            | Widget::TabBar { id, style, .. }
+            | Widget::TextArea { id, style, .. }
+            | Widget::TextInput { id, style, .. }
+            | Widget::SearchBar { id, style, .. }
+            | Widget::Slider { id, style, .. }
+            | Widget::VirtualList { id, style, .. } => Self::leaf(Some(*id), style.clone()),
+            Widget::Toast { id, .. } => Self::leaf(
+                Some(*id),
+                Style {
+                    size: Size::zero(),
+                    ..Default::default()
+                },
+            ),
+        }
+    }
+}
+
+pub fn build_taffy_tree<'a, Msg>(
+    taffy: &mut TaffyTree<RutterContext>,
+    widget: &Widget<'a, Msg>,
+    _fs: Rc<RefCell<FontSystem>>,
+    widget_states: &HashMap<u64, WidgetState>,
+) -> NodeId {
+    let blueprint = LayoutBlueprint::from_widget(widget, widget_states);
+    mount_layout_blueprint(taffy, &blueprint).node_id
+}
+
+pub fn sync_taffy_tree<'a, Msg>(
+    taffy: &mut TaffyTree<RutterContext>,
+    tree: &mut SyncedLayoutTree,
+    widget: &Widget<'a, Msg>,
+    widget_states: &HashMap<u64, WidgetState>,
+) -> NodeId {
+    let blueprint = LayoutBlueprint::from_widget(widget, widget_states);
+    sync_layout_blueprint(taffy, tree, &blueprint);
+    tree.node_id()
+}
+
+fn mount_layout_blueprint(
+    taffy: &mut TaffyTree<RutterContext>,
+    blueprint: &LayoutBlueprint,
+) -> SyncedLayoutTree {
+    let node_id = match &blueprint.context {
+        RutterContext::None => taffy.new_leaf(blueprint.style.clone()).unwrap(),
+        _ => taffy
+            .new_leaf_with_context(blueprint.style.clone(), blueprint.context.clone())
             .unwrap(),
-        Widget::Button { style, .. }
-        | Widget::TextInput { style, .. }
-        | Widget::TextArea { style, .. }
-        | Widget::SearchBar { style, .. }
-        | Widget::Checkbox { style, .. }
-        | Widget::Switch { style, .. }
-        | Widget::Radio { style, .. }
-        | Widget::Slider { style, .. }
-        | Widget::ProgressBar { style, .. }
-        | Widget::Spinner { style, .. }
-        | Widget::Image { style, .. }
-        | Widget::Divider { style, .. }
-        | Widget::Spacer { style, .. }
-        | Widget::TabBar { style, .. }
-        | Widget::VirtualList { style, .. } => taffy.new_leaf(style.clone()).unwrap(),
-        Widget::Toast { .. } => taffy
-            .new_leaf(Style {
-                size: Size::zero(),
-                ..Default::default()
-            })
-            .unwrap(),
+    };
+
+    let children: Vec<_> = blueprint
+        .children
+        .iter()
+        .map(|child| mount_layout_blueprint(taffy, child))
+        .collect();
+
+    if !children.is_empty() {
+        let child_ids: Vec<_> = children.iter().map(|child| child.node_id).collect();
+        taffy.set_children(node_id, &child_ids).unwrap();
+    }
+
+    SyncedLayoutTree {
+        node_id,
+        key: blueprint.key,
+        style: blueprint.style.clone(),
+        context: blueprint.context.clone(),
+        children,
+    }
+}
+
+fn sync_layout_blueprint(
+    taffy: &mut TaffyTree<RutterContext>,
+    tree: &mut SyncedLayoutTree,
+    blueprint: &LayoutBlueprint,
+) {
+    if tree.style != blueprint.style {
+        taffy
+            .set_style(tree.node_id, blueprint.style.clone())
+            .unwrap();
+        tree.style = blueprint.style.clone();
+    }
+
+    if tree.context != blueprint.context {
+        taffy
+            .set_node_context(tree.node_id, clone_context(&blueprint.context))
+            .unwrap();
+        tree.context = blueprint.context.clone();
+    }
+
+    tree.key = blueprint.key;
+    sync_layout_children(taffy, tree, &blueprint.children);
+}
+
+fn sync_layout_children(
+    taffy: &mut TaffyTree<RutterContext>,
+    tree: &mut SyncedLayoutTree,
+    blueprints: &[LayoutBlueprint],
+) {
+    let old_child_ids: Vec<_> = tree.children.iter().map(|child| child.node_id).collect();
+    let old_children = std::mem::take(&mut tree.children);
+    let mut keyed_children: HashMap<u64, VecDeque<SyncedLayoutTree>> = HashMap::new();
+    let mut unkeyed_children = VecDeque::new();
+
+    for child in old_children {
+        if let Some(key) = child.key {
+            keyed_children.entry(key).or_default().push_back(child);
+        } else {
+            unkeyed_children.push_back(child);
+        }
+    }
+
+    let mut new_children = Vec::with_capacity(blueprints.len());
+    for blueprint in blueprints {
+        let existing_child = match blueprint.key {
+            Some(key) => keyed_children
+                .get_mut(&key)
+                .and_then(|children| children.pop_front()),
+            None => unkeyed_children.pop_front(),
+        };
+
+        let child = match existing_child {
+            Some(mut child) => {
+                sync_layout_blueprint(taffy, &mut child, blueprint);
+                child
+            }
+            None => mount_layout_blueprint(taffy, blueprint),
+        };
+        new_children.push(child);
+    }
+
+    let new_child_ids: Vec<_> = new_children.iter().map(|child| child.node_id).collect();
+    if old_child_ids != new_child_ids {
+        taffy.set_children(tree.node_id, &new_child_ids).unwrap();
+    }
+
+    for queue in keyed_children.into_values() {
+        for child in queue {
+            remove_layout_subtree(taffy, child);
+        }
+    }
+    for child in unkeyed_children {
+        remove_layout_subtree(taffy, child);
+    }
+
+    tree.children = new_children;
+}
+
+fn remove_layout_subtree(taffy: &mut TaffyTree<RutterContext>, tree: SyncedLayoutTree) {
+    for child in tree.children {
+        remove_layout_subtree(taffy, child);
+    }
+    taffy.remove(tree.node_id).unwrap();
+}
+
+fn clone_context(context: &RutterContext) -> Option<RutterContext> {
+    match context {
+        RutterContext::None => None,
+        _ => Some(context.clone()),
     }
 }
 
@@ -201,4 +425,207 @@ pub fn compute_layout(
 
 fn extract_height(_style: &Style) -> f32 {
     return 40.0;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_states() -> HashMap<u64, WidgetState> {
+        HashMap::new()
+    }
+
+    fn sync_tree<'a>(
+        taffy: &mut TaffyTree<RutterContext>,
+        tree: &mut SyncedLayoutTree,
+        widget: &Widget<'a, ()>,
+    ) {
+        sync_taffy_tree(taffy, tree, widget, &empty_states());
+    }
+
+    fn text(content: &str, size: f32) -> Widget<'static, ()> {
+        Widget::Text {
+            content: content.to_string(),
+            style: Style::default(),
+            color: None,
+            size,
+        }
+    }
+
+    fn button(width: f32) -> Widget<'static, ()> {
+        Widget::Button {
+            text: "Run",
+            on_press: (),
+            style: Style {
+                size: Size {
+                    width: Dimension::length(width),
+                    height: Dimension::length(36.0),
+                },
+                ..Style::default()
+            },
+            color: None,
+            variant: crate::widget::ButtonVariant::Primary,
+        }
+    }
+
+    fn slider(id: u64, width: f32) -> Widget<'static, ()> {
+        Widget::Slider {
+            id,
+            value: 0.0,
+            min: 0.0,
+            max: 100.0,
+            step: 1.0,
+            on_change: |_| (),
+            style: Style {
+                size: Size {
+                    width: Dimension::length(width),
+                    height: Dimension::length(20.0),
+                },
+                ..Style::default()
+            },
+            label: "Slider",
+        }
+    }
+
+    fn accordion(expanded: bool) -> Widget<'static, ()> {
+        Widget::Accordion {
+            id: 7,
+            title: "Section",
+            expanded,
+            on_toggle: (),
+            child: Box::new(text("Inner", 14.0)),
+            style: Style::default(),
+        }
+    }
+
+    #[test]
+    fn sync_taffy_tree_reuses_nodes_for_style_and_text_updates() {
+        let mut taffy = TaffyTree::new();
+        let root = taffy.new_leaf(Style::default()).unwrap();
+        let mut tree = SyncedLayoutTree::placeholder(root);
+
+        let initial = Widget::Column {
+            children: vec![text("hello", 16.0), button(96.0)],
+            style: Style::default(),
+        };
+        sync_tree(&mut taffy, &mut tree, &initial);
+
+        let text_id = tree.children[0].node_id;
+        let button_id = tree.children[1].node_id;
+        assert_eq!(taffy.total_node_count(), 3);
+
+        let updated = Widget::Column {
+            children: vec![text("updated", 18.0), button(144.0)],
+            style: Style {
+                gap: Size {
+                    width: LengthPercentage::length(12.0),
+                    height: LengthPercentage::length(12.0),
+                },
+                ..Style::default()
+            },
+        };
+        sync_tree(&mut taffy, &mut tree, &updated);
+
+        assert_eq!(tree.node_id, root);
+        assert_eq!(tree.children[0].node_id, text_id);
+        assert_eq!(tree.children[1].node_id, button_id);
+        assert_eq!(taffy.total_node_count(), 3);
+        assert_eq!(
+            taffy.style(button_id).unwrap().size.width,
+            Dimension::length(144.0)
+        );
+        assert_eq!(
+            taffy.style(root).unwrap().gap.width,
+            LengthPercentage::length(12.0)
+        );
+        assert_eq!(
+            taffy.get_node_context(text_id),
+            Some(&RutterContext::Text(TextContext {
+                content: "updated".to_string(),
+                font_size: 18.0,
+            }))
+        );
+    }
+
+    #[test]
+    fn sync_taffy_tree_reuses_keyed_children_across_reorder() {
+        let mut taffy = TaffyTree::new();
+        let root = taffy.new_leaf(Style::default()).unwrap();
+        let mut tree = SyncedLayoutTree::placeholder(root);
+
+        let initial = Widget::Column {
+            children: vec![slider(1, 100.0), slider(2, 120.0)],
+            style: Style::default(),
+        };
+        sync_tree(&mut taffy, &mut tree, &initial);
+
+        let first_id = tree.children[0].node_id;
+        let second_id = tree.children[1].node_id;
+
+        let reordered = Widget::Column {
+            children: vec![slider(2, 180.0), slider(1, 100.0), slider(3, 80.0)],
+            style: Style::default(),
+        };
+        sync_tree(&mut taffy, &mut tree, &reordered);
+
+        assert_eq!(tree.children[0].node_id, second_id);
+        assert_eq!(tree.children[1].node_id, first_id);
+        assert_eq!(taffy.total_node_count(), 4);
+        assert_eq!(
+            taffy.style(tree.children[0].node_id).unwrap().size.width,
+            Dimension::length(180.0)
+        );
+    }
+
+    #[test]
+    fn sync_taffy_tree_preserves_unkeyed_siblings_when_keyed_nodes_are_inserted() {
+        let mut taffy = TaffyTree::new();
+        let root = taffy.new_leaf(Style::default()).unwrap();
+        let mut tree = SyncedLayoutTree::placeholder(root);
+
+        let initial = Widget::Column {
+            children: vec![text("anchor", 14.0)],
+            style: Style::default(),
+        };
+        sync_tree(&mut taffy, &mut tree, &initial);
+
+        let text_id = tree.children[0].node_id;
+
+        let updated = Widget::Column {
+            children: vec![slider(10, 90.0), text("anchor", 14.0)],
+            style: Style::default(),
+        };
+        sync_tree(&mut taffy, &mut tree, &updated);
+
+        assert_eq!(tree.children[1].node_id, text_id);
+        assert_eq!(taffy.total_node_count(), 3);
+    }
+
+    #[test]
+    fn sync_taffy_tree_removes_orphaned_subtrees() {
+        let mut taffy = TaffyTree::new();
+        let root = taffy.new_leaf(Style::default()).unwrap();
+        let mut tree = SyncedLayoutTree::placeholder(root);
+
+        let initial = Widget::Column {
+            children: vec![accordion(true)],
+            style: Style::default(),
+        };
+        sync_tree(&mut taffy, &mut tree, &initial);
+
+        let accordion_id = tree.children[0].node_id;
+        assert_eq!(taffy.total_node_count(), 3);
+        assert_eq!(taffy.child_count(accordion_id), 1);
+
+        let collapsed = Widget::Column {
+            children: vec![accordion(false)],
+            style: Style::default(),
+        };
+        sync_tree(&mut taffy, &mut tree, &collapsed);
+
+        assert_eq!(tree.children[0].node_id, accordion_id);
+        assert!(tree.children[0].children.is_empty());
+        assert_eq!(taffy.total_node_count(), 2);
+        assert_eq!(taffy.child_count(accordion_id), 0);
+    }
 }

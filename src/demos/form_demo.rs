@@ -556,7 +556,7 @@ impl AppLogic for MyApp {
             },
             duration_ms: 3000,
             on_dismiss: Some(Msg::DismissToast),
-            position: ToastPosition::BottomRight
+            position: ToastPosition::BottomRight,
         };
 
         Widget::Column {

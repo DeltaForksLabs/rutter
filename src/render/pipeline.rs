@@ -11,11 +11,9 @@
 //   • Subpixel rendering (SwashContent::SubpixelMask)
 // ============================================================
 
-use skia_safe::{canvas::Canvas, AlphaType, Bitmap, ColorType, ImageInfo, Paint, Point};
+use cosmic_text::{Color as CosmicColor, FontSystem, LayoutRun, SwashCache, SwashContent};
 use skia_safe::Color as SkiaColor;
-use cosmic_text::{
-    Color as CosmicColor, FontSystem, LayoutRun, SwashCache, SwashContent,
-};
+use skia_safe::{AlphaType, Bitmap, ColorType, ImageInfo, Paint, Point, canvas::Canvas};
 
 /// Renderiza todas as runs de layout de um buffer cosmic-text
 /// diretamente no canvas Skia, usando SwashCache para rasterização.
@@ -24,13 +22,13 @@ use cosmic_text::{
 /// `color`:  cor do texto (ignorada para glyphs coloridos/emoji).
 /// `scale`:  fator DPI (1.0 em telas normais, 2.0 em retina).
 pub fn render_text_runs<'a>(
-    canvas:      &Canvas,
-    runs:        impl Iterator<Item = LayoutRun<'a>>,
-    origin:      Point,
-    color:       SkiaColor,
-    fs:          &mut FontSystem,
-    swash:       &mut SwashCache,
-    scale:       f32,
+    canvas: &Canvas,
+    runs: impl Iterator<Item = LayoutRun<'a>>,
+    origin: Point,
+    color: SkiaColor,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    scale: f32,
 ) {
     // Converter cor Skia → cor cosmic-text (para glyph image)
     let cosmic_color = CosmicColor::rgb(color.r(), color.g(), color.b());
@@ -42,30 +40,30 @@ pub fn render_text_runs<'a>(
     for run in runs {
         for glyph in run.glyphs.iter() {
             // Posição física (leva scale em conta)
-            let physical = glyph.physical(
-                (origin.x, origin.y),
-                scale,
-            );
+            let physical = glyph.physical((origin.x, origin.y), scale);
 
             // Rasterizar glyph via SwashCache
             let image = swash.get_image(fs, physical.cache_key);
-            let image = match image { Some(img) => img, None => continue };
+            let image = match image {
+                Some(img) => img,
+                None => continue,
+            };
 
             if image.placement.width == 0 || image.placement.height == 0 {
                 continue;
             }
 
             let dst_x = (physical.x + image.placement.left) as f32 / scale;
-            let dst_y = (physical.y - image.placement.top)  as f32 / scale;
-            let w     = image.placement.width  as i32;
-            let h     = image.placement.height as i32;
+            let dst_y = (physical.y - image.placement.top) as f32 / scale;
+            let w = image.placement.width as i32;
+            let h = image.placement.height as i32;
 
             match image.content {
                 // ── Máscara alfa (texto normal) ───────────────
                 SwashContent::Mask => {
                     // Criar bitmap A8 a partir dos dados de máscara
                     let mut bmp = Bitmap::new();
-                    let info    = ImageInfo::new_a8((w, h));
+                    let info = ImageInfo::new_a8((w, h));
                     if bmp.set_info(&info, None) {
                         bmp.alloc_pixels();
                         let pixels = bmp.pixels();
@@ -97,12 +95,7 @@ pub fn render_text_runs<'a>(
                 SwashContent::Color => {
                     // Dados RGBA
                     let mut bmp = Bitmap::new();
-                    let info = ImageInfo::new(
-                        (w, h),
-                        ColorType::RGBA8888,
-                        AlphaType::Premul,
-                        None,
-                    );
+                    let info = ImageInfo::new((w, h), ColorType::RGBA8888, AlphaType::Premul, None);
                     if bmp.set_info(&info, None) {
                         bmp.alloc_pixels();
                         let pixels = bmp.pixels();
@@ -129,11 +122,11 @@ pub fn render_text_runs<'a>(
                     // (subpixel rendering completo requer gamma correction)
                     let coverage_len = (w * h) as usize;
                     let mut bmp = Bitmap::new();
-                    let info    = ImageInfo::new_a8((w, h));
+                    let info = ImageInfo::new_a8((w, h));
                     if bmp.set_info(&info, None) {
                         bmp.alloc_pixels();
                         let pixels = bmp.pixels();
-                        if !pixels.is_null() {                        
+                        if !pixels.is_null() {
                             let src = &image.data[..coverage_len.min(image.data.len())];
                             unsafe {
                                 std::ptr::copy_nonoverlapping(
@@ -165,16 +158,16 @@ mod tests {
     /// corretamente para scale 1.0 e 2.0.
     #[test]
     fn physical_position_scale_1() {
-        let scale  = 1.0_f32;
-        let px_x   = 100.0_f32;
-        let dst_x  = px_x / scale;
+        let scale = 1.0_f32;
+        let px_x = 100.0_f32;
+        let dst_x = px_x / scale;
         assert!((dst_x - 100.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn physical_position_scale_2() {
         let scale = 2.0_f32;
-        let px_x  = 200.0_f32;
+        let px_x = 200.0_f32;
         let dst_x = px_x / scale;
         assert!((dst_x - 100.0).abs() < f32::EPSILON);
     }
@@ -202,8 +195,8 @@ mod tests {
     #[test]
     fn empty_glyph_data_skipped_gracefully() {
         // Simula data vazio — não deve panic
-        let w   = 0_i32;
-        let h   = 0_i32;
+        let w = 0_i32;
+        let h = 0_i32;
         let bmp = Bitmap::new();
         assert_eq!(bmp.width(), w);
         assert_eq!(bmp.height(), h);
