@@ -66,6 +66,67 @@ fn collect_toast_runtime_updates<Msg>(widget: &Widget<Msg>, out: &mut Vec<ToastR
     }
 }
 
+#[derive(Debug, Clone)]
+struct InputRuntime<Msg: Clone> {
+    on_change: fn(String) -> Msg,
+    on_submit: Option<Msg>,
+    is_password: bool,
+    is_multiline: bool,
+    visible_w: f32,
+}
+
+#[derive(Debug, Clone)]
+struct SliderRuntime<Msg> {
+    on_change: fn(f32) -> Msg,
+    min: f32,
+    max: f32,
+    step: f32,
+}
+
+#[derive(Debug, Clone)]
+struct VListRuntime<Msg> {
+    on_select: fn(usize) -> Msg,
+    item_height: f32,
+    item_count: usize,
+}
+
+#[derive(Debug)]
+struct WidgetRuntimeCaches<Msg: Clone> {
+    input_order: Vec<u64>,
+    inputs: HashMap<u64, InputRuntime<Msg>>,
+    sliders: HashMap<u64, SliderRuntime<Msg>>,
+    selects: HashMap<u64, fn(usize) -> Msg>,
+    tabs: HashMap<u64, fn(usize) -> Msg>,
+    vlists: HashMap<u64, VListRuntime<Msg>>,
+    toast_dismiss: HashMap<u64, Msg>,
+}
+
+impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
+    fn default() -> Self {
+        Self {
+            input_order: Vec::new(),
+            inputs: HashMap::new(),
+            sliders: HashMap::new(),
+            selects: HashMap::new(),
+            tabs: HashMap::new(),
+            vlists: HashMap::new(),
+            toast_dismiss: HashMap::new(),
+        }
+    }
+}
+
+impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
+    fn clear(&mut self) {
+        self.input_order.clear();
+        self.inputs.clear();
+        self.sliders.clear();
+        self.selects.clear();
+        self.tabs.clear();
+        self.vlists.clear();
+        self.toast_dismiss.clear();
+    }
+}
+
 pub struct RutterEngine<A: AppLogic> {
     pub window: Option<Rc<Window>>,
     pub surface: Option<Surface<Rc<Window>, Rc<Window>>>,
@@ -75,6 +136,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub font_cache: HashMap<(String, u32), Font>,
     pub taffy: TaffyTree<RutterContext>,
     layout_tree: SyncedLayoutTree,
+    runtime_caches: WidgetRuntimeCaches<A::Message>,
     pub last_root_node: NodeId,
     pub layout_dirty: bool,
     pub app_state: A::State,
@@ -106,6 +168,7 @@ impl<A: AppLogic> RutterEngine<A> {
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
             layout_tree: SyncedLayoutTree::placeholder(root),
+            runtime_caches: WidgetRuntimeCaches::default(),
             taffy,
             last_root_node: root,
             layout_dirty: true,
@@ -282,82 +345,223 @@ impl<A: AppLogic> RutterEngine<A> {
         );
         self.last_root_node = root;
         compute_layout(&mut self.taffy, root, logical, self.font_system.clone());
-        Self::update_viewports_impl(&mut self.widget_states, &self.taffy, &widget_tree, root);
+        self.runtime_caches.clear();
+        Self::sync_runtime_metadata_impl(
+            &mut self.runtime_caches,
+            &mut self.widget_states,
+            &self.taffy,
+            &widget_tree,
+            Some(root),
+            A::theme().spacing,
+        );
         self.layout_dirty = false;
     }
 
-    fn update_viewports_impl<Msg>(
+    fn sync_runtime_metadata_impl<Msg: Clone>(
+        runtime_caches: &mut WidgetRuntimeCaches<Msg>,
         widget_states: &mut HashMap<u64, WidgetState>,
         taffy: &TaffyTree<RutterContext>,
         widget: &Widget<Msg>,
-        node: NodeId,
+        node: Option<NodeId>,
+        spacing: f32,
     ) {
-        if let Ok(layout) = taffy.layout(node) {
-            match widget {
-                Widget::ScrollView { id, child, .. } => {
+        let layout = node.and_then(|node| taffy.layout(node).ok());
+        match widget {
+            Widget::TextInput {
+                id,
+                on_change,
+                on_submit,
+                is_password,
+                ..
+            } => {
+                runtime_caches.input_order.push(*id);
+                runtime_caches.inputs.insert(
+                    *id,
+                    InputRuntime {
+                        on_change: *on_change,
+                        on_submit: on_submit.clone(),
+                        is_password: *is_password,
+                        is_multiline: false,
+                        visible_w: Self::visible_input_width(layout, spacing),
+                    },
+                );
+            }
+            Widget::TextArea {
+                id,
+                on_change,
+                on_submit,
+                ..
+            } => {
+                runtime_caches.input_order.push(*id);
+                runtime_caches.inputs.insert(
+                    *id,
+                    InputRuntime {
+                        on_change: *on_change,
+                        on_submit: on_submit.clone(),
+                        is_password: false,
+                        is_multiline: true,
+                        visible_w: Self::visible_input_width(layout, spacing),
+                    },
+                );
+            }
+            Widget::SearchBar {
+                id,
+                on_change,
+                on_submit,
+                ..
+            } => {
+                runtime_caches.input_order.push(*id);
+                runtime_caches.inputs.insert(
+                    *id,
+                    InputRuntime {
+                        on_change: *on_change,
+                        on_submit: on_submit.clone(),
+                        is_password: false,
+                        is_multiline: false,
+                        visible_w: Self::visible_input_width(layout, spacing),
+                    },
+                );
+            }
+            Widget::Slider {
+                id,
+                on_change,
+                min,
+                max,
+                step,
+                ..
+            } => {
+                runtime_caches.sliders.insert(
+                    *id,
+                    SliderRuntime {
+                        on_change: *on_change,
+                        min: *min,
+                        max: *max,
+                        step: *step,
+                    },
+                );
+            }
+            Widget::Select { id, on_change, .. } => {
+                runtime_caches.selects.insert(*id, *on_change);
+            }
+            Widget::TabBar { id, on_change, .. } => {
+                runtime_caches.tabs.insert(*id, *on_change);
+            }
+            Widget::Toast {
+                id,
+                on_dismiss: Some(msg),
+                ..
+            } => {
+                runtime_caches.toast_dismiss.insert(*id, msg.clone());
+            }
+            Widget::ScrollView { id, child, .. } => {
+                if let Some(layout) = layout {
                     if let Some(ws) = widget_states.get_mut(id) {
                         if let Some(s) = ws.as_scroll_mut() {
                             s.viewport_h = layout.size.height;
-                            if let Ok(children) = taffy.children(node) {
-                                if !children.is_empty() {
-                                    if let Ok(child_layout) = taffy.layout(children[0]) {
-                                        s.content_height = child_layout.size.height;
-                                    }
+                            if let Some(child_node) = Self::first_child(node, taffy) {
+                                if let Ok(child_layout) = taffy.layout(child_node) {
+                                    s.content_height = child_layout.size.height;
                                 }
                             }
                         }
                     }
-                    if let Ok(children) = taffy.children(node) {
-                        if !children.is_empty() {
-                            Self::update_viewports_impl(
-                                widget_states,
-                                taffy,
-                                child.as_ref(),
-                                children[0],
-                            );
-                        }
-                    }
                 }
-                Widget::VirtualList { id, .. } => {
+                Self::sync_runtime_metadata_impl(
+                    runtime_caches,
+                    widget_states,
+                    taffy,
+                    child.as_ref(),
+                    Self::first_child(node, taffy),
+                    spacing,
+                );
+            }
+            Widget::VirtualList {
+                id,
+                item_height,
+                item_count,
+                on_select,
+                ..
+            } => {
+                runtime_caches.vlists.insert(
+                    *id,
+                    VListRuntime {
+                        on_select: *on_select,
+                        item_height: *item_height,
+                        item_count: *item_count,
+                    },
+                );
+                if let Some(layout) = layout {
                     if let Some(ws) = widget_states.get_mut(id) {
                         if let Some(s) = ws.as_vlist_mut() {
                             s.viewport_h = layout.size.height;
                         }
                     }
                 }
-                Widget::Column { children, .. } | Widget::Row { children, .. } => {
-                    if let Ok(node_children) = taffy.children(node) {
-                        for (i, child) in children.iter().enumerate() {
-                            if i < node_children.len() {
-                                Self::update_viewports_impl(
-                                    widget_states,
-                                    taffy,
-                                    child,
-                                    node_children[i],
-                                );
-                            }
-                        }
-                    }
-                }
-                Widget::Container { child, .. }
-                | Widget::Tooltip { child, .. }
-                | Widget::Accordion { child, .. }
-                | Widget::Modal { child, .. }
-                | Widget::Dialog { child, .. } => {
-                    if let Ok(children) = taffy.children(node) {
-                        if !children.is_empty() {
-                            Self::update_viewports_impl(
-                                widget_states,
-                                taffy,
-                                child.as_ref(),
-                                children[0],
-                            );
-                        }
-                    }
-                }
-                _ => {}
             }
+            Widget::Column { children, .. } | Widget::Row { children, .. } => {
+                let node_children = Self::children_for(node, taffy);
+                for (i, child) in children.iter().enumerate() {
+                    Self::sync_runtime_metadata_impl(
+                        runtime_caches,
+                        widget_states,
+                        taffy,
+                        child,
+                        node_children.get(i).copied(),
+                        spacing,
+                    );
+                }
+            }
+            Widget::Container { child, .. }
+            | Widget::Tooltip { child, .. }
+            | Widget::Accordion { child, .. }
+            | Widget::Modal { child, .. }
+            | Widget::Dialog { child, .. } => {
+                Self::sync_runtime_metadata_impl(
+                    runtime_caches,
+                    widget_states,
+                    taffy,
+                    child.as_ref(),
+                    Self::first_child(node, taffy),
+                    spacing,
+                );
+            }
+            _ => {}
         }
+    }
+
+    fn visible_input_width(layout: Option<&taffy::tree::Layout>, spacing: f32) -> f32 {
+        layout
+            .map(|layout| (layout.size.width - spacing * 4.0).max(24.0))
+            .unwrap_or(260.0)
+    }
+
+    fn children_for(node: Option<NodeId>, taffy: &TaffyTree<RutterContext>) -> Vec<NodeId> {
+        node.and_then(|node| taffy.children(node).ok())
+            .unwrap_or_default()
+    }
+
+    fn first_child(node: Option<NodeId>, taffy: &TaffyTree<RutterContext>) -> Option<NodeId> {
+        Self::children_for(node, taffy).into_iter().next()
+    }
+
+    #[cfg(test)]
+    fn sync_runtime_metadata_for_test<Msg: Clone>(
+        runtime_caches: &mut WidgetRuntimeCaches<Msg>,
+        widget_states: &mut HashMap<u64, WidgetState>,
+        taffy: &TaffyTree<RutterContext>,
+        widget: &Widget<Msg>,
+        root: NodeId,
+        spacing: f32,
+    ) {
+        runtime_caches.clear();
+        Self::sync_runtime_metadata_impl(
+            runtime_caches,
+            widget_states,
+            taffy,
+            widget,
+            Some(root),
+            spacing,
+        );
     }
 
     pub fn redraw(&mut self, cursor_pos: Point) {
@@ -414,5 +618,217 @@ impl<A: AppLogic> RutterEngine<A> {
             }
         }
         buf.present().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    use cosmic_text::FontSystem;
+
+    use crate::layout::build_taffy_tree;
+    use crate::widget::InputState;
+
+    fn fs() -> Rc<RefCell<FontSystem>> {
+        Rc::new(RefCell::new(FontSystem::new()))
+    }
+
+    fn base_style(width: f32, height: f32) -> Style {
+        Style {
+            size: taffy::geometry::Size {
+                width: taffy::style::Dimension::length(width),
+                height: taffy::style::Dimension::length(height),
+            },
+            ..Style::default()
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Msg {
+        Str(String),
+        Float(f32),
+        Usize(usize),
+        Submit,
+        Dismiss,
+    }
+
+    struct DummyApp;
+
+    impl AppLogic for DummyApp {
+        type State = ();
+        type Message = Msg;
+
+        fn new(_: &mut FontSystem) -> Self::State {}
+
+        fn view<'a>(_: &'a mut Self::State) -> Widget<'a, Self::Message> {
+            Widget::Spacer {
+                style: Style::default(),
+            }
+        }
+
+        fn update(_: &mut Self::State, _: Self::Message, _: &mut Clipboard) {}
+    }
+
+    #[test]
+    fn runtime_metadata_collects_callbacks_and_layout_props() {
+        let widget = Widget::Column {
+            children: vec![
+                Widget::TextInput {
+                    id: 1,
+                    on_change: Msg::Str,
+                    on_submit: Some(Msg::Submit),
+                    style: base_style(200.0, 40.0),
+                    label: "",
+                    placeholder: "",
+                    state: InputState::Idle,
+                    error_msg: None,
+                    is_password: true,
+                },
+                Widget::Slider {
+                    id: 2,
+                    value: 25.0,
+                    min: 0.0,
+                    max: 100.0,
+                    step: 5.0,
+                    on_change: Msg::Float,
+                    style: base_style(240.0, 20.0),
+                    label: "",
+                },
+                Widget::Select {
+                    id: 3,
+                    options: &["A", "B"],
+                    selected_index: 0,
+                    on_change: Msg::Usize,
+                    style: base_style(240.0, 40.0),
+                    label: "",
+                    placeholder: "",
+                },
+                Widget::TabBar {
+                    id: 4,
+                    tabs: &["One", "Two"],
+                    active: 0,
+                    on_change: Msg::Usize,
+                    style: base_style(240.0, 40.0),
+                },
+                Widget::VirtualList {
+                    id: 5,
+                    item_height: 30.0,
+                    item_count: 50,
+                    items: &|_| None,
+                    on_select: Msg::Usize,
+                    style: base_style(240.0, 180.0),
+                },
+                Widget::Toast {
+                    id: 6,
+                    visible: true,
+                    message: "done",
+                    kind: crate::widget::ToastKind::Info,
+                    position: crate::widget::ToastPosition::BottomRight,
+                    duration_ms: 1000,
+                    on_dismiss: Some(Msg::Dismiss),
+                },
+            ],
+            style: Style::default(),
+        };
+
+        let mut widget_states =
+            HashMap::from([(5, WidgetState::VList(VirtualListState::default()))]);
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &widget, fs(), &widget_states);
+        compute_layout(&mut taffy, root, PhysicalSize::new(400, 500), fs());
+
+        let mut runtime_caches = WidgetRuntimeCaches::<Msg>::default();
+        RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
+            &mut runtime_caches,
+            &mut widget_states,
+            &taffy,
+            &widget,
+            root,
+            DummyApp::theme().spacing,
+        );
+
+        assert_eq!(runtime_caches.input_order, vec![1]);
+        let input = runtime_caches.inputs.get(&1).unwrap();
+        assert_eq!((input.on_change)("abc".into()), Msg::Str("abc".into()));
+        assert_eq!(input.on_submit, Some(Msg::Submit));
+        assert!(input.is_password);
+        assert!((input.visible_w - 168.0).abs() < f32::EPSILON);
+
+        let slider = runtime_caches.sliders.get(&2).unwrap();
+        assert_eq!(slider.min, 0.0);
+        assert_eq!(slider.max, 100.0);
+        assert_eq!(slider.step, 5.0);
+        assert_eq!((slider.on_change)(55.0), Msg::Float(55.0));
+
+        assert_eq!(
+            runtime_caches.selects.get(&3).copied().unwrap()(1),
+            Msg::Usize(1)
+        );
+        assert_eq!(
+            runtime_caches.tabs.get(&4).copied().unwrap()(1),
+            Msg::Usize(1)
+        );
+
+        let vlist = runtime_caches.vlists.get(&5).unwrap();
+        assert_eq!(vlist.item_height, 30.0);
+        assert_eq!(vlist.item_count, 50);
+        assert_eq!((vlist.on_select)(7), Msg::Usize(7));
+        assert_eq!(
+            widget_states
+                .get(&5)
+                .and_then(|s| s.as_vlist())
+                .map(|s| s.viewport_h),
+            Some(180.0)
+        );
+
+        assert_eq!(runtime_caches.toast_dismiss.get(&6), Some(&Msg::Dismiss));
+    }
+
+    #[test]
+    fn runtime_metadata_keeps_hidden_children_registered() {
+        let widget = Widget::Modal {
+            id: 9,
+            visible: false,
+            child: Box::new(Widget::TextInput {
+                id: 10,
+                on_change: Msg::Str,
+                on_submit: Some(Msg::Submit),
+                style: base_style(220.0, 40.0),
+                label: "",
+                placeholder: "",
+                state: InputState::Idle,
+                error_msg: None,
+                is_password: false,
+            }),
+            on_dismiss: None,
+            style: Style::default(),
+        };
+
+        let widget_states = HashMap::new();
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &widget, fs(), &widget_states);
+        compute_layout(&mut taffy, root, PhysicalSize::new(400, 300), fs());
+
+        let mut runtime_caches = WidgetRuntimeCaches::<Msg>::default();
+        let mut widget_states = HashMap::new();
+        RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
+            &mut runtime_caches,
+            &mut widget_states,
+            &taffy,
+            &widget,
+            root,
+            DummyApp::theme().spacing,
+        );
+
+        assert_eq!(runtime_caches.input_order, vec![10]);
+        let input = runtime_caches.inputs.get(&10).unwrap();
+        assert_eq!(
+            (input.on_change)("hidden".into()),
+            Msg::Str("hidden".into())
+        );
+        assert_eq!(input.on_submit, Some(Msg::Submit));
+        assert!((input.visible_w - 260.0).abs() < f32::EPSILON);
     }
 }

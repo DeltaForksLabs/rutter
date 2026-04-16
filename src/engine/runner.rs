@@ -16,11 +16,7 @@ use winit::{
 
 use super::RutterEngine;
 use crate::app::AppLogic;
-use crate::render::hit_test::{
-    HitResult, collect_input_ids, find_input_geometry, find_input_props, find_scroll_focus,
-    find_scrollbar_drag_hit, find_select_callback, find_slider_callback, find_toast_dismiss_msg,
-    find_vlist_props, hit_test,
-};
+use crate::render::hit_test::{HitResult, find_scroll_focus, find_scrollbar_drag_hit, hit_test};
 
 fn map_key(key: &Key, ctrl: bool) -> Option<Action> {
     match key {
@@ -51,88 +47,6 @@ pub fn snap_to_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
     let decimals = (-step.log10().floor()).max(0.0) as i32;
     let factor = 10_f32.powi(decimals);
     (snapped * factor).round() / factor
-}
-
-fn find_slider_params<Msg: Clone>(
-    widget: &crate::widget::Widget<Msg>,
-    id: u64,
-) -> Option<(f32, f32, f32, f32)> {
-    use crate::widget::Widget;
-    match widget {
-        Widget::Slider {
-            id: wid,
-            min,
-            max,
-            step,
-            value,
-            ..
-        } if *wid == id => Some((*min, *max, *step, *value)),
-        Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                if let Some(r) = find_slider_params(c, id) {
-                    return Some(r);
-                }
-            }
-            None
-        }
-        Widget::Container { child, .. }
-        | Widget::Tooltip { child, .. }
-        | Widget::ScrollView { child, .. }
-        | Widget::Accordion { child, .. }
-        | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_slider_params(child, id),
-        _ => None,
-    }
-}
-
-pub fn find_tab_callback<Msg: Clone>(
-    widget: &crate::widget::Widget<Msg>,
-    target_id: u64,
-) -> Option<fn(usize) -> Msg> {
-    use crate::widget::Widget;
-    match widget {
-        Widget::TabBar { id, on_change, .. } if *id == target_id => Some(*on_change),
-        Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                if let Some(r) = find_tab_callback(c, target_id) {
-                    return Some(r);
-                }
-            }
-            None
-        }
-        Widget::Container { child, .. }
-        | Widget::Tooltip { child, .. }
-        | Widget::ScrollView { child, .. }
-        | Widget::Accordion { child, .. }
-        | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_tab_callback(child, target_id),
-        _ => None,
-    }
-}
-
-pub fn find_vlist_callback<Msg: Clone>(
-    widget: &crate::widget::Widget<Msg>,
-    target_id: u64,
-) -> Option<fn(usize) -> Msg> {
-    use crate::widget::Widget;
-    match widget {
-        Widget::VirtualList { id, on_select, .. } if *id == target_id => Some(*on_select),
-        Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                if let Some(r) = find_vlist_callback(c, target_id) {
-                    return Some(r);
-                }
-            }
-            None
-        }
-        Widget::Container { child, .. }
-        | Widget::Tooltip { child, .. }
-        | Widget::ScrollView { child, .. }
-        | Widget::Accordion { child, .. }
-        | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_vlist_callback(child, target_id),
-        _ => None,
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -194,8 +108,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         t.visible = false;
                     }
                 }
-                let wt = A::view(&mut self.engine.app_state);
-                if let Some(msg) = find_toast_dismiss_msg(&wt, *id) {
+                if let Some(msg) = self.engine.runtime_caches.toast_dismiss.get(id).cloned() {
                     A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
                 }
             }
@@ -409,10 +322,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 }
                                 let norm = ((cursor_x - abs_track_x) / track_w).clamp(0.0, 1.0);
                                 let val = snap_to_step(min + norm * (max - min), min, max, step);
-                                let cb = {
-                                    let wt2 = A::view(&mut self.engine.app_state);
-                                    find_slider_callback(&wt2, id)
-                                };
+                                let cb = self
+                                    .engine
+                                    .runtime_caches
+                                    .sliders
+                                    .get(&id)
+                                    .map(|s| s.on_change);
                                 if let Some(cb) = cb {
                                     let msg = cb(val);
                                     A::update(
@@ -448,10 +363,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                         s.is_open = false;
                                     }
                                 }
-                                let cb = {
-                                    let wt2 = A::view(&mut self.engine.app_state);
-                                    find_select_callback(&wt2, id)
-                                };
+                                let cb = self.engine.runtime_caches.selects.get(&id).copied();
                                 if let Some(cb) = cb {
                                     let msg = cb(index);
                                     A::update(
@@ -468,10 +380,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         }
                         HitResult::TabPress { id, index } => {
                             if button == winit::event::MouseButton::Left {
-                                let cb = {
-                                    let wt2 = A::view(&mut self.engine.app_state);
-                                    find_tab_callback(&wt2, id)
-                                };
+                                let cb = self.engine.runtime_caches.tabs.get(&id).copied();
                                 if let Some(cb) = cb {
                                     let msg = cb(index);
                                     A::update(
@@ -513,10 +422,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                         vl.selected_row = Some(index);
                                     }
                                 }
-                                let cb = {
-                                    let wt2 = A::view(&mut self.engine.app_state);
-                                    find_vlist_callback(&wt2, id)
-                                };
+                                let cb = self
+                                    .engine
+                                    .runtime_caches
+                                    .vlists
+                                    .get(&id)
+                                    .map(|v| v.on_select);
                                 if let Some(cb) = cb {
                                     let msg = cb(index);
                                     A::update(
@@ -562,10 +473,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 let mut dirty = false;
 
                 if let Some(sid) = self.engine.active_scroll_id {
-                    let vlist_props = {
-                        let wt = A::view(&mut self.engine.app_state);
-                        find_vlist_props(&wt, sid)
-                    };
+                    let vlist_props = self
+                        .engine
+                        .runtime_caches
+                        .vlists
+                        .get(&sid)
+                        .map(|v| (v.item_height, v.item_count));
 
                     if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
                         if let Some(s) = ws.as_scroll_mut() {
@@ -580,14 +493,17 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     }
                 } else {
                     let mut vlist_to_scroll = None;
-                    {
-                        let wt = A::view(&mut self.engine.app_state);
-                        for (id, ws) in self.engine.widget_states.iter() {
-                            if ws.as_vlist().is_some() {
-                                if let Some(props) = find_vlist_props(&wt, *id) {
-                                    vlist_to_scroll = Some((*id, props));
-                                    break;
-                                }
+                    for (id, ws) in self.engine.widget_states.iter() {
+                        if ws.as_vlist().is_some() {
+                            if let Some(props) = self
+                                .engine
+                                .runtime_caches
+                                .vlists
+                                .get(id)
+                                .map(|v| (v.item_height, v.item_count))
+                            {
+                                vlist_to_scroll = Some((*id, props));
+                                break;
                             }
                         }
                     }
@@ -631,14 +547,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn update_slider_drag(&mut self, sid: u64, cursor_x: f32) {
-        let Some((min, max, step, cb)) = ({
-            let wt = A::view(&mut self.engine.app_state);
-            let Some((min, max, step, _)) = find_slider_params(&wt, sid) else {
-                return;
-            };
-            let cb = find_slider_callback(&wt, sid);
-            cb.map(|cb| (min, max, step, cb))
-        }) else {
+        let Some(slider) = self.engine.runtime_caches.sliders.get(&sid).cloned() else {
             return;
         };
         let (abs_x, track_w) = {
@@ -650,8 +559,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             )
         };
         let norm = ((cursor_x - abs_x) / track_w).clamp(0.0, 1.0);
-        let val = snap_to_step(min + norm * (max - min), min, max, step);
-        let msg = cb(val);
+        let val = snap_to_step(
+            slider.min + norm * (slider.max - slider.min),
+            slider.min,
+            slider.max,
+            slider.step,
+        );
+        let msg = (slider.on_change)(val);
         A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
         self.engine.layout_dirty = true;
         self.redraw();
@@ -684,49 +598,52 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         let pad_x = A::theme().spacing * 2.0;
         let pad_y = A::theme().spacing;
-        let input_props = {
-            let wt = A::view(&mut self.engine.app_state);
-            find_input_props(&wt, id)
-        };
-        if let Some((_, _, is_password, _)) = input_props {
-            if let Some(ist) = self.engine.input_states.get_mut(&id) {
-                let mut fs = self.engine.font_system.borrow_mut();
-                ist.clear_selection();
-                let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
-                let click_y = (local_y - pad_y).max(0.0);
+        let is_password = self
+            .engine
+            .runtime_caches
+            .inputs
+            .get(&id)
+            .map(|input| input.is_password)
+            .unwrap_or(false);
+        if let Some(ist) = self.engine.input_states.get_mut(&id) {
+            let mut fs = self.engine.font_system.borrow_mut();
+            ist.clear_selection();
+            let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
+            let click_y = (local_y - pad_y).max(0.0);
 
-                if is_double {
-                    ist.editor.action(
-                        &mut fs,
-                        Action::DoubleClick {
-                            x: click_x as i32,
-                            y: click_y as i32,
-                        },
-                    );
-                } else {
-                    ist.editor.action(
-                        &mut fs,
-                        Action::Click {
-                            x: click_x as i32,
-                            y: click_y as i32,
-                        },
-                    );
-                }
-                ist.sync_selection();
-
-                let visible_w = (width - pad_x * 2.0).max(24.0);
-                ist.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
+            if is_double {
+                ist.editor.action(
+                    &mut fs,
+                    Action::DoubleClick {
+                        x: click_x as i32,
+                        y: click_y as i32,
+                    },
+                );
+            } else {
+                ist.editor.action(
+                    &mut fs,
+                    Action::Click {
+                        x: click_x as i32,
+                        y: click_y as i32,
+                    },
+                );
             }
+            ist.sync_selection();
+
+            let visible_w = (width - pad_x * 2.0).max(24.0);
+            ist.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
         }
     }
 
     fn handle_key(&mut self, key: &Key) {
         if self.engine.focused_input_id.is_none() {
             if let Some(sid) = self.engine.active_scroll_id {
-                let vlist_props = {
-                    let wt = A::view(&mut self.engine.app_state);
-                    find_vlist_props(&wt, sid)
-                };
+                let vlist_props = self
+                    .engine
+                    .runtime_caches
+                    .vlists
+                    .get(&sid)
+                    .map(|v| (v.item_height, v.item_count, v.on_select));
                 match key {
                     Key::Named(NamedKey::ArrowDown) => {
                         if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
@@ -735,22 +652,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                 self.redraw();
                                 return;
                             } else if let Some(s) = ws.as_vlist_mut() {
-                                if let Some((ih, ic)) = vlist_props {
+                                if let Some((ih, ic, cb)) = vlist_props {
                                     let new_sel = s.selected_row.unwrap_or(0) + 1;
                                     if new_sel < ic {
                                         s.selected_row = Some(new_sel);
                                         s.scroll_to_index(new_sel, ih, ic);
-                                        let cb = {
-                                            let wt2 = A::view(&mut self.engine.app_state);
-                                            find_vlist_callback(&wt2, sid)
-                                        };
-                                        if let Some(cb) = cb {
-                                            A::update(
-                                                &mut self.engine.app_state,
-                                                cb(new_sel),
-                                                &mut self.engine.clipboard,
-                                            );
-                                        }
+                                        A::update(
+                                            &mut self.engine.app_state,
+                                            cb(new_sel),
+                                            &mut self.engine.clipboard,
+                                        );
                                         self.engine.layout_dirty = true;
                                         self.redraw();
                                         return;
@@ -766,21 +677,15 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                 self.redraw();
                                 return;
                             } else if let Some(s) = ws.as_vlist_mut() {
-                                if let Some((ih, ic)) = vlist_props {
+                                if let Some((ih, ic, cb)) = vlist_props {
                                     let new_sel = s.selected_row.unwrap_or(0).saturating_sub(1);
                                     s.selected_row = Some(new_sel);
                                     s.scroll_to_index(new_sel, ih, ic);
-                                    let cb = {
-                                        let wt2 = A::view(&mut self.engine.app_state);
-                                        find_vlist_callback(&wt2, sid)
-                                    };
-                                    if let Some(cb) = cb {
-                                        A::update(
-                                            &mut self.engine.app_state,
-                                            cb(new_sel),
-                                            &mut self.engine.clipboard,
-                                        );
-                                    }
+                                    A::update(
+                                        &mut self.engine.app_state,
+                                        cb(new_sel),
+                                        &mut self.engine.clipboard,
+                                    );
                                     self.engine.layout_dirty = true;
                                     self.redraw();
                                     return;
@@ -795,7 +700,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                 self.redraw();
                                 return;
                             } else if let Some(s) = ws.as_vlist_mut() {
-                                if let Some((ih, ic)) = vlist_props {
+                                if let Some((ih, ic, _)) = vlist_props {
                                     s.scroll_by(s.viewport_h * 0.9, ih, ic);
                                     self.redraw();
                                     return;
@@ -810,7 +715,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                 self.redraw();
                                 return;
                             } else if let Some(s) = ws.as_vlist_mut() {
-                                if let Some((ih, ic)) = vlist_props {
+                                if let Some((ih, ic, _)) = vlist_props {
                                     s.scroll_by(-s.viewport_h * 0.9, ih, ic);
                                     self.redraw();
                                     return;
@@ -864,12 +769,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn handle_tab(&mut self) {
-        let ids = {
-            let wt = A::view(&mut self.engine.app_state);
-            let mut ids = vec![];
-            collect_input_ids(&wt, &mut ids);
-            ids
-        };
+        let ids = self.engine.runtime_caches.input_order.clone();
         if ids.is_empty() {
             return;
         }
@@ -912,23 +812,20 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete)
         );
 
-        let Some((on_change, is_password, is_multiline, visible_w)) = ({
-            let wt = A::view(&mut self.engine.app_state);
-            let Some((on_change, _, is_password, is_multiline)) = find_input_props(&wt, fid) else {
-                return;
-            };
-            let visible_w =
-                find_input_geometry(&wt, &self.engine.taffy, self.engine.last_root_node, fid)
-                    .map(|g| (g.width - A::theme().spacing * 4.0).max(24.0))
-                    .unwrap_or(260.0);
-            Some((on_change, is_password, is_multiline, visible_w))
-        }) else {
+        let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
             return;
         };
+
+        let on_change = input.on_change;
+        let on_submit = input.on_submit.clone();
+        let is_password = input.is_password;
+        let is_multiline = input.is_multiline;
+        let visible_w = input.visible_w;
 
         let mut dirty = false;
         let mut full = String::new();
         let mut deleted_selection = None;
+        let mut submit_msg = None;
 
         if let Some(ist) = self.engine.input_states.get_mut(&fid) {
             if is_del_key {
@@ -966,16 +863,18 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     dirty = true;
                 } else {
                     ist.clear_selection();
-                    if let Some(action) = map_key(key, self.engine.modifiers.state().control_key())
-                    {
-                        let mut fs = self.engine.font_system.borrow_mut();
-                        ist.editor.action(&mut fs, action);
-                        dirty = true;
-                    } else if let Key::Named(NamedKey::Enter) = key {
+                    if let Key::Named(NamedKey::Enter) = key {
                         if is_multiline {
                             ist.editor.insert_string("\n", None);
                             dirty = true;
                         }
+                        submit_msg = on_submit.clone();
+                    } else if let Some(action) =
+                        map_key(key, self.engine.modifiers.state().control_key())
+                    {
+                        let mut fs = self.engine.font_system.borrow_mut();
+                        ist.editor.action(&mut fs, action);
+                        dirty = true;
                     } else if let Key::Named(NamedKey::Space) = key {
                         ist.editor.insert_string(" ", None);
                         let t = ist.text();
@@ -1002,6 +901,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
             self.engine.cursor_blink.reset();
             self.engine.schedule_snapshot();
+            self.engine.layout_dirty = true;
+            self.redraw();
+            return;
+        }
+
+        if let Some(msg) = submit_msg {
+            self.engine.cursor_blink.reset();
+            A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
             self.engine.layout_dirty = true;
             self.redraw();
             return;
@@ -1044,17 +951,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         };
 
-        let Some((cb, is_password, visible_w)) = ({
-            let wt = A::view(&mut self.engine.app_state);
-            let Some((cb, _, is_password, _)) = find_input_props(&wt, fid) else {
-                return;
-            };
-            let visible_w =
-                find_input_geometry(&wt, &self.engine.taffy, self.engine.last_root_node, fid)
-                    .map(|g| (g.width - A::theme().spacing * 4.0).max(24.0))
-                    .unwrap_or(260.0);
-            Some((cb, is_password, visible_w))
-        }) else {
+        let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
             return;
         };
 
@@ -1062,7 +959,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             s.editor.insert_string(&txt, None);
             s.snapshot();
             let mut fs = self.engine.font_system.borrow_mut();
-            s.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
+            s.update_scroll(
+                &mut fs,
+                input.visible_w,
+                A::theme().font_body,
+                input.is_password,
+            );
             s.text()
         } else {
             return;
@@ -1070,7 +972,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         A::update(
             &mut self.engine.app_state,
-            cb(full),
+            (input.on_change)(full),
             &mut self.engine.clipboard,
         );
         self.engine.cursor_blink.reset();
@@ -1083,23 +985,19 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         };
 
-        let Some((is_password, visible_w)) = ({
-            let wt = A::view(&mut self.engine.app_state);
-            find_input_props(&wt, fid).map(|(_, _, is_password, _)| {
-                let visible_w =
-                    find_input_geometry(&wt, &self.engine.taffy, self.engine.last_root_node, fid)
-                        .map(|g| (g.width - A::theme().spacing * 4.0).max(24.0))
-                        .unwrap_or(260.0);
-                (is_password, visible_w)
-            })
-        }) else {
+        let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
             return;
         };
 
         if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
             s.select_all(&mut fs);
-            s.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
+            s.update_scroll(
+                &mut fs,
+                input.visible_w,
+                A::theme().font_body,
+                input.is_password,
+            );
         }
         self.redraw();
     }
@@ -1108,24 +1006,19 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let Some(fid) = self.engine.focused_input_id else {
             return;
         };
-        let Some((cb, is_password, visible_w)) = ({
-            let wt = A::view(&mut self.engine.app_state);
-            let Some((cb, _, is_password, _)) = find_input_props(&wt, fid) else {
-                return;
-            };
-            let visible_w =
-                find_input_geometry(&wt, &self.engine.taffy, self.engine.last_root_node, fid)
-                    .map(|g| (g.width - A::theme().spacing * 4.0).max(24.0))
-                    .unwrap_or(260.0);
-            Some((cb, is_password, visible_w))
-        }) else {
+        let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
             return;
         };
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
             s.undo(&mut fs);
-            s.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
+            s.update_scroll(
+                &mut fs,
+                input.visible_w,
+                A::theme().font_body,
+                input.is_password,
+            );
             Some(s.text())
         } else {
             None
@@ -1134,7 +1027,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(full) = full {
             A::update(
                 &mut self.engine.app_state,
-                cb(full),
+                (input.on_change)(full),
                 &mut self.engine.clipboard,
             );
         }
@@ -1147,24 +1040,19 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let Some(fid) = self.engine.focused_input_id else {
             return;
         };
-        let Some((cb, is_password, visible_w)) = ({
-            let wt = A::view(&mut self.engine.app_state);
-            let Some((cb, _, is_password, _)) = find_input_props(&wt, fid) else {
-                return;
-            };
-            let visible_w =
-                find_input_geometry(&wt, &self.engine.taffy, self.engine.last_root_node, fid)
-                    .map(|g| (g.width - A::theme().spacing * 4.0).max(24.0))
-                    .unwrap_or(260.0);
-            Some((cb, is_password, visible_w))
-        }) else {
+        let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
             return;
         };
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
             s.redo(&mut fs);
-            s.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
+            s.update_scroll(
+                &mut fs,
+                input.visible_w,
+                A::theme().font_body,
+                input.is_password,
+            );
             Some(s.text())
         } else {
             None
@@ -1173,7 +1061,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(full) = full {
             A::update(
                 &mut self.engine.app_state,
-                cb(full),
+                (input.on_change)(full),
                 &mut self.engine.clipboard,
             );
         }
