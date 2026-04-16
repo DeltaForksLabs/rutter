@@ -41,10 +41,49 @@ pub fn draw_widgets<'w, Msg>(
     theme: &Theme,
     scale: f32,
 ) {
+    let mut path = Vec::new();
+    draw_widgets_impl(
+        canvas,
+        taffy,
+        node,
+        widget,
+        fs,
+        swash,
+        mouse_pos,
+        focused_id,
+        input_states,
+        widget_states,
+        font_cache,
+        cursor_visible,
+        theme,
+        scale,
+        &mut path,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_widgets_impl<'w, Msg>(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    node: NodeId,
+    widget: &Widget<'w, Msg>,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    mouse_pos: Point,
+    focused_id: Option<u64>,
+    input_states: &HashMap<u64, InputWidgetState>,
+    widget_states: &HashMap<u64, WidgetState>,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    cursor_visible: bool,
+    theme: &Theme,
+    scale: f32,
+    path: &mut Vec<usize>,
+) {
     let layout = taffy.layout(node).unwrap();
     let pos = Point::new(layout.location.x, layout.location.y);
     let size = (layout.size.width, layout.size.height);
     let local_mouse = Point::new(mouse_pos.x - pos.x, mouse_pos.y - pos.y);
+    let resolved_id = widget.resolved_id(path);
 
     canvas.save();
     canvas.translate((pos.x, pos.y));
@@ -53,7 +92,8 @@ pub fn draw_widgets<'w, Msg>(
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node).unwrap();
             for (i, child) in children.iter().enumerate() {
-                draw_widgets(
+                path.push(i);
+                draw_widgets_impl(
                     canvas,
                     taffy,
                     ids[i],
@@ -68,7 +108,9 @@ pub fn draw_widgets<'w, Msg>(
                     cursor_visible,
                     theme,
                     scale,
+                    path,
                 );
+                path.pop();
             }
         }
         Widget::Container {
@@ -84,7 +126,8 @@ pub fn draw_widgets<'w, Msg>(
                 canvas.draw_rrect(rrect(size, *radius), &p);
             }
             let ids = taffy.children(node).unwrap();
-            draw_widgets(
+            path.push(0);
+            draw_widgets_impl(
                 canvas,
                 taffy,
                 ids[0],
@@ -99,17 +142,21 @@ pub fn draw_widgets<'w, Msg>(
                 cursor_visible,
                 theme,
                 scale,
+                path,
             );
+            path.pop();
         }
-        Widget::ScrollView { id, child, .. } => {
-            let scroll_state = widget_states.get(id).and_then(|s| s.as_scroll());
+        Widget::ScrollView { child, .. } => {
+            let resolved_id = resolved_id.unwrap();
+            let scroll_state = widget_states.get(&resolved_id).and_then(|s| s.as_scroll());
             let offset_y = scroll_state.map(|s| s.offset_y).unwrap_or(0.0);
             let content_h = scroll_state.map(|s| s.content_height).unwrap_or(0.0);
             canvas.save();
             canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
             canvas.translate((0.0, -offset_y));
             let ids = taffy.children(node).unwrap();
-            draw_widgets(
+            path.push(0);
+            draw_widgets_impl(
                 canvas,
                 taffy,
                 ids[0],
@@ -124,7 +171,9 @@ pub fn draw_widgets<'w, Msg>(
                 cursor_visible,
                 theme,
                 scale,
+                path,
             );
+            path.pop();
             canvas.restore();
             if content_h > size.1 {
                 draw_scrollbar(canvas, size, scroll_state, theme);
@@ -132,7 +181,8 @@ pub fn draw_widgets<'w, Msg>(
         }
         Widget::Tooltip { child, text, .. } => {
             let ids = taffy.children(node).unwrap();
-            draw_widgets(
+            path.push(0);
+            draw_widgets_impl(
                 canvas,
                 taffy,
                 ids[0],
@@ -147,7 +197,9 @@ pub fn draw_widgets<'w, Msg>(
                 cursor_visible,
                 theme,
                 scale,
+                path,
             );
+            path.pop();
             let rect = SkiaRect::from_xywh(0.0, 0.0, size.0, size.1);
             if rect.contains(local_mouse) {
                 draw_tooltip_popup(canvas, text, local_mouse, font_cache, theme);
@@ -169,7 +221,6 @@ pub fn draw_widgets<'w, Msg>(
             theme,
         ),
         Widget::TextInput {
-            id,
             label,
             placeholder,
             state,
@@ -184,18 +235,17 @@ pub fn draw_widgets<'w, Msg>(
             theme,
             scale,
             size,
-            focused_id == Some(*id),
+            focused_id == resolved_id,
             label,
             placeholder,
             *state,
             error_msg.as_deref(),
             *is_password,
-            input_states.get(id),
+            input_states.get(&resolved_id.unwrap()),
             cursor_visible,
             false,
         ),
         Widget::TextArea {
-            id,
             label,
             placeholder,
             state,
@@ -209,19 +259,17 @@ pub fn draw_widgets<'w, Msg>(
             theme,
             scale,
             size,
-            focused_id == Some(*id),
+            focused_id == resolved_id,
             label,
             placeholder,
             *state,
             error_msg.as_deref(),
             false,
-            input_states.get(id),
+            input_states.get(&resolved_id.unwrap()),
             cursor_visible,
             true,
         ),
-        Widget::SearchBar {
-            id, placeholder, ..
-        } => draw_search_bar(
+        Widget::SearchBar { placeholder, .. } => draw_search_bar(
             canvas,
             fs,
             swash,
@@ -229,9 +277,9 @@ pub fn draw_widgets<'w, Msg>(
             theme,
             scale,
             size,
-            focused_id == Some(*id),
+            focused_id == resolved_id,
             placeholder,
-            input_states.get(id),
+            input_states.get(&resolved_id.unwrap()),
             cursor_visible,
         ),
         Widget::Checkbox { checked, label, .. } => draw_checkbox(
@@ -256,14 +304,11 @@ pub fn draw_widgets<'w, Msg>(
             theme,
         ),
         Widget::Slider {
-            id,
-            value,
-            min,
-            max,
-            ..
+            value, min, max, ..
         } => {
+            let resolved_id = resolved_id.unwrap();
             let dragging = widget_states
-                .get(id)
+                .get(&resolved_id)
                 .and_then(|s| s.as_slider())
                 .map(|s| s.dragging)
                 .unwrap_or(false);
@@ -279,14 +324,14 @@ pub fn draw_widgets<'w, Msg>(
             );
         }
         Widget::ProgressBar {
-            id,
             value,
             indeterminate,
             ..
         } => {
+            let resolved_id = resolved_id.unwrap();
             let anim_offset = if *indeterminate {
                 widget_states
-                    .get(id)
+                    .get(&resolved_id)
                     .and_then(|s| s.as_anim())
                     .map(|a| a.anim_offset)
                     .unwrap_or(0.0)
@@ -295,9 +340,10 @@ pub fn draw_widgets<'w, Msg>(
             };
             draw_progress_bar(canvas, *value, *indeterminate, anim_offset, size, theme);
         }
-        Widget::Spinner { id, .. } => {
+        Widget::Spinner { .. } => {
+            let resolved_id = resolved_id.unwrap();
             let angle = widget_states
-                .get(id)
+                .get(&resolved_id)
                 .and_then(|s| s.as_anim())
                 .map(|a| a.angle)
                 .unwrap_or(0.0);
@@ -325,14 +371,14 @@ pub fn draw_widgets<'w, Msg>(
             );
         }
         Widget::Select {
-            id,
             options,
             selected_index,
             label,
             placeholder,
             ..
         } => {
-            let sel_state = widget_states.get(id).and_then(|s| s.as_select());
+            let resolved_id = resolved_id.unwrap();
+            let sel_state = widget_states.get(&resolved_id).and_then(|s| s.as_select());
             let is_open = sel_state.map(|s| s.is_open).unwrap_or(false);
             let hovered = sel_state.and_then(|s| s.hovered_option);
             draw_select(
@@ -349,12 +395,7 @@ pub fn draw_widgets<'w, Msg>(
                 theme,
             );
         }
-        Widget::TabBar {
-            id: _,
-            tabs,
-            active,
-            ..
-        } => {
+        Widget::TabBar { tabs, active, .. } => {
             let tab_w = size.0 / tabs.len().max(1) as f32;
             let anim_x = *active as f32 * tab_w;
             draw_tabbar(
@@ -387,7 +428,8 @@ pub fn draw_widgets<'w, Msg>(
                 let ids = taffy.children(node).unwrap();
                 canvas.save();
                 canvas.translate((0.0, ACCORDION_HEADER_H));
-                draw_widgets(
+                path.push(0);
+                draw_widgets_impl(
                     canvas,
                     taffy,
                     ids[0],
@@ -402,19 +444,20 @@ pub fn draw_widgets<'w, Msg>(
                     cursor_visible,
                     theme,
                     scale,
+                    path,
                 );
+                path.pop();
                 canvas.restore();
             }
         }
-        Widget::Modal {
-            id, visible, child, ..
-        } => {
+        Widget::Modal { visible, child, .. } => {
             if !*visible {
                 canvas.restore();
                 return;
             }
+            let resolved_id = resolved_id.unwrap();
             let alpha = widget_states
-                .get(id)
+                .get(&resolved_id)
                 .and_then(|s| s.as_modal())
                 .map(|m| m.backdrop_alpha)
                 .unwrap_or(180);
@@ -435,10 +478,10 @@ pub fn draw_widgets<'w, Msg>(
                 scale,
                 size,
                 alpha,
+                path,
             );
         }
         Widget::Dialog {
-            id: _,
             title,
             message,
             confirm_label,
@@ -465,20 +508,20 @@ pub fn draw_widgets<'w, Msg>(
             );
         }
         Widget::Toast {
-            id,
             visible,
             message,
             kind,
             position,
             ..
         } => {
+            let resolved_id = resolved_id.unwrap();
             let runtime_visible = widget_states
-                .get(id)
+                .get(&resolved_id)
                 .and_then(|s| s.as_toast())
                 .map(|t| t.visible && !t.is_expired())
                 .unwrap_or(false);
             let progress = widget_states
-                .get(id)
+                .get(&resolved_id)
                 .and_then(|s| s.as_toast())
                 .map(|t| t.progress())
                 .unwrap_or(0.0);
@@ -491,7 +534,7 @@ pub fn draw_widgets<'w, Msg>(
                 visible_toasts.sort_by_key(|(_, t)| t.created_at);
                 let my_idx = visible_toasts
                     .iter()
-                    .position(|(k, _)| **k == *id)
+                    .position(|(k, _)| **k == resolved_id)
                     .unwrap_or(0);
                 draw_toast(
                     canvas, message, *kind, *position, progress, size, my_idx, font_cache, theme,
@@ -499,13 +542,13 @@ pub fn draw_widgets<'w, Msg>(
             }
         }
         Widget::VirtualList {
-            id,
             item_height,
             item_count,
             items,
             ..
         } => {
-            let vstate = widget_states.get(id).and_then(|s| s.as_vlist());
+            let resolved_id = resolved_id.unwrap();
+            let vstate = widget_states.get(&resolved_id).and_then(|s| s.as_vlist());
             let scroll_y = vstate.map(|v| v.scroll_y).unwrap_or(0.0);
             let selected = vstate.and_then(|v| v.selected_row);
             let hovered = vstate.and_then(|v| v.hovered_row);
@@ -950,6 +993,7 @@ fn draw_modal<Msg>(
     scale: f32,
     size: (f32, f32),
     backdrop_alpha: u8,
+    path: &mut Vec<usize>,
 ) {
     let mut bp = Paint::default();
     bp.set_color(Theme::alpha(SkiaColor::BLACK, backdrop_alpha));
@@ -990,7 +1034,8 @@ fn draw_modal<Msg>(
 
     canvas.save();
     canvas.translate((card_x, card_y));
-    draw_widgets(
+    path.push(0);
+    draw_widgets_impl(
         canvas,
         taffy,
         ids[0],
@@ -1005,7 +1050,9 @@ fn draw_modal<Msg>(
         cursor_visible,
         theme,
         scale,
+        path,
     );
+    path.pop();
     canvas.restore();
 }
 

@@ -69,6 +69,19 @@ pub fn hit_test<Msg: Clone>(
     abs: Point,
     widget_states: &HashMap<u64, WidgetState>,
 ) -> Option<HitResult<Msg>> {
+    let mut path = Vec::new();
+    hit_test_impl(widget, taffy, node_id, mouse, abs, widget_states, &mut path)
+}
+
+fn hit_test_impl<Msg: Clone>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<HitResult<Msg>> {
     let layout = taffy.layout(node_id).unwrap();
     let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
     let rect = SkiaRect::from_xywh(abs_pos.x, abs_pos.y, layout.size.width, layout.size.height);
@@ -78,15 +91,15 @@ pub fn hit_test<Msg: Clone>(
 
     match widget {
         Widget::Button { on_press, .. } => Some(HitResult::Message(on_press.clone())),
-        Widget::TextInput { id, .. }
-        | Widget::TextArea { id, .. }
-        | Widget::SearchBar { id, .. } => Some(HitResult::InputFocus {
-            id: *id,
-            local_x: mouse.x - abs_pos.x,
-            local_y: mouse.y - abs_pos.y,
-            width: layout.size.width,
-            height: layout.size.height,
-        }),
+        Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
+            Some(HitResult::InputFocus {
+                id: widget.resolved_id(path).unwrap(),
+                local_x: mouse.x - abs_pos.x,
+                local_y: mouse.y - abs_pos.y,
+                width: layout.size.width,
+                height: layout.size.height,
+            })
+        }
         Widget::Checkbox {
             checked, on_change, ..
         } => Some(HitResult::Message(on_change(!checked))),
@@ -94,14 +107,13 @@ pub fn hit_test<Msg: Clone>(
             checked, on_change, ..
         } => Some(HitResult::Message(on_change(!checked))),
         Widget::Radio { on_select, .. } => Some(HitResult::Message(on_select())),
-        Widget::Slider {
-            id, min, max, step, ..
-        } => {
+        Widget::Slider { min, max, step, .. } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
             let pad = 16.0_f32;
             let track_x = abs_pos.x + pad;
             let track_w = layout.size.width - pad * 2.0;
             Some(HitResult::SliderPress {
-                id: *id,
+                id: resolved_id,
                 cursor_x: mouse.x,
                 abs_track_x: track_x,
                 track_w,
@@ -110,9 +122,10 @@ pub fn hit_test<Msg: Clone>(
                 step: *step,
             })
         }
-        Widget::Select { id, options, .. } => {
+        Widget::Select { options, .. } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
             let is_open = widget_states
-                .get(id)
+                .get(&resolved_id)
                 .and_then(|s| s.as_select())
                 .map(|s| s.is_open)
                 .unwrap_or(false);
@@ -123,29 +136,36 @@ pub fn hit_test<Msg: Clone>(
                     0.0
                 };
             if mouse.y < abs_pos.y + closed_h {
-                return Some(HitResult::SelectToggle(*id));
+                return Some(HitResult::SelectToggle(resolved_id));
             }
             if is_open {
                 let rel_y = mouse.y - (abs_pos.y + closed_h);
                 let idx = (rel_y / OPTION_HEIGHT).floor() as usize;
                 let idx = idx.min(options.len().saturating_sub(1));
                 return Some(HitResult::SelectOption {
-                    id: *id,
+                    id: resolved_id,
                     index: idx,
                 });
             }
             None
         }
-        Widget::ScrollView { id, child, .. } => {
+        Widget::ScrollView { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
-            if let Some(r) = hit_test(child, taffy, ids[0], mouse, abs_pos, widget_states) {
-                return Some(r);
+            path.push(0);
+            let child_hit =
+                hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
+            path.pop();
+            if let Some(result) = child_hit {
+                return Some(result);
             }
-            Some(HitResult::ScrollFocus(*id))
+            Some(HitResult::ScrollFocus(widget.resolved_id(path).unwrap()))
         }
         Widget::Tooltip { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
-            hit_test(child, taffy, ids[0], mouse, abs_pos, widget_states)
+            path.push(0);
+            let result = hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
+            path.pop();
+            result
         }
         Widget::Accordion {
             child,
@@ -167,18 +187,22 @@ pub fn hit_test<Msg: Clone>(
                 if ids.is_empty() {
                     return None;
                 }
-                return hit_test(
+                path.push(0);
+                let result = hit_test_impl(
                     child,
                     taffy,
                     ids[0],
                     mouse,
                     Point::new(abs_pos.x, abs_pos.y + ACCORDION_HEADER_H),
                     widget_states,
+                    path,
                 );
+                path.pop();
+                return result;
             }
             None
         }
-        Widget::TabBar { id, tabs, .. } => {
+        Widget::TabBar { tabs, .. } => {
             if tabs.is_empty() {
                 return None;
             }
@@ -186,12 +210,11 @@ pub fn hit_test<Msg: Clone>(
             let idx = ((mouse.x - abs_pos.x) / tab_w).floor() as usize;
             let idx = idx.min(tabs.len().saturating_sub(1));
             Some(HitResult::TabPress {
-                id: *id,
+                id: widget.resolved_id(path).unwrap(),
                 index: idx,
             })
         }
         Widget::Modal {
-            id,
             visible,
             child,
             on_dismiss,
@@ -201,18 +224,20 @@ pub fn hit_test<Msg: Clone>(
                 return None;
             }
             let ids = taffy.children(node_id).unwrap();
-            let child_hit = hit_test(child, taffy, ids[0], mouse, abs_pos, widget_states);
+            path.push(0);
+            let child_hit =
+                hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
+            path.pop();
             if child_hit.is_some() {
                 return child_hit;
             }
             if let Some(msg) = on_dismiss.clone() {
                 Some(HitResult::Message(msg))
             } else {
-                Some(HitResult::ModalDismiss(*id))
+                Some(HitResult::ModalDismiss(widget.resolved_id(path).unwrap()))
             }
         }
         Widget::Dialog {
-            id,
             visible,
             on_confirm,
             on_cancel,
@@ -247,16 +272,16 @@ pub fn hit_test<Msg: Clone>(
             if cancel_rect.contains(mouse) {
                 return Some(HitResult::Message(on_cancel.clone()));
             }
-            Some(HitResult::ModalDismiss(*id))
+            Some(HitResult::ModalDismiss(widget.resolved_id(path).unwrap()))
         }
         Widget::VirtualList {
-            id,
             item_height,
             item_count,
             ..
         } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
             let scroll_y = widget_states
-                .get(id)
+                .get(&resolved_id)
                 .and_then(|s| s.as_vlist())
                 .map(|v| v.scroll_y)
                 .unwrap_or(0.0);
@@ -264,7 +289,7 @@ pub fn hit_test<Msg: Clone>(
             let idx = (rel_y / item_height).floor() as usize;
             if idx < *item_count {
                 Some(HitResult::VListSelect {
-                    id: *id,
+                    id: resolved_id,
                     index: idx,
                 })
             } else {
@@ -274,7 +299,11 @@ pub fn hit_test<Msg: Clone>(
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).unwrap();
             for (i, child) in children.iter().enumerate().rev() {
-                if let Some(r) = hit_test(child, taffy, ids[i], mouse, abs_pos, widget_states) {
+                path.push(i);
+                let result =
+                    hit_test_impl(child, taffy, ids[i], mouse, abs_pos, widget_states, path);
+                path.pop();
+                if let Some(r) = result {
                     return Some(r);
                 }
             }
@@ -282,20 +311,30 @@ pub fn hit_test<Msg: Clone>(
         }
         Widget::Container { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
-            hit_test(child, taffy, ids[0], mouse, abs_pos, widget_states)
+            path.push(0);
+            let result = hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
+            path.pop();
+            result
         }
         _ => None,
     }
 }
 
 pub fn collect_input_ids<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>) {
+    let mut path = Vec::new();
+    collect_input_ids_impl(widget, ids, &mut path);
+}
+
+fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &mut Vec<usize>) {
     match widget {
-        Widget::TextInput { id, .. }
-        | Widget::TextArea { id, .. }
-        | Widget::SearchBar { id, .. } => ids.push(*id),
+        Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
+            ids.push(widget.resolved_id(path).unwrap());
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                collect_input_ids(c, ids);
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                collect_input_ids_impl(child, ids, path);
+                path.pop();
             }
         }
         Widget::Container { child, .. }
@@ -303,39 +342,61 @@ pub fn collect_input_ids<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>) {
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => collect_input_ids(child, ids),
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            collect_input_ids_impl(child, ids, path);
+            path.pop();
+        }
         _ => {}
     }
 }
 
 pub fn collect_stateful_ids<Msg>(widget: &Widget<Msg>, out: &mut Vec<(u64, &'static str)>) {
+    let mut path = Vec::new();
+    collect_stateful_ids_impl(widget, out, &mut path);
+}
+
+fn collect_stateful_ids_impl<Msg>(
+    widget: &Widget<Msg>,
+    out: &mut Vec<(u64, &'static str)>,
+    path: &mut Vec<usize>,
+) {
     match widget {
-        Widget::Slider { id, .. } => out.push((*id, "slider")),
-        Widget::Select { id, .. } => out.push((*id, "select")),
-        Widget::Spinner { id, .. } => out.push((*id, "anim")),
-        Widget::ScrollView { id, child, .. } => {
-            out.push((*id, "scroll"));
-            collect_stateful_ids(child, out);
+        Widget::Slider { .. } => out.push((widget.resolved_id(path).unwrap(), "slider")),
+        Widget::Select { .. } => out.push((widget.resolved_id(path).unwrap(), "select")),
+        Widget::Spinner { .. } => out.push((widget.resolved_id(path).unwrap(), "anim")),
+        Widget::ScrollView { child, .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "scroll"));
+            path.push(0);
+            collect_stateful_ids_impl(child, out, path);
+            path.pop();
         }
         Widget::ProgressBar {
-            id,
             indeterminate: true,
             ..
-        } => out.push((*id, "anim")),
-        Widget::TabBar { id, .. } => out.push((*id, "tab")),
-        Widget::Toast { id, .. } => out.push((*id, "toast")),
-        Widget::VirtualList { id, .. } => out.push((*id, "vlist")),
-        Widget::Modal { id, child, .. } => {
-            out.push((*id, "modal"));
-            collect_stateful_ids(child, out);
+        } => out.push((widget.resolved_id(path).unwrap(), "anim")),
+        Widget::TabBar { .. } => out.push((widget.resolved_id(path).unwrap(), "tab")),
+        Widget::Toast { .. } => out.push((widget.resolved_id(path).unwrap(), "toast")),
+        Widget::VirtualList { .. } => out.push((widget.resolved_id(path).unwrap(), "vlist")),
+        Widget::Modal { child, .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "modal"));
+            path.push(0);
+            collect_stateful_ids_impl(child, out, path);
+            path.pop();
         }
         Widget::Dialog { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Container { child, .. }
-        | Widget::Tooltip { child, .. } => collect_stateful_ids(child, out),
+        | Widget::Tooltip { child, .. } => {
+            path.push(0);
+            collect_stateful_ids_impl(child, out, path);
+            path.pop();
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                collect_stateful_ids(c, out);
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                collect_stateful_ids_impl(child, out, path);
+                path.pop();
             }
         }
         _ => {}
@@ -353,29 +414,44 @@ pub fn find_input_props<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
 ) -> Option<(fn(String) -> Msg, Option<Msg>, bool, bool)> {
+    let mut path = Vec::new();
+    find_input_props_impl(widget, target_id, &mut path)
+}
+
+fn find_input_props_impl<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+) -> Option<(fn(String) -> Msg, Option<Msg>, bool, bool)> {
     match widget {
         Widget::TextInput {
-            id,
             on_change,
             on_submit,
             is_password,
             ..
-        } if *id == target_id => Some((*on_change, on_submit.clone(), *is_password, false)),
+        } if widget.resolved_id(path) == Some(target_id) => {
+            Some((*on_change, on_submit.clone(), *is_password, false))
+        }
         Widget::TextArea {
-            id,
             on_change,
             on_submit,
             ..
-        } if *id == target_id => Some((*on_change, on_submit.clone(), false, true)),
+        } if widget.resolved_id(path) == Some(target_id) => {
+            Some((*on_change, on_submit.clone(), false, true))
+        }
         Widget::SearchBar {
-            id,
             on_change,
             on_submit,
             ..
-        } if *id == target_id => Some((*on_change, on_submit.clone(), false, false)),
+        } if widget.resolved_id(path) == Some(target_id) => {
+            Some((*on_change, on_submit.clone(), false, false))
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                if let Some(r) = find_input_props(c, target_id) {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                let result = find_input_props_impl(child, target_id, path);
+                path.pop();
+                if let Some(r) = result {
                     return Some(r);
                 }
             }
@@ -386,7 +462,12 @@ pub fn find_input_props<Msg: Clone>(
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_input_props(child, target_id),
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            let result = find_input_props_impl(child, target_id, path);
+            path.pop();
+            result
+        }
         _ => None,
     }
 }
@@ -395,11 +476,25 @@ pub fn find_select_callback<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
 ) -> Option<fn(usize) -> Msg> {
+    let mut path = Vec::new();
+    find_select_callback_impl(widget, target_id, &mut path)
+}
+
+fn find_select_callback_impl<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+) -> Option<fn(usize) -> Msg> {
     match widget {
-        Widget::Select { id, on_change, .. } if *id == target_id => Some(*on_change),
+        Widget::Select { on_change, .. } if widget.resolved_id(path) == Some(target_id) => {
+            Some(*on_change)
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                if let Some(r) = find_select_callback(c, target_id) {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                let result = find_select_callback_impl(child, target_id, path);
+                path.pop();
+                if let Some(r) = result {
                     return Some(r);
                 }
             }
@@ -410,7 +505,12 @@ pub fn find_select_callback<Msg: Clone>(
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_select_callback(child, target_id),
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            let result = find_select_callback_impl(child, target_id, path);
+            path.pop();
+            result
+        }
         _ => None,
     }
 }
@@ -419,11 +519,25 @@ pub fn find_slider_callback<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
 ) -> Option<fn(f32) -> Msg> {
+    let mut path = Vec::new();
+    find_slider_callback_impl(widget, target_id, &mut path)
+}
+
+fn find_slider_callback_impl<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+) -> Option<fn(f32) -> Msg> {
     match widget {
-        Widget::Slider { id, on_change, .. } if *id == target_id => Some(*on_change),
+        Widget::Slider { on_change, .. } if widget.resolved_id(path) == Some(target_id) => {
+            Some(*on_change)
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                if let Some(r) = find_slider_callback(c, target_id) {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                let result = find_slider_callback_impl(child, target_id, path);
+                path.pop();
+                if let Some(r) = result {
                     return Some(r);
                 }
             }
@@ -434,22 +548,38 @@ pub fn find_slider_callback<Msg: Clone>(
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_slider_callback(child, target_id),
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            let result = find_slider_callback_impl(child, target_id, path);
+            path.pop();
+            result
+        }
         _ => None,
     }
 }
 
 pub fn find_vlist_props<Msg>(widget: &Widget<Msg>, target_id: u64) -> Option<(f32, usize)> {
+    let mut path = Vec::new();
+    find_vlist_props_impl(widget, target_id, &mut path)
+}
+
+fn find_vlist_props_impl<Msg>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+) -> Option<(f32, usize)> {
     match widget {
         Widget::VirtualList {
-            id,
             item_height,
             item_count,
             ..
-        } if *id == target_id => Some((*item_height, *item_count)),
+        } if widget.resolved_id(path) == Some(target_id) => Some((*item_height, *item_count)),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                if let Some(r) = find_vlist_props(c, target_id) {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                let result = find_vlist_props_impl(child, target_id, path);
+                path.pop();
+                if let Some(r) = result {
                     return Some(r);
                 }
             }
@@ -460,17 +590,36 @@ pub fn find_vlist_props<Msg>(widget: &Widget<Msg>, target_id: u64) -> Option<(f3
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_vlist_props(child, target_id),
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            let result = find_vlist_props_impl(child, target_id, path);
+            path.pop();
+            result
+        }
         _ => None,
     }
 }
 
 pub fn find_toast_dismiss_msg<Msg: Clone>(widget: &Widget<Msg>, target_id: u64) -> Option<Msg> {
+    let mut path = Vec::new();
+    find_toast_dismiss_msg_impl(widget, target_id, &mut path)
+}
+
+fn find_toast_dismiss_msg_impl<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+) -> Option<Msg> {
     match widget {
-        Widget::Toast { id, on_dismiss, .. } if *id == target_id => on_dismiss.clone(),
+        Widget::Toast { on_dismiss, .. } if widget.resolved_id(path) == Some(target_id) => {
+            on_dismiss.clone()
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for c in children {
-                if let Some(r) = find_toast_dismiss_msg(c, target_id) {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                let result = find_toast_dismiss_msg_impl(child, target_id, path);
+                path.pop();
+                if let Some(r) = result {
                     return Some(r);
                 }
             }
@@ -481,7 +630,12 @@ pub fn find_toast_dismiss_msg<Msg: Clone>(widget: &Widget<Msg>, target_id: u64) 
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_toast_dismiss_msg(child, target_id),
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            let result = find_toast_dismiss_msg_impl(child, target_id, path);
+            path.pop();
+            result
+        }
         _ => None,
     }
 }
@@ -492,11 +646,20 @@ pub fn find_input_geometry<Msg>(
     node_id: NodeId,
     target_id: u64,
 ) -> Option<InputGeometry> {
+    let mut path = Vec::new();
+    find_input_geometry_impl(widget, taffy, node_id, target_id, &mut path)
+}
+
+fn find_input_geometry_impl<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    target_id: u64,
+    path: &mut Vec<usize>,
+) -> Option<InputGeometry> {
     match widget {
-        Widget::TextInput { id, .. }
-        | Widget::TextArea { id, .. }
-        | Widget::SearchBar { id, .. }
-            if *id == target_id =>
+        Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. }
+            if widget.resolved_id(path) == Some(target_id) =>
         {
             let layout = taffy.layout(node_id).ok()?;
             Some(InputGeometry {
@@ -507,7 +670,10 @@ pub fn find_input_geometry<Msg>(
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
             for (i, child) in children.iter().enumerate() {
-                if let Some(r) = find_input_geometry(child, taffy, ids[i], target_id) {
+                path.push(i);
+                let result = find_input_geometry_impl(child, taffy, ids[i], target_id, path);
+                path.pop();
+                if let Some(r) = result {
                     return Some(r);
                 }
             }
@@ -523,7 +689,10 @@ pub fn find_input_geometry<Msg>(
             if ids.is_empty() {
                 return None;
             }
-            find_input_geometry(child, taffy, ids[0], target_id)
+            path.push(0);
+            let result = find_input_geometry_impl(child, taffy, ids[0], target_id, path);
+            path.pop();
+            result
         }
         _ => None,
     }
@@ -536,6 +705,18 @@ pub fn find_scroll_focus<Msg>(
     mouse: Point,
     abs: Point,
 ) -> Option<u64> {
+    let mut path = Vec::new();
+    find_scroll_focus_impl(widget, taffy, node_id, mouse, abs, &mut path)
+}
+
+fn find_scroll_focus_impl<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+    path: &mut Vec<usize>,
+) -> Option<u64> {
     let layout = taffy.layout(node_id).ok()?;
     let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
     let rect = SkiaRect::from_xywh(abs_pos.x, abs_pos.y, layout.size.width, layout.size.height);
@@ -544,15 +725,21 @@ pub fn find_scroll_focus<Msg>(
     }
 
     match widget {
-        Widget::ScrollView { id, child, .. } => {
+        Widget::ScrollView { child, .. } => {
             let ids = taffy.children(node_id).ok()?;
-            find_scroll_focus(child, taffy, ids[0], mouse, abs_pos).or(Some(*id))
+            path.push(0);
+            let result = find_scroll_focus_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            path.pop();
+            result.or(Some(widget.resolved_id(path).unwrap()))
         }
-        Widget::VirtualList { id, .. } => Some(*id),
+        Widget::VirtualList { .. } => Some(widget.resolved_id(path).unwrap()),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
             for (i, child) in children.iter().enumerate().rev() {
-                if let Some(id) = find_scroll_focus(child, taffy, ids[i], mouse, abs_pos) {
+                path.push(i);
+                let result = find_scroll_focus_impl(child, taffy, ids[i], mouse, abs_pos, path);
+                path.pop();
+                if let Some(id) = result {
                     return Some(id);
                 }
             }
@@ -567,7 +754,10 @@ pub fn find_scroll_focus<Msg>(
             if ids.is_empty() {
                 return None;
             }
-            find_scroll_focus(child, taffy, ids[0], mouse, abs_pos)
+            path.push(0);
+            let result = find_scroll_focus_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            path.pop();
+            result
         }
         _ => None,
     }
@@ -581,6 +771,19 @@ pub fn find_scrollbar_drag_hit<Msg>(
     abs: Point,
     widget_states: &HashMap<u64, WidgetState>,
 ) -> Option<ScrollbarDragHit> {
+    let mut path = Vec::new();
+    find_scrollbar_drag_hit_impl(widget, taffy, node_id, mouse, abs, widget_states, &mut path)
+}
+
+fn find_scrollbar_drag_hit_impl<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<ScrollbarDragHit> {
     let layout = taffy.layout(node_id).ok()?;
     let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
     let rect = SkiaRect::from_xywh(abs_pos.x, abs_pos.y, layout.size.width, layout.size.height);
@@ -589,14 +792,24 @@ pub fn find_scrollbar_drag_hit<Msg>(
     }
 
     match widget {
-        Widget::ScrollView { id, child, .. } => {
+        Widget::ScrollView { child, .. } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
             let ids = taffy.children(node_id).ok()?;
-            if let Some(hit) =
-                find_scrollbar_drag_hit(child, taffy, ids[0], mouse, abs_pos, widget_states)
-            {
+            path.push(0);
+            let child_hit = find_scrollbar_drag_hit_impl(
+                child,
+                taffy,
+                ids[0],
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
+            path.pop();
+            if let Some(hit) = child_hit {
                 return Some(hit);
             }
-            let s = widget_states.get(id)?.as_scroll()?;
+            let s = widget_states.get(&resolved_id)?.as_scroll()?;
             if s.content_height <= s.viewport_h {
                 return None;
             }
@@ -606,7 +819,7 @@ pub fn find_scrollbar_drag_hit<Msg>(
             let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
             if thumb_rect.contains(mouse) {
                 return Some(ScrollbarDragHit {
-                    id: *id,
+                    id: resolved_id,
                     start_offset: s.offset_y,
                     viewport_h: s.viewport_h.max(layout.size.height),
                     content_h: s.content_height,
@@ -615,12 +828,12 @@ pub fn find_scrollbar_drag_hit<Msg>(
             None
         }
         Widget::VirtualList {
-            id,
             item_count,
             item_height,
             ..
         } => {
-            let s = widget_states.get(id)?.as_vlist()?;
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let s = widget_states.get(&resolved_id)?.as_vlist()?;
             let total_h = *item_count as f32 * *item_height;
             if total_h <= s.viewport_h {
                 return None;
@@ -631,7 +844,7 @@ pub fn find_scrollbar_drag_hit<Msg>(
             let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
             if thumb_rect.contains(mouse) {
                 return Some(ScrollbarDragHit {
-                    id: *id,
+                    id: resolved_id,
                     start_offset: s.scroll_y,
                     viewport_h: s.viewport_h.max(layout.size.height),
                     content_h: total_h,
@@ -642,9 +855,18 @@ pub fn find_scrollbar_drag_hit<Msg>(
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
             for (i, child) in children.iter().enumerate().rev() {
-                if let Some(hit) =
-                    find_scrollbar_drag_hit(child, taffy, ids[i], mouse, abs_pos, widget_states)
-                {
+                path.push(i);
+                let result = find_scrollbar_drag_hit_impl(
+                    child,
+                    taffy,
+                    ids[i],
+                    mouse,
+                    abs_pos,
+                    widget_states,
+                    path,
+                );
+                path.pop();
+                if let Some(hit) = result {
                     return Some(hit);
                 }
             }
@@ -659,8 +881,135 @@ pub fn find_scrollbar_drag_hit<Msg>(
             if ids.is_empty() {
                 return None;
             }
-            find_scrollbar_drag_hit(child, taffy, ids[0], mouse, abs_pos, widget_states)
+            path.push(0);
+            let result = find_scrollbar_drag_hit_impl(
+                child,
+                taffy,
+                ids[0],
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
+            path.pop();
+            result
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use taffy::prelude::Style;
+
+    use super::{collect_input_ids, collect_stateful_ids};
+    use crate::widget::{AUTO_ID, InputState, Widget};
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Msg {
+        Str(String),
+        Usize(usize),
+        Toggle,
+    }
+
+    fn text_msg(value: String) -> Msg {
+        Msg::Str(value)
+    }
+
+    fn usize_msg(value: usize) -> Msg {
+        Msg::Usize(value)
+    }
+
+    #[test]
+    fn auto_input_ids_are_stable_and_distinct_by_path() {
+        let widget = Widget::Column {
+            style: Style::default(),
+            children: vec![
+                Widget::text_input(
+                    text_msg,
+                    None,
+                    Style::default(),
+                    "Name",
+                    "type",
+                    InputState::Idle,
+                    None,
+                    false,
+                ),
+                Widget::Row {
+                    style: Style::default(),
+                    children: vec![
+                        Widget::text_input(
+                            text_msg,
+                            None,
+                            Style::default(),
+                            "Email",
+                            "mail",
+                            InputState::Idle,
+                            None,
+                            false,
+                        ),
+                        Widget::text_input(
+                            text_msg,
+                            None,
+                            Style::default(),
+                            "Search",
+                            "query",
+                            InputState::Idle,
+                            None,
+                            false,
+                        ),
+                    ],
+                },
+            ],
+        };
+
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        collect_input_ids(&widget, &mut first);
+        collect_input_ids(&widget, &mut second);
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 3);
+        assert!(first.iter().all(|id| *id != AUTO_ID));
+        assert_eq!(first.iter().copied().collect::<HashSet<_>>().len(), 3);
+    }
+
+    #[test]
+    fn manual_id_override_wins_over_generated_path_id() {
+        let widget = Widget::text_input(
+            text_msg,
+            None,
+            Style::default(),
+            "Override",
+            "",
+            InputState::Idle,
+            None,
+            false,
+        )
+        .with_id(77);
+
+        let mut ids = Vec::new();
+        collect_input_ids(&widget, &mut ids);
+
+        assert_eq!(ids, vec![77]);
+    }
+
+    #[test]
+    fn auto_stateful_ids_include_widget_kind() {
+        let slider = Widget::slider(25.0, 0.0, 100.0, 1.0, |_| Msg::Toggle, Style::default(), "");
+        let select = Widget::select(&["A", "B"], 0, usize_msg, Style::default(), "", "");
+
+        let mut slider_ids = Vec::new();
+        let mut select_ids = Vec::new();
+        collect_stateful_ids(&slider, &mut slider_ids);
+        collect_stateful_ids(&select, &mut select_ids);
+
+        assert_eq!(slider_ids.len(), 1);
+        assert_eq!(select_ids.len(), 1);
+        assert_ne!(slider_ids[0].0, select_ids[0].0);
+        assert_eq!(slider_ids[0].1, "slider");
+        assert_eq!(select_ids[0].1, "select");
     }
 }

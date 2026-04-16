@@ -7,7 +7,7 @@ pub mod runner;
 pub mod widget_state;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use arboard::Clipboard;
@@ -25,7 +25,7 @@ use self::widget_state::{
 use crate::app::AppLogic;
 use crate::layout::{RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree};
 use crate::render::draw_widgets;
-use crate::render::hit_test::collect_stateful_ids;
+use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
 use crate::widget::Widget;
 
 #[derive(Debug, Clone, Copy)]
@@ -35,25 +35,36 @@ enum ToastRuntimeUpdate {
 }
 
 fn collect_toast_runtime_updates<Msg>(widget: &Widget<Msg>, out: &mut Vec<ToastRuntimeUpdate>) {
+    let mut path = Vec::new();
+    collect_toast_runtime_updates_impl(widget, out, &mut path);
+}
+
+fn collect_toast_runtime_updates_impl<Msg>(
+    widget: &Widget<Msg>,
+    out: &mut Vec<ToastRuntimeUpdate>,
+    path: &mut Vec<usize>,
+) {
     match widget {
         Widget::Toast {
-            id,
             visible,
             duration_ms,
             ..
         } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
             if *visible {
                 out.push(ToastRuntimeUpdate::EnsureVisible {
-                    id: *id,
+                    id: resolved_id,
                     duration_ms: *duration_ms,
                 });
             } else {
-                out.push(ToastRuntimeUpdate::Dismiss { id: *id });
+                out.push(ToastRuntimeUpdate::Dismiss { id: resolved_id });
             }
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for child in children {
-                collect_toast_runtime_updates(child, out);
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                collect_toast_runtime_updates_impl(child, out, path);
+                path.pop();
             }
         }
         Widget::Container { child, .. }
@@ -61,7 +72,11 @@ fn collect_toast_runtime_updates<Msg>(widget: &Widget<Msg>, out: &mut Vec<ToastR
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => collect_toast_runtime_updates(child, out),
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            collect_toast_runtime_updates_impl(child, out, path);
+            path.pop();
+        }
         _ => {}
     }
 }
@@ -228,14 +243,42 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn ensure_widget_states(&mut self) {
-        let (stateful, toast_updates) = {
+        let (stateful, input_ids, toast_updates) = {
             let widget_tree = A::view(&mut self.app_state);
             let mut stateful = Vec::new();
+            let mut input_ids = Vec::new();
             let mut toast_updates = Vec::new();
             collect_stateful_ids(&widget_tree, &mut stateful);
+            collect_input_ids(&widget_tree, &mut input_ids);
             collect_toast_runtime_updates(&widget_tree, &mut toast_updates);
-            (stateful, toast_updates)
+            (stateful, input_ids, toast_updates)
         };
+
+        let live_widget_ids = stateful.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
+        let live_input_ids = input_ids.into_iter().collect::<HashSet<_>>();
+
+        self.widget_states
+            .retain(|id, _| live_widget_ids.contains(id));
+        self.input_states
+            .retain(|id, _| live_input_ids.contains(id));
+        if self
+            .focused_input_id
+            .is_some_and(|id| !live_input_ids.contains(&id))
+        {
+            self.focused_input_id = None;
+        }
+        if self
+            .active_scroll_id
+            .is_some_and(|id| !live_widget_ids.contains(&id))
+        {
+            self.active_scroll_id = None;
+        }
+        if self
+            .drag_slider_id
+            .is_some_and(|id| !live_widget_ids.contains(&id))
+        {
+            self.drag_slider_id = None;
+        }
 
         self.apply_widget_runtime_state(&toast_updates);
 
@@ -346,7 +389,7 @@ impl<A: AppLogic> RutterEngine<A> {
         self.last_root_node = root;
         compute_layout(&mut self.taffy, root, logical, self.font_system.clone());
         self.runtime_caches.clear();
-        Self::sync_runtime_metadata_impl(
+        Self::sync_runtime_metadata(
             &mut self.runtime_caches,
             &mut self.widget_states,
             &self.taffy,
@@ -357,7 +400,7 @@ impl<A: AppLogic> RutterEngine<A> {
         self.layout_dirty = false;
     }
 
-    fn sync_runtime_metadata_impl<Msg: Clone>(
+    fn sync_runtime_metadata<Msg: Clone>(
         runtime_caches: &mut WidgetRuntimeCaches<Msg>,
         widget_states: &mut HashMap<u64, WidgetState>,
         taffy: &TaffyTree<RutterContext>,
@@ -365,18 +408,39 @@ impl<A: AppLogic> RutterEngine<A> {
         node: Option<NodeId>,
         spacing: f32,
     ) {
+        let mut path = Vec::new();
+        Self::sync_runtime_metadata_impl(
+            runtime_caches,
+            widget_states,
+            taffy,
+            widget,
+            node,
+            spacing,
+            &mut path,
+        );
+    }
+
+    fn sync_runtime_metadata_impl<Msg: Clone>(
+        runtime_caches: &mut WidgetRuntimeCaches<Msg>,
+        widget_states: &mut HashMap<u64, WidgetState>,
+        taffy: &TaffyTree<RutterContext>,
+        widget: &Widget<Msg>,
+        node: Option<NodeId>,
+        spacing: f32,
+        path: &mut Vec<usize>,
+    ) {
         let layout = node.and_then(|node| taffy.layout(node).ok());
         match widget {
             Widget::TextInput {
-                id,
                 on_change,
                 on_submit,
                 is_password,
                 ..
             } => {
-                runtime_caches.input_order.push(*id);
+                let resolved_id = widget.resolved_id(path).unwrap();
+                runtime_caches.input_order.push(resolved_id);
                 runtime_caches.inputs.insert(
-                    *id,
+                    resolved_id,
                     InputRuntime {
                         on_change: *on_change,
                         on_submit: on_submit.clone(),
@@ -387,14 +451,14 @@ impl<A: AppLogic> RutterEngine<A> {
                 );
             }
             Widget::TextArea {
-                id,
                 on_change,
                 on_submit,
                 ..
             } => {
-                runtime_caches.input_order.push(*id);
+                let resolved_id = widget.resolved_id(path).unwrap();
+                runtime_caches.input_order.push(resolved_id);
                 runtime_caches.inputs.insert(
-                    *id,
+                    resolved_id,
                     InputRuntime {
                         on_change: *on_change,
                         on_submit: on_submit.clone(),
@@ -405,14 +469,14 @@ impl<A: AppLogic> RutterEngine<A> {
                 );
             }
             Widget::SearchBar {
-                id,
                 on_change,
                 on_submit,
                 ..
             } => {
-                runtime_caches.input_order.push(*id);
+                let resolved_id = widget.resolved_id(path).unwrap();
+                runtime_caches.input_order.push(resolved_id);
                 runtime_caches.inputs.insert(
-                    *id,
+                    resolved_id,
                     InputRuntime {
                         on_change: *on_change,
                         on_submit: on_submit.clone(),
@@ -423,15 +487,15 @@ impl<A: AppLogic> RutterEngine<A> {
                 );
             }
             Widget::Slider {
-                id,
                 on_change,
                 min,
                 max,
                 step,
                 ..
             } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
                 runtime_caches.sliders.insert(
-                    *id,
+                    resolved_id,
                     SliderRuntime {
                         on_change: *on_change,
                         min: *min,
@@ -440,22 +504,28 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                 );
             }
-            Widget::Select { id, on_change, .. } => {
-                runtime_caches.selects.insert(*id, *on_change);
+            Widget::Select { on_change, .. } => {
+                runtime_caches
+                    .selects
+                    .insert(widget.resolved_id(path).unwrap(), *on_change);
             }
-            Widget::TabBar { id, on_change, .. } => {
-                runtime_caches.tabs.insert(*id, *on_change);
+            Widget::TabBar { on_change, .. } => {
+                runtime_caches
+                    .tabs
+                    .insert(widget.resolved_id(path).unwrap(), *on_change);
             }
             Widget::Toast {
-                id,
                 on_dismiss: Some(msg),
                 ..
             } => {
-                runtime_caches.toast_dismiss.insert(*id, msg.clone());
+                runtime_caches
+                    .toast_dismiss
+                    .insert(widget.resolved_id(path).unwrap(), msg.clone());
             }
-            Widget::ScrollView { id, child, .. } => {
+            Widget::ScrollView { child, .. } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
                 if let Some(layout) = layout {
-                    if let Some(ws) = widget_states.get_mut(id) {
+                    if let Some(ws) = widget_states.get_mut(&resolved_id) {
                         if let Some(s) = ws.as_scroll_mut() {
                             s.viewport_h = layout.size.height;
                             if let Some(child_node) = Self::first_child(node, taffy) {
@@ -466,6 +536,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         }
                     }
                 }
+                path.push(0);
                 Self::sync_runtime_metadata_impl(
                     runtime_caches,
                     widget_states,
@@ -473,17 +544,19 @@ impl<A: AppLogic> RutterEngine<A> {
                     child.as_ref(),
                     Self::first_child(node, taffy),
                     spacing,
+                    path,
                 );
+                path.pop();
             }
             Widget::VirtualList {
-                id,
                 item_height,
                 item_count,
                 on_select,
                 ..
             } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
                 runtime_caches.vlists.insert(
-                    *id,
+                    resolved_id,
                     VListRuntime {
                         on_select: *on_select,
                         item_height: *item_height,
@@ -491,7 +564,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                 );
                 if let Some(layout) = layout {
-                    if let Some(ws) = widget_states.get_mut(id) {
+                    if let Some(ws) = widget_states.get_mut(&resolved_id) {
                         if let Some(s) = ws.as_vlist_mut() {
                             s.viewport_h = layout.size.height;
                         }
@@ -501,6 +574,7 @@ impl<A: AppLogic> RutterEngine<A> {
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
                 let node_children = Self::children_for(node, taffy);
                 for (i, child) in children.iter().enumerate() {
+                    path.push(i);
                     Self::sync_runtime_metadata_impl(
                         runtime_caches,
                         widget_states,
@@ -508,7 +582,9 @@ impl<A: AppLogic> RutterEngine<A> {
                         child,
                         node_children.get(i).copied(),
                         spacing,
+                        path,
                     );
+                    path.pop();
                 }
             }
             Widget::Container { child, .. }
@@ -516,6 +592,7 @@ impl<A: AppLogic> RutterEngine<A> {
             | Widget::Accordion { child, .. }
             | Widget::Modal { child, .. }
             | Widget::Dialog { child, .. } => {
+                path.push(0);
                 Self::sync_runtime_metadata_impl(
                     runtime_caches,
                     widget_states,
@@ -523,7 +600,9 @@ impl<A: AppLogic> RutterEngine<A> {
                     child.as_ref(),
                     Self::first_child(node, taffy),
                     spacing,
+                    path,
                 );
+                path.pop();
             }
             _ => {}
         }
@@ -554,7 +633,7 @@ impl<A: AppLogic> RutterEngine<A> {
         spacing: f32,
     ) {
         runtime_caches.clear();
-        Self::sync_runtime_metadata_impl(
+        Self::sync_runtime_metadata(
             runtime_caches,
             widget_states,
             taffy,

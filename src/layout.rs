@@ -96,6 +96,15 @@ impl LayoutBlueprint {
         widget: &Widget<'a, Msg>,
         widget_states: &HashMap<u64, WidgetState>,
     ) -> Self {
+        let mut path = Vec::new();
+        Self::from_widget_with_path(widget, widget_states, &mut path)
+    }
+
+    fn from_widget_with_path<'a, Msg>(
+        widget: &Widget<'a, Msg>,
+        widget_states: &HashMap<u64, WidgetState>,
+        path: &mut Vec<usize>,
+    ) -> Self {
         match widget {
             Widget::Column { children, style } => {
                 let style = Style {
@@ -104,7 +113,13 @@ impl LayoutBlueprint {
                 };
                 let children = children
                     .iter()
-                    .map(|child| Self::from_widget(child, widget_states))
+                    .enumerate()
+                    .map(|(index, child)| {
+                        path.push(index);
+                        let blueprint = Self::from_widget_with_path(child, widget_states, path);
+                        path.pop();
+                        blueprint
+                    })
                     .collect();
                 Self::with_children(None, style, children)
             }
@@ -115,68 +130,75 @@ impl LayoutBlueprint {
                 };
                 let children = children
                     .iter()
-                    .map(|child| Self::from_widget(child, widget_states))
+                    .enumerate()
+                    .map(|(index, child)| {
+                        path.push(index);
+                        let blueprint = Self::from_widget_with_path(child, widget_states, path);
+                        path.pop();
+                        blueprint
+                    })
                     .collect();
                 Self::with_children(None, style, children)
             }
-            Widget::Container { child, style, .. } => Self::with_children(
-                None,
-                style.clone(),
-                vec![Self::from_widget(child, widget_states)],
-            ),
-            Widget::ScrollView { id, child, style } => Self::with_children(
-                Some(*id),
-                style.clone(),
-                vec![Self::from_widget(child, widget_states)],
-            ),
-            Widget::Tooltip { child, style, .. } => Self::with_children(
-                None,
-                style.clone(),
-                vec![Self::from_widget(child, widget_states)],
-            ),
+            Widget::Container { child, style, .. } => {
+                path.push(0);
+                let child = Self::from_widget_with_path(child, widget_states, path);
+                path.pop();
+                Self::with_children(None, style.clone(), vec![child])
+            }
+            Widget::ScrollView { child, style, .. } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
+                path.push(0);
+                let child = Self::from_widget_with_path(child, widget_states, path);
+                path.pop();
+                Self::with_children(Some(resolved_id), style.clone(), vec![child])
+            }
+            Widget::Tooltip { child, style, .. } => {
+                path.push(0);
+                let child = Self::from_widget_with_path(child, widget_states, path);
+                path.pop();
+                Self::with_children(None, style.clone(), vec![child])
+            }
             Widget::Accordion {
-                id,
                 child,
                 style,
                 expanded,
                 ..
             } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
                 let mut style = style.clone();
                 style.padding.top = LengthPercentage::length(ACCORDION_HEADER_H);
                 if *expanded {
-                    Self::with_children(
-                        Some(*id),
-                        style,
-                        vec![Self::from_widget(child, widget_states)],
-                    )
+                    path.push(0);
+                    let child = Self::from_widget_with_path(child, widget_states, path);
+                    path.pop();
+                    Self::with_children(Some(resolved_id), style, vec![child])
                 } else {
                     style.size.height = Dimension::length(ACCORDION_HEADER_H);
-                    Self::leaf(Some(*id), style)
+                    Self::leaf(Some(resolved_id), style)
                 }
             }
             Widget::Modal {
-                id,
                 child,
                 style,
                 visible,
                 ..
             }
             | Widget::Dialog {
-                id,
                 child,
                 style,
                 visible,
                 ..
             } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
                 if *visible {
-                    Self::with_children(
-                        Some(*id),
-                        style.clone(),
-                        vec![Self::from_widget(child, widget_states)],
-                    )
+                    path.push(0);
+                    let child = Self::from_widget_with_path(child, widget_states, path);
+                    path.pop();
+                    Self::with_children(Some(resolved_id), style.clone(), vec![child])
                 } else {
                     Self::leaf(
-                        Some(*id),
+                        Some(resolved_id),
                         Style {
                             size: Size::zero(),
                             ..style.clone()
@@ -184,11 +206,10 @@ impl LayoutBlueprint {
                     )
                 }
             }
-            Widget::Select {
-                id, options, style, ..
-            } => {
+            Widget::Select { options, style, .. } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
                 let is_open = widget_states
-                    .get(id)
+                    .get(&resolved_id)
                     .and_then(|s| s.as_select())
                     .map(|s| s.is_open)
                     .unwrap_or(false);
@@ -206,7 +227,7 @@ impl LayoutBlueprint {
                 } else {
                     style.clone()
                 };
-                Self::leaf(Some(*id), style)
+                Self::leaf(Some(resolved_id), style)
             }
             Widget::Text {
                 content,
@@ -228,16 +249,18 @@ impl LayoutBlueprint {
             | Widget::Radio { style, .. }
             | Widget::Spacer { style, .. }
             | Widget::Switch { style, .. } => Self::leaf(None, style.clone()),
-            Widget::ProgressBar { id, style, .. }
-            | Widget::Spinner { id, style, .. }
-            | Widget::TabBar { id, style, .. }
-            | Widget::TextArea { id, style, .. }
-            | Widget::TextInput { id, style, .. }
-            | Widget::SearchBar { id, style, .. }
-            | Widget::Slider { id, style, .. }
-            | Widget::VirtualList { id, style, .. } => Self::leaf(Some(*id), style.clone()),
-            Widget::Toast { id, .. } => Self::leaf(
-                Some(*id),
+            Widget::ProgressBar { style, .. }
+            | Widget::Spinner { style, .. }
+            | Widget::TabBar { style, .. }
+            | Widget::TextArea { style, .. }
+            | Widget::TextInput { style, .. }
+            | Widget::SearchBar { style, .. }
+            | Widget::Slider { style, .. }
+            | Widget::VirtualList { style, .. } => {
+                Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
+            }
+            Widget::Toast { .. } => Self::leaf(
+                Some(widget.resolved_id(path).unwrap()),
                 Style {
                     size: Size::zero(),
                     ..Default::default()
