@@ -88,6 +88,7 @@ struct InputRuntime<Msg: Clone> {
     is_password: bool,
     is_multiline: bool,
     visible_w: f32,
+    visible_h: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -448,6 +449,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         is_password: *is_password,
                         is_multiline: false,
                         visible_w: Self::visible_input_width(layout, spacing),
+                        visible_h: Self::visible_input_height(layout, spacing),
                     },
                 );
             }
@@ -466,6 +468,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         is_password: false,
                         is_multiline: true,
                         visible_w: Self::visible_input_width(layout, spacing),
+                        visible_h: Self::visible_input_height(layout, spacing),
                     },
                 );
             }
@@ -484,6 +487,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         is_password: false,
                         is_multiline: false,
                         visible_w: Self::visible_input_width(layout, spacing),
+                        visible_h: Self::visible_input_height(layout, spacing),
                     },
                 );
             }
@@ -613,6 +617,12 @@ impl<A: AppLogic> RutterEngine<A> {
         layout
             .map(|layout| (layout.size.width - spacing * 4.0).max(24.0))
             .unwrap_or(260.0)
+    }
+
+    fn visible_input_height(layout: Option<&taffy::tree::Layout>, spacing: f32) -> f32 {
+        layout
+            .map(|layout| (layout.size.height - spacing * 2.0).max(18.0))
+            .unwrap_or(18.0)
     }
 
     fn children_for(node: Option<NodeId>, taffy: &TaffyTree<RutterContext>) -> Vec<NodeId> {
@@ -831,10 +841,16 @@ mod tests {
 
         assert_eq!(runtime_caches.input_order, vec![1]);
         let input = runtime_caches.inputs.get(&1).unwrap();
+        let input_node = taffy.children(root).unwrap()[0];
+        let expected_h = RutterEngine::<DummyApp>::visible_input_height(
+            taffy.layout(input_node).ok(),
+            DummyApp::theme().spacing,
+        );
         assert_eq!((input.on_change)("abc".into()), Msg::Str("abc".into()));
         assert_eq!(input.on_submit, Some(Msg::Submit));
         assert!(input.is_password);
         assert!((input.visible_w - 168.0).abs() < f32::EPSILON);
+        assert!((input.visible_h - expected_h).abs() < f32::EPSILON);
 
         let slider = runtime_caches.sliders.get(&2).unwrap();
         assert_eq!(slider.min, 0.0);
@@ -910,5 +926,6 @@ mod tests {
         );
         assert_eq!(input.on_submit, Some(Msg::Submit));
         assert!((input.visible_w - 260.0).abs() < f32::EPSILON);
+        assert!(input.visible_h >= 18.0);
     }
 }

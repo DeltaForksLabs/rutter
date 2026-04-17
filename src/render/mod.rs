@@ -17,7 +17,7 @@ use taffy::prelude::{NodeId, TaffyTree};
 
 use self::text::{draw_text, get_cached_font};
 use crate::engine::widget_state::WidgetState;
-use crate::input_state::InputWidgetState;
+use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
 use crate::theme::Theme;
 use crate::widget::{ButtonVariant, InputState, Orientation, ToastKind, Widget};
@@ -701,7 +701,7 @@ fn draw_text_input(
         return;
     };
 
-    canvas.translate((-s.scroll_x, 0.0));
+    canvas.translate((-s.scroll_x, -s.scroll_y));
 
     let text = s.text();
     if text.is_empty() && !placeholder.is_empty() && !is_focused {
@@ -739,7 +739,7 @@ fn draw_text_input(
         } else {
             10_000.0
         }),
-        Some(size.1),
+        if is_multiline { None } else { Some(size.1) },
     );
     buf.set_text(fs, &display, &Attrs::new(), Shaping::Advanced, None);
     buf.shape_until_scroll(fs, false);
@@ -768,16 +768,10 @@ fn draw_text_input(
     let mut cursor_h = line_height;
 
     for run in runs.iter() {
-        if run.line_i == mapped_cursor.line {
+        if let Some(run_x) = cursor_x_in_run(mapped_cursor, run) {
+            cx = run_x;
             cy = vertical_offset + run.line_top;
             cursor_h = run.line_height;
-            for glyph in run.glyphs.iter() {
-                if glyph.start >= mapped_cursor.index {
-                    cx = glyph.x;
-                    break;
-                }
-                cx = glyph.x + glyph.w;
-            }
             break;
         }
     }

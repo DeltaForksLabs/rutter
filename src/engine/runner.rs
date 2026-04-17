@@ -275,7 +275,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             let pad_y = A::theme().spacing;
                             if let Some(ist) = self.engine.input_states.get_mut(&fid) {
                                 let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
-                                let click_y = (local_y - pad_y).max(0.0);
+                                let click_y = ((local_y - pad_y) + ist.scroll_y).max(0.0);
                                 let mut fs = self.engine.font_system.borrow_mut();
                                 ist.editor.action(
                                     &mut fs,
@@ -284,6 +284,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                         y: click_y as i32,
                                     },
                                 );
+                                ist.normalize_cursor();
                                 ist.sync_selection();
                                 self.redraw();
                             }
@@ -642,19 +643,29 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         };
 
         let visible_w = input.visible_w;
+        let visible_h = input.visible_h;
         let is_password = input.is_password;
+        let is_multiline = input.is_multiline;
         let on_change = input.on_change;
 
         let mut full = None;
 
         if let Some(ist) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            ist.set_metrics(&mut fs, A::theme().font_body);
+            ist.sync_layout(&mut fs, visible_w, A::theme().font_body, is_multiline);
             if !ist.delete_selection(&mut fs) {
                 ist.clear_selection();
             }
             ist.editor.insert_string(text, None);
-            ist.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
+            ist.normalize_cursor();
+            ist.update_scroll(
+                &mut fs,
+                visible_w,
+                visible_h,
+                A::theme().font_body,
+                is_password,
+                is_multiline,
+            );
             full = Some(ist.text());
         }
 
@@ -740,19 +751,17 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         let pad_x = A::theme().spacing * 2.0;
         let pad_y = A::theme().spacing;
-        let is_password = self
-            .engine
-            .runtime_caches
-            .inputs
-            .get(&id)
-            .map(|input| input.is_password)
-            .unwrap_or(false);
+        let input = self.engine.runtime_caches.inputs.get(&id).cloned();
         if let Some(ist) = self.engine.input_states.get_mut(&id) {
             let mut fs = self.engine.font_system.borrow_mut();
-            ist.set_metrics(&mut fs, A::theme().font_body);
+            if let Some(input) = input.as_ref() {
+                ist.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
+            } else {
+                ist.set_metrics(&mut fs, A::theme().font_body);
+            }
             ist.clear_selection();
             let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
-            let click_y = (local_y - pad_y).max(0.0);
+            let click_y = ((local_y - pad_y) + ist.scroll_y).max(0.0);
 
             if is_double {
                 ist.editor.action(
@@ -771,10 +780,30 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     },
                 );
             }
+            ist.normalize_cursor();
             ist.sync_selection();
 
-            let visible_w = (width - pad_x * 2.0).max(24.0);
-            ist.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
+            let visible_w = input
+                .as_ref()
+                .map(|input| input.visible_w)
+                .unwrap_or_else(|| (width - pad_x * 2.0).max(24.0));
+            let visible_h = input
+                .as_ref()
+                .map(|input| input.visible_h)
+                .unwrap_or_else(|| (_height - pad_y * 2.0).max(18.0));
+            let is_password = input.as_ref().map(|input| input.is_password).unwrap_or(false);
+            let is_multiline = input
+                .as_ref()
+                .map(|input| input.is_multiline)
+                .unwrap_or(false);
+            ist.update_scroll(
+                &mut fs,
+                visible_w,
+                visible_h,
+                A::theme().font_body,
+                is_password,
+                is_multiline,
+            );
         }
     }
 
@@ -964,6 +993,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let is_password = input.is_password;
         let is_multiline = input.is_multiline;
         let visible_w = input.visible_w;
+        let visible_h = input.visible_h;
 
         let mut dirty = false;
         let mut full = String::new();
@@ -973,12 +1003,21 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(ist) = self.engine.input_states.get_mut(&fid) {
             {
                 let mut fs = self.engine.font_system.borrow_mut();
-                ist.set_metrics(&mut fs, A::theme().font_body);
+                ist.sync_layout(&mut fs, visible_w, A::theme().font_body, is_multiline);
             }
 
             if is_del_key {
                 let mut fs = self.engine.font_system.borrow_mut();
+                ist.normalize_cursor();
                 if ist.delete_selection(&mut fs) {
+                    ist.update_scroll(
+                        &mut fs,
+                        visible_w,
+                        visible_h,
+                        A::theme().font_body,
+                        is_password,
+                        is_multiline,
+                    );
                     deleted_selection = Some(ist.text());
                 }
             }
@@ -992,7 +1031,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     if let Some(action) = map_key(key, self.engine.modifiers.state().control_key())
                     {
                         let mut fs = self.engine.font_system.borrow_mut();
+                        ist.normalize_cursor();
                         ist.editor.action(&mut fs, action);
+                        ist.normalize_cursor();
                     }
                     let after = ist.cursor_byte_index();
                     let anchor = ist.selection_anchor.unwrap();
@@ -1006,14 +1047,18 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     if let Some(action) = map_key(key, self.engine.modifiers.state().control_key())
                     {
                         let mut fs = self.engine.font_system.borrow_mut();
+                        ist.normalize_cursor();
                         ist.editor.action(&mut fs, action);
+                        ist.normalize_cursor();
                     }
                     dirty = true;
                 } else {
                     ist.clear_selection();
                     if let Key::Named(NamedKey::Enter) = key {
                         if is_multiline {
-                            ist.editor.insert_string("\n", None);
+                            let mut fs = self.engine.font_system.borrow_mut();
+                            ist.editor.action(&mut fs, Action::Enter);
+                            ist.normalize_cursor();
                             dirty = true;
                         } else {
                             submit_msg = on_submit.clone();
@@ -1022,14 +1067,23 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         map_key(key, self.engine.modifiers.state().control_key())
                     {
                         let mut fs = self.engine.font_system.borrow_mut();
+                        ist.normalize_cursor();
                         ist.editor.action(&mut fs, action);
+                        ist.normalize_cursor();
                         dirty = true;
                     }
                 }
 
                 if dirty {
                     let mut fs = self.engine.font_system.borrow_mut();
-                    ist.update_scroll(&mut fs, visible_w, A::theme().font_body, is_password);
+                    ist.update_scroll(
+                        &mut fs,
+                        visible_w,
+                        visible_h,
+                        A::theme().font_body,
+                        is_password,
+                        is_multiline,
+                    );
                     full = ist.text();
                 }
             }
@@ -1100,17 +1154,20 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            s.set_metrics(&mut fs, A::theme().font_body);
+            s.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
             if !s.delete_selection(&mut fs) {
                 s.clear_selection();
             }
             s.editor.insert_string(&txt, None);
+            s.normalize_cursor();
             s.snapshot();
             s.update_scroll(
                 &mut fs,
                 input.visible_w,
+                input.visible_h,
                 A::theme().font_body,
                 input.is_password,
+                input.is_multiline,
             );
             s.text()
         } else {
@@ -1138,13 +1195,15 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            s.set_metrics(&mut fs, A::theme().font_body);
+            s.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
             s.select_all(&mut fs);
             s.update_scroll(
                 &mut fs,
                 input.visible_w,
+                input.visible_h,
                 A::theme().font_body,
                 input.is_password,
+                input.is_multiline,
             );
         }
         self.redraw();
@@ -1160,13 +1219,15 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            s.set_metrics(&mut fs, A::theme().font_body);
+            s.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
             s.undo(&mut fs);
             s.update_scroll(
                 &mut fs,
                 input.visible_w,
+                input.visible_h,
                 A::theme().font_body,
                 input.is_password,
+                input.is_multiline,
             );
             Some(s.text())
         } else {
@@ -1195,13 +1256,15 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            s.set_metrics(&mut fs, A::theme().font_body);
+            s.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
             s.redo(&mut fs);
             s.update_scroll(
                 &mut fs,
                 input.visible_w,
+                input.visible_h,
                 A::theme().font_body,
                 input.is_password,
+                input.is_multiline,
             );
             Some(s.text())
         } else {
