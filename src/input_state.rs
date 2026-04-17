@@ -110,8 +110,22 @@ impl InputWidgetState {
     }
 
     pub fn text(&self) -> String {
-        self.editor
-            .with_buffer(|b| b.lines.iter().map(|l| l.text()).collect::<String>())
+        self.editor.with_buffer(|b| {
+            let mut text = String::new();
+            for (index, line) in b.lines.iter().enumerate() {
+                if index > 0 {
+                    text.push('\n');
+                }
+                text.push_str(line.text());
+            }
+            text
+        })
+    }
+
+    pub fn set_metrics(&mut self, fs: &mut FontSystem, font_size: f32) {
+        self.editor.with_buffer_mut(|b| {
+            b.set_metrics(fs, Metrics::new(font_size, font_size * 1.3));
+        });
     }
 
     pub fn set_text(&mut self, fs: &mut FontSystem, text: &str) {

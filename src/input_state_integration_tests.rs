@@ -106,6 +106,14 @@ fn set_text_and_read_back() {
 }
 
 #[test]
+fn set_text_preserves_newlines() {
+    let mut fs = fs();
+    let mut s  = InputWidgetState::new(&mut fs);
+    s.set_text(&mut fs, "line 1\nline 2");
+    assert_eq!(s.text(), "line 1\nline 2");
+}
+
+#[test]
 fn snapshot_undo_redo_full_cycle() {
     let mut fs = fs();
     let mut s  = InputWidgetState::new(&mut fs);

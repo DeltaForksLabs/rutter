@@ -649,6 +649,7 @@ fn draw_text_input(
     cursor_visible: bool,
     is_multiline: bool,
 ) {
+    let line_height = theme.font_body * 1.3;
     let border_c = theme.input_border(state, is_focused);
     let mut bg = Paint::default();
     bg.set_color(theme.surface);
@@ -730,8 +731,7 @@ fn draw_text_input(
     } else {
         text.clone()
     };
-    let mut buf =
-        cosmic_text::Buffer::new(fs, Metrics::new(theme.font_body, theme.font_body * 1.3));
+    let mut buf = cosmic_text::Buffer::new(fs, Metrics::new(theme.font_body, line_height));
     buf.set_size(
         fs,
         Some(if is_multiline {
@@ -770,7 +770,7 @@ fn draw_text_input(
     }
 
     if !is_multiline {
-        cy = (size.1 - theme.font_body - 4.0) / 2.0 - pad_y;
+        cy = (size.1 - line_height) / 2.0 - pad_y;
     }
 
     if let Some(sel) = s.selection.filter(|sel| !sel.is_empty()) {
@@ -788,7 +788,7 @@ fn draw_text_input(
             }
             if let (Some(xs), Some(xe)) = (x_start, x_end) {
                 let sel_w = (xe - xs).max(0.0);
-                let sel_h = theme.font_body + 4.0;
+                let sel_h = line_height;
                 let sel_y = if is_multiline {
                     run.line_y - theme.font_body
                 } else {
@@ -806,13 +806,13 @@ fn draw_text_input(
         let mut cp = Paint::default();
         cp.set_color(theme.primary);
         cp.set_anti_alias(true);
-        canvas.draw_rect(SkiaRect::from_xywh(cx, cy, 1.5, theme.font_body + 4.0), &cp);
+        canvas.draw_rect(SkiaRect::from_xywh(cx, cy, 1.5, line_height), &cp);
     }
 
     let origin_y = if is_multiline {
         0.0
     } else {
-        (size.1 / 2.0 + theme.font_body / 3.0 - pad_y) - (theme.font_body * 1.3)
+        (size.1 - line_height) / 2.0 - pad_y
     };
     crate::render::pipeline::render_text_runs(
         canvas,
@@ -1669,20 +1669,17 @@ fn draw_divider(canvas: &Canvas, orientation: Orientation, size: (f32, f32), the
 }
 
 fn draw_image(canvas: &Canvas, data: &[u8], size: (f32, f32), radius: f32) {
-    use image::ImageReader;
     use skia_safe::{AlphaType, Bitmap, ColorType, ImageInfo, Matrix, images};
-    use std::io::Cursor;
-    let Ok(dyn_img) = ImageReader::new(Cursor::new(data))
-        .with_guessed_format()
-        .and_then(|r| Ok(r.decode().ok()))
-    else {
+    let Ok(dyn_img) = decode_image_with_default_limits(data) else {
         return;
     };
-    let Some(img) = dyn_img else {
-        return;
-    };
-    let rgba = img.to_rgba8();
+
+    let rgba = dyn_img.to_rgba8();
     let (iw, ih) = (rgba.width() as i32, rgba.height() as i32);
+    if iw <= 0 || ih <= 0 {
+        return;
+    }
+
     let raw = rgba.into_raw();
     let mut bmp = Bitmap::new();
     if !bmp.set_info(
@@ -1721,6 +1718,49 @@ fn draw_image(canvas: &Canvas, data: &[u8], size: (f32, f32), radius: f32) {
     if radius > 0.0 {
         canvas.restore();
     }
+}
+
+const MAX_IMAGE_DECODE_WIDTH: u32 = 8192;
+const MAX_IMAGE_DECODE_HEIGHT: u32 = 8192;
+const MAX_IMAGE_DECODE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
+
+fn decode_image_with_default_limits(data: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    decode_image_with_limits(
+        data,
+        MAX_IMAGE_DECODE_WIDTH,
+        MAX_IMAGE_DECODE_HEIGHT,
+        MAX_IMAGE_DECODE_ALLOC_BYTES,
+    )
+}
+
+fn decode_image_with_limits(
+    data: &[u8],
+    max_width: u32,
+    max_height: u32,
+    max_alloc_bytes: u64,
+) -> image::ImageResult<image::DynamicImage> {
+    use image::{ImageReader, Limits};
+    use std::io::Cursor;
+
+    let mut reader = ImageReader::new(Cursor::new(data));
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(max_width);
+    limits.max_image_height = Some(max_height);
+    limits.max_alloc = Some(max_alloc_bytes);
+    reader.limits(limits);
+
+    let image = reader.with_guessed_format()?.decode()?;
+    let rgba_bytes = u64::from(image.width())
+        .saturating_mul(u64::from(image.height()))
+        .saturating_mul(4);
+
+    if rgba_bytes > max_alloc_bytes {
+        return Err(image::ImageError::Limits(
+            image::error::LimitError::from_kind(image::error::LimitErrorKind::InsufficientMemory),
+        ));
+    }
+
+    Ok(image)
 }
 
 fn draw_select(
@@ -1915,4 +1955,34 @@ fn draw_scrollbar(
 
 fn rrect(size: (f32, f32), r: f32) -> RRect {
     RRect::new_rect_xy(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), r, r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_image_with_default_limits, decode_image_with_limits};
+
+    fn tiny_png() -> Vec<u8> {
+        use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+        use std::io::Cursor;
+
+        let image = RgbaImage::from_pixel(1, 1, Rgba([0x12, 0x34, 0x56, 0xff]));
+        let mut bytes = Vec::new();
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn decode_image_accepts_small_png_with_default_limits() {
+        let image = decode_image_with_default_limits(&tiny_png()).unwrap();
+        assert_eq!(image.width(), 1);
+        assert_eq!(image.height(), 1);
+    }
+
+    #[test]
+    fn decode_image_rejects_small_png_when_alloc_budget_is_too_low() {
+        let result = decode_image_with_limits(&tiny_png(), 16, 16, 1);
+        assert!(result.is_err());
+    }
 }

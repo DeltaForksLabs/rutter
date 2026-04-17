@@ -237,8 +237,9 @@ impl<A: AppLogic> RutterEngine<A> {
     pub fn ensure_input_state(&mut self, id: u64) {
         if !self.input_states.contains_key(&id) {
             let mut fs = self.font_system.borrow_mut();
-            self.input_states
-                .insert(id, crate::input_state::InputWidgetState::new(&mut fs));
+            let mut state = crate::input_state::InputWidgetState::new(&mut fs);
+            state.set_metrics(&mut fs, A::theme().font_body);
+            self.input_states.insert(id, state);
         }
     }
 
