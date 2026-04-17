@@ -6,7 +6,7 @@ pub mod hit_test;
 pub mod pipeline;
 pub mod text;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 use cosmic_text::{Attrs, Edit, FontSystem, Metrics, Shaping, SwashCache};
 use skia_safe::{
@@ -20,9 +20,18 @@ use crate::engine::widget_state::WidgetState;
 use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
 use crate::theme::Theme;
-use crate::widget::{ButtonVariant, InputState, Orientation, ToastKind, Widget};
+use crate::widget::{ButtonVariant, InputState, Orientation, ToastKind, ToastPosition, Widget};
 
 const ACCORDION_HEADER_H: f32 = 44.0;
+
+#[derive(Clone, Copy)]
+struct ToastOverlay<'a> {
+    message: &'a str,
+    kind: ToastKind,
+    position: ToastPosition,
+    progress: f32,
+    created_at: Instant,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_widgets<'w, Msg>(
@@ -59,6 +68,139 @@ pub fn draw_widgets<'w, Msg>(
         scale,
         &mut path,
     );
+    draw_toast_overlays(canvas, widget, widget_states, font_cache, theme, scale);
+}
+
+fn draw_toast_overlays<'w, Msg>(
+    canvas: &Canvas,
+    widget: &Widget<'w, Msg>,
+    widget_states: &HashMap<u64, WidgetState>,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    theme: &Theme,
+    scale: f32,
+) {
+    let mut toasts = Vec::new();
+    let mut path = Vec::new();
+    collect_visible_toasts(widget, widget_states, &mut path, &mut toasts);
+    if toasts.is_empty() {
+        return;
+    }
+
+    toasts.sort_by_key(|toast| toast.created_at);
+
+    let dims = canvas.image_info().dimensions();
+    let viewport_size = (
+        dims.width as f32 / scale.max(f32::EPSILON),
+        dims.height as f32 / scale.max(f32::EPSILON),
+    );
+
+    let mut top_left = 0;
+    let mut top_right = 0;
+    let mut bottom_right = 0;
+    let mut bottom_left = 0;
+
+    canvas.save();
+    canvas.reset_matrix();
+    canvas.scale((scale, scale));
+    for toast in toasts {
+        let index = match toast.position {
+            ToastPosition::TopLeft => {
+                let index = top_left;
+                top_left += 1;
+                index
+            }
+            ToastPosition::TopRight => {
+                let index = top_right;
+                top_right += 1;
+                index
+            }
+            ToastPosition::BottomRight => {
+                let index = bottom_right;
+                bottom_right += 1;
+                index
+            }
+            ToastPosition::BottomLeft => {
+                let index = bottom_left;
+                bottom_left += 1;
+                index
+            }
+        };
+        draw_toast(
+            canvas,
+            toast.message,
+            toast.kind,
+            toast.position,
+            toast.progress,
+            viewport_size,
+            index,
+            font_cache,
+            theme,
+        );
+    }
+    canvas.restore();
+}
+
+fn collect_visible_toasts<'w, Msg>(
+    widget: &Widget<'w, Msg>,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+    out: &mut Vec<ToastOverlay<'w>>,
+) {
+    match widget {
+        Widget::Toast {
+            visible,
+            message,
+            kind,
+            position,
+            ..
+        } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let Some(toast) = widget_states.get(&resolved_id).and_then(|state| state.as_toast())
+            else {
+                return;
+            };
+            if *visible && toast.visible && !toast.is_expired() {
+                out.push(ToastOverlay {
+                    message,
+                    kind: *kind,
+                    position: *position,
+                    progress: toast.progress(),
+                    created_at: toast.created_at,
+                });
+            }
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                collect_visible_toasts(child, widget_states, path, out);
+                path.pop();
+            }
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. } => {
+            path.push(0);
+            collect_visible_toasts(child, widget_states, path, out);
+            path.pop();
+        }
+        Widget::Accordion {
+            expanded, child, ..
+        } => {
+            if *expanded {
+                path.push(0);
+                collect_visible_toasts(child, widget_states, path, out);
+                path.pop();
+            }
+        }
+        Widget::Modal { visible, child, .. } => {
+            if *visible {
+                path.push(0);
+                collect_visible_toasts(child, widget_states, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -508,39 +650,8 @@ fn draw_widgets_impl<'w, Msg>(
             );
         }
         Widget::Toast {
-            visible,
-            message,
-            kind,
-            position,
             ..
-        } => {
-            let resolved_id = resolved_id.unwrap();
-            let runtime_visible = widget_states
-                .get(&resolved_id)
-                .and_then(|s| s.as_toast())
-                .map(|t| t.visible && !t.is_expired())
-                .unwrap_or(false);
-            let progress = widget_states
-                .get(&resolved_id)
-                .and_then(|s| s.as_toast())
-                .map(|t| t.progress())
-                .unwrap_or(0.0);
-            if *visible && runtime_visible {
-                let mut visible_toasts = widget_states
-                    .iter()
-                    .filter_map(|(k, v)| v.as_toast().map(|t| (k, t)))
-                    .filter(|(_, t)| t.visible && !t.is_expired())
-                    .collect::<Vec<_>>();
-                visible_toasts.sort_by_key(|(_, t)| t.created_at);
-                let my_idx = visible_toasts
-                    .iter()
-                    .position(|(k, _)| **k == resolved_id)
-                    .unwrap_or(0);
-                draw_toast(
-                    canvas, message, *kind, *position, progress, size, my_idx, font_cache, theme,
-                );
-            }
-        }
+        } => {}
         Widget::VirtualList {
             item_height,
             item_count,

@@ -2,7 +2,7 @@
 // Rutter Framework — engine/runner.rs
 // ============================================================
 
-use std::{num::NonZeroU32, time::Duration};
+use std::{collections::HashMap, num::NonZeroU32, time::Duration};
 
 use cosmic_text::{Action, Edit, Motion};
 use skia_safe::{Point, Rect as SkiaRect};
@@ -15,6 +15,7 @@ use winit::{
 };
 
 use super::RutterEngine;
+use crate::engine::widget_state::WidgetState;
 use crate::app::AppLogic;
 use crate::render::hit_test::{HitResult, find_scroll_focus, find_scrollbar_drag_hit, hit_test};
 
@@ -121,6 +122,27 @@ fn map_key(key: &Key, ctrl: bool) -> Option<Action> {
     }
 }
 
+fn collect_toast_runtime_state(widget_states: &HashMap<u64, WidgetState>) -> (Vec<u64>, bool) {
+    let mut expired_toasts = Vec::new();
+    let mut has_active_timed_toasts = false;
+
+    for (id, ws) in widget_states {
+        let Some(toast) = ws.as_toast() else {
+            continue;
+        };
+        if !toast.visible {
+            continue;
+        }
+        if toast.is_expired() {
+            expired_toasts.push(*id);
+        } else if toast.duration_ms > 0 {
+            has_active_timed_toasts = true;
+        }
+    }
+
+    (expired_toasts, has_active_timed_toasts)
+}
+
 pub fn snap_to_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
     if step <= 0.0 {
         return value.clamp(min, max);
@@ -175,14 +197,8 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
     fn new_events(&mut self, el: &ActiveEventLoop, _: StartCause) {
         self.engine.maybe_snapshot();
 
-        let mut expired_toasts = vec![];
-        for (id, ws) in self.engine.widget_states.iter() {
-            if let Some(t) = ws.as_toast() {
-                if t.is_expired() && t.visible {
-                    expired_toasts.push(*id);
-                }
-            }
-        }
+        let (expired_toasts, has_active_timed_toasts) =
+            collect_toast_runtime_state(&self.engine.widget_states);
         if !expired_toasts.is_empty() {
             for id in &expired_toasts {
                 if let Some(ws) = self.engine.widget_states.get_mut(id) {
@@ -198,10 +214,19 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             self.redraw();
         }
 
-        if self.engine.has_animated {
-            if self.engine.tick_animations() {
-                self.redraw();
-            }
+        let mut needs_frame_tick = false;
+        if self.engine.has_animated && self.engine.tick_animations() {
+            self.redraw();
+            needs_frame_tick = true;
+        } else if self.engine.has_animated {
+            needs_frame_tick = true;
+        }
+        if has_active_timed_toasts {
+            self.redraw();
+            needs_frame_tick = true;
+        }
+
+        if needs_frame_tick {
             el.set_control_flow(ControlFlow::WaitUntil(
                 std::time::Instant::now() + Duration::from_millis(16),
             ));
@@ -1286,7 +1311,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_clipboard_text;
+    use std::{collections::HashMap, time::{Duration, Instant}};
+
+    use super::{collect_toast_runtime_state, sanitize_clipboard_text};
+    use crate::engine::widget_state::{ToastState, WidgetState};
 
     #[test]
     fn sanitize_clipboard_text_strips_controls_and_ansi_sequences() {
@@ -1305,5 +1333,29 @@ mod tests {
         let raw = "a\r\nb\nc\td";
         assert_eq!(sanitize_clipboard_text(raw, true), "a\nb\nc d");
         assert_eq!(sanitize_clipboard_text(raw, false), "a b c d");
+    }
+
+    #[test]
+    fn collect_toast_runtime_state_detects_timed_toasts_without_expiring_them() {
+        let mut toast = ToastState::new(3000);
+        toast.created_at = Instant::now() - Duration::from_millis(250);
+        let widget_states = HashMap::from([(7, WidgetState::Toast(toast))]);
+
+        let (expired, has_active_timed) = collect_toast_runtime_state(&widget_states);
+
+        assert!(expired.is_empty());
+        assert!(has_active_timed);
+    }
+
+    #[test]
+    fn collect_toast_runtime_state_marks_expired_toasts() {
+        let mut toast = ToastState::new(30);
+        toast.created_at = Instant::now() - Duration::from_millis(60);
+        let widget_states = HashMap::from([(9, WidgetState::Toast(toast))]);
+
+        let (expired, has_active_timed) = collect_toast_runtime_state(&widget_states);
+
+        assert_eq!(expired, vec![9]);
+        assert!(!has_active_timed);
     }
 }
