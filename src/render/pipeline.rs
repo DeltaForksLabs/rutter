@@ -38,9 +38,10 @@ pub fn render_text_runs<'a>(
     paint.set_anti_alias(true);
 
     for run in runs {
+        let run_origin = (origin.x, origin.y + run.line_y);
         for glyph in run.glyphs.iter() {
             // Posição física (leva scale em conta)
-            let physical = glyph.physical((origin.x, origin.y), scale);
+            let physical = glyph.physical(run_origin, scale);
 
             // Rasterizar glyph via SwashCache
             let image = swash.get_image(fs, physical.cache_key);

@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.4.2"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4722d768eff46b75989dd134e5c353f0d6296e5aaa3132e776cbdb56be7731aa"
 dependencies = [
@@ -1589,7 +1589,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rutter"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "arboard",
  "cosmic-text",

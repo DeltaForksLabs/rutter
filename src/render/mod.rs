@@ -743,6 +743,17 @@ fn draw_text_input(
     );
     buf.set_text(fs, &display, &Attrs::new(), Shaping::Advanced, None);
     buf.shape_until_scroll(fs, false);
+    let runs = buf.layout_runs().collect::<Vec<_>>();
+    let inner_height = (size.1 - pad_y * 2.0).max(0.0);
+    let vertical_offset = if is_multiline {
+        0.0
+    } else {
+        let run_height = runs
+            .first()
+            .map(|run| run.line_height)
+            .unwrap_or(line_height);
+        ((inner_height - run_height).max(0.0)) / 2.0
+    };
 
     let cursor = s.editor.cursor();
     let mapped_cursor = if is_password {
@@ -753,11 +764,13 @@ fn draw_text_input(
     };
 
     let mut cx = 0.0;
-    let mut cy = 0.0;
+    let mut cy = vertical_offset;
+    let mut cursor_h = line_height;
 
-    for run in buf.layout_runs() {
+    for run in runs.iter() {
         if run.line_i == mapped_cursor.line {
-            cy = run.line_y - theme.font_body;
+            cy = vertical_offset + run.line_top;
+            cursor_h = run.line_height;
             for glyph in run.glyphs.iter() {
                 if glyph.start >= mapped_cursor.index {
                     cx = glyph.x;
@@ -769,13 +782,9 @@ fn draw_text_input(
         }
     }
 
-    if !is_multiline {
-        cy = (size.1 - line_height) / 2.0 - pad_y;
-    }
-
     if let Some(sel) = s.selection.filter(|sel| !sel.is_empty()) {
         let (a, b) = sel.normalized();
-        for run in buf.layout_runs() {
+        for run in runs.iter() {
             let mut x_start = None;
             let mut x_end = None;
             for glyph in run.glyphs.iter() {
@@ -788,12 +797,8 @@ fn draw_text_input(
             }
             if let (Some(xs), Some(xe)) = (x_start, x_end) {
                 let sel_w = (xe - xs).max(0.0);
-                let sel_h = line_height;
-                let sel_y = if is_multiline {
-                    run.line_y - theme.font_body
-                } else {
-                    (size.1 - sel_h) / 2.0 - pad_y
-                };
+                let sel_h = run.line_height;
+                let sel_y = vertical_offset + run.line_top;
                 let mut sp = Paint::default();
                 sp.set_color(Theme::alpha(theme.primary, 60));
                 sp.set_anti_alias(true);
@@ -806,18 +811,13 @@ fn draw_text_input(
         let mut cp = Paint::default();
         cp.set_color(theme.primary);
         cp.set_anti_alias(true);
-        canvas.draw_rect(SkiaRect::from_xywh(cx, cy, 1.5, line_height), &cp);
+        canvas.draw_rect(SkiaRect::from_xywh(cx, cy, 1.5, cursor_h), &cp);
     }
 
-    let origin_y = if is_multiline {
-        0.0
-    } else {
-        (size.1 - line_height) / 2.0 - pad_y
-    };
     crate::render::pipeline::render_text_runs(
         canvas,
-        buf.layout_runs(),
-        Point::new(0.0, origin_y),
+        runs.into_iter(),
+        Point::new(0.0, vertical_offset),
         theme.on_surface,
         fs,
         swash,
