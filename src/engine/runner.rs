@@ -18,6 +18,88 @@ use super::RutterEngine;
 use crate::app::AppLogic;
 use crate::render::hit_test::{HitResult, find_scroll_focus, find_scrollbar_drag_hit, hit_test};
 
+fn is_bidi_override_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061C}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+fn skip_ansi_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match chars.peek().copied() {
+        Some('[') => {
+            chars.next();
+            while let Some(ch) = chars.next() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        }
+        Some(']') => {
+            chars.next();
+            let mut saw_escape = false;
+            while let Some(ch) = chars.next() {
+                if ch == '\u{0007}' {
+                    break;
+                }
+                if saw_escape && ch == '\\' {
+                    break;
+                }
+                saw_escape = ch == '\u{001B}';
+            }
+        }
+        Some(_) => {
+            chars.next();
+        }
+        None => {}
+    }
+}
+
+fn sanitize_clipboard_text(text: &str, allow_newlines: bool) -> String {
+    let mut sanitized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{001B}' {
+            skip_ansi_escape(&mut chars);
+            continue;
+        }
+
+        if is_bidi_override_char(ch) {
+            continue;
+        }
+
+        match ch {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                if allow_newlines {
+                    sanitized.push('\n');
+                } else {
+                    sanitized.push(' ');
+                }
+            }
+            '\n' => {
+                if allow_newlines {
+                    sanitized.push('\n');
+                } else {
+                    sanitized.push(' ');
+                }
+            }
+            '\t' => sanitized.push(' '),
+            _ if ch.is_control() => {}
+            _ => sanitized.push(ch),
+        }
+    }
+
+    sanitized
+}
+
 fn map_key(key: &Key, ctrl: bool) -> Option<Action> {
     match key {
         Key::Named(NamedKey::ArrowLeft) if ctrl => Some(Action::Motion(Motion::Left)),
@@ -1011,10 +1093,17 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
             return;
         };
+        let txt = sanitize_clipboard_text(&txt, input.is_multiline);
+        if txt.is_empty() {
+            return;
+        }
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
             s.set_metrics(&mut fs, A::theme().font_body);
+            if !s.delete_selection(&mut fs) {
+                s.clear_selection();
+            }
             s.editor.insert_string(&txt, None);
             s.snapshot();
             s.update_scroll(
@@ -1129,5 +1218,29 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.engine.cursor_blink.reset();
         self.engine.layout_dirty = true;
         self.redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_clipboard_text;
+
+    #[test]
+    fn sanitize_clipboard_text_strips_controls_and_ansi_sequences() {
+        let raw = "hello\u{0000}\u{001B}[31mworld\u{001B}[0m\u{0008}!";
+        assert_eq!(sanitize_clipboard_text(raw, false), "helloworld!");
+    }
+
+    #[test]
+    fn sanitize_clipboard_text_strips_bidi_override_chars() {
+        let raw = "safe \u{202E}spoof\u{202C} text\u{200F}";
+        assert_eq!(sanitize_clipboard_text(raw, false), "safe spoof text");
+    }
+
+    #[test]
+    fn sanitize_clipboard_text_preserves_newlines_only_for_multiline() {
+        let raw = "a\r\nb\nc\td";
+        assert_eq!(sanitize_clipboard_text(raw, true), "a\nb\nc d");
+        assert_eq!(sanitize_clipboard_text(raw, false), "a b c d");
     }
 }
