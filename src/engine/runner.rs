@@ -15,8 +15,8 @@ use winit::{
 };
 
 use super::RutterEngine;
-use crate::engine::widget_state::WidgetState;
 use crate::app::AppLogic;
+use crate::engine::widget_state::WidgetState;
 use crate::render::hit_test::{HitResult, find_scroll_focus, find_scrollbar_drag_hit, hit_test};
 
 fn is_bidi_override_char(ch: char) -> bool {
@@ -120,6 +120,10 @@ fn map_key(key: &Key, ctrl: bool) -> Option<Action> {
         Key::Named(NamedKey::Enter) => Some(Action::Enter),
         _ => None,
     }
+}
+
+fn is_activation_key(key: &Key) -> bool {
+    matches!(key, Key::Named(NamedKey::Enter)) || matches!(key, Key::Character(ch) if ch == " ")
 }
 
 fn collect_toast_runtime_state(widget_states: &HashMap<u64, WidgetState>) -> (Vec<u64>, bool) {
@@ -233,7 +237,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             return;
         }
 
-        if self.engine.focused_input_id.is_some() {
+        if self.engine.focused_input_id().is_some() {
             if self.engine.cursor_blink.tick() {
                 self.redraw();
             }
@@ -292,7 +296,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
 
                 if self.mouse_down {
-                    if let Some(fid) = self.engine.focused_input_id {
+                    if let Some(fid) = self.engine.focused_input_id() {
                         if let Some(rect) = self.focused_input_rect {
                             let local_x = self.cursor_pos.x / self.engine.scale_factor - rect.left;
                             let local_y = self.cursor_pos.y / self.engine.scale_factor - rect.top;
@@ -387,8 +391,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 if let Some(hit) = hit {
                     self.close_all_selects();
                     match hit {
-                        HitResult::Message(msg) => {
+                        HitResult::Message { focus_id, msg } => {
                             if button == winit::event::MouseButton::Left {
+                                self.focus_widget(focus_id);
                                 A::update(
                                     &mut self.engine.app_state,
                                     msg,
@@ -420,6 +425,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             step,
                         } => {
                             if button == winit::event::MouseButton::Left {
+                                self.focus_widget(Some(id));
                                 self.engine.drag_slider_id = Some(id);
                                 if let Some(ws) = self.engine.widget_states.get_mut(&id) {
                                     if let Some(s) = ws.as_slider_mut() {
@@ -449,6 +455,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         }
                         HitResult::SelectToggle(id) => {
                             if button == winit::event::MouseButton::Left {
+                                self.focus_widget(Some(id));
                                 let was_open = self
                                     .engine
                                     .widget_states
@@ -466,14 +473,15 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         }
                         HitResult::SelectOption { id, index } => {
                             if button == winit::event::MouseButton::Left {
+                                self.focus_widget(Some(id));
                                 if let Some(ws) = self.engine.widget_states.get_mut(&id) {
                                     if let Some(s) = ws.as_select_mut() {
                                         s.is_open = false;
                                     }
                                 }
-                                let cb = self.engine.runtime_caches.selects.get(&id).copied();
-                                if let Some(cb) = cb {
-                                    let msg = cb(index);
+                                let select = self.engine.runtime_caches.selects.get(&id).cloned();
+                                if let Some(select) = select {
+                                    let msg = (select.on_change)(index);
                                     A::update(
                                         &mut self.engine.app_state,
                                         msg,
@@ -486,31 +494,13 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         HitResult::ScrollFocus(id) => {
                             self.engine.active_scroll_id = Some(id);
                         }
-                        HitResult::TabPress { id, index } => {
+                        HitResult::TabPress {
+                            id,
+                            focus_id,
+                            index,
+                        } => {
                             if button == winit::event::MouseButton::Left {
-                                let cb = self.engine.runtime_caches.tabs.get(&id).copied();
-                                if let Some(cb) = cb {
-                                    let msg = cb(index);
-                                    A::update(
-                                        &mut self.engine.app_state,
-                                        msg,
-                                        &mut self.engine.clipboard,
-                                    );
-                                }
-                                if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                    let size_ref = self
-                                        .engine
-                                        .window
-                                        .as_ref()
-                                        .map(|w| {
-                                            w.inner_size().width as f32 / self.engine.scale_factor
-                                        })
-                                        .unwrap_or(800.0);
-                                    if let Some(t) = ws.as_tab_mut() {
-                                        t.set_active(index, size_ref / 4.0);
-                                    }
-                                }
-                                self.engine.layout_dirty = true;
+                                self.activate_tab_item(id, index, focus_id);
                             }
                         }
                         HitResult::ModalDismiss(id) => {
@@ -525,6 +515,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         }
                         HitResult::VListSelect { id, index } => {
                             if button == winit::event::MouseButton::Left {
+                                self.focus_widget(Some(id));
                                 if let Some(ws) = self.engine.widget_states.get_mut(&id) {
                                     if let Some(vl) = ws.as_vlist_mut() {
                                         vl.selected_row = Some(index);
@@ -550,7 +541,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     }
                     self.redraw();
                 } else {
-                    self.engine.focused_input_id = None;
+                    self.focus_widget(None);
                     self.close_all_selects();
                     self.redraw();
                 }
@@ -642,7 +633,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
     fn handle_text_commit(&mut self, event: &KeyEvent) -> bool {
-        if self.engine.focused_input_id.is_none() || self.engine.modifiers.state().control_key() {
+        if self.engine.focused_input_id().is_none() || self.engine.modifiers.state().control_key() {
             return false;
         }
 
@@ -659,7 +650,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn insert_text_commit(&mut self, text: &str) {
-        let Some(fid) = self.engine.focused_input_id else {
+        let Some(fid) = self.engine.focused_input_id() else {
             return;
         };
 
@@ -715,6 +706,55 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
     }
 
+    fn focus_widget(&mut self, focus_id: Option<u64>) {
+        if self.engine.focused_widget_id == focus_id {
+            return;
+        }
+
+        if let Some(previous_input) = self.engine.focused_input_id() {
+            if let Some(state) = self.engine.input_states.get_mut(&previous_input) {
+                state.snapshot();
+            }
+        }
+
+        self.engine.focused_widget_id = focus_id;
+        if let Some(id) = focus_id {
+            if self.engine.runtime_caches.inputs.contains_key(&id) {
+                self.engine.ensure_input_state(id);
+                self.engine.cursor_blink.reset();
+            } else {
+                self.focused_input_rect = None;
+            }
+        } else {
+            self.focused_input_rect = None;
+        }
+        self.engine.layout_dirty = true;
+    }
+
+    fn activate_tab_item(&mut self, parent_id: u64, index: usize, focus_id: u64) {
+        let tab = self.engine.runtime_caches.tabs.get(&parent_id).cloned();
+        self.focus_widget(Some(focus_id));
+        if let Some(tab) = tab {
+            A::update(
+                &mut self.engine.app_state,
+                (tab.on_change)(index),
+                &mut self.engine.clipboard,
+            );
+            if let Some(ws) = self.engine.widget_states.get_mut(&parent_id) {
+                let size_ref = self
+                    .engine
+                    .window
+                    .as_ref()
+                    .map(|w| w.inner_size().width as f32 / self.engine.scale_factor)
+                    .unwrap_or(800.0);
+                if let Some(state) = ws.as_tab_mut() {
+                    state.set_active(index, size_ref / tab.tab_count.max(1) as f32);
+                }
+            }
+            self.engine.layout_dirty = true;
+        }
+    }
+
     fn close_all_selects(&mut self) {
         for ws in self.engine.widget_states.values_mut() {
             if let Some(s) = ws.as_select_mut() {
@@ -766,13 +806,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         local_x: f32,
         local_y: f32,
         width: f32,
-        _height: f32,
+        height: f32,
         is_double: bool,
     ) {
-        self.engine.focused_input_id = Some(id);
+        self.focus_widget(Some(id));
         self.engine.ensure_input_state(id);
-        self.engine.cursor_blink.reset();
-        self.engine.layout_dirty = true;
 
         let pad_x = A::theme().spacing * 2.0;
         let pad_y = A::theme().spacing;
@@ -780,7 +818,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(ist) = self.engine.input_states.get_mut(&id) {
             let mut fs = self.engine.font_system.borrow_mut();
             if let Some(input) = input.as_ref() {
-                ist.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
+                ist.sync_layout(
+                    &mut fs,
+                    input.visible_w,
+                    A::theme().font_body,
+                    input.is_multiline,
+                );
             } else {
                 ist.set_metrics(&mut fs, A::theme().font_body);
             }
@@ -815,8 +858,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             let visible_h = input
                 .as_ref()
                 .map(|input| input.visible_h)
-                .unwrap_or_else(|| (_height - pad_y * 2.0).max(18.0));
-            let is_password = input.as_ref().map(|input| input.is_password).unwrap_or(false);
+                .unwrap_or_else(|| (height - pad_y * 2.0).max(18.0));
+            let is_password = input
+                .as_ref()
+                .map(|input| input.is_password)
+                .unwrap_or(false);
             let is_multiline = input
                 .as_ref()
                 .map(|input| input.is_multiline)
@@ -832,8 +878,208 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
     }
 
+    fn handle_focused_widget_key(&mut self, key: &Key) -> bool {
+        let Some(fid) = self.engine.focused_widget_id else {
+            return false;
+        };
+        if self.engine.runtime_caches.inputs.contains_key(&fid) {
+            return false;
+        }
+
+        if let Some(msg) = self.engine.runtime_caches.buttons.get(&fid).cloned() {
+            if is_activation_key(key) {
+                A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
+                self.engine.layout_dirty = true;
+                self.redraw();
+                return true;
+            }
+        }
+
+        if let Some(toggle) = self.engine.runtime_caches.checkboxes.get(&fid).cloned() {
+            if is_activation_key(key) {
+                A::update(
+                    &mut self.engine.app_state,
+                    (toggle.on_change)(!toggle.checked),
+                    &mut self.engine.clipboard,
+                );
+                self.engine.layout_dirty = true;
+                self.redraw();
+                return true;
+            }
+        }
+
+        if let Some(toggle) = self.engine.runtime_caches.switches.get(&fid).cloned() {
+            if is_activation_key(key) {
+                A::update(
+                    &mut self.engine.app_state,
+                    (toggle.on_change)(!toggle.checked),
+                    &mut self.engine.clipboard,
+                );
+                self.engine.layout_dirty = true;
+                self.redraw();
+                return true;
+            }
+        }
+
+        if let Some(on_select) = self.engine.runtime_caches.radios.get(&fid).copied() {
+            if is_activation_key(key) {
+                A::update(
+                    &mut self.engine.app_state,
+                    on_select(),
+                    &mut self.engine.clipboard,
+                );
+                self.engine.layout_dirty = true;
+                self.redraw();
+                return true;
+            }
+        }
+
+        if let Some(msg) = self.engine.runtime_caches.accordions.get(&fid).cloned() {
+            if is_activation_key(key) {
+                A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
+                self.engine.layout_dirty = true;
+                self.redraw();
+                return true;
+            }
+        }
+
+        if let Some(slider) = self.engine.runtime_caches.sliders.get(&fid).cloned() {
+            let next_value = match key {
+                Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowDown) => {
+                    Some(slider.value - slider.step.max(f32::EPSILON))
+                }
+                Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowUp) => {
+                    Some(slider.value + slider.step.max(f32::EPSILON))
+                }
+                Key::Named(NamedKey::Home) => Some(slider.min),
+                Key::Named(NamedKey::End) => Some(slider.max),
+                Key::Named(NamedKey::PageUp) => Some(slider.value + slider.step.max(1.0) * 10.0),
+                Key::Named(NamedKey::PageDown) => Some(slider.value - slider.step.max(1.0) * 10.0),
+                _ => None,
+            };
+            if let Some(next_value) = next_value {
+                let snapped = snap_to_step(next_value, slider.min, slider.max, slider.step);
+                A::update(
+                    &mut self.engine.app_state,
+                    (slider.on_change)(snapped),
+                    &mut self.engine.clipboard,
+                );
+                self.engine.layout_dirty = true;
+                self.redraw();
+                return true;
+            }
+        }
+
+        if let Some(select) = self.engine.runtime_caches.selects.get(&fid).cloned() {
+            let mut dirty = false;
+            if is_activation_key(key) {
+                if let Some(ws) = self.engine.widget_states.get_mut(&fid) {
+                    if let Some(state) = ws.as_select_mut() {
+                        state.is_open = !state.is_open;
+                        dirty = true;
+                    }
+                }
+                if dirty {
+                    self.engine.layout_dirty = true;
+                    self.redraw();
+                    return true;
+                }
+            }
+
+            if select.option_count > 0 {
+                let next_index = match key {
+                    Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowRight) => {
+                        Some((select.selected_index + 1).min(select.option_count - 1))
+                    }
+                    Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowLeft) => {
+                        Some(select.selected_index.saturating_sub(1))
+                    }
+                    Key::Named(NamedKey::Home) => Some(0),
+                    Key::Named(NamedKey::End) => Some(select.option_count - 1),
+                    _ => None,
+                };
+                if let Some(next_index) = next_index {
+                    if let Some(ws) = self.engine.widget_states.get_mut(&fid) {
+                        if let Some(state) = ws.as_select_mut() {
+                            state.hovered_option = Some(next_index);
+                        }
+                    }
+                    A::update(
+                        &mut self.engine.app_state,
+                        (select.on_change)(next_index),
+                        &mut self.engine.clipboard,
+                    );
+                    self.engine.layout_dirty = true;
+                    self.redraw();
+                    return true;
+                }
+            }
+        }
+
+        if let Some(tab_item) = self.engine.runtime_caches.tab_items.get(&fid).cloned() {
+            if let Some(tab) = self
+                .engine
+                .runtime_caches
+                .tabs
+                .get(&tab_item.parent_id)
+                .cloned()
+            {
+                if tab.tab_count > 0 {
+                    let next_index = match key {
+                        Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
+                            Some(tab_item.index.saturating_sub(1))
+                        }
+                        Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => {
+                            Some((tab_item.index + 1).min(tab.tab_count - 1))
+                        }
+                        Key::Named(NamedKey::Home) => Some(0),
+                        Key::Named(NamedKey::End) => Some(tab.tab_count - 1),
+                        _ if is_activation_key(key) => Some(tab_item.index),
+                        _ => None,
+                    };
+                    if let Some(next_index) = next_index {
+                        let next_focus_id = tab.focus_ids.get(next_index).copied().unwrap_or(fid);
+                        self.activate_tab_item(tab_item.parent_id, next_index, next_focus_id);
+                        self.redraw();
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if let Some(vlist) = self.engine.runtime_caches.vlists.get(&fid).cloned() {
+            match key {
+                Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+                    if let Some(ws) = self.engine.widget_states.get_mut(&fid) {
+                        if let Some(state) = ws.as_vlist_mut() {
+                            let current = state.selected_row.unwrap_or(0);
+                            let next = if matches!(key, Key::Named(NamedKey::ArrowDown)) {
+                                (current + 1).min(vlist.item_count.saturating_sub(1))
+                            } else {
+                                current.saturating_sub(1)
+                            };
+                            state.selected_row = Some(next);
+                            state.scroll_to_index(next, vlist.item_height, vlist.item_count);
+                            A::update(
+                                &mut self.engine.app_state,
+                                (vlist.on_select)(next),
+                                &mut self.engine.clipboard,
+                            );
+                            self.engine.layout_dirty = true;
+                            self.redraw();
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        false
+    }
+
     fn handle_key(&mut self, key: &Key) {
-        if self.engine.focused_input_id.is_none() {
+        if self.engine.focused_widget_id.is_none() {
             if let Some(sid) = self.engine.active_scroll_id {
                 let vlist_props = self
                     .engine
@@ -936,6 +1182,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         }
         if self.engine.modifiers.state().control_key() {
+            if self.engine.focused_input_id().is_none() {
+                return;
+            }
             if let Key::Character(ch) = key {
                 match ch.to_lowercase().as_str() {
                     "c" => {
@@ -962,16 +1211,20 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 }
             }
         }
-        self.handle_text_input(key);
+        if self.engine.focused_input_id().is_some() {
+            self.handle_text_input(key);
+            return;
+        }
+        let _ = self.handle_focused_widget_key(key);
     }
 
     fn handle_tab(&mut self) {
-        let ids = self.engine.runtime_caches.input_order.clone();
+        let ids = self.engine.runtime_caches.focus_order.clone();
         if ids.is_empty() {
             return;
         }
         let shift = self.engine.modifiers.state().shift_key();
-        let next = match self.engine.focused_input_id {
+        let next = match self.engine.focused_widget_id {
             Some(cur) => {
                 let n = ids.len();
                 let i = ids.iter().position(|&x| x == cur).unwrap_or(0);
@@ -979,20 +1232,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             }
             None => ids[0],
         };
-        if let Some(p) = self.engine.focused_input_id {
-            if let Some(s) = self.engine.input_states.get_mut(&p) {
-                s.snapshot();
-            }
-        }
-        self.engine.focused_input_id = Some(next);
-        self.engine.ensure_input_state(next);
-        self.engine.cursor_blink.reset();
-        self.engine.layout_dirty = true;
+        self.focus_widget(Some(next));
         self.redraw();
     }
 
     fn handle_text_input(&mut self, key: &Key) {
-        let Some(fid) = self.engine.focused_input_id else {
+        let Some(fid) = self.engine.focused_input_id() else {
             return;
         };
 
@@ -1143,7 +1388,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn do_copy(&mut self) {
-        if let Some(fid) = self.engine.focused_input_id {
+        if let Some(fid) = self.engine.focused_input_id() {
             if let Some(s) = self.engine.input_states.get(&fid) {
                 let text_to_copy = s
                     .selection
@@ -1165,7 +1410,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let Ok(txt) = self.engine.clipboard.get_text() else {
             return;
         };
-        let Some(fid) = self.engine.focused_input_id else {
+        let Some(fid) = self.engine.focused_input_id() else {
             return;
         };
 
@@ -1179,7 +1424,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            s.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
+            s.sync_layout(
+                &mut fs,
+                input.visible_w,
+                A::theme().font_body,
+                input.is_multiline,
+            );
             if !s.delete_selection(&mut fs) {
                 s.clear_selection();
             }
@@ -1210,7 +1460,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn do_select_all(&mut self) {
-        let Some(fid) = self.engine.focused_input_id else {
+        let Some(fid) = self.engine.focused_input_id() else {
             return;
         };
 
@@ -1220,7 +1470,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            s.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
+            s.sync_layout(
+                &mut fs,
+                input.visible_w,
+                A::theme().font_body,
+                input.is_multiline,
+            );
             s.select_all(&mut fs);
             s.update_scroll(
                 &mut fs,
@@ -1235,7 +1490,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn do_undo(&mut self) {
-        let Some(fid) = self.engine.focused_input_id else {
+        let Some(fid) = self.engine.focused_input_id() else {
             return;
         };
         let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
@@ -1244,7 +1499,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            s.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
+            s.sync_layout(
+                &mut fs,
+                input.visible_w,
+                A::theme().font_body,
+                input.is_multiline,
+            );
             s.undo(&mut fs);
             s.update_scroll(
                 &mut fs,
@@ -1272,7 +1532,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn do_redo(&mut self) {
-        let Some(fid) = self.engine.focused_input_id else {
+        let Some(fid) = self.engine.focused_input_id() else {
             return;
         };
         let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
@@ -1281,7 +1541,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
-            s.sync_layout(&mut fs, input.visible_w, A::theme().font_body, input.is_multiline);
+            s.sync_layout(
+                &mut fs,
+                input.visible_w,
+                A::theme().font_body,
+                input.is_multiline,
+            );
             s.redo(&mut fs);
             s.update_scroll(
                 &mut fs,
@@ -1311,7 +1576,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::{Duration, Instant}};
+    use std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    };
 
     use super::{collect_toast_runtime_state, sanitize_clipboard_text};
     use crate::engine::widget_state::{ToastState, WidgetState};

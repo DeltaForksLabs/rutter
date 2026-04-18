@@ -20,7 +20,9 @@ use crate::engine::widget_state::WidgetState;
 use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
 use crate::theme::Theme;
-use crate::widget::{ButtonVariant, InputState, Orientation, ToastKind, ToastPosition, Widget};
+use crate::widget::{
+    ButtonVariant, DialogAction, InputState, Orientation, ToastKind, ToastPosition, Widget,
+};
 
 const ACCORDION_HEADER_H: f32 = 44.0;
 
@@ -31,6 +33,63 @@ struct ToastOverlay<'a> {
     position: ToastPosition,
     progress: f32,
     created_at: Instant,
+}
+
+fn color_luminance(color: SkiaColor) -> f32 {
+    let channel = |value: u8| {
+        let srgb = value as f32 / 255.0;
+        if srgb <= 0.04045 {
+            srgb / 12.92
+        } else {
+            ((srgb + 0.055) / 1.055).powf(2.4)
+        }
+    };
+
+    0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+}
+
+fn outset_rect(rect: SkiaRect, amount: f32) -> SkiaRect {
+    SkiaRect::from_xywh(
+        rect.left - amount,
+        rect.top - amount,
+        rect.width() + amount * 2.0,
+        rect.height() + amount * 2.0,
+    )
+}
+
+fn draw_focus_outline_with_colors(
+    canvas: &Canvas,
+    rect: SkiaRect,
+    radius: f32,
+    accent: SkiaColor,
+    background: SkiaColor,
+) {
+    let outer_color = if color_luminance(background) > 0.5 {
+        Theme::alpha(SkiaColor::BLACK, 210)
+    } else {
+        Theme::alpha(SkiaColor::WHITE, 230)
+    };
+
+    let mut outer = Paint::default();
+    outer.set_style(paint::Style::Stroke);
+    outer.set_stroke_width(4.0);
+    outer.set_color(outer_color);
+    outer.set_anti_alias(true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(outset_rect(rect, 1.5), radius + 1.5, radius + 1.5),
+        &outer,
+    );
+
+    let mut inner = Paint::default();
+    inner.set_style(paint::Style::Stroke);
+    inner.set_stroke_width(2.0);
+    inner.set_color(Theme::alpha(accent, 235));
+    inner.set_anti_alias(true);
+    canvas.draw_rrect(RRect::new_rect_xy(rect, radius, radius), &inner);
+}
+
+fn draw_focus_outline(canvas: &Canvas, rect: SkiaRect, radius: f32, theme: &Theme) {
+    draw_focus_outline_with_colors(canvas, rect, radius, theme.primary, theme.surface);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -155,7 +214,9 @@ fn collect_visible_toasts<'w, Msg>(
             ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
-            let Some(toast) = widget_states.get(&resolved_id).and_then(|state| state.as_toast())
+            let Some(toast) = widget_states
+                .get(&resolved_id)
+                .and_then(|state| state.as_toast())
             else {
                 return;
             };
@@ -226,6 +287,7 @@ fn draw_widgets_impl<'w, Msg>(
     let size = (layout.size.width, layout.size.height);
     let local_mouse = Point::new(mouse_pos.x - pos.x, mouse_pos.y - pos.y);
     let resolved_id = widget.resolved_id(path);
+    let is_focused = focused_id == widget.keyboard_focus_id(path);
 
     canvas.save();
     canvas.translate((pos.x, pos.y));
@@ -357,6 +419,7 @@ fn draw_widgets_impl<'w, Msg>(
             text,
             *color,
             *variant,
+            is_focused,
             size,
             local_mouse,
             font_cache,
@@ -377,7 +440,7 @@ fn draw_widgets_impl<'w, Msg>(
             theme,
             scale,
             size,
-            focused_id == resolved_id,
+            is_focused,
             label,
             placeholder,
             *state,
@@ -401,7 +464,7 @@ fn draw_widgets_impl<'w, Msg>(
             theme,
             scale,
             size,
-            focused_id == resolved_id,
+            is_focused,
             label,
             placeholder,
             *state,
@@ -419,7 +482,7 @@ fn draw_widgets_impl<'w, Msg>(
             theme,
             scale,
             size,
-            focused_id == resolved_id,
+            is_focused,
             placeholder,
             input_states.get(&resolved_id.unwrap()),
             cursor_visible,
@@ -428,18 +491,22 @@ fn draw_widgets_impl<'w, Msg>(
             canvas,
             *checked,
             label,
+            is_focused,
             size,
             local_mouse,
             font_cache,
             theme,
         ),
-        Widget::Switch { checked, .. } => draw_switch(canvas, *checked, size, local_mouse, theme),
+        Widget::Switch { checked, .. } => {
+            draw_switch(canvas, *checked, is_focused, size, local_mouse, theme)
+        }
         Widget::Radio {
             selected, label, ..
         } => draw_radio(
             canvas,
             *selected,
             label,
+            is_focused,
             size,
             local_mouse,
             font_cache,
@@ -459,6 +526,7 @@ fn draw_widgets_impl<'w, Msg>(
                 *value,
                 *min,
                 *max,
+                is_focused,
                 size,
                 local_mouse,
                 dragging,
@@ -531,6 +599,7 @@ fn draw_widgets_impl<'w, Msg>(
                 hovered,
                 label,
                 placeholder,
+                is_focused,
                 size,
                 local_mouse,
                 font_cache,
@@ -540,11 +609,14 @@ fn draw_widgets_impl<'w, Msg>(
         Widget::TabBar { tabs, active, .. } => {
             let tab_w = size.0 / tabs.len().max(1) as f32;
             let anim_x = *active as f32 * tab_w;
+            let focused_tab =
+                (0..tabs.len()).find(|index| focused_id == widget.tab_focus_id(path, *index));
             draw_tabbar(
                 canvas,
                 tabs,
                 *active,
                 anim_x,
+                focused_tab,
                 size,
                 local_mouse,
                 font_cache,
@@ -561,6 +633,7 @@ fn draw_widgets_impl<'w, Msg>(
                 canvas,
                 title,
                 *expanded,
+                is_focused,
                 size,
                 local_mouse,
                 font_cache,
@@ -642,6 +715,9 @@ fn draw_widgets_impl<'w, Msg>(
                 confirm_label,
                 cancel_label,
                 size,
+                focused_id,
+                widget.dialog_action_focus_id(path, DialogAction::Confirm),
+                widget.dialog_action_focus_id(path, DialogAction::Cancel),
                 font_cache,
                 theme,
                 fs,
@@ -649,9 +725,7 @@ fn draw_widgets_impl<'w, Msg>(
                 scale,
             );
         }
-        Widget::Toast {
-            ..
-        } => {}
+        Widget::Toast { .. } => {}
         Widget::VirtualList {
             item_height,
             item_count,
@@ -687,6 +761,7 @@ fn draw_tabbar(
     tabs: &[&str],
     active: usize,
     anim_x: f32,
+    focused_tab: Option<usize>,
     size: (f32, f32),
     mouse: Point,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -712,6 +787,19 @@ fn draw_tabbar(
     for (i, tab) in tabs.iter().enumerate() {
         let tx = i as f32 * tab_w;
         let hov = SkiaRect::from_xywh(tx, 0.0, tab_w, size.1).contains(mouse);
+        if focused_tab == Some(i) {
+            draw_focus_outline(
+                canvas,
+                SkiaRect::from_xywh(
+                    tx + 3.0,
+                    3.0,
+                    (tab_w - 6.0).max(0.0),
+                    (size.1 - 7.0).max(0.0),
+                ),
+                theme.radius_sm,
+                theme,
+            );
+        }
         let tc = if i == active {
             theme.primary
         } else if hov {
@@ -982,6 +1070,7 @@ fn draw_accordion_header(
     canvas: &Canvas,
     title: &str,
     expanded: bool,
+    is_focused: bool,
     size: (f32, f32),
     mouse: Point,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -1012,6 +1101,14 @@ fn draw_accordion_header(
         RRect::new_rect_xy(rect, theme.radius_sm, theme.radius_sm),
         &border,
     );
+    if is_focused {
+        draw_focus_outline(
+            canvas,
+            SkiaRect::from_xywh(1.0, 1.0, (size.0 - 2.0).max(0.0), (header_h - 2.0).max(0.0)),
+            theme.radius_sm,
+            theme,
+        );
+    }
 
     let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
     let mut tp = Paint::default();
@@ -1168,6 +1265,9 @@ fn draw_dialog(
     confirm_label: &str,
     cancel_label: &str,
     size: (f32, f32),
+    focused_id: Option<u64>,
+    confirm_focus_id: Option<u64>,
+    cancel_focus_id: Option<u64>,
     font_cache: &mut HashMap<(String, u32), Font>,
     theme: &Theme,
     fs: &mut FontSystem,
@@ -1262,6 +1362,15 @@ fn draw_dialog(
         RRect::new_rect_xy(confirm_rect, theme.radius_sm, theme.radius_sm),
         &confirm_p,
     );
+    if focused_id == cancel_focus_id {
+        draw_focus_outline_with_colors(
+            canvas,
+            cancel_rect,
+            theme.radius_sm,
+            Theme::alpha(theme.on_surface, 180),
+            theme.surface,
+        );
+    }
     let mut confirm_tp = Paint::default();
     confirm_tp.set_color(theme.on_primary);
     confirm_tp.set_anti_alias(true);
@@ -1275,6 +1384,15 @@ fn draw_dialog(
         &mf,
         &confirm_tp,
     );
+    if focused_id == confirm_focus_id {
+        draw_focus_outline_with_colors(
+            canvas,
+            confirm_rect,
+            theme.radius_sm,
+            theme.primary,
+            theme.surface,
+        );
+    }
 }
 
 fn draw_toast(
@@ -1452,6 +1570,7 @@ fn draw_button(
     text: &str,
     color: Option<SkiaColor>,
     variant: ButtonVariant,
+    is_focused: bool,
     size: (f32, f32),
     mouse: Point,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -1527,12 +1646,22 @@ fn draw_button(
             );
         }
     }
+    if is_focused {
+        draw_focus_outline_with_colors(
+            canvas,
+            SkiaRect::from_xywh(1.5, 1.5, (size.0 - 3.0).max(0.0), (size.1 - 3.0).max(0.0)),
+            theme.radius_sm,
+            accent,
+            theme.surface,
+        );
+    }
 }
 
 fn draw_checkbox(
     canvas: &Canvas,
     checked: bool,
     label: &str,
+    is_focused: bool,
     size: (f32, f32),
     mouse: Point,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -1589,9 +1718,38 @@ fn draw_checkbox(
             &p,
         );
     }
+    if is_focused {
+        let focus_w = if label.is_empty() {
+            box_size
+        } else {
+            let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
+            let mut p = Paint::default();
+            p.set_anti_alias(true);
+            box_size + 8.0 + f.measure_str(label, Some(&p)).0
+        };
+        let focus_h = box_size.max(theme.font_body);
+        draw_focus_outline(
+            canvas,
+            SkiaRect::from_xywh(
+                -4.0,
+                (size.1 - focus_h) / 2.0 - 4.0,
+                focus_w + 8.0,
+                focus_h + 8.0,
+            ),
+            theme.radius_sm,
+            theme,
+        );
+    }
 }
 
-fn draw_switch(canvas: &Canvas, checked: bool, size: (f32, f32), mouse: Point, theme: &Theme) {
+fn draw_switch(
+    canvas: &Canvas,
+    checked: bool,
+    is_focused: bool,
+    size: (f32, f32),
+    mouse: Point,
+    theme: &Theme,
+) {
     let track_w = 40.0_f32;
     let track_h = 22.0_f32;
     let thumb_r = 9.0_f32;
@@ -1627,12 +1785,26 @@ fn draw_switch(canvas: &Canvas, checked: bool, size: (f32, f32), mouse: Point, t
     });
     bp.set_anti_alias(true);
     canvas.draw_circle((thumb_x, ty + track_h / 2.0), thumb_r, &bp);
+    if is_focused {
+        draw_focus_outline_with_colors(
+            canvas,
+            SkiaRect::from_xywh(-3.0, ty - 3.0, track_w + 6.0, track_h + 6.0),
+            track_h / 2.0,
+            if checked {
+                theme.primary
+            } else {
+                Theme::alpha(theme.on_surface, 150)
+            },
+            theme.surface,
+        );
+    }
 }
 
 fn draw_radio(
     canvas: &Canvas,
     selected: bool,
     label: &str,
+    is_focused: bool,
     size: (f32, f32),
     mouse: Point,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -1670,6 +1842,28 @@ fn draw_radio(
         p.set_anti_alias(true);
         canvas.draw_str(label, (r * 2.0 + 8.0, cy + theme.font_body / 3.0), &f, &p);
     }
+    if is_focused {
+        let focus_w = if label.is_empty() {
+            r * 2.0
+        } else {
+            let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
+            let mut p = Paint::default();
+            p.set_anti_alias(true);
+            r * 2.0 + 8.0 + f.measure_str(label, Some(&p)).0
+        };
+        let focus_h = (r * 2.0).max(theme.font_body);
+        draw_focus_outline(
+            canvas,
+            SkiaRect::from_xywh(
+                -4.0,
+                (size.1 - focus_h) / 2.0 - 4.0,
+                focus_w + 8.0,
+                focus_h + 8.0,
+            ),
+            theme.radius_sm,
+            theme,
+        );
+    }
 }
 
 fn draw_slider(
@@ -1677,6 +1871,7 @@ fn draw_slider(
     value: f32,
     min: f32,
     max: f32,
+    is_focused: bool,
     size: (f32, f32),
     mouse: Point,
     is_dragging: bool,
@@ -1737,6 +1932,14 @@ fn draw_slider(
         hp.set_color(Theme::alpha(theme.primary, 30));
         hp.set_anti_alias(true);
         canvas.draw_circle((thumb_x, track_y), tr + 4.0, &hp);
+    }
+    if is_focused {
+        draw_focus_outline(
+            canvas,
+            SkiaRect::from_xywh(1.0, 1.0, (size.0 - 2.0).max(0.0), (size.1 - 2.0).max(0.0)),
+            theme.radius_sm,
+            theme,
+        );
     }
 }
 
@@ -1876,6 +2079,7 @@ fn draw_select(
     hovered_option: Option<usize>,
     label: &str,
     placeholder: &str,
+    is_focused: bool,
     size: (f32, f32),
     mouse: Point,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -1899,7 +2103,7 @@ fn draw_select(
     let mut brd = Paint::default();
     brd.set_style(paint::Style::Stroke);
     brd.set_stroke_width(1.0);
-    brd.set_color(if is_open {
+    brd.set_color(if is_open || is_focused {
         theme.primary
     } else {
         Theme::alpha(theme.on_surface, 80)
@@ -1909,7 +2113,7 @@ fn draw_select(
     if !label.is_empty() {
         let f = get_cached_font(font_cache, "sans-serif", theme.font_label);
         let mut p = Paint::default();
-        p.set_color(if is_open {
+        p.set_color(if is_open || is_focused {
             theme.primary
         } else {
             Theme::alpha(theme.on_surface, 160)
@@ -1987,6 +2191,14 @@ fn draw_select(
                 &op,
             );
         }
+    }
+    if is_focused {
+        draw_focus_outline(
+            canvas,
+            SkiaRect::from_xywh(1.0, 1.0, (size.0 - 2.0).max(0.0), (closed_h - 2.0).max(0.0)),
+            theme.radius_sm,
+            theme,
+        );
     }
 }
 

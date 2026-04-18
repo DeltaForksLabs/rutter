@@ -26,7 +26,7 @@ use crate::app::AppLogic;
 use crate::layout::{RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree};
 use crate::render::draw_widgets;
 use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
-use crate::widget::Widget;
+use crate::widget::{DialogAction, Widget};
 
 #[derive(Debug, Clone, Copy)]
 enum ToastRuntimeUpdate {
@@ -81,6 +81,132 @@ fn collect_toast_runtime_updates_impl<Msg>(
     }
 }
 
+fn collect_focus_order<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>) {
+    let mut path = Vec::new();
+    if collect_overlay_focus_scope(widget, out, &mut path) {
+        return;
+    }
+    collect_focus_order_impl(widget, out, &mut path);
+}
+
+fn collect_overlay_focus_scope<Msg>(
+    widget: &Widget<Msg>,
+    out: &mut Vec<u64>,
+    path: &mut Vec<usize>,
+) -> bool {
+    match widget {
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate().rev() {
+                path.push(index);
+                let found = collect_overlay_focus_scope(child, out, path);
+                path.pop();
+                if found {
+                    return true;
+                }
+            }
+            false
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. } => {
+            path.push(0);
+            let found = collect_overlay_focus_scope(child, out, path);
+            path.pop();
+            found
+        }
+        Widget::Accordion {
+            expanded, child, ..
+        } => {
+            if !expanded {
+                return false;
+            }
+            path.push(0);
+            let found = collect_overlay_focus_scope(child, out, path);
+            path.pop();
+            found
+        }
+        Widget::Modal { visible, child, .. } => {
+            if !visible {
+                return false;
+            }
+            path.push(0);
+            let found = collect_overlay_focus_scope(child, out, path);
+            if !found {
+                collect_focus_order_impl(child, out, path);
+            }
+            path.pop();
+            true
+        }
+        Widget::Dialog { visible, .. } => {
+            if !visible {
+                return false;
+            }
+            if let Some(cancel_id) = widget.dialog_action_focus_id(path, DialogAction::Cancel) {
+                out.push(cancel_id);
+            }
+            if let Some(confirm_id) = widget.dialog_action_focus_id(path, DialogAction::Confirm) {
+                out.push(confirm_id);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path: &mut Vec<usize>) {
+    match widget {
+        Widget::Button { .. }
+        | Widget::Checkbox { .. }
+        | Widget::Switch { .. }
+        | Widget::Radio { .. }
+        | Widget::TextInput { .. }
+        | Widget::TextArea { .. }
+        | Widget::SearchBar { .. }
+        | Widget::Slider { .. }
+        | Widget::Select { .. }
+        | Widget::VirtualList { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
+        Widget::TabBar { tabs, .. } => {
+            for index in 0..tabs.len() {
+                if let Some(focus_id) = widget.tab_focus_id(path, index) {
+                    out.push(focus_id);
+                }
+            }
+        }
+        Widget::Accordion {
+            expanded, child, ..
+        } => {
+            out.push(widget.keyboard_focus_id(path).unwrap());
+            if *expanded {
+                path.push(0);
+                collect_focus_order_impl(child, out, path);
+                path.pop();
+            }
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                collect_focus_order_impl(child, out, path);
+                path.pop();
+            }
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. } => {
+            path.push(0);
+            collect_focus_order_impl(child, out, path);
+            path.pop();
+        }
+        Widget::Modal { visible, child, .. } => {
+            if *visible {
+                path.push(0);
+                collect_focus_order_impl(child, out, path);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
 #[derive(Debug, Clone)]
 struct InputRuntime<Msg: Clone> {
     on_change: fn(String) -> Msg,
@@ -94,9 +220,36 @@ struct InputRuntime<Msg: Clone> {
 #[derive(Debug, Clone)]
 struct SliderRuntime<Msg> {
     on_change: fn(f32) -> Msg,
+    value: f32,
     min: f32,
     max: f32,
     step: f32,
+}
+
+#[derive(Debug, Clone)]
+struct ToggleRuntime<Msg> {
+    on_change: fn(bool) -> Msg,
+    checked: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SelectRuntime<Msg> {
+    on_change: fn(usize) -> Msg,
+    selected_index: usize,
+    option_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TabRuntime<Msg> {
+    on_change: fn(usize) -> Msg,
+    tab_count: usize,
+    focus_ids: Vec<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct TabFocusRuntime {
+    parent_id: u64,
+    index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -109,10 +262,17 @@ struct VListRuntime<Msg> {
 #[derive(Debug)]
 struct WidgetRuntimeCaches<Msg: Clone> {
     input_order: Vec<u64>,
+    focus_order: Vec<u64>,
     inputs: HashMap<u64, InputRuntime<Msg>>,
+    buttons: HashMap<u64, Msg>,
+    checkboxes: HashMap<u64, ToggleRuntime<Msg>>,
+    switches: HashMap<u64, ToggleRuntime<Msg>>,
+    radios: HashMap<u64, fn() -> Msg>,
+    accordions: HashMap<u64, Msg>,
     sliders: HashMap<u64, SliderRuntime<Msg>>,
-    selects: HashMap<u64, fn(usize) -> Msg>,
-    tabs: HashMap<u64, fn(usize) -> Msg>,
+    selects: HashMap<u64, SelectRuntime<Msg>>,
+    tabs: HashMap<u64, TabRuntime<Msg>>,
+    tab_items: HashMap<u64, TabFocusRuntime>,
     vlists: HashMap<u64, VListRuntime<Msg>>,
     toast_dismiss: HashMap<u64, Msg>,
 }
@@ -121,10 +281,17 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
     fn default() -> Self {
         Self {
             input_order: Vec::new(),
+            focus_order: Vec::new(),
             inputs: HashMap::new(),
+            buttons: HashMap::new(),
+            checkboxes: HashMap::new(),
+            switches: HashMap::new(),
+            radios: HashMap::new(),
+            accordions: HashMap::new(),
             sliders: HashMap::new(),
             selects: HashMap::new(),
             tabs: HashMap::new(),
+            tab_items: HashMap::new(),
             vlists: HashMap::new(),
             toast_dismiss: HashMap::new(),
         }
@@ -134,10 +301,17 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
 impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
     fn clear(&mut self) {
         self.input_order.clear();
+        self.focus_order.clear();
         self.inputs.clear();
+        self.buttons.clear();
+        self.checkboxes.clear();
+        self.switches.clear();
+        self.radios.clear();
+        self.accordions.clear();
         self.sliders.clear();
         self.selects.clear();
         self.tabs.clear();
+        self.tab_items.clear();
         self.vlists.clear();
         self.toast_dismiss.clear();
     }
@@ -158,7 +332,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub app_state: A::State,
     pub input_states: HashMap<u64, crate::input_state::InputWidgetState>,
     pub widget_states: HashMap<u64, WidgetState>,
-    pub focused_input_id: Option<u64>,
+    pub focused_widget_id: Option<u64>,
     pub active_scroll_id: Option<u64>,
     pub drag_slider_id: Option<u64>,
     pub clipboard: Clipboard,
@@ -191,7 +365,7 @@ impl<A: AppLogic> RutterEngine<A> {
             app_state: state,
             input_states: HashMap::new(),
             widget_states: HashMap::new(),
-            focused_input_id: None,
+            focused_widget_id: None,
             active_scroll_id: None,
             drag_slider_id: None,
             clipboard: Clipboard::new().expect("clipboard init falhou"),
@@ -226,13 +400,18 @@ impl<A: AppLogic> RutterEngine<A> {
     }
     pub fn maybe_snapshot(&mut self) {
         if self.snapshot_scheduled && self.last_snapshot.elapsed().as_millis() > 500 {
-            if let Some(id) = self.focused_input_id {
+            if let Some(id) = self.focused_input_id() {
                 if let Some(s) = self.input_states.get_mut(&id) {
                     s.snapshot();
                 }
             }
             self.snapshot_scheduled = false;
         }
+    }
+
+    pub fn focused_input_id(&self) -> Option<u64> {
+        self.focused_widget_id
+            .filter(|id| self.runtime_caches.inputs.contains_key(id))
     }
 
     pub fn ensure_input_state(&mut self, id: u64) {
@@ -263,12 +442,6 @@ impl<A: AppLogic> RutterEngine<A> {
             .retain(|id, _| live_widget_ids.contains(id));
         self.input_states
             .retain(|id, _| live_input_ids.contains(id));
-        if self
-            .focused_input_id
-            .is_some_and(|id| !live_input_ids.contains(&id))
-        {
-            self.focused_input_id = None;
-        }
         if self
             .active_scroll_id
             .is_some_and(|id| !live_widget_ids.contains(&id))
@@ -399,6 +572,13 @@ impl<A: AppLogic> RutterEngine<A> {
             Some(root),
             A::theme().spacing,
         );
+        collect_focus_order(&widget_tree, &mut self.runtime_caches.focus_order);
+        if self
+            .focused_widget_id
+            .is_some_and(|id| !self.runtime_caches.focus_order.contains(&id))
+        {
+            self.focused_widget_id = None;
+        }
         self.layout_dirty = false;
     }
 
@@ -433,6 +613,11 @@ impl<A: AppLogic> RutterEngine<A> {
     ) {
         let layout = node.and_then(|node| taffy.layout(node).ok());
         match widget {
+            Widget::Button { on_press, .. } => {
+                runtime_caches
+                    .buttons
+                    .insert(widget.keyboard_focus_id(path).unwrap(), on_press.clone());
+            }
             Widget::TextInput {
                 on_change,
                 on_submit,
@@ -491,7 +676,35 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                 );
             }
+            Widget::Checkbox {
+                checked, on_change, ..
+            } => {
+                runtime_caches.checkboxes.insert(
+                    widget.keyboard_focus_id(path).unwrap(),
+                    ToggleRuntime {
+                        on_change: *on_change,
+                        checked: *checked,
+                    },
+                );
+            }
+            Widget::Switch {
+                checked, on_change, ..
+            } => {
+                runtime_caches.switches.insert(
+                    widget.keyboard_focus_id(path).unwrap(),
+                    ToggleRuntime {
+                        on_change: *on_change,
+                        checked: *checked,
+                    },
+                );
+            }
+            Widget::Radio { on_select, .. } => {
+                runtime_caches
+                    .radios
+                    .insert(widget.keyboard_focus_id(path).unwrap(), *on_select);
+            }
             Widget::Slider {
+                value,
                 on_change,
                 min,
                 max,
@@ -503,21 +716,99 @@ impl<A: AppLogic> RutterEngine<A> {
                     resolved_id,
                     SliderRuntime {
                         on_change: *on_change,
+                        value: *value,
                         min: *min,
                         max: *max,
                         step: *step,
                     },
                 );
             }
-            Widget::Select { on_change, .. } => {
-                runtime_caches
-                    .selects
-                    .insert(widget.resolved_id(path).unwrap(), *on_change);
+            Widget::Select {
+                options,
+                selected_index,
+                on_change,
+                ..
+            } => {
+                runtime_caches.selects.insert(
+                    widget.resolved_id(path).unwrap(),
+                    SelectRuntime {
+                        on_change: *on_change,
+                        selected_index: *selected_index,
+                        option_count: options.len(),
+                    },
+                );
             }
-            Widget::TabBar { on_change, .. } => {
+            Widget::Accordion {
+                on_toggle, child, ..
+            } => {
                 runtime_caches
-                    .tabs
-                    .insert(widget.resolved_id(path).unwrap(), *on_change);
+                    .accordions
+                    .insert(widget.keyboard_focus_id(path).unwrap(), on_toggle.clone());
+                path.push(0);
+                Self::sync_runtime_metadata_impl(
+                    runtime_caches,
+                    widget_states,
+                    taffy,
+                    child.as_ref(),
+                    Self::first_child(node, taffy),
+                    spacing,
+                    path,
+                );
+                path.pop();
+            }
+            Widget::TabBar {
+                tabs,
+                on_change,
+                ..
+            } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
+                let focus_ids = (0..tabs.len())
+                    .filter_map(|index| widget.tab_focus_id(path, index))
+                    .collect::<Vec<_>>();
+                for (index, focus_id) in focus_ids.iter().copied().enumerate() {
+                    runtime_caches.tab_items.insert(
+                        focus_id,
+                        TabFocusRuntime {
+                            parent_id: resolved_id,
+                            index,
+                        },
+                    );
+                }
+                runtime_caches.tabs.insert(
+                    resolved_id,
+                    TabRuntime {
+                        on_change: *on_change,
+                        tab_count: tabs.len(),
+                        focus_ids,
+                    },
+                );
+            }
+            Widget::Dialog {
+                on_confirm,
+                on_cancel,
+                child,
+                ..
+            } => {
+                if let Some(cancel_id) = widget.dialog_action_focus_id(path, DialogAction::Cancel) {
+                    runtime_caches.buttons.insert(cancel_id, on_cancel.clone());
+                }
+                if let Some(confirm_id) = widget.dialog_action_focus_id(path, DialogAction::Confirm)
+                {
+                    runtime_caches
+                        .buttons
+                        .insert(confirm_id, on_confirm.clone());
+                }
+                path.push(0);
+                Self::sync_runtime_metadata_impl(
+                    runtime_caches,
+                    widget_states,
+                    taffy,
+                    child.as_ref(),
+                    Self::first_child(node, taffy),
+                    spacing,
+                    path,
+                );
+                path.pop();
             }
             Widget::Toast {
                 on_dismiss: Some(msg),
@@ -594,9 +885,7 @@ impl<A: AppLogic> RutterEngine<A> {
             }
             Widget::Container { child, .. }
             | Widget::Tooltip { child, .. }
-            | Widget::Accordion { child, .. }
-            | Widget::Modal { child, .. }
-            | Widget::Dialog { child, .. } => {
+            | Widget::Modal { child, .. } => {
                 path.push(0);
                 Self::sync_runtime_metadata_impl(
                     runtime_caches,
@@ -688,7 +977,7 @@ impl<A: AppLogic> RutterEngine<A> {
             &mut self.font_system.borrow_mut(),
             &mut self.swash_cache,
             lc,
-            self.focused_input_id,
+            self.focused_widget_id,
             &self.input_states,
             &self.widget_states,
             &mut self.font_cache,
@@ -719,7 +1008,7 @@ mod tests {
     use cosmic_text::FontSystem;
 
     use crate::layout::build_taffy_tree;
-    use crate::widget::InputState;
+    use crate::widget::{DialogAction, InputState};
 
     fn fs() -> Rc<RefCell<FontSystem>> {
         Rc::new(RefCell::new(FontSystem::new()))
@@ -858,14 +1147,15 @@ mod tests {
         assert_eq!(slider.step, 5.0);
         assert_eq!((slider.on_change)(55.0), Msg::Float(55.0));
 
-        assert_eq!(
-            runtime_caches.selects.get(&3).copied().unwrap()(1),
-            Msg::Usize(1)
-        );
-        assert_eq!(
-            runtime_caches.tabs.get(&4).copied().unwrap()(1),
-            Msg::Usize(1)
-        );
+        let select = runtime_caches.selects.get(&3).unwrap();
+        assert_eq!(select.selected_index, 0);
+        assert_eq!(select.option_count, 2);
+        assert_eq!((select.on_change)(1), Msg::Usize(1));
+
+        let tab = runtime_caches.tabs.get(&4).unwrap();
+        assert_eq!(tab.tab_count, 2);
+        assert_eq!(tab.focus_ids.len(), 2);
+        assert_eq!((tab.on_change)(1), Msg::Usize(1));
 
         let vlist = runtime_caches.vlists.get(&5).unwrap();
         assert_eq!(vlist.item_height, 30.0);
@@ -927,5 +1217,70 @@ mod tests {
         assert_eq!(input.on_submit, Some(Msg::Submit));
         assert!((input.visible_w - 260.0).abs() < f32::EPSILON);
         assert!(input.visible_h >= 18.0);
+    }
+
+    #[test]
+    fn focus_order_expands_tab_bar_into_individual_tabs() {
+        let tabbar = Widget::TabBar {
+            id: 22,
+            tabs: &["Home", "Explore", "Library"],
+            active: 1,
+            on_change: Msg::Usize,
+            style: base_style(320.0, 40.0),
+        };
+
+        let mut focus_order = Vec::new();
+        collect_focus_order(&tabbar, &mut focus_order);
+
+        let expected = (0..3)
+            .map(|index| tabbar.tab_focus_id(&[], index).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(focus_order, expected);
+        assert_ne!(focus_order[0], tabbar.resolved_id(&[]).unwrap());
+    }
+
+    #[test]
+    fn visible_dialog_traps_focus_on_dialog_actions() {
+        let dialog = Widget::Dialog {
+            id: 30,
+            title: "Confirm",
+            message: "Proceed?",
+            confirm_label: "Confirm",
+            cancel_label: "Cancel",
+            visible: true,
+            on_confirm: Msg::Submit,
+            on_cancel: Msg::Dismiss,
+            on_dismiss: None,
+            style: base_style(400.0, 240.0),
+            child: Box::new(Widget::Spacer {
+                style: Style::default(),
+            }),
+        };
+        let cancel_id = dialog
+            .dialog_action_focus_id(&[1], DialogAction::Cancel)
+            .unwrap();
+        let confirm_id = dialog
+            .dialog_action_focus_id(&[1], DialogAction::Confirm)
+            .unwrap();
+
+        let widget = Widget::Column {
+            style: Style::default(),
+            children: vec![
+                Widget::Button {
+                    text: "Open",
+                    on_press: Msg::Submit,
+                    style: base_style(140.0, 40.0),
+                    color: None,
+                    variant: crate::widget::ButtonVariant::Primary,
+                },
+                dialog,
+            ],
+        };
+
+        let mut focus_order = Vec::new();
+        collect_focus_order(&widget, &mut focus_order);
+
+        assert_eq!(focus_order, vec![cancel_id, confirm_id]);
     }
 }

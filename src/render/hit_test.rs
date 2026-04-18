@@ -8,12 +8,15 @@ use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::engine::widget_state::WidgetState;
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
-use crate::widget::Widget;
+use crate::widget::{DialogAction, Widget};
 
 const ACCORDION_HEADER_H: f32 = 44.0;
 
 pub enum HitResult<Msg> {
-    Message(Msg),
+    Message {
+        focus_id: Option<u64>,
+        msg: Msg,
+    },
     InputFocus {
         id: u64,
         local_x: f32,
@@ -38,6 +41,7 @@ pub enum HitResult<Msg> {
     ScrollFocus(u64),
     TabPress {
         id: u64,
+        focus_id: u64,
         index: usize,
     },
     ModalDismiss(u64),
@@ -90,7 +94,10 @@ fn hit_test_impl<Msg: Clone>(
     }
 
     match widget {
-        Widget::Button { on_press, .. } => Some(HitResult::Message(on_press.clone())),
+        Widget::Button { on_press, .. } => Some(HitResult::Message {
+            focus_id: widget.keyboard_focus_id(path),
+            msg: on_press.clone(),
+        }),
         Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
             Some(HitResult::InputFocus {
                 id: widget.resolved_id(path).unwrap(),
@@ -102,11 +109,20 @@ fn hit_test_impl<Msg: Clone>(
         }
         Widget::Checkbox {
             checked, on_change, ..
-        } => Some(HitResult::Message(on_change(!checked))),
+        } => Some(HitResult::Message {
+            focus_id: widget.keyboard_focus_id(path),
+            msg: on_change(!checked),
+        }),
         Widget::Switch {
             checked, on_change, ..
-        } => Some(HitResult::Message(on_change(!checked))),
-        Widget::Radio { on_select, .. } => Some(HitResult::Message(on_select())),
+        } => Some(HitResult::Message {
+            focus_id: widget.keyboard_focus_id(path),
+            msg: on_change(!checked),
+        }),
+        Widget::Radio { on_select, .. } => Some(HitResult::Message {
+            focus_id: widget.keyboard_focus_id(path),
+            msg: on_select(),
+        }),
         Widget::Slider { min, max, step, .. } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let pad = 16.0_f32;
@@ -180,7 +196,10 @@ fn hit_test_impl<Msg: Clone>(
                 ACCORDION_HEADER_H.min(layout.size.height),
             );
             if header_rect.contains(mouse) {
-                return Some(HitResult::Message(on_toggle.clone()));
+                return Some(HitResult::Message {
+                    focus_id: widget.keyboard_focus_id(path),
+                    msg: on_toggle.clone(),
+                });
             }
             if *expanded {
                 let ids = taffy.children(node_id).unwrap();
@@ -211,6 +230,7 @@ fn hit_test_impl<Msg: Clone>(
             let idx = idx.min(tabs.len().saturating_sub(1));
             Some(HitResult::TabPress {
                 id: widget.resolved_id(path).unwrap(),
+                focus_id: widget.tab_focus_id(path, idx).unwrap(),
                 index: idx,
             })
         }
@@ -232,7 +252,10 @@ fn hit_test_impl<Msg: Clone>(
                 return child_hit;
             }
             if let Some(msg) = on_dismiss.clone() {
-                Some(HitResult::Message(msg))
+                Some(HitResult::Message {
+                    focus_id: None,
+                    msg,
+                })
             } else {
                 Some(HitResult::ModalDismiss(widget.resolved_id(path).unwrap()))
             }
@@ -267,10 +290,16 @@ fn hit_test_impl<Msg: Clone>(
             );
 
             if confirm_rect.contains(mouse) {
-                return Some(HitResult::Message(on_confirm.clone()));
+                return Some(HitResult::Message {
+                    focus_id: widget.dialog_action_focus_id(path, DialogAction::Confirm),
+                    msg: on_confirm.clone(),
+                });
             }
             if cancel_rect.contains(mouse) {
-                return Some(HitResult::Message(on_cancel.clone()));
+                return Some(HitResult::Message {
+                    focus_id: widget.dialog_action_focus_id(path, DialogAction::Cancel),
+                    msg: on_cancel.clone(),
+                });
             }
             Some(HitResult::ModalDismiss(widget.resolved_id(path).unwrap()))
         }

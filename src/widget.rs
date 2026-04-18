@@ -68,6 +68,19 @@ pub(crate) enum WidgetIdTag {
     Dialog = 12,
     Toast = 13,
     VirtualList = 14,
+    Button = 15,
+    Checkbox = 16,
+    Switch = 17,
+    Radio = 18,
+    Tab = 19,
+    DialogConfirm = 20,
+    DialogCancel = 21,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DialogAction {
+    Confirm,
+    Cancel,
 }
 
 pub(crate) fn resolve_widget_id(raw_id: u64, tag: WidgetIdTag, path: &[usize]) -> u64 {
@@ -87,6 +100,27 @@ pub(crate) fn resolve_widget_id(raw_id: u64, tag: WidgetIdTag, path: &[usize]) -
         hash ^= (segment as u64).wrapping_add(1);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
+
+    let resolved = hash | AUTO_MASK;
+    if resolved == AUTO_ID {
+        AUTO_MASK
+    } else {
+        resolved
+    }
+}
+
+pub(crate) fn resolve_subwidget_id(base_id: u64, tag: WidgetIdTag, slot: usize) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    const AUTO_MASK: u64 = 1 << 63;
+
+    let mut hash = FNV_OFFSET;
+    hash ^= tag as u64;
+    hash = hash.wrapping_mul(FNV_PRIME);
+    hash ^= base_id;
+    hash = hash.wrapping_mul(FNV_PRIME);
+    hash ^= (slot as u64).wrapping_add(1);
+    hash = hash.wrapping_mul(FNV_PRIME);
 
     let resolved = hash | AUTO_MASK;
     if resolved == AUTO_ID {
@@ -565,6 +599,50 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::VirtualList { id, .. } => {
                 Some(resolve_widget_id(*id, WidgetIdTag::VirtualList, path))
             }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn keyboard_focus_id(&self, path: &[usize]) -> Option<u64> {
+        match self {
+            Self::Button { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Button, path)),
+            Self::Checkbox { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Checkbox, path)),
+            Self::Switch { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Switch, path)),
+            Self::Radio { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Radio, path)),
+            Self::TextInput { .. }
+            | Self::TextArea { .. }
+            | Self::SearchBar { .. }
+            | Self::Slider { .. }
+            | Self::Select { .. }
+            | Self::Accordion { .. }
+            | Self::TabBar { .. }
+            | Self::VirtualList { .. } => self.resolved_id(path),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn tab_focus_id(&self, path: &[usize], index: usize) -> Option<u64> {
+        match self {
+            Self::TabBar { .. } => Some(resolve_subwidget_id(
+                self.resolved_id(path)?,
+                WidgetIdTag::Tab,
+                index,
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn dialog_action_focus_id(
+        &self,
+        path: &[usize],
+        action: DialogAction,
+    ) -> Option<u64> {
+        let tag = match action {
+            DialogAction::Confirm => WidgetIdTag::DialogConfirm,
+            DialogAction::Cancel => WidgetIdTag::DialogCancel,
+        };
+        match self {
+            Self::Dialog { .. } => Some(resolve_subwidget_id(self.resolved_id(path)?, tag, 0)),
             _ => None,
         }
     }
