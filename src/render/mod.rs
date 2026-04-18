@@ -8,16 +8,16 @@ pub mod text;
 
 use std::{collections::HashMap, time::Instant};
 
-use cosmic_text::{Attrs, Edit, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Cursor, Edit, FontSystem, LayoutRun, SwashCache, Wrap};
 use skia_safe::{
     Color as SkiaColor, Contains, Font, Paint, Point, RRect, Rect as SkiaRect, canvas::Canvas,
     paint,
 };
 use taffy::prelude::{NodeId, TaffyTree};
 
-use self::text::{draw_text, get_cached_font};
+use self::text::{TextBufferCache, TextShapeRequest, draw_text, get_cached_font};
 use crate::engine::widget_state::WidgetState;
-use crate::input_state::{InputWidgetState, cursor_x_in_run};
+use crate::input_state::{InputWidgetState, TextSelection, cursor_x_in_run};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
 use crate::theme::Theme;
 use crate::widget::{
@@ -105,6 +105,7 @@ pub fn draw_widgets<'w, Msg>(
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -122,6 +123,7 @@ pub fn draw_widgets<'w, Msg>(
         input_states,
         widget_states,
         font_cache,
+        text_cache,
         cursor_visible,
         theme,
         scale,
@@ -277,6 +279,7 @@ fn draw_widgets_impl<'w, Msg>(
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -309,6 +312,7 @@ fn draw_widgets_impl<'w, Msg>(
                     input_states,
                     widget_states,
                     font_cache,
+                    text_cache,
                     cursor_visible,
                     theme,
                     scale,
@@ -343,6 +347,7 @@ fn draw_widgets_impl<'w, Msg>(
                 input_states,
                 widget_states,
                 font_cache,
+                text_cache,
                 cursor_visible,
                 theme,
                 scale,
@@ -372,6 +377,7 @@ fn draw_widgets_impl<'w, Msg>(
                 input_states,
                 widget_states,
                 font_cache,
+                text_cache,
                 cursor_visible,
                 theme,
                 scale,
@@ -398,6 +404,7 @@ fn draw_widgets_impl<'w, Msg>(
                 input_states,
                 widget_states,
                 font_cache,
+                text_cache,
                 cursor_visible,
                 theme,
                 scale,
@@ -437,6 +444,7 @@ fn draw_widgets_impl<'w, Msg>(
             fs,
             swash,
             font_cache,
+            text_cache,
             theme,
             scale,
             size,
@@ -461,6 +469,7 @@ fn draw_widgets_impl<'w, Msg>(
             fs,
             swash,
             font_cache,
+            text_cache,
             theme,
             scale,
             size,
@@ -479,6 +488,7 @@ fn draw_widgets_impl<'w, Msg>(
             fs,
             swash,
             font_cache,
+            text_cache,
             theme,
             scale,
             size,
@@ -656,6 +666,7 @@ fn draw_widgets_impl<'w, Msg>(
                     input_states,
                     widget_states,
                     font_cache,
+                    text_cache,
                     cursor_visible,
                     theme,
                     scale,
@@ -688,6 +699,7 @@ fn draw_widgets_impl<'w, Msg>(
                 input_states,
                 widget_states,
                 font_cache,
+                text_cache,
                 cursor_visible,
                 theme,
                 scale,
@@ -719,6 +731,7 @@ fn draw_widgets_impl<'w, Msg>(
                 widget.dialog_action_focus_id(path, DialogAction::Confirm),
                 widget.dialog_action_focus_id(path, DialogAction::Cancel),
                 font_cache,
+                text_cache,
                 theme,
                 fs,
                 swash,
@@ -835,6 +848,7 @@ fn draw_text_input(
     fs: &mut FontSystem,
     swash: &mut SwashCache,
     font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
     theme: &Theme,
     scale: f32,
     size: (f32, f32),
@@ -875,6 +889,11 @@ fn draw_text_input(
 
     let pad_x = theme.spacing * 2.0;
     let pad_y = theme.spacing;
+    let text_width = if is_multiline {
+        (size.0 - pad_x * 2.0).max(1.0)
+    } else {
+        10_000.0
+    };
     canvas.save();
     canvas.translate((pad_x, pad_y));
     canvas.clip_rect(
@@ -925,24 +944,163 @@ fn draw_text_input(
         return;
     }
 
-    let display = if is_password {
-        "•".repeat(text.chars().count())
+    let cursor = s.editor.cursor();
+    let mapped_cursor = if is_password {
+        Cursor::new(
+            cursor.line,
+            password_display_index(&text, cursor.index.min(text.len())),
+        )
     } else {
-        text.clone()
+        cursor
     };
-    let mut buf = cosmic_text::Buffer::new(fs, Metrics::new(theme.font_body, line_height));
-    buf.set_size(
+    let mapped_selection = s
+        .selection
+        .filter(|selection| !selection.is_empty())
+        .map(|selection| map_selection_for_display(selection, &text, is_password));
+
+    if is_password {
+        let display = "•".repeat(text.chars().count());
+        let buffer = text_cache.get_or_shape(
+            fs,
+            TextShapeRequest::new(&display, theme.font_body, line_height)
+                .with_bounds(
+                    Some(text_width),
+                    if is_multiline { None } else { Some(size.1) },
+                )
+                .with_wrap(if is_multiline {
+                    Wrap::WordOrGlyph
+                } else {
+                    Wrap::None
+                }),
+        );
+        let runs = buffer.layout_runs().collect::<Vec<_>>();
+        draw_text_input_runs(
+            canvas,
+            fs,
+            swash,
+            theme,
+            scale,
+            size,
+            pad_y,
+            line_height,
+            is_focused,
+            cursor_visible,
+            is_multiline,
+            mapped_cursor,
+            mapped_selection,
+            runs,
+        );
+    } else {
+        s.editor.with_buffer(|buffer| {
+            let runs = buffer.layout_runs().collect::<Vec<_>>();
+            draw_text_input_runs(
+                canvas,
+                fs,
+                swash,
+                theme,
+                scale,
+                size,
+                pad_y,
+                line_height,
+                is_focused,
+                cursor_visible,
+                is_multiline,
+                mapped_cursor,
+                mapped_selection,
+                runs,
+            );
+        });
+    }
+
+    canvas.restore();
+
+    if let Some(msg) = error_msg {
+        let ef = get_cached_font(font_cache, "sans-serif", theme.font_small);
+        let mut p = Paint::default();
+        p.set_color(theme.error);
+        p.set_anti_alias(true);
+        canvas.draw_str(msg, (4.0, size.1 + theme.spacing * 3.0), &ef, &p);
+    }
+}
+
+fn draw_search_bar(
+    canvas: &Canvas,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
+    theme: &Theme,
+    scale: f32,
+    size: (f32, f32),
+    is_focused: bool,
+    placeholder: &str,
+    istate: Option<&InputWidgetState>,
+    cursor_visible: bool,
+) {
+    draw_text_input(
+        canvas,
         fs,
-        Some(if is_multiline {
-            size.0 - pad_x * 2.0
-        } else {
-            10_000.0
-        }),
-        if is_multiline { None } else { Some(size.1) },
+        swash,
+        font_cache,
+        text_cache,
+        theme,
+        scale,
+        size,
+        is_focused,
+        "",
+        placeholder,
+        InputState::Idle,
+        None,
+        false,
+        istate,
+        cursor_visible,
+        false,
     );
-    buf.set_text(fs, &display, &Attrs::new(), Shaping::Advanced, None);
-    buf.shape_until_scroll(fs, false);
-    let runs = buf.layout_runs().collect::<Vec<_>>();
+    let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
+    let mut p = Paint::default();
+    p.set_color(Theme::alpha(theme.on_surface, 160));
+    p.set_anti_alias(true);
+    canvas.draw_str("⌕", (10.0, size.1 / 2.0 + theme.font_body / 3.0), &f, &p);
+}
+
+fn password_display_index(text: &str, byte_index: usize) -> usize {
+    const BULLET_UTF8_LEN: usize = "•".len();
+    text[..byte_index].chars().count() * BULLET_UTF8_LEN
+}
+
+fn map_selection_for_display(
+    selection: TextSelection,
+    text: &str,
+    is_password: bool,
+) -> TextSelection {
+    if !is_password {
+        return selection;
+    }
+
+    let (start, end) = selection.normalized();
+    TextSelection {
+        start: password_display_index(text, start.min(text.len())),
+        end: password_display_index(text, end.min(text.len())),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_text_input_runs<'a>(
+    canvas: &Canvas,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    theme: &Theme,
+    scale: f32,
+    size: (f32, f32),
+    pad_y: f32,
+    line_height: f32,
+    is_focused: bool,
+    cursor_visible: bool,
+    is_multiline: bool,
+    cursor: Cursor,
+    selection: Option<TextSelection>,
+    runs: Vec<LayoutRun<'a>>,
+) {
     let inner_height = (size.1 - pad_y * 2.0).max(0.0);
     let vertical_offset = if is_multiline {
         0.0
@@ -954,20 +1112,12 @@ fn draw_text_input(
         ((inner_height - run_height).max(0.0)) / 2.0
     };
 
-    let cursor = s.editor.cursor();
-    let mapped_cursor = if is_password {
-        let chars_before = text[..cursor.index].chars().count();
-        cosmic_text::Cursor::new(cursor.line, chars_before * 3)
-    } else {
-        cursor
-    };
-
     let mut cx = 0.0;
     let mut cy = vertical_offset;
     let mut cursor_h = line_height;
 
     for run in runs.iter() {
-        if let Some(run_x) = cursor_x_in_run(mapped_cursor, run) {
+        if let Some(run_x) = cursor_x_in_run(cursor, run) {
             cx = run_x;
             cy = vertical_offset + run.line_top;
             cursor_h = run.line_height;
@@ -975,8 +1125,8 @@ fn draw_text_input(
         }
     }
 
-    if let Some(sel) = s.selection.filter(|sel| !sel.is_empty()) {
-        let (a, b) = sel.normalized();
+    if let Some(selection) = selection {
+        let (a, b) = selection.normalized();
         for run in runs.iter() {
             let mut x_start = None;
             let mut x_end = None;
@@ -989,13 +1139,18 @@ fn draw_text_input(
                 }
             }
             if let (Some(xs), Some(xe)) = (x_start, x_end) {
-                let sel_w = (xe - xs).max(0.0);
-                let sel_h = run.line_height;
-                let sel_y = vertical_offset + run.line_top;
                 let mut sp = Paint::default();
                 sp.set_color(Theme::alpha(theme.primary, 60));
                 sp.set_anti_alias(true);
-                canvas.draw_rect(SkiaRect::from_xywh(xs, sel_y, sel_w, sel_h), &sp);
+                canvas.draw_rect(
+                    SkiaRect::from_xywh(
+                        xs,
+                        vertical_offset + run.line_top,
+                        (xe - xs).max(0.0),
+                        run.line_height,
+                    ),
+                    &sp,
+                );
             }
         }
     }
@@ -1016,54 +1171,6 @@ fn draw_text_input(
         swash,
         scale,
     );
-
-    canvas.restore();
-
-    if let Some(msg) = error_msg {
-        let ef = get_cached_font(font_cache, "sans-serif", theme.font_small);
-        let mut p = Paint::default();
-        p.set_color(theme.error);
-        p.set_anti_alias(true);
-        canvas.draw_str(msg, (4.0, size.1 + theme.spacing * 3.0), &ef, &p);
-    }
-}
-
-fn draw_search_bar(
-    canvas: &Canvas,
-    fs: &mut FontSystem,
-    swash: &mut SwashCache,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-    scale: f32,
-    size: (f32, f32),
-    is_focused: bool,
-    placeholder: &str,
-    istate: Option<&InputWidgetState>,
-    cursor_visible: bool,
-) {
-    draw_text_input(
-        canvas,
-        fs,
-        swash,
-        font_cache,
-        theme,
-        scale,
-        size,
-        is_focused,
-        "",
-        placeholder,
-        InputState::Idle,
-        None,
-        false,
-        istate,
-        cursor_visible,
-        false,
-    );
-    let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
-    let mut p = Paint::default();
-    p.set_color(Theme::alpha(theme.on_surface, 160));
-    p.set_anti_alias(true);
-    canvas.draw_str("⌕", (10.0, size.1 / 2.0 + theme.font_body / 3.0), &f, &p);
 }
 
 fn draw_accordion_header(
@@ -1190,6 +1297,7 @@ fn draw_modal<Msg>(
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -1249,6 +1357,7 @@ fn draw_modal<Msg>(
         input_states,
         widget_states,
         font_cache,
+        text_cache,
         cursor_visible,
         theme,
         scale,
@@ -1269,6 +1378,7 @@ fn draw_dialog(
     confirm_focus_id: Option<u64>,
     cancel_focus_id: Option<u64>,
     font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
     theme: &Theme,
     fs: &mut FontSystem,
     swash: &mut SwashCache,
@@ -1302,14 +1412,16 @@ fn draw_dialog(
     tp.set_anti_alias(true);
     canvas.draw_str(title, (card_x + 24.0, card_y + 40.0), &tf, &tp);
 
-    let mut buf = cosmic_text::Buffer::new(fs, Metrics::new(14.0, 20.0));
-    buf.set_size(fs, Some(card_w - 48.0), None);
-    buf.set_text(fs, message, &Attrs::new(), Shaping::Advanced, None);
-    buf.shape_until_scroll(fs, false);
+    let buffer = text_cache.get_or_shape(
+        fs,
+        TextShapeRequest::new(message, 14.0, 20.0)
+            .with_bounds(Some(card_w - 48.0), None)
+            .with_wrap(Wrap::WordOrGlyph),
+    );
 
     crate::render::pipeline::render_text_runs(
         canvas,
-        buf.layout_runs(),
+        buffer.layout_runs(),
         Point::new(card_x + 24.0, card_y + 60.0),
         Theme::alpha(theme.on_surface, 180),
         fs,

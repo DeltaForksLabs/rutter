@@ -26,6 +26,7 @@ use crate::app::AppLogic;
 use crate::layout::{RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree};
 use crate::render::draw_widgets;
 use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
+use crate::render::text::TextBufferCache;
 use crate::widget::{DialogAction, Widget};
 
 #[derive(Debug, Clone, Copy)]
@@ -324,6 +325,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub font_system: Rc<RefCell<FontSystem>>,
     pub swash_cache: SwashCache,
     pub font_cache: HashMap<(String, u32), Font>,
+    pub text_cache: TextBufferCache,
     pub taffy: TaffyTree<RutterContext>,
     layout_tree: SyncedLayoutTree,
     runtime_caches: WidgetRuntimeCaches<A::Message>,
@@ -357,6 +359,7 @@ impl<A: AppLogic> RutterEngine<A> {
             font_system: Rc::new(RefCell::new(fs)),
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
+            text_cache: TextBufferCache::default(),
             layout_tree: SyncedLayoutTree::placeholder(root),
             runtime_caches: WidgetRuntimeCaches::default(),
             taffy,
@@ -573,6 +576,8 @@ impl<A: AppLogic> RutterEngine<A> {
             A::theme().spacing,
         );
         collect_focus_order(&widget_tree, &mut self.runtime_caches.focus_order);
+        drop(widget_tree);
+        self.sync_input_buffers();
         if self
             .focused_widget_id
             .is_some_and(|id| !self.runtime_caches.focus_order.contains(&id))
@@ -757,9 +762,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 path.pop();
             }
             Widget::TabBar {
-                tabs,
-                on_change,
-                ..
+                tabs, on_change, ..
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 let focus_ids = (0..tabs.len())
@@ -914,6 +917,36 @@ impl<A: AppLogic> RutterEngine<A> {
             .unwrap_or(18.0)
     }
 
+    fn sync_input_buffers(&mut self) {
+        let theme = A::theme();
+        let focused_input = self.focused_input_id();
+        let mut fs = self.font_system.borrow_mut();
+
+        for (&id, runtime) in &self.runtime_caches.inputs {
+            let Some(state) = self.input_states.get_mut(&id) else {
+                continue;
+            };
+
+            state.sync_layout(
+                &mut fs,
+                runtime.visible_w,
+                theme.font_body,
+                runtime.is_multiline,
+            );
+
+            if focused_input == Some(id) {
+                state.update_scroll(
+                    &mut fs,
+                    runtime.visible_w,
+                    runtime.visible_h,
+                    theme.font_body,
+                    runtime.is_password,
+                    runtime.is_multiline,
+                );
+            }
+        }
+    }
+
     fn children_for(node: Option<NodeId>, taffy: &TaffyTree<RutterContext>) -> Vec<NodeId> {
         node.and_then(|node| taffy.children(node).ok())
             .unwrap_or_default()
@@ -981,6 +1014,7 @@ impl<A: AppLogic> RutterEngine<A> {
             &self.input_states,
             &self.widget_states,
             &mut self.font_cache,
+            &mut self.text_cache,
             self.cursor_blink.is_visible(),
             &A::theme(),
             self.scale_factor,
