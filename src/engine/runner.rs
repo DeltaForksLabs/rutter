@@ -279,6 +279,8 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             s.offset_y = new_offset;
                         } else if let Some(s) = ws.as_vlist_mut() {
                             s.scroll_y = new_offset;
+                        } else if let Some(s) = ws.as_vgrid_mut() {
+                            s.scroll_y = new_offset;
                         }
                     }
                     self.redraw();
@@ -533,6 +535,31 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 self.engine.layout_dirty = true;
                             }
                         }
+                        HitResult::VGridSelect { id, index } => {
+                            if button == winit::event::MouseButton::Left {
+                                self.focus_widget(Some(id));
+                                if let Some(ws) = self.engine.widget_states.get_mut(&id) {
+                                    if let Some(grid) = ws.as_vgrid_mut() {
+                                        grid.selected_item = Some(index);
+                                    }
+                                }
+                                let cb = self
+                                    .engine
+                                    .runtime_caches
+                                    .vgrids
+                                    .get(&id)
+                                    .map(|v| v.on_select);
+                                if let Some(cb) = cb {
+                                    let msg = cb(index);
+                                    A::update(
+                                        &mut self.engine.app_state,
+                                        msg,
+                                        &mut self.engine.clipboard,
+                                    );
+                                }
+                                self.engine.layout_dirty = true;
+                            }
+                        }
                     }
                     self.redraw();
                 } else {
@@ -573,6 +600,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         .vlists
                         .get(&sid)
                         .map(|v| (v.item_height, v.item_count));
+                    let vgrid_props = self
+                        .engine
+                        .runtime_caches
+                        .vgrids
+                        .get(&sid)
+                        .map(|v| (v.item_height, v.item_count, v.columns));
 
                     if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
                         if let Some(s) = ws.as_scroll_mut() {
@@ -583,10 +616,15 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 s.scroll_by(dy, ih, ic);
                                 dirty = true;
                             }
+                        } else if let Some(s) = ws.as_vgrid_mut() {
+                            if let Some((ih, ic, cols)) = vgrid_props {
+                                s.scroll_by(dy, ih, ic, cols);
+                                dirty = true;
+                            }
                         }
                     }
                 } else {
-                    let mut vlist_to_scroll = None;
+                    let mut virtual_to_scroll = None;
                     for (id, ws) in self.engine.widget_states.iter() {
                         if ws.as_vlist().is_some() {
                             if let Some(props) = self
@@ -594,17 +632,31 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 .runtime_caches
                                 .vlists
                                 .get(id)
-                                .map(|v| (v.item_height, v.item_count))
+                                .map(|v| (*id, v.item_height, v.item_count, None))
                             {
-                                vlist_to_scroll = Some((*id, props));
+                                virtual_to_scroll = Some(props);
+                                break;
+                            }
+                        } else if ws.as_vgrid().is_some() {
+                            if let Some(props) = self
+                                .engine
+                                .runtime_caches
+                                .vgrids
+                                .get(id)
+                                .map(|v| (*id, v.item_height, v.item_count, Some(v.columns)))
+                            {
+                                virtual_to_scroll = Some(props);
                                 break;
                             }
                         }
                     }
-                    if let Some((id, (ih, ic))) = vlist_to_scroll {
+                    if let Some((id, ih, ic, cols)) = virtual_to_scroll {
                         if let Some(ws) = self.engine.widget_states.get_mut(&id) {
                             if let Some(vl) = ws.as_vlist_mut() {
                                 vl.scroll_by(dy, ih, ic);
+                                dirty = true;
+                            } else if let Some(grid) = ws.as_vgrid_mut() {
+                                grid.scroll_by(dy, ih, ic, cols.unwrap_or(1));
                                 dirty = true;
                             }
                         }
@@ -1070,6 +1122,78 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             }
         }
 
+        if let Some(vgrid) = self.engine.runtime_caches.vgrids.get(&fid).cloned() {
+            let current = self
+                .engine
+                .widget_states
+                .get(&fid)
+                .and_then(|ws| ws.as_vgrid())
+                .and_then(|state| state.selected_item)
+                .unwrap_or(0);
+            let next_index = match key {
+                Key::Named(NamedKey::ArrowLeft) => Some(current.saturating_sub(1)),
+                Key::Named(NamedKey::ArrowRight) => {
+                    Some((current + 1).min(vgrid.item_count.saturating_sub(1)))
+                }
+                Key::Named(NamedKey::ArrowUp) => Some(current.saturating_sub(vgrid.columns.max(1))),
+                Key::Named(NamedKey::ArrowDown) => {
+                    Some((current + vgrid.columns.max(1)).min(vgrid.item_count.saturating_sub(1)))
+                }
+                Key::Named(NamedKey::Home) => Some(0),
+                Key::Named(NamedKey::End) => Some(vgrid.item_count.saturating_sub(1)),
+                Key::Named(NamedKey::PageUp) => {
+                    let rows_per_page = self
+                        .engine
+                        .widget_states
+                        .get(&fid)
+                        .and_then(|ws| ws.as_vgrid())
+                        .map(|state| (state.viewport_h / vgrid.item_height).floor() as usize)
+                        .unwrap_or(1)
+                        .max(1);
+                    Some(current.saturating_sub(rows_per_page * vgrid.columns.max(1)))
+                }
+                Key::Named(NamedKey::PageDown) => {
+                    let rows_per_page = self
+                        .engine
+                        .widget_states
+                        .get(&fid)
+                        .and_then(|ws| ws.as_vgrid())
+                        .map(|state| (state.viewport_h / vgrid.item_height).floor() as usize)
+                        .unwrap_or(1)
+                        .max(1);
+                    Some(
+                        (current + rows_per_page * vgrid.columns.max(1))
+                            .min(vgrid.item_count.saturating_sub(1)),
+                    )
+                }
+                _ if is_activation_key(key) => {
+                    Some(current.min(vgrid.item_count.saturating_sub(1)))
+                }
+                _ => None,
+            };
+            if let Some(next_index) = next_index {
+                if let Some(ws) = self.engine.widget_states.get_mut(&fid) {
+                    if let Some(state) = ws.as_vgrid_mut() {
+                        state.selected_item = Some(next_index);
+                        state.scroll_to_index(
+                            next_index,
+                            vgrid.item_height,
+                            vgrid.item_count,
+                            vgrid.columns,
+                        );
+                    }
+                }
+                A::update(
+                    &mut self.engine.app_state,
+                    (vgrid.on_select)(next_index),
+                    &mut self.engine.clipboard,
+                );
+                self.engine.layout_dirty = true;
+                self.redraw();
+                return true;
+            }
+        }
+
         false
     }
 
@@ -1082,6 +1206,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     .vlists
                     .get(&sid)
                     .map(|v| (v.item_height, v.item_count, v.on_select));
+                let vgrid_props = self
+                    .engine
+                    .runtime_caches
+                    .vgrids
+                    .get(&sid)
+                    .map(|v| (v.item_height, v.item_count, v.columns, v.on_select));
                 match key {
                     Key::Named(NamedKey::ArrowDown) => {
                         if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
@@ -1104,6 +1234,21 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                         self.redraw();
                                         return;
                                     }
+                                }
+                            } else if let Some(s) = ws.as_vgrid_mut() {
+                                if let Some((ih, ic, cols, cb)) = vgrid_props {
+                                    let new_sel = (s.selected_item.unwrap_or(0) + cols.max(1))
+                                        .min(ic.saturating_sub(1));
+                                    s.selected_item = Some(new_sel);
+                                    s.scroll_to_index(new_sel, ih, ic, cols);
+                                    A::update(
+                                        &mut self.engine.app_state,
+                                        cb(new_sel),
+                                        &mut self.engine.clipboard,
+                                    );
+                                    self.engine.layout_dirty = true;
+                                    self.redraw();
+                                    return;
                                 }
                             }
                         }
@@ -1128,6 +1273,22 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                     self.redraw();
                                     return;
                                 }
+                            } else if let Some(s) = ws.as_vgrid_mut() {
+                                if let Some((ih, ic, cols, cb)) = vgrid_props {
+                                    let _ = ic;
+                                    let new_sel =
+                                        s.selected_item.unwrap_or(0).saturating_sub(cols.max(1));
+                                    s.selected_item = Some(new_sel);
+                                    s.scroll_to_index(new_sel, ih, ic, cols);
+                                    A::update(
+                                        &mut self.engine.app_state,
+                                        cb(new_sel),
+                                        &mut self.engine.clipboard,
+                                    );
+                                    self.engine.layout_dirty = true;
+                                    self.redraw();
+                                    return;
+                                }
                             }
                         }
                     }
@@ -1143,6 +1304,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                     self.redraw();
                                     return;
                                 }
+                            } else if let Some(s) = ws.as_vgrid_mut() {
+                                if let Some((ih, ic, cols, _)) = vgrid_props {
+                                    s.scroll_by(s.viewport_h * 0.9, ih, ic, cols);
+                                    self.redraw();
+                                    return;
+                                }
                             }
                         }
                     }
@@ -1155,6 +1322,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                             } else if let Some(s) = ws.as_vlist_mut() {
                                 if let Some((ih, ic, _)) = vlist_props {
                                     s.scroll_by(-s.viewport_h * 0.9, ih, ic);
+                                    self.redraw();
+                                    return;
+                                }
+                            } else if let Some(s) = ws.as_vgrid_mut() {
+                                if let Some((ih, ic, cols, _)) = vgrid_props {
+                                    s.scroll_by(-s.viewport_h * 0.9, ih, ic, cols);
                                     self.redraw();
                                     return;
                                 }

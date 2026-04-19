@@ -12,7 +12,7 @@ use taffy::prelude::Style;
 use rutter::{ButtonVariant, InputState, Orientation, ToastKind, Widget};
 use rutter::engine::widget_state::{
     AnimState, ModalState, ScrollState, SelectState,
-    SliderState, TabState, ToastState, VirtualListState, WidgetState,
+    SliderState, TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
 };
 use rutter::engine::runner::snap_to_step;
 use rutter::layout::{build_taffy_tree, OPTION_HEIGHT};
@@ -200,6 +200,21 @@ fn vlist_hovered_row_none_default() {
     assert!(VirtualListState::default().hovered_row.is_none());
 }
 
+#[test]
+fn vgrid_visible_rows_scrolled() {
+    let s = VirtualGridState { scroll_y: 120.0, viewport_h: 180.0, ..Default::default() };
+    let (first, last) = s.visible_row_range(60.0, 48, 4);
+    assert_eq!(first, 2);
+    assert!(last > first);
+}
+
+#[test]
+fn vgrid_scroll_to_index_tracks_row() {
+    let mut s = VirtualGridState { viewport_h: 180.0, ..Default::default() };
+    s.scroll_to_index(10, 60.0, 48, 4);
+    assert!((s.scroll_y - 120.0).abs() < f32::EPSILON);
+}
+
 // ── WidgetState accessors ─────────────────────────────────────
 
 #[test]
@@ -252,6 +267,19 @@ fn vlist_state_mut() {
     let mut ws = WidgetState::VList(VirtualListState::default());
     ws.as_vlist_mut().unwrap().selected_row = Some(7);
     assert_eq!(ws.as_vlist().unwrap().selected_row, Some(7));
+}
+
+#[test]
+fn vgrid_state_accessor() {
+    let ws = WidgetState::VGrid(VirtualGridState::default());
+    assert!(ws.as_vgrid().is_some()); assert!(ws.as_slider().is_none());
+}
+
+#[test]
+fn vgrid_state_mut() {
+    let mut ws = WidgetState::VGrid(VirtualGridState::default());
+    ws.as_vgrid_mut().unwrap().selected_item = Some(8);
+    assert_eq!(ws.as_vgrid().unwrap().selected_item, Some(8));
 }
 
 // ── Widget construction ───────────────────────────────────────
@@ -321,6 +349,17 @@ fn vlist_items_fn_called() {
     }
 }
 
+#[test]
+fn vgrid_stores_columns_and_items() {
+    let w: Widget<M> = Widget::VirtualGrid { id: 1, columns: 4, item_height: 64.0, item_count: 12,
+        items: &|i| Some(format!("cell-{i}")), on_select: M::Usize, style: Style::default() };
+    if let Widget::VirtualGrid { columns, item_height, items, .. } = w {
+        assert_eq!(columns, 4);
+        assert!((item_height - 64.0).abs() < f32::EPSILON);
+        assert_eq!(items(5), Some("cell-5".to_string()));
+    }
+}
+
 // ── Layout (Taffy) ────────────────────────────────────────────
 
 #[test]
@@ -370,6 +409,15 @@ fn vlist_taffy_leaf() {
     assert_eq!(taffy.child_count(node), 0);
 }
 
+#[test]
+fn vgrid_taffy_leaf() {
+    let mut taffy = taffy::TaffyTree::new();
+    let w: Widget<M> = Widget::VirtualGrid { id: 1, columns: 3, item_height: 64.0, item_count: 100,
+        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
+    assert_eq!(taffy.child_count(node), 0);
+}
+
 // ── collect_stateful_ids ─────────────────────────────────────
 
 #[test]
@@ -409,6 +457,15 @@ fn stateful_vlist() {
 }
 
 #[test]
+fn stateful_vgrid() {
+    let w: Widget<M> = Widget::VirtualGrid { id: 12, columns: 4, item_height: 64.0, item_count: 50,
+        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let mut out = vec![];
+    collect_stateful_ids(&w, &mut out);
+    assert!(out.iter().any(|(id, k)| *id == 12 && *k == "vgrid"));
+}
+
+#[test]
 fn no_duplicate_scroll_id_in_collect() {
     // FIX WARNING: padrão duplicado do v5 causaria double-push
     let w: Widget<M> = Widget::ScrollView { id: 5, style: Style::default(),
@@ -436,6 +493,15 @@ fn inputs_collected_inside_modal() {
 #[test]
 fn vlist_not_in_input_ids() {
     let w: Widget<M> = Widget::VirtualList { id: 1, item_height: 30.0, item_count: 10,
+        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let mut ids = vec![];
+    collect_input_ids(&w, &mut ids);
+    assert!(ids.is_empty());
+}
+
+#[test]
+fn vgrid_not_in_input_ids() {
+    let w: Widget<M> = Widget::VirtualGrid { id: 1, columns: 4, item_height: 64.0, item_count: 10,
         items: &|_| None, on_select: M::Usize, style: Style::default() };
     let mut ids = vec![];
     collect_input_ids(&w, &mut ids);

@@ -6,7 +6,7 @@ use skia_safe::{Contains, Point, Rect as SkiaRect};
 use std::collections::HashMap;
 use taffy::prelude::{NodeId, TaffyTree};
 
-use crate::engine::widget_state::WidgetState;
+use crate::engine::widget_state::{WidgetState, virtual_grid_row_count};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
 use crate::widget::{DialogAction, Widget};
 
@@ -46,6 +46,10 @@ pub enum HitResult<Msg> {
     },
     ModalDismiss(u64),
     VListSelect {
+        id: u64,
+        index: usize,
+    },
+    VGridSelect {
         id: u64,
         index: usize,
     },
@@ -325,6 +329,35 @@ fn hit_test_impl<Msg: Clone>(
                 None
             }
         }
+        Widget::VirtualGrid {
+            columns,
+            item_height,
+            item_count,
+            ..
+        } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let fallback_state = crate::engine::widget_state::VirtualGridState {
+                viewport_w: layout.size.width,
+                viewport_h: layout.size.height,
+                ..Default::default()
+            };
+            let grid_state = widget_states
+                .get(&resolved_id)
+                .and_then(|s| s.as_vgrid())
+                .unwrap_or(&fallback_state);
+            grid_state
+                .index_at(
+                    mouse.x - abs_pos.x,
+                    mouse.y - abs_pos.y,
+                    *item_height,
+                    *item_count,
+                    *columns,
+                )
+                .map(|index| HitResult::VGridSelect {
+                    id: resolved_id,
+                    index,
+                })
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).unwrap();
             for (i, child) in children.iter().enumerate().rev() {
@@ -407,6 +440,7 @@ fn collect_stateful_ids_impl<Msg>(
         Widget::TabBar { .. } => out.push((widget.resolved_id(path).unwrap(), "tab")),
         Widget::Toast { .. } => out.push((widget.resolved_id(path).unwrap(), "toast")),
         Widget::VirtualList { .. } => out.push((widget.resolved_id(path).unwrap(), "vlist")),
+        Widget::VirtualGrid { .. } => out.push((widget.resolved_id(path).unwrap(), "vgrid")),
         Widget::Modal { child, .. } => {
             out.push((widget.resolved_id(path).unwrap(), "modal"));
             path.push(0);
@@ -761,7 +795,9 @@ fn find_scroll_focus_impl<Msg>(
             path.pop();
             result.or(Some(widget.resolved_id(path).unwrap()))
         }
-        Widget::VirtualList { .. } => Some(widget.resolved_id(path).unwrap()),
+        Widget::VirtualList { .. } | Widget::VirtualGrid { .. } => {
+            Some(widget.resolved_id(path).unwrap())
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
             for (i, child) in children.iter().enumerate().rev() {
@@ -869,6 +905,33 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             }
             let thumb_h = (layout.size.height * s.thumb_ratio(*item_height, *item_count)).max(20.0);
             let thumb_y = abs_pos.y + s.thumb_y(*item_height, *item_count);
+            let sb_x = abs_pos.x + layout.size.width - SCROLLBAR_W - 2.0;
+            let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
+            if thumb_rect.contains(mouse) {
+                return Some(ScrollbarDragHit {
+                    id: resolved_id,
+                    start_offset: s.scroll_y,
+                    viewport_h: s.viewport_h.max(layout.size.height),
+                    content_h: total_h,
+                });
+            }
+            None
+        }
+        Widget::VirtualGrid {
+            item_count,
+            item_height,
+            columns,
+            ..
+        } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let s = widget_states.get(&resolved_id)?.as_vgrid()?;
+            let total_h = virtual_grid_row_count(*item_count, *columns) as f32 * *item_height;
+            if total_h <= s.viewport_h {
+                return None;
+            }
+            let thumb_h =
+                (layout.size.height * s.thumb_ratio(*item_height, *item_count, *columns)).max(20.0);
+            let thumb_y = abs_pos.y + s.thumb_y(*item_height, *item_count, *columns);
             let sb_x = abs_pos.x + layout.size.width - SCROLLBAR_W - 2.0;
             let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
             if thumb_rect.contains(mouse) {

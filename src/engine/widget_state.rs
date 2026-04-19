@@ -7,9 +7,12 @@
 //   TabState        — aba ativa (redundante com widget, mas
 //                     permite animação de underline)
 //   VirtualListState— scroll offset + range visível
+//   VirtualGridState— scroll vertical + seleção de célula
 // ============================================================
 
 use std::time::{Duration, Instant};
+
+use crate::layout::{SCROLLBAR_W, VIRTUAL_GRID_GAP, VIRTUAL_GRID_PADDING};
 
 // ── (mantidos da Fase 3) ──────────────────────────────────────
 
@@ -266,6 +269,135 @@ impl VirtualListState {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct VirtualGridState {
+    pub scroll_y: f32,
+    pub viewport_w: f32,
+    pub viewport_h: f32,
+    pub selected_item: Option<usize>,
+    pub hovered_item: Option<usize>,
+}
+
+pub(crate) fn normalize_virtual_grid_columns(columns: usize) -> usize {
+    columns.max(1)
+}
+
+pub(crate) fn virtual_grid_row_count(item_count: usize, columns: usize) -> usize {
+    let columns = normalize_virtual_grid_columns(columns);
+    if item_count == 0 {
+        0
+    } else {
+        item_count.div_ceil(columns)
+    }
+}
+
+pub(crate) fn virtual_grid_cell_width(viewport_w: f32, columns: usize) -> f32 {
+    let columns = normalize_virtual_grid_columns(columns);
+    let content_w = (viewport_w
+        - SCROLLBAR_W
+        - 4.0
+        - VIRTUAL_GRID_PADDING * 2.0
+        - VIRTUAL_GRID_GAP * (columns.saturating_sub(1)) as f32)
+        .max(1.0);
+    content_w / columns as f32
+}
+
+pub(crate) fn virtual_grid_cell_left(column: usize, viewport_w: f32, columns: usize) -> f32 {
+    let cell_w = virtual_grid_cell_width(viewport_w, columns);
+    VIRTUAL_GRID_PADDING + column as f32 * (cell_w + VIRTUAL_GRID_GAP)
+}
+
+impl VirtualGridState {
+    pub fn visible_row_range(
+        &self,
+        item_height: f32,
+        item_count: usize,
+        columns: usize,
+    ) -> (usize, usize) {
+        if item_height <= 0.0 {
+            return (0, 0);
+        }
+        let row_count = virtual_grid_row_count(item_count, columns);
+        let first = (self.scroll_y / item_height).floor() as usize;
+        let count = (self.viewport_h / item_height).ceil() as usize + 1;
+        let last = (first + count).min(row_count);
+        (first, last)
+    }
+
+    pub fn max_scroll(&self, item_height: f32, item_count: usize, columns: usize) -> f32 {
+        let total = item_height * virtual_grid_row_count(item_count, columns) as f32;
+        (total - self.viewport_h).max(0.0)
+    }
+
+    pub fn scroll_by(&mut self, delta_y: f32, item_height: f32, item_count: usize, columns: usize) {
+        let max = self.max_scroll(item_height, item_count, columns);
+        self.scroll_y = (self.scroll_y + delta_y).clamp(0.0, max);
+    }
+
+    pub fn scroll_to_index(
+        &mut self,
+        idx: usize,
+        item_height: f32,
+        item_count: usize,
+        columns: usize,
+    ) {
+        let row = idx / normalize_virtual_grid_columns(columns);
+        let target_y = row as f32 * item_height;
+        let max = self.max_scroll(item_height, item_count, columns);
+        self.scroll_y = target_y.clamp(0.0, max);
+    }
+
+    pub fn thumb_ratio(&self, item_height: f32, item_count: usize, columns: usize) -> f32 {
+        let total = item_height * virtual_grid_row_count(item_count, columns) as f32;
+        if total <= 0.0 {
+            return 1.0;
+        }
+        (self.viewport_h / total).clamp(0.0, 1.0)
+    }
+
+    pub fn thumb_y(&self, item_height: f32, item_count: usize, columns: usize) -> f32 {
+        let max = self.max_scroll(item_height, item_count, columns);
+        if max <= 0.0 {
+            return 0.0;
+        }
+        (self.scroll_y / max)
+            * (self.viewport_h * (1.0 - self.thumb_ratio(item_height, item_count, columns)))
+    }
+
+    pub fn index_at(
+        &self,
+        local_x: f32,
+        local_y: f32,
+        item_height: f32,
+        item_count: usize,
+        columns: usize,
+    ) -> Option<usize> {
+        if item_height <= 0.0 || item_count == 0 {
+            return None;
+        }
+
+        let columns = normalize_virtual_grid_columns(columns);
+        let row = ((local_y + self.scroll_y) / item_height).floor().max(0.0) as usize;
+        let cell_w = virtual_grid_cell_width(self.viewport_w, columns);
+        let usable_w = VIRTUAL_GRID_PADDING * 2.0
+            + cell_w * columns as f32
+            + VIRTUAL_GRID_GAP * columns.saturating_sub(1) as f32;
+        if local_x < VIRTUAL_GRID_PADDING || local_x > usable_w {
+            return None;
+        }
+
+        for col in 0..columns {
+            let left = virtual_grid_cell_left(col, self.viewport_w, columns);
+            let right = left + cell_w;
+            if local_x >= left && local_x <= right {
+                let index = row * columns + col;
+                return (index < item_count).then_some(index);
+            }
+        }
+        None
+    }
+}
+
 // ── Enum unificado ────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -278,6 +410,7 @@ pub enum WidgetState {
     Modal(ModalState),
     Tab(TabState),
     VList(VirtualListState),
+    VGrid(VirtualGridState),
 }
 
 impl WidgetState {
@@ -388,6 +521,20 @@ impl WidgetState {
     }
     pub fn as_vlist_mut(&mut self) -> Option<&mut VirtualListState> {
         if let Self::VList(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_vgrid(&self) -> Option<&VirtualGridState> {
+        if let Self::VGrid(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_vgrid_mut(&mut self) -> Option<&mut VirtualGridState> {
+        if let Self::VGrid(s) = self {
             Some(s)
         } else {
             None
@@ -629,6 +776,55 @@ mod tests {
         assert!(VirtualListState::default().selected_row.is_none());
     }
 
+    // ── VirtualGridState ─────────────────────────────────────
+
+    #[test]
+    fn vgrid_visible_row_range_scrolled() {
+        let s = VirtualGridState {
+            scroll_y: 180.0,
+            viewport_h: 180.0,
+            ..Default::default()
+        };
+        let (first, last) = s.visible_row_range(60.0, 100, 4);
+        assert_eq!(first, 3);
+        assert!(last > first);
+    }
+
+    #[test]
+    fn vgrid_max_scroll_calculation() {
+        let s = VirtualGridState {
+            viewport_h: 180.0,
+            ..Default::default()
+        };
+        assert!((s.max_scroll(60.0, 40, 4) - 420.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vgrid_scroll_to_index_uses_row() {
+        let mut s = VirtualGridState {
+            viewport_h: 180.0,
+            ..Default::default()
+        };
+        s.scroll_to_index(9, 60.0, 40, 4);
+        assert!((s.scroll_y - 120.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn vgrid_index_at_maps_point_to_cell() {
+        let s = VirtualGridState {
+            viewport_w: 420.0,
+            viewport_h: 240.0,
+            ..Default::default()
+        };
+        assert_eq!(s.index_at(32.0, 24.0, 60.0, 40, 4), Some(0));
+        assert_eq!(s.index_at(220.0, 24.0, 60.0, 40, 4), Some(2));
+    }
+
+    #[test]
+    fn vgrid_selected_item_none_by_default() {
+        assert!(VirtualGridState::default().selected_item.is_none());
+    }
+
     // ── WidgetState accessors ─────────────────────────────────
 
     #[test]
@@ -664,6 +860,20 @@ mod tests {
         let mut ws = WidgetState::VList(VirtualListState::default());
         ws.as_vlist_mut().unwrap().selected_row = Some(5);
         assert_eq!(ws.as_vlist().unwrap().selected_row, Some(5));
+    }
+
+    #[test]
+    fn widget_state_vgrid_accessor() {
+        let ws = WidgetState::VGrid(VirtualGridState::default());
+        assert!(ws.as_vgrid().is_some());
+        assert!(ws.as_vlist().is_none());
+    }
+
+    #[test]
+    fn widget_state_vgrid_mut() {
+        let mut ws = WidgetState::VGrid(VirtualGridState::default());
+        ws.as_vgrid_mut().unwrap().selected_item = Some(9);
+        assert_eq!(ws.as_vgrid().unwrap().selected_item, Some(9));
     }
 
     #[test]

@@ -17,6 +17,8 @@ const ACCORDION_HEADER_H: f32 = 44.0;
 
 pub const OPTION_HEIGHT: f32 = 32.0;
 pub const SCROLLBAR_W: f32 = 8.0;
+pub const VIRTUAL_GRID_GAP: f32 = 8.0;
+pub const VIRTUAL_GRID_PADDING: f32 = 8.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextContext {
@@ -256,7 +258,8 @@ impl LayoutBlueprint {
             | Widget::TextInput { style, .. }
             | Widget::SearchBar { style, .. }
             | Widget::Slider { style, .. }
-            | Widget::VirtualList { style, .. } => {
+            | Widget::VirtualList { style, .. }
+            | Widget::VirtualGrid { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
             Widget::Toast { .. } => Self::leaf(

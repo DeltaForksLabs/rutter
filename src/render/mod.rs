@@ -16,9 +16,12 @@ use skia_safe::{
 use taffy::prelude::{NodeId, TaffyTree};
 
 use self::text::{TextBufferCache, TextShapeRequest, draw_text, get_cached_font};
-use crate::engine::widget_state::WidgetState;
+use crate::engine::widget_state::{
+    WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left, virtual_grid_cell_width,
+    virtual_grid_row_count,
+};
 use crate::input_state::{InputWidgetState, TextSelection, cursor_x_in_run};
-use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
+use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP};
 use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, DialogAction, InputState, Orientation, ToastKind, ToastPosition, Widget,
@@ -760,6 +763,34 @@ fn draw_widgets_impl<'w, Msg>(
                 hovered,
                 size,
                 local_mouse,
+                font_cache,
+                theme,
+            );
+        }
+        Widget::VirtualGrid {
+            columns,
+            item_height,
+            item_count,
+            items,
+            ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let gstate = widget_states.get(&resolved_id).and_then(|s| s.as_vgrid());
+            let scroll_y = gstate.map(|g| g.scroll_y).unwrap_or(0.0);
+            let selected = gstate.and_then(|g| g.selected_item);
+            let hovered = gstate.and_then(|g| g.hovered_item);
+            draw_virtual_grid(
+                canvas,
+                columns,
+                item_height,
+                item_count,
+                items,
+                scroll_y,
+                selected,
+                hovered,
+                size,
+                local_mouse,
+                is_focused,
                 font_cache,
                 theme,
             );
@@ -1630,6 +1661,162 @@ fn draw_virtual_list(
     canvas.restore();
 
     let total_h = ih * count as f32;
+    if total_h > size.1 {
+        let max_s = (total_h - size.1).max(1.0);
+        let ratio = (size.1 / total_h).clamp(0.0, 1.0);
+        let thumb_h = (size.1 * ratio).max(20.0);
+        let thumb_y = (scroll_y / max_s) * (size.1 - thumb_h);
+        let sb_x = size.0 - SCROLLBAR_W - 2.0;
+
+        let mut st = Paint::default();
+        st.set_color(Theme::alpha(theme.on_surface, 20));
+        st.set_anti_alias(true);
+        canvas.draw_rrect(
+            RRect::new_rect_xy(
+                SkiaRect::from_xywh(sb_x, 0.0, SCROLLBAR_W, size.1),
+                4.0,
+                4.0,
+            ),
+            &st,
+        );
+        let mut sm = Paint::default();
+        sm.set_color(Theme::alpha(theme.on_surface, 70));
+        sm.set_anti_alias(true);
+        canvas.draw_rrect(
+            RRect::new_rect_xy(
+                SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h),
+                4.0,
+                4.0,
+            ),
+            &sm,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_virtual_grid(
+    canvas: &Canvas,
+    columns: &usize,
+    item_height: &f32,
+    item_count: &usize,
+    items: &dyn Fn(usize) -> Option<String>,
+    scroll_y: f32,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    size: (f32, f32),
+    mouse: Point,
+    is_focused: bool,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    theme: &Theme,
+) {
+    let columns = normalize_virtual_grid_columns(*columns);
+    let row_h = *item_height;
+    let count = *item_count;
+    let row_count = virtual_grid_row_count(count, columns);
+    let cell_w = virtual_grid_cell_width(size.0, columns);
+
+    let mut bg = Paint::default();
+    bg.set_color(theme.surface);
+    bg.set_anti_alias(true);
+    canvas.draw_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), &bg);
+
+    canvas.save();
+    canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
+
+    let first_row = (scroll_y / row_h).floor() as usize;
+    let vis_rows = (size.1 / row_h).ceil() as usize + 1;
+    let last_row = (first_row + vis_rows).min(row_count);
+
+    for row in first_row..last_row {
+        let y = row as f32 * row_h - scroll_y;
+        let cell_h = (row_h - VIRTUAL_GRID_GAP).max(12.0);
+        let cell_y = y + VIRTUAL_GRID_GAP * 0.5;
+
+        for col in 0..columns {
+            let index = row * columns + col;
+            if index >= count {
+                break;
+            }
+
+            let cell_x = virtual_grid_cell_left(col, size.0, columns);
+            let rect = SkiaRect::from_xywh(cell_x, cell_y, cell_w, cell_h);
+            let is_sel = selected == Some(index);
+            let is_hov = hovered == Some(index) || rect.contains(mouse);
+
+            let fill = if is_sel {
+                Theme::alpha(theme.primary, 36)
+            } else if is_hov {
+                Theme::alpha(theme.on_surface, 12)
+            } else {
+                Theme::alpha(theme.on_surface, 6)
+            };
+            let border = if is_sel {
+                Theme::alpha(theme.primary, 130)
+            } else {
+                Theme::alpha(theme.on_surface, 22)
+            };
+
+            let mut cell_bg = Paint::default();
+            cell_bg.set_color(fill);
+            cell_bg.set_anti_alias(true);
+            canvas.draw_rrect(
+                RRect::new_rect_xy(rect, theme.radius_sm, theme.radius_sm),
+                &cell_bg,
+            );
+
+            let mut cell_border = Paint::default();
+            cell_border.set_style(paint::Style::Stroke);
+            cell_border.set_stroke_width(1.0);
+            cell_border.set_color(border);
+            cell_border.set_anti_alias(true);
+            canvas.draw_rrect(
+                RRect::new_rect_xy(rect, theme.radius_sm, theme.radius_sm),
+                &cell_border,
+            );
+
+            if is_focused && is_sel {
+                draw_focus_outline(
+                    canvas,
+                    SkiaRect::from_xywh(
+                        rect.left + 1.0,
+                        rect.top + 1.0,
+                        (rect.width() - 2.0).max(0.0),
+                        (rect.height() - 2.0).max(0.0),
+                    ),
+                    theme.radius_sm,
+                    theme,
+                );
+            }
+
+            if let Some(text) = items(index) {
+                let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
+                let tc = if is_sel {
+                    theme.primary
+                } else {
+                    theme.on_surface
+                };
+                let mut tp = Paint::default();
+                tp.set_color(tc);
+                tp.set_anti_alias(true);
+                let text_x = rect.left + 12.0;
+                let text_y = rect.top + rect.height() / 2.0 + theme.font_body / 3.0;
+                canvas.draw_str(&text, (text_x, text_y), &f, &tp);
+            }
+        }
+    }
+
+    canvas.restore();
+
+    if is_focused && selected.is_none() {
+        draw_focus_outline(
+            canvas,
+            SkiaRect::from_xywh(2.0, 2.0, (size.0 - 4.0).max(0.0), (size.1 - 4.0).max(0.0)),
+            theme.radius_sm,
+            theme,
+        );
+    }
+
+    let total_h = row_h * row_count as f32;
     if total_h > size.1 {
         let max_s = (total_h - size.1).max(1.0);
         let ratio = (size.1 / total_h).clamp(0.0, 1.0);

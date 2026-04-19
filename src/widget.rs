@@ -75,6 +75,7 @@ pub(crate) enum WidgetIdTag {
     Tab = 19,
     DialogConfirm = 20,
     DialogCancel = 21,
+    VirtualGrid = 22,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +303,15 @@ pub enum Widget<'a, Msg> {
     },
     VirtualList {
         id: u64,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    },
+    VirtualGrid {
+        id: u64,
+        columns: usize,
         item_height: f32,
         item_count: usize,
         items: &'a dyn Fn(usize) -> Option<String>,
@@ -546,6 +556,25 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    pub fn virtual_grid(
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    ) -> Self {
+        Self::VirtualGrid {
+            id: AUTO_ID,
+            columns,
+            item_height,
+            item_count,
+            items,
+            on_select,
+            style,
+        }
+    }
+
     pub fn with_id(mut self, id: u64) -> Self {
         match &mut self {
             Self::TextInput { id: slot, .. }
@@ -561,7 +590,8 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Modal { id: slot, .. }
             | Self::Dialog { id: slot, .. }
             | Self::Toast { id: slot, .. }
-            | Self::VirtualList { id: slot, .. } => *slot = id,
+            | Self::VirtualList { id: slot, .. }
+            | Self::VirtualGrid { id: slot, .. } => *slot = id,
             _ => {}
         }
         self
@@ -599,6 +629,9 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::VirtualList { id, .. } => {
                 Some(resolve_widget_id(*id, WidgetIdTag::VirtualList, path))
             }
+            Self::VirtualGrid { id, .. } => {
+                Some(resolve_widget_id(*id, WidgetIdTag::VirtualGrid, path))
+            }
             _ => None,
         }
     }
@@ -616,7 +649,8 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Select { .. }
             | Self::Accordion { .. }
             | Self::TabBar { .. }
-            | Self::VirtualList { .. } => self.resolved_id(path),
+            | Self::VirtualList { .. }
+            | Self::VirtualGrid { .. } => self.resolved_id(path),
             _ => None,
         }
     }

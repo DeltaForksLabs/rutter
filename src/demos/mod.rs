@@ -21,6 +21,7 @@ pub mod scroll_demo;
 pub mod slider_demo;
 pub mod tab_demo;
 pub mod text_input_demo;
+pub mod vgrid_demo;
 pub mod vlist_demo;
 
 pub mod accordion_demo;

@@ -21,7 +21,7 @@ use self::cursor::CursorBlink;
 use self::gpu::{BackendType, GraphicsBackend, create_best_backend};
 use self::widget_state::{
     AnimState, ModalState, ScrollState, SelectState, SliderState, TabState, ToastState,
-    VirtualListState, WidgetState,
+    VirtualGridState, VirtualListState, WidgetState,
 };
 use crate::app::AppLogic;
 use crate::layout::{RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree};
@@ -166,7 +166,8 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::SearchBar { .. }
         | Widget::Slider { .. }
         | Widget::Select { .. }
-        | Widget::VirtualList { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
+        | Widget::VirtualList { .. }
+        | Widget::VirtualGrid { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
         Widget::TabBar { tabs, .. } => {
             for index in 0..tabs.len() {
                 if let Some(focus_id) = widget.tab_focus_id(path, index) {
@@ -261,6 +262,14 @@ struct VListRuntime<Msg> {
     item_count: usize,
 }
 
+#[derive(Debug, Clone)]
+struct VGridRuntime<Msg> {
+    on_select: fn(usize) -> Msg,
+    columns: usize,
+    item_height: f32,
+    item_count: usize,
+}
+
 #[derive(Debug)]
 struct WidgetRuntimeCaches<Msg: Clone> {
     input_order: Vec<u64>,
@@ -276,6 +285,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     tabs: HashMap<u64, TabRuntime<Msg>>,
     tab_items: HashMap<u64, TabFocusRuntime>,
     vlists: HashMap<u64, VListRuntime<Msg>>,
+    vgrids: HashMap<u64, VGridRuntime<Msg>>,
     toast_dismiss: HashMap<u64, Msg>,
 }
 
@@ -295,6 +305,7 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             tabs: HashMap::new(),
             tab_items: HashMap::new(),
             vlists: HashMap::new(),
+            vgrids: HashMap::new(),
             toast_dismiss: HashMap::new(),
         }
     }
@@ -315,6 +326,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.tabs.clear();
         self.tab_items.clear();
         self.vlists.clear();
+        self.vgrids.clear();
         self.toast_dismiss.clear();
     }
 }
@@ -493,6 +505,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     "modal" => WidgetState::Modal(ModalState::default()),
                     "toast" => WidgetState::Toast(ToastState::new(3000)),
                     "vlist" => WidgetState::VList(VirtualListState::default()),
+                    "vgrid" => WidgetState::VGrid(VirtualGridState::default()),
                     _ => WidgetState::Anim(AnimState::default()),
                 });
             if *kind == "anim" {
@@ -887,6 +900,32 @@ impl<A: AppLogic> RutterEngine<A> {
                     }
                 }
             }
+            Widget::VirtualGrid {
+                columns,
+                item_height,
+                item_count,
+                on_select,
+                ..
+            } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
+                runtime_caches.vgrids.insert(
+                    resolved_id,
+                    VGridRuntime {
+                        on_select: *on_select,
+                        columns: *columns,
+                        item_height: *item_height,
+                        item_count: *item_count,
+                    },
+                );
+                if let Some(layout) = layout {
+                    if let Some(ws) = widget_states.get_mut(&resolved_id) {
+                        if let Some(s) = ws.as_vgrid_mut() {
+                            s.viewport_w = layout.size.width;
+                            s.viewport_h = layout.size.height;
+                        }
+                    }
+                }
+            }
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
                 let node_children = Self::children_for(node, taffy);
                 for (i, child) in children.iter().enumerate() {
@@ -1152,6 +1191,15 @@ mod tests {
                     on_select: Msg::Usize,
                     style: base_style(240.0, 180.0),
                 },
+                Widget::VirtualGrid {
+                    id: 7,
+                    columns: 4,
+                    item_height: 64.0,
+                    item_count: 60,
+                    items: &|_| None,
+                    on_select: Msg::Usize,
+                    style: base_style(240.0, 192.0),
+                },
                 Widget::Toast {
                     id: 6,
                     visible: true,
@@ -1165,8 +1213,10 @@ mod tests {
             style: Style::default(),
         };
 
-        let mut widget_states =
-            HashMap::from([(5, WidgetState::VList(VirtualListState::default()))]);
+        let mut widget_states = HashMap::from([
+            (5, WidgetState::VList(VirtualListState::default())),
+            (7, WidgetState::VGrid(VirtualGridState::default())),
+        ]);
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, &widget, fs(), &widget_states);
         compute_layout(&mut taffy, root, PhysicalSize::new(400, 500), fs());
@@ -1220,6 +1270,19 @@ mod tests {
                 .and_then(|s| s.as_vlist())
                 .map(|s| s.viewport_h),
             Some(180.0)
+        );
+
+        let vgrid = runtime_caches.vgrids.get(&7).unwrap();
+        assert_eq!(vgrid.columns, 4);
+        assert_eq!(vgrid.item_height, 64.0);
+        assert_eq!(vgrid.item_count, 60);
+        assert_eq!((vgrid.on_select)(9), Msg::Usize(9));
+        assert_eq!(
+            widget_states
+                .get(&7)
+                .and_then(|s| s.as_vgrid())
+                .map(|s| (s.viewport_w, s.viewport_h)),
+            Some((240.0, 192.0))
         );
 
         assert_eq!(runtime_caches.toast_dismiss.get(&6), Some(&Msg::Dismiss));
