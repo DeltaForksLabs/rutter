@@ -199,12 +199,14 @@ impl InputWidgetState {
             buffer.set_wrap(fs, wrap);
             buffer.set_size(fs, Some(width), None);
         });
+        self.editor.shape_as_needed(fs, false);
         self.normalize_cursor();
     }
 
     pub fn set_text(&mut self, fs: &mut FontSystem, text: &str) {
         self.editor
             .with_buffer_mut(|b| b.set_text(fs, text, &Attrs::new(), Shaping::Advanced, None));
+        self.editor.shape_as_needed(fs, false);
         self.editor.action(fs, Action::Motion(Motion::End));
         self.normalize_cursor();
         self.selection = None;
@@ -373,6 +375,7 @@ impl InputWidgetState {
         is_password: bool,
         is_multiline: bool,
     ) {
+        self.editor.shape_as_needed(fs, false);
         self.normalize_cursor();
 
         let display = self.display_text(is_password);

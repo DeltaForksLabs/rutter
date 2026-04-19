@@ -2,7 +2,7 @@
 // Rutter Framework — engine/runner.rs
 // ============================================================
 
-use std::{collections::HashMap, num::NonZeroU32, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use cosmic_text::{Action, Edit, Motion};
 use skia_safe::{Point, Rect as SkiaRect};
@@ -253,13 +253,8 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(size) => {
-                if let (Some(w), Some(h)) =
-                    (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-                {
-                    if let Some(s) = self.engine.surface.as_mut() {
-                        s.resize(w, h).unwrap();
-                    }
-                    self.engine.layout_dirty = true;
+                if size.width > 0 && size.height > 0 {
+                    self.engine.handle_resize(size);
                     self.redraw();
                 }
             }

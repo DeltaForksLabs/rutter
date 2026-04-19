@@ -3,6 +3,7 @@
 // ============================================================
 
 pub mod cursor;
+pub mod gpu;
 pub mod runner;
 pub mod widget_state;
 
@@ -13,11 +14,11 @@ use std::rc::Rc;
 use arboard::Clipboard;
 use cosmic_text::{FontSystem, SwashCache};
 use skia_safe::{Color as SkiaColor, Font, Point};
-use softbuffer::{Context, Surface};
 use taffy::prelude::{NodeId, Style, TaffyTree};
 use winit::{dpi::PhysicalSize, event::Modifiers, window::Window};
 
 use self::cursor::CursorBlink;
+use self::gpu::{BackendType, GraphicsBackend, create_best_backend};
 use self::widget_state::{
     AnimState, ModalState, ScrollState, SelectState, SliderState, TabState, ToastState,
     VirtualListState, WidgetState,
@@ -320,8 +321,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
 
 pub struct RutterEngine<A: AppLogic> {
     pub window: Option<Rc<Window>>,
-    pub surface: Option<Surface<Rc<Window>, Rc<Window>>>,
-    context: Option<Context<Rc<Window>>>,
+    graphics_backend: Option<Box<dyn GraphicsBackend>>,
     pub font_system: Rc<RefCell<FontSystem>>,
     pub swash_cache: SwashCache,
     pub font_cache: HashMap<(String, u32), Font>,
@@ -354,8 +354,7 @@ impl<A: AppLogic> RutterEngine<A> {
         let root = taffy.new_leaf(Style::default()).unwrap();
         Self {
             window: None,
-            surface: None,
-            context: None,
+            graphics_backend: None,
             font_system: Rc::new(RefCell::new(fs)),
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
@@ -383,14 +382,32 @@ impl<A: AppLogic> RutterEngine<A> {
 
     pub fn handle_resumed(&mut self, el: &winit::event_loop::ActiveEventLoop) {
         let attrs = Window::default_attributes().with_title("Rutter");
-        let window = Rc::new(el.create_window(attrs).unwrap());
+        let backend = create_best_backend(el, attrs)
+            .unwrap_or_else(|err| panic!("graphics backend init failed: {err}"));
+        if cfg!(debug_assertions) {
+            eprintln!("rutter: initialized {} backend", backend.backend_type());
+        }
+        let window = backend.window().clone();
         self.scale_factor = window.scale_factor() as f32;
-        let ctx = Context::new(window.clone()).unwrap();
-        let surface = Surface::new(&ctx, window.clone()).unwrap();
         self.window = Some(window);
-        self.context = Some(ctx);
-        self.surface = Some(surface);
+        self.graphics_backend = Some(backend);
+        self.handle_resize(self.window.as_ref().unwrap().inner_size());
         self.layout_dirty = true;
+    }
+
+    pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
+        if let Some(backend) = self.graphics_backend.as_mut() {
+            backend
+                .resize(size)
+                .unwrap_or_else(|err| panic!("graphics backend resize failed: {err}"));
+        }
+        self.layout_dirty = true;
+    }
+
+    pub fn backend_type(&self) -> Option<BackendType> {
+        self.graphics_backend
+            .as_ref()
+            .map(|backend| backend.backend_type())
     }
 
     pub fn update_scale(&mut self, scale: f64) {
@@ -991,46 +1008,48 @@ impl<A: AppLogic> RutterEngine<A> {
         self.ensure_layout(phys);
 
         let mut widget_tree = A::view(&mut self.app_state);
-        let mut sk =
-            skia_safe::surfaces::raster_n32_premul((phys.width as i32, phys.height as i32))
-                .expect("Surface Skia falhou");
-        sk.canvas().clear(SkiaColor::WHITE);
-        sk.canvas().scale((self.scale_factor, self.scale_factor));
-
         let lc = Point::new(
             cursor_pos.x / self.scale_factor,
             cursor_pos.y / self.scale_factor,
         );
 
-        draw_widgets(
-            sk.canvas(),
-            &self.taffy,
-            self.last_root_node,
-            &mut widget_tree,
-            &mut self.font_system.borrow_mut(),
-            &mut self.swash_cache,
-            lc,
-            self.focused_widget_id,
-            &self.input_states,
-            &self.widget_states,
-            &mut self.font_cache,
-            &mut self.text_cache,
-            self.cursor_blink.is_visible(),
-            &A::theme(),
-            self.scale_factor,
-        );
+        {
+            let backend = self
+                .graphics_backend
+                .as_mut()
+                .expect("graphics backend not initialized");
+            let canvas = backend
+                .begin_frame()
+                .unwrap_or_else(|err| panic!("graphics begin_frame failed: {err}"));
+            canvas.restore_to_count(1);
+            canvas.clear(SkiaColor::WHITE);
+            canvas.reset_matrix();
+            canvas.scale((self.scale_factor, self.scale_factor));
 
-        let sf = self.surface.as_mut().unwrap();
-        let mut buf = sf.buffer_mut().unwrap();
-        let px = sk.peek_pixels().unwrap();
-        let raw = px.bytes().unwrap();
-        for (i, pixel) in buf.iter_mut().enumerate() {
-            let o = i * 4;
-            if o + 2 < raw.len() {
-                *pixel = ((raw[o] as u32) << 16) | ((raw[o + 1] as u32) << 8) | raw[o + 2] as u32;
-            }
+            draw_widgets(
+                canvas,
+                &self.taffy,
+                self.last_root_node,
+                &mut widget_tree,
+                &mut self.font_system.borrow_mut(),
+                &mut self.swash_cache,
+                lc,
+                self.focused_widget_id,
+                &self.input_states,
+                &self.widget_states,
+                &mut self.font_cache,
+                &mut self.text_cache,
+                self.cursor_blink.is_visible(),
+                &A::theme(),
+                self.scale_factor,
+            );
         }
-        buf.present().unwrap();
+
+        self.graphics_backend
+            .as_mut()
+            .expect("graphics backend not initialized")
+            .end_frame()
+            .unwrap_or_else(|err| panic!("graphics end_frame failed: {err}"));
     }
 }
 

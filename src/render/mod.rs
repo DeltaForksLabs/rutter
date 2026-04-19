@@ -958,59 +958,44 @@ fn draw_text_input(
         .filter(|selection| !selection.is_empty())
         .map(|selection| map_selection_for_display(selection, &text, is_password));
 
-    if is_password {
-        let display = "•".repeat(text.chars().count());
-        let buffer = text_cache.get_or_shape(
-            fs,
-            TextShapeRequest::new(&display, theme.font_body, line_height)
-                .with_bounds(
-                    Some(text_width),
-                    if is_multiline { None } else { Some(size.1) },
-                )
-                .with_wrap(if is_multiline {
-                    Wrap::WordOrGlyph
-                } else {
-                    Wrap::None
-                }),
-        );
-        let runs = buffer.layout_runs().collect::<Vec<_>>();
-        draw_text_input_runs(
-            canvas,
-            fs,
-            swash,
-            theme,
-            scale,
-            size,
-            pad_y,
-            line_height,
-            is_focused,
-            cursor_visible,
-            is_multiline,
-            mapped_cursor,
-            mapped_selection,
-            runs,
-        );
+    let display = if is_password {
+        "•".repeat(text.chars().count())
     } else {
-        s.editor.with_buffer(|buffer| {
-            let runs = buffer.layout_runs().collect::<Vec<_>>();
-            draw_text_input_runs(
-                canvas,
-                fs,
-                swash,
-                theme,
-                scale,
-                size,
-                pad_y,
-                line_height,
-                is_focused,
-                cursor_visible,
-                is_multiline,
-                mapped_cursor,
-                mapped_selection,
-                runs,
-            );
-        });
-    }
+        text.clone()
+    };
+
+    let buffer = text_cache.get_or_shape(
+        fs,
+        TextShapeRequest::new(&display, theme.font_body, line_height)
+            .with_bounds(
+                Some(text_width),
+                if is_multiline { None } else { Some(size.1) },
+            )
+            .with_wrap(if is_multiline {
+                Wrap::WordOrGlyph
+            } else {
+                Wrap::None
+            }),
+    );
+
+    let runs = buffer.layout_runs().collect::<Vec<_>>();
+
+    draw_text_input_runs(
+        canvas,
+        fs,
+        swash,
+        theme,
+        scale,
+        size,
+        pad_y,
+        line_height,
+        is_focused,
+        cursor_visible,
+        is_multiline,
+        mapped_cursor,
+        mapped_selection,
+        runs,
+    );
 
     canvas.restore();
 

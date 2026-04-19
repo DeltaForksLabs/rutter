@@ -17,3 +17,9 @@ pub use app::AppLogic;
 pub use engine::runner::RutterRunner;
 pub use theme::Theme;
 pub use widget::{AUTO_ID, ButtonVariant, InputState, Widget};
+
+// ── Re-exports de dependências públicas ──────────────────────
+pub use arboard;
+pub use cosmic_text;
+pub use skia_safe;
+pub use taffy;
