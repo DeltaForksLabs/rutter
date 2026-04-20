@@ -20,8 +20,8 @@ use winit::{dpi::PhysicalSize, event::Modifiers, window::Window};
 use self::cursor::CursorBlink;
 use self::gpu::{BackendType, GraphicsBackend, create_best_backend};
 use self::widget_state::{
-    AnimState, ModalState, ScrollState, SelectState, SliderState, TabState, ToastState,
-    VirtualGridState, VirtualListState, WidgetState,
+    AnimState, ContextMenuState, ModalState, PopoverState, ScrollState, SelectState, SliderState,
+    TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
 };
 use crate::app::AppLogic;
 use crate::layout::{RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree};
@@ -71,6 +71,7 @@ fn collect_toast_runtime_updates_impl<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
@@ -78,6 +79,21 @@ fn collect_toast_runtime_updates_impl<Msg>(
             path.push(0);
             collect_toast_runtime_updates_impl(child, out, path);
             path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            collect_toast_runtime_updates_impl(anchor, out, path);
+            path.pop();
+            if *open {
+                path.push(1);
+                collect_toast_runtime_updates_impl(content, out, path);
+                path.pop();
+            }
         }
         _ => {}
     }
@@ -110,9 +126,29 @@ fn collect_overlay_focus_scope<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. } => {
             path.push(0);
             let found = collect_overlay_focus_scope(child, out, path);
+            path.pop();
+            found
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            if *open {
+                path.push(1);
+                let found = collect_overlay_focus_scope(content, out, path);
+                path.pop();
+                if found {
+                    return true;
+                }
+            }
+            path.push(0);
+            let found = collect_overlay_focus_scope(anchor, out, path);
             path.pop();
             found
         }
@@ -194,10 +230,26 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. } => {
             path.push(0);
             collect_focus_order_impl(child, out, path);
             path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            collect_focus_order_impl(anchor, out, path);
+            path.pop();
+            if *open {
+                path.push(1);
+                collect_focus_order_impl(content, out, path);
+                path.pop();
+            }
         }
         Widget::Modal { visible, child, .. } => {
             if *visible {
@@ -355,6 +407,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub last_snapshot: std::time::Instant,
     pub snapshot_scheduled: bool,
     pub scale_factor: f32,
+    pub last_mouse_pos: Point,
     pub has_animated: bool,
 }
 
@@ -388,6 +441,7 @@ impl<A: AppLogic> RutterEngine<A> {
             last_snapshot: std::time::Instant::now(),
             snapshot_scheduled: false,
             scale_factor: 1.0,
+            last_mouse_pos: Point::new(0.0, 0.0),
             has_animated: false,
         }
     }
@@ -504,6 +558,8 @@ impl<A: AppLogic> RutterEngine<A> {
                     "tab" => WidgetState::Tab(TabState::default()),
                     "modal" => WidgetState::Modal(ModalState::default()),
                     "toast" => WidgetState::Toast(ToastState::new(3000)),
+                    "context_menu" => WidgetState::ContextMenu(ContextMenuState::default()),
+                    "popover" => WidgetState::Popover(PopoverState::default()),
                     "vlist" => WidgetState::VList(VirtualListState::default()),
                     "vgrid" => WidgetState::VGrid(VirtualGridState::default()),
                     _ => WidgetState::Anim(AnimState::default()),
@@ -550,6 +606,74 @@ impl<A: AppLogic> RutterEngine<A> {
         self.widget_states
             .insert(id, WidgetState::Toast(ToastState::new(duration_ms)));
     }
+
+    pub fn any_context_menu_open(&self) -> bool {
+        self.widget_states
+            .values()
+            .filter_map(WidgetState::as_context_menu)
+            .any(|state| state.is_open)
+    }
+
+    pub fn close_all_context_menus(&mut self) -> bool {
+        let mut changed = false;
+        for state in self.widget_states.values_mut() {
+            if let Some(menu) = state.as_context_menu_mut() {
+                if menu.is_open {
+                    menu.close();
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    pub fn open_context_menu(&mut self, id: u64, anchor: Point) {
+        for (&widget_id, state) in self.widget_states.iter_mut() {
+            if let Some(menu) = state.as_context_menu_mut() {
+                if widget_id == id {
+                    menu.open_at(anchor.x, anchor.y);
+                } else {
+                    menu.close();
+                }
+            }
+        }
+    }
+
+    pub fn any_popover_open(&self) -> bool {
+        self.widget_states
+            .values()
+            .filter_map(WidgetState::as_popover)
+            .any(|state| state.is_open)
+    }
+
+    pub fn close_popover(&mut self, id: u64) -> bool {
+        let Some(popover) = self
+            .widget_states
+            .get_mut(&id)
+            .and_then(|state| state.as_popover_mut())
+        else {
+            return false;
+        };
+        if popover.is_open {
+            popover.close();
+            return true;
+        }
+        false
+    }
+
+    pub fn close_all_popovers(&mut self) -> bool {
+        let mut changed = false;
+        for state in self.widget_states.values_mut() {
+            if let Some(popover) = state.as_popover_mut() {
+                if popover.is_open {
+                    popover.close();
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     pub fn open_modal(&mut self, id: u64) {
         if let Some(ws) = self.widget_states.get_mut(&id) {
             if let Some(m) = ws.as_modal_mut() {
@@ -632,6 +756,7 @@ impl<A: AppLogic> RutterEngine<A> {
             taffy,
             widget,
             node,
+            Point::new(0.0, 0.0),
             spacing,
             &mut path,
         );
@@ -643,10 +768,14 @@ impl<A: AppLogic> RutterEngine<A> {
         taffy: &TaffyTree<RutterContext>,
         widget: &Widget<Msg>,
         node: Option<NodeId>,
+        abs: Point,
         spacing: f32,
         path: &mut Vec<usize>,
     ) {
         let layout = node.and_then(|node| taffy.layout(node).ok());
+        let abs_pos = layout
+            .map(|layout| Point::new(abs.x + layout.location.x, abs.y + layout.location.y))
+            .unwrap_or(abs);
         match widget {
             Widget::Button { on_press, .. } => {
                 runtime_caches
@@ -786,6 +915,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     taffy,
                     child.as_ref(),
                     Self::first_child(node, taffy),
+                    abs_pos,
                     spacing,
                     path,
                 );
@@ -838,6 +968,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     taffy,
                     child.as_ref(),
                     Self::first_child(node, taffy),
+                    abs_pos,
                     spacing,
                     path,
                 );
@@ -872,6 +1003,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     taffy,
                     child.as_ref(),
                     Self::first_child(node, taffy),
+                    abs_pos,
                     spacing,
                     path,
                 );
@@ -926,6 +1058,64 @@ impl<A: AppLogic> RutterEngine<A> {
                     }
                 }
             }
+            Widget::Popover {
+                anchor,
+                content,
+                open,
+                ..
+            } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
+                let node_children = Self::children_for(node, taffy);
+                if let Some(ws) = widget_states.get_mut(&resolved_id) {
+                    if let Some(popover) = ws.as_popover_mut() {
+                        popover.set_open(*open);
+                        if let Some(anchor_node) = node_children.first().copied() {
+                            if let Ok(anchor_layout) = taffy.layout(anchor_node) {
+                                popover.set_anchor_rect(
+                                    abs_pos.x + anchor_layout.location.x,
+                                    abs_pos.y + anchor_layout.location.y,
+                                    anchor_layout.size.width,
+                                    anchor_layout.size.height,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if let Some(anchor_node) = node_children.first().copied() {
+                    path.push(0);
+                    Self::sync_runtime_metadata_impl(
+                        runtime_caches,
+                        widget_states,
+                        taffy,
+                        anchor.as_ref(),
+                        Some(anchor_node),
+                        abs_pos,
+                        spacing,
+                        path,
+                    );
+                    path.pop();
+                }
+
+                if *open {
+                    if let Some(popup_node) = node_children.get(1).copied() {
+                        if let Some(content_node) = Self::first_child(Some(popup_node), taffy) {
+                            path.push(1);
+                            Self::sync_runtime_metadata_impl(
+                                runtime_caches,
+                                widget_states,
+                                taffy,
+                                content.as_ref(),
+                                Some(content_node),
+                                Point::new(0.0, 0.0),
+                                spacing,
+                                path,
+                            );
+                            path.pop();
+                        }
+                    }
+                }
+            }
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
                 let node_children = Self::children_for(node, taffy);
                 for (i, child) in children.iter().enumerate() {
@@ -936,6 +1126,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         taffy,
                         child,
                         node_children.get(i).copied(),
+                        abs_pos,
                         spacing,
                         path,
                     );
@@ -944,6 +1135,7 @@ impl<A: AppLogic> RutterEngine<A> {
             }
             Widget::Container { child, .. }
             | Widget::Tooltip { child, .. }
+            | Widget::ContextMenu { child, .. }
             | Widget::Modal { child, .. } => {
                 path.push(0);
                 Self::sync_runtime_metadata_impl(
@@ -952,6 +1144,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     taffy,
                     child.as_ref(),
                     Self::first_child(node, taffy),
+                    abs_pos,
                     spacing,
                     path,
                 );
@@ -1100,7 +1293,7 @@ mod tests {
     use cosmic_text::FontSystem;
 
     use crate::layout::build_taffy_tree;
-    use crate::widget::{DialogAction, InputState};
+    use crate::widget::{DialogAction, DialogPosition, InputState};
 
     fn fs() -> Rc<RefCell<FontSystem>> {
         Rc::new(RefCell::new(FontSystem::new()))
@@ -1368,6 +1561,7 @@ mod tests {
             on_confirm: Msg::Submit,
             on_cancel: Msg::Dismiss,
             on_dismiss: None,
+            position: DialogPosition::Center,
             style: base_style(400.0, 240.0),
             child: Box::new(Widget::Spacer {
                 style: Style::default(),

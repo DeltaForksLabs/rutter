@@ -6,7 +6,7 @@ use arboard::Clipboard;
 use cosmic_text::FontSystem;
 use taffy::prelude::*;
 
-use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
+use rutter::{AppLogic, ButtonVariant, DialogPosition, RutterRunner, Theme, Widget};
 
 #[derive(Default)]
 pub struct DialogDemoState {
@@ -121,6 +121,7 @@ impl AppLogic for DialogDemo {
                     cancel_label: "Cancelar",
                     on_confirm: Msg::ConfirmSave,
                     on_cancel: Msg::CloseAll,
+                    position: DialogPosition::Center,
                     style: Style {
                         size: Size {
                             width: Dimension::percent(1.0),
@@ -142,6 +143,7 @@ impl AppLogic for DialogDemo {
                     cancel_label: "Voltar",
                     on_confirm: Msg::ConfirmDelete,
                     on_cancel: Msg::CloseAll,
+                    position: DialogPosition::Bottom,
                     style: Style {
                         size: Size {
                             width: Dimension::percent(1.0),
@@ -163,6 +165,7 @@ impl AppLogic for DialogDemo {
                     cancel_label: "Fechar",
                     on_confirm: Msg::CloseAll,
                     on_cancel: Msg::CloseAll,
+                    position: DialogPosition::Top,
                     style: Style {
                         size: Size {
                             width: Dimension::percent(1.0),

@@ -4,6 +4,7 @@
 // Novos estados:
 //   ToastState      — timer de auto-dismiss
 //   ModalState      — visível/oculto + backdrop fade
+//   ContextMenuState— visível/oculto + âncora absoluta
 //   TabState        — aba ativa (redundante com widget, mas
 //                     permite animação de underline)
 //   VirtualListState— scroll offset + range visível
@@ -185,6 +186,51 @@ impl ModalState {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ContextMenuState {
+    pub is_open: bool,
+    pub anchor_x: f32,
+    pub anchor_y: f32,
+}
+
+impl ContextMenuState {
+    pub fn open_at(&mut self, anchor_x: f32, anchor_y: f32) {
+        self.is_open = true;
+        self.anchor_x = anchor_x;
+        self.anchor_y = anchor_y;
+    }
+
+    pub fn close(&mut self) {
+        self.is_open = false;
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PopoverState {
+    pub is_open: bool,
+    pub anchor_x: f32,
+    pub anchor_y: f32,
+    pub anchor_w: f32,
+    pub anchor_h: f32,
+}
+
+impl PopoverState {
+    pub fn set_open(&mut self, open: bool) {
+        self.is_open = open;
+    }
+
+    pub fn set_anchor_rect(&mut self, anchor_x: f32, anchor_y: f32, anchor_w: f32, anchor_h: f32) {
+        self.anchor_x = anchor_x;
+        self.anchor_y = anchor_y;
+        self.anchor_w = anchor_w;
+        self.anchor_h = anchor_h;
+    }
+
+    pub fn close(&mut self) {
+        self.is_open = false;
+    }
+}
+
 /// Estado de uma TabBar.
 #[derive(Debug, Clone)]
 pub struct TabState {
@@ -247,8 +293,13 @@ impl VirtualListState {
 
     pub fn scroll_to_index(&mut self, idx: usize, item_height: f32, item_count: usize) {
         let target_y = idx as f32 * item_height;
+        let target_bottom = target_y + item_height;
         let max = self.max_scroll(item_height, item_count);
-        self.scroll_y = target_y.clamp(0.0, max);
+        if target_y < self.scroll_y {
+            self.scroll_y = target_y.clamp(0.0, max);
+        } else if target_bottom > self.scroll_y + self.viewport_h {
+            self.scroll_y = (target_bottom - self.viewport_h).clamp(0.0, max);
+        }
     }
 
     pub fn thumb_ratio(&self, item_height: f32, item_count: usize) -> f32 {
@@ -343,8 +394,13 @@ impl VirtualGridState {
     ) {
         let row = idx / normalize_virtual_grid_columns(columns);
         let target_y = row as f32 * item_height;
+        let target_bottom = target_y + item_height;
         let max = self.max_scroll(item_height, item_count, columns);
-        self.scroll_y = target_y.clamp(0.0, max);
+        if target_y < self.scroll_y {
+            self.scroll_y = target_y.clamp(0.0, max);
+        } else if target_bottom > self.scroll_y + self.viewport_h {
+            self.scroll_y = (target_bottom - self.viewport_h).clamp(0.0, max);
+        }
     }
 
     pub fn thumb_ratio(&self, item_height: f32, item_count: usize, columns: usize) -> f32 {
@@ -408,6 +464,8 @@ pub enum WidgetState {
     Anim(AnimState),
     Toast(ToastState),
     Modal(ModalState),
+    ContextMenu(ContextMenuState),
+    Popover(PopoverState),
     Tab(TabState),
     VList(VirtualListState),
     VGrid(VirtualGridState),
@@ -493,6 +551,34 @@ impl WidgetState {
     }
     pub fn as_modal_mut(&mut self) -> Option<&mut ModalState> {
         if let Self::Modal(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_context_menu(&self) -> Option<&ContextMenuState> {
+        if let Self::ContextMenu(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_context_menu_mut(&mut self) -> Option<&mut ContextMenuState> {
+        if let Self::ContextMenu(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_popover(&self) -> Option<&PopoverState> {
+        if let Self::Popover(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_popover_mut(&mut self) -> Option<&mut PopoverState> {
+        if let Self::Popover(s) = self {
             Some(s)
         } else {
             None
@@ -631,6 +717,53 @@ mod tests {
         assert_eq!(m.backdrop_alpha, 0);
     }
 
+    #[test]
+    fn context_menu_starts_closed() {
+        assert!(!ContextMenuState::default().is_open);
+    }
+
+    #[test]
+    fn context_menu_open_tracks_anchor() {
+        let mut menu = ContextMenuState::default();
+        menu.open_at(32.0, 48.0);
+        assert!(menu.is_open);
+        assert!((menu.anchor_x - 32.0).abs() < f32::EPSILON);
+        assert!((menu.anchor_y - 48.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn context_menu_close_hides_overlay() {
+        let mut menu = ContextMenuState::default();
+        menu.open_at(10.0, 12.0);
+        menu.close();
+        assert!(!menu.is_open);
+    }
+
+    #[test]
+    fn popover_starts_closed() {
+        assert!(!PopoverState::default().is_open);
+    }
+
+    #[test]
+    fn popover_tracks_anchor_rect() {
+        let mut popover = PopoverState::default();
+        popover.set_open(true);
+        popover.set_anchor_rect(10.0, 20.0, 120.0, 36.0);
+        assert!(popover.is_open);
+        assert!((popover.anchor_x - 10.0).abs() < f32::EPSILON);
+        assert!((popover.anchor_y - 20.0).abs() < f32::EPSILON);
+        assert!((popover.anchor_w - 120.0).abs() < f32::EPSILON);
+        assert!((popover.anchor_h - 36.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn popover_close_hides_overlay() {
+        let mut popover = PopoverState::default();
+        popover.set_open(true);
+        popover.close();
+        assert!(!popover.is_open);
+    }
+
     // ── TabState ─────────────────────────────────────────────
 
     #[test]
@@ -725,14 +858,14 @@ mod tests {
     }
 
     #[test]
-    fn vlist_scroll_to_index_correct() {
+    fn vlist_scroll_to_index_keeps_target_visible() {
         let mut s = VirtualListState {
             scroll_y: 0.0,
             viewport_h: 200.0,
             ..Default::default()
         };
         s.scroll_to_index(20, 30.0, 100);
-        assert!((s.scroll_y - 600.0).abs() < f32::EPSILON);
+        assert!((s.scroll_y - 430.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -800,13 +933,13 @@ mod tests {
     }
 
     #[test]
-    fn vgrid_scroll_to_index_uses_row() {
+    fn vgrid_scroll_to_index_keeps_row_visible() {
         let mut s = VirtualGridState {
             viewport_h: 180.0,
             ..Default::default()
         };
         s.scroll_to_index(9, 60.0, 40, 4);
-        assert!((s.scroll_y - 120.0).abs() < f32::EPSILON);
+        assert!((s.scroll_y - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -838,6 +971,13 @@ mod tests {
     fn widget_state_modal_accessor() {
         let ws = WidgetState::Modal(ModalState::default());
         assert!(ws.as_modal().is_some());
+        assert!(ws.as_tab().is_none());
+    }
+
+    #[test]
+    fn widget_state_context_menu_accessor() {
+        let ws = WidgetState::ContextMenu(ContextMenuState::default());
+        assert!(ws.as_context_menu().is_some());
         assert!(ws.as_tab().is_none());
     }
 
@@ -883,5 +1023,12 @@ mod tests {
         assert!(ws.as_modal().unwrap().visible);
         ws.as_modal_mut().unwrap().close();
         assert!(!ws.as_modal().unwrap().visible);
+    }
+
+    #[test]
+    fn widget_state_context_menu_mut() {
+        let mut ws = WidgetState::ContextMenu(ContextMenuState::default());
+        ws.as_context_menu_mut().unwrap().open_at(11.0, 19.0);
+        assert!(ws.as_context_menu().unwrap().is_open);
     }
 }

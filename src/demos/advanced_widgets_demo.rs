@@ -8,7 +8,7 @@ use arboard::Clipboard;
 use cosmic_text::FontSystem;
 use taffy::prelude::*;
 
-use rutter::{AppLogic, ButtonVariant, InputState, RutterRunner, Theme, Widget};
+use rutter::{AppLogic, ButtonVariant, DialogPosition, InputState, RutterRunner, Theme, Widget};
 
 #[derive(Default)]
 pub struct AdvancedWidgetsState {
@@ -115,6 +115,7 @@ impl AppLogic for AdvancedWidgetsDemo {
             on_confirm: Msg::ToggleDialog,
             on_cancel: Msg::ToggleDialog,
             on_dismiss: Some(Msg::ToggleDialog),
+            position: DialogPosition::Center,
             style: Style {
                 size: Size {
                     width: Dimension::percent(1.0),

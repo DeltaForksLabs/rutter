@@ -8,9 +8,16 @@ use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::engine::widget_state::{WidgetState, virtual_grid_row_count};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
-use crate::widget::{DialogAction, Widget};
+use crate::widget::{
+    CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
+    CONTEXT_MENU_VIEWPORT_MARGIN, ContextMenuEntry, DialogAction, DialogPosition, POPOVER_GAP,
+    POPOVER_VIEWPORT_MARGIN, Widget, estimate_context_menu_height, estimate_context_menu_width,
+};
 
 const ACCORDION_HEADER_H: f32 = 44.0;
+const DIALOG_CARD_W: f32 = 400.0;
+const DIALOG_CARD_H: f32 = 200.0;
+const DIALOG_VIEWPORT_MARGIN: f32 = 32.0;
 
 pub enum HitResult<Msg> {
     Message {
@@ -67,6 +74,484 @@ pub struct ScrollbarDragHit {
 pub struct InputGeometry {
     pub width: f32,
     pub height: f32,
+}
+
+pub enum ContextMenuOverlayHit<Msg> {
+    Item { id: u64, msg: Msg },
+    Consume,
+    Dismiss,
+}
+
+pub enum PopoverOverlayHit<Msg> {
+    Content(HitResult<Msg>),
+    Consume,
+    Dismiss { id: u64, on_dismiss: Option<Msg> },
+}
+
+pub(crate) fn context_menu_rect<Msg>(
+    entries: &[ContextMenuEntry<'_, Msg>],
+    anchor: Point,
+    viewport_size: (f32, f32),
+    font_size: f32,
+) -> SkiaRect {
+    let width = estimate_context_menu_width(entries, font_size)
+        .min((viewport_size.0 - CONTEXT_MENU_VIEWPORT_MARGIN * 2.0).max(1.0));
+    let height = (estimate_context_menu_height(entries) + CONTEXT_MENU_PAD_Y * 2.0)
+        .min((viewport_size.1 - CONTEXT_MENU_VIEWPORT_MARGIN * 2.0).max(1.0));
+    let x = anchor.x.clamp(
+        CONTEXT_MENU_VIEWPORT_MARGIN,
+        (viewport_size.0 - width - CONTEXT_MENU_VIEWPORT_MARGIN).max(CONTEXT_MENU_VIEWPORT_MARGIN),
+    );
+    let y = anchor.y.clamp(
+        CONTEXT_MENU_VIEWPORT_MARGIN,
+        (viewport_size.1 - height - CONTEXT_MENU_VIEWPORT_MARGIN).max(CONTEXT_MENU_VIEWPORT_MARGIN),
+    );
+    SkiaRect::from_xywh(x, y, width, height)
+}
+
+pub(crate) fn popover_rect(
+    anchor_rect: SkiaRect,
+    popup_size: (f32, f32),
+    viewport_size: (f32, f32),
+) -> SkiaRect {
+    let width = popup_size
+        .0
+        .min((viewport_size.0 - POPOVER_VIEWPORT_MARGIN * 2.0).max(1.0))
+        .max(1.0);
+    let height = popup_size
+        .1
+        .min((viewport_size.1 - POPOVER_VIEWPORT_MARGIN * 2.0).max(1.0))
+        .max(1.0);
+    let max_x = (viewport_size.0 - width - POPOVER_VIEWPORT_MARGIN).max(POPOVER_VIEWPORT_MARGIN);
+    let x = anchor_rect.left.clamp(POPOVER_VIEWPORT_MARGIN, max_x);
+    let below_y = anchor_rect.bottom + POPOVER_GAP;
+    let above_y = anchor_rect.top - height - POPOVER_GAP;
+    let y = if below_y + height + POPOVER_VIEWPORT_MARGIN <= viewport_size.1 {
+        below_y
+    } else {
+        above_y
+    }
+    .clamp(
+        POPOVER_VIEWPORT_MARGIN,
+        (viewport_size.1 - height - POPOVER_VIEWPORT_MARGIN).max(POPOVER_VIEWPORT_MARGIN),
+    );
+    SkiaRect::from_xywh(x, y, width, height)
+}
+
+pub(crate) fn dialog_card_rect(position: DialogPosition, viewport_size: (f32, f32)) -> SkiaRect {
+    let width = DIALOG_CARD_W
+        .min((viewport_size.0 - DIALOG_VIEWPORT_MARGIN * 2.0).max(1.0))
+        .max(1.0);
+    let height = DIALOG_CARD_H
+        .min((viewport_size.1 - DIALOG_VIEWPORT_MARGIN * 2.0).max(1.0))
+        .max(1.0);
+    let max_x = (viewport_size.0 - width - DIALOG_VIEWPORT_MARGIN)
+        .max(DIALOG_VIEWPORT_MARGIN.min(viewport_size.0));
+    let x =
+        ((viewport_size.0 - width) / 2.0).clamp(DIALOG_VIEWPORT_MARGIN.min(viewport_size.0), max_x);
+    let y = match position {
+        DialogPosition::Top => DIALOG_VIEWPORT_MARGIN,
+        DialogPosition::Center => (viewport_size.1 - height) / 2.0,
+        DialogPosition::Bottom => viewport_size.1 - height - DIALOG_VIEWPORT_MARGIN,
+    }
+    .clamp(
+        DIALOG_VIEWPORT_MARGIN.min(viewport_size.1),
+        (viewport_size.1 - height - DIALOG_VIEWPORT_MARGIN)
+            .max(DIALOG_VIEWPORT_MARGIN.min(viewport_size.1)),
+    );
+    SkiaRect::from_xywh(x, y, width, height)
+}
+
+pub fn hit_test_context_menu_overlay<Msg: Clone>(
+    widget: &Widget<Msg>,
+    mouse: Point,
+    viewport_size: (f32, f32),
+    widget_states: &HashMap<u64, WidgetState>,
+    font_size: f32,
+) -> Option<ContextMenuOverlayHit<Msg>> {
+    let mut path = Vec::new();
+    let mut any_open = false;
+    let hit = hit_test_context_menu_overlay_impl(
+        widget,
+        mouse,
+        viewport_size,
+        widget_states,
+        font_size,
+        &mut path,
+        &mut any_open,
+    );
+    hit.or_else(|| any_open.then_some(ContextMenuOverlayHit::Dismiss))
+}
+
+fn hit_test_context_menu_overlay_impl<Msg: Clone>(
+    widget: &Widget<Msg>,
+    mouse: Point,
+    viewport_size: (f32, f32),
+    widget_states: &HashMap<u64, WidgetState>,
+    font_size: f32,
+    path: &mut Vec<usize>,
+    any_open: &mut bool,
+) -> Option<ContextMenuOverlayHit<Msg>> {
+    match widget {
+        Widget::ContextMenu { child, entries, .. } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let menu_state = widget_states
+                .get(&resolved_id)
+                .and_then(|s| s.as_context_menu());
+            if let Some(state) = menu_state {
+                if state.is_open {
+                    *any_open = true;
+                    let rect = context_menu_rect(
+                        entries,
+                        Point::new(state.anchor_x, state.anchor_y),
+                        viewport_size,
+                        font_size,
+                    );
+                    if rect.contains(mouse) {
+                        let mut y = rect.top + CONTEXT_MENU_PAD_Y;
+                        for entry in entries.iter() {
+                            let item_h = match entry {
+                                ContextMenuEntry::Item { .. } => CONTEXT_MENU_ITEM_H,
+                                ContextMenuEntry::Separator => CONTEXT_MENU_SEPARATOR_H,
+                            };
+                            let item_rect = SkiaRect::from_xywh(rect.left, y, rect.width(), item_h);
+                            if item_rect.contains(mouse) {
+                                return match entry {
+                                    ContextMenuEntry::Item {
+                                        on_select: Some(msg),
+                                        ..
+                                    } => Some(ContextMenuOverlayHit::Item {
+                                        id: resolved_id,
+                                        msg: msg.clone(),
+                                    }),
+                                    _ => Some(ContextMenuOverlayHit::Consume),
+                                };
+                            }
+                            y += item_h;
+                        }
+                        return Some(ContextMenuOverlayHit::Consume);
+                    }
+                }
+            }
+            path.push(0);
+            let hit = hit_test_context_menu_overlay_impl(
+                child,
+                mouse,
+                viewport_size,
+                widget_states,
+                font_size,
+                path,
+                any_open,
+            );
+            path.pop();
+            hit
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate().rev() {
+                path.push(index);
+                let hit = hit_test_context_menu_overlay_impl(
+                    child,
+                    mouse,
+                    viewport_size,
+                    widget_states,
+                    font_size,
+                    path,
+                    any_open,
+                );
+                path.pop();
+                if hit.is_some() {
+                    return hit;
+                }
+            }
+            None
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. } => {
+            path.push(0);
+            let hit = hit_test_context_menu_overlay_impl(
+                child,
+                mouse,
+                viewport_size,
+                widget_states,
+                font_size,
+                path,
+                any_open,
+            );
+            path.pop();
+            hit
+        }
+        Widget::Accordion {
+            expanded, child, ..
+        } => {
+            if !expanded {
+                return None;
+            }
+            path.push(0);
+            let hit = hit_test_context_menu_overlay_impl(
+                child,
+                mouse,
+                viewport_size,
+                widget_states,
+                font_size,
+                path,
+                any_open,
+            );
+            path.pop();
+            hit
+        }
+        Widget::Modal { visible, child, .. } | Widget::Dialog { visible, child, .. } => {
+            if !visible {
+                return None;
+            }
+            path.push(0);
+            let hit = hit_test_context_menu_overlay_impl(
+                child,
+                mouse,
+                viewport_size,
+                widget_states,
+                font_size,
+                path,
+                any_open,
+            );
+            path.pop();
+            hit
+        }
+        _ => None,
+    }
+}
+
+pub fn hit_test_popover_overlay<Msg: Clone>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    viewport_size: (f32, f32),
+    widget_states: &HashMap<u64, WidgetState>,
+) -> Option<PopoverOverlayHit<Msg>> {
+    let mut path = Vec::new();
+    let mut any_open = false;
+    let hit = hit_test_popover_overlay_impl(
+        widget,
+        taffy,
+        node_id,
+        mouse,
+        Point::new(0.0, 0.0),
+        viewport_size,
+        widget_states,
+        &mut path,
+        &mut any_open,
+    );
+    hit.or_else(|| {
+        any_open.then_some(PopoverOverlayHit::Dismiss {
+            id: 0,
+            on_dismiss: None,
+        })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hit_test_popover_overlay_impl<Msg: Clone>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+    viewport_size: (f32, f32),
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+    any_open: &mut bool,
+) -> Option<PopoverOverlayHit<Msg>> {
+    let layout = taffy.layout(node_id).ok()?;
+    let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
+    match widget {
+        Widget::Popover {
+            anchor,
+            content,
+            on_dismiss,
+            ..
+        } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let node_children = taffy.children(node_id).ok()?;
+            let popover = widget_states
+                .get(&resolved_id)
+                .and_then(|state| state.as_popover());
+            if let Some(popover) = popover {
+                if popover.is_open {
+                    *any_open = true;
+                    if let Some(popup_node) = node_children.get(1).copied() {
+                        if let Ok(popup_layout) = taffy.layout(popup_node) {
+                            let anchor_rect = SkiaRect::from_xywh(
+                                popover.anchor_x,
+                                popover.anchor_y,
+                                popover.anchor_w,
+                                popover.anchor_h,
+                            );
+                            let rect = popover_rect(
+                                anchor_rect,
+                                (popup_layout.size.width, popup_layout.size.height),
+                                viewport_size,
+                            );
+                            if rect.contains(mouse) {
+                                if let Some(content_node) = taffy
+                                    .children(popup_node)
+                                    .ok()
+                                    .and_then(|ids| ids.first().copied())
+                                {
+                                    path.push(1);
+                                    let nested = hit_test_popover_overlay_impl(
+                                        content,
+                                        taffy,
+                                        content_node,
+                                        mouse,
+                                        Point::new(rect.left, rect.top),
+                                        viewport_size,
+                                        widget_states,
+                                        path,
+                                        any_open,
+                                    );
+                                    if nested.is_some() {
+                                        path.pop();
+                                        return nested;
+                                    }
+                                    let content_hit = hit_test_impl(
+                                        content,
+                                        taffy,
+                                        content_node,
+                                        mouse,
+                                        Point::new(rect.left, rect.top),
+                                        widget_states,
+                                        path,
+                                    );
+                                    path.pop();
+                                    return Some(match content_hit {
+                                        Some(hit) => PopoverOverlayHit::Content(hit),
+                                        None => PopoverOverlayHit::Consume,
+                                    });
+                                }
+                                return Some(PopoverOverlayHit::Consume);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(anchor_node) = node_children.first().copied() {
+                path.push(0);
+                let hit = hit_test_popover_overlay_impl(
+                    anchor,
+                    taffy,
+                    anchor_node,
+                    mouse,
+                    abs_pos,
+                    viewport_size,
+                    widget_states,
+                    path,
+                    any_open,
+                );
+                path.pop();
+                if hit.is_some() {
+                    return hit;
+                }
+            }
+
+            if popover.is_some_and(|state| state.is_open) {
+                return Some(PopoverOverlayHit::Dismiss {
+                    id: resolved_id,
+                    on_dismiss: on_dismiss.clone(),
+                });
+            }
+            None
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            for (index, child) in children.iter().enumerate().rev() {
+                path.push(index);
+                let hit = hit_test_popover_overlay_impl(
+                    child,
+                    taffy,
+                    ids[index],
+                    mouse,
+                    abs_pos,
+                    viewport_size,
+                    widget_states,
+                    path,
+                    any_open,
+                );
+                path.pop();
+                if hit.is_some() {
+                    return hit;
+                }
+            }
+            None
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
+        | Widget::ScrollView { child, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            let child_node = ids.first().copied()?;
+            path.push(0);
+            let hit = hit_test_popover_overlay_impl(
+                child,
+                taffy,
+                child_node,
+                mouse,
+                abs_pos,
+                viewport_size,
+                widget_states,
+                path,
+                any_open,
+            );
+            path.pop();
+            hit
+        }
+        Widget::Accordion {
+            expanded, child, ..
+        } => {
+            if !expanded {
+                return None;
+            }
+            let ids = taffy.children(node_id).ok()?;
+            let child_node = ids.first().copied()?;
+            path.push(0);
+            let hit = hit_test_popover_overlay_impl(
+                child,
+                taffy,
+                child_node,
+                mouse,
+                abs_pos,
+                viewport_size,
+                widget_states,
+                path,
+                any_open,
+            );
+            path.pop();
+            hit
+        }
+        Widget::Modal { visible, child, .. } | Widget::Dialog { visible, child, .. } => {
+            if !visible {
+                return None;
+            }
+            let ids = taffy.children(node_id).ok()?;
+            let child_node = ids.first().copied()?;
+            path.push(0);
+            let hit = hit_test_popover_overlay_impl(
+                child,
+                taffy,
+                child_node,
+                mouse,
+                abs_pos,
+                viewport_size,
+                widget_states,
+                path,
+                any_open,
+            );
+            path.pop();
+            hit
+        }
+        _ => None,
+    }
 }
 
 pub fn hit_test<Msg: Clone>(
@@ -187,6 +672,34 @@ fn hit_test_impl<Msg: Clone>(
             path.pop();
             result
         }
+        Widget::ContextMenu { child, .. } => {
+            let ids = taffy.children(node_id).unwrap();
+            if ids.is_empty() {
+                return None;
+            }
+            path.push(0);
+            let result = hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
+            path.pop();
+            result
+        }
+        Widget::Popover { anchor, .. } => {
+            let ids = taffy.children(node_id).unwrap();
+            let Some(anchor_node) = ids.first().copied() else {
+                return None;
+            };
+            path.push(0);
+            let result = hit_test_impl(
+                anchor,
+                taffy,
+                anchor_node,
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
+            path.pop();
+            result
+        }
         Widget::Accordion {
             child,
             expanded,
@@ -268,27 +781,26 @@ fn hit_test_impl<Msg: Clone>(
             visible,
             on_confirm,
             on_cancel,
+            on_dismiss,
+            position,
             ..
         } => {
             if !visible {
                 return None;
             }
-            let card_w = 400.0;
-            let card_h = 200.0;
-            let card_x = (layout.size.width - card_w) / 2.0;
-            let card_y = (layout.size.height - card_h) / 2.0;
+            let card = dialog_card_rect(*position, (layout.size.width, layout.size.height));
             let cancel_w = 100.0;
             let confirm_w = 100.0;
             let btn_h = 36.0;
             let cancel_rect = SkiaRect::from_xywh(
-                abs_pos.x + card_x + card_w - 24.0 - confirm_w - 12.0 - cancel_w,
-                abs_pos.y + card_y + card_h - 24.0 - btn_h,
+                abs_pos.x + card.right - 24.0 - confirm_w - 12.0 - cancel_w,
+                abs_pos.y + card.bottom - 24.0 - btn_h,
                 cancel_w,
                 btn_h,
             );
             let confirm_rect = SkiaRect::from_xywh(
-                abs_pos.x + card_x + card_w - 24.0 - confirm_w,
-                abs_pos.y + card_y + card_h - 24.0 - btn_h,
+                abs_pos.x + card.right - 24.0 - confirm_w,
+                abs_pos.y + card.bottom - 24.0 - btn_h,
                 confirm_w,
                 btn_h,
             );
@@ -305,7 +817,23 @@ fn hit_test_impl<Msg: Clone>(
                     msg: on_cancel.clone(),
                 });
             }
-            Some(HitResult::ModalDismiss(widget.resolved_id(path).unwrap()))
+            let abs_card = SkiaRect::from_xywh(
+                abs_pos.x + card.left,
+                abs_pos.y + card.top,
+                card.width(),
+                card.height(),
+            );
+            if abs_card.contains(mouse) {
+                return None;
+            }
+            if let Some(msg) = on_dismiss.clone() {
+                Some(HitResult::Message {
+                    focus_id: None,
+                    msg,
+                })
+            } else {
+                Some(HitResult::ModalDismiss(widget.resolved_id(path).unwrap()))
+            }
         }
         Widget::VirtualList {
             item_height,
@@ -401,6 +929,7 @@ fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
@@ -408,6 +937,21 @@ fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &
             path.push(0);
             collect_input_ids_impl(child, ids, path);
             path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            collect_input_ids_impl(anchor, ids, path);
+            path.pop();
+            if *open {
+                path.push(1);
+                collect_input_ids_impl(content, ids, path);
+                path.pop();
+            }
         }
         _ => {}
     }
@@ -439,6 +983,28 @@ fn collect_stateful_ids_impl<Msg>(
         } => out.push((widget.resolved_id(path).unwrap(), "anim")),
         Widget::TabBar { .. } => out.push((widget.resolved_id(path).unwrap(), "tab")),
         Widget::Toast { .. } => out.push((widget.resolved_id(path).unwrap(), "toast")),
+        Widget::ContextMenu { child, .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "context_menu"));
+            path.push(0);
+            collect_stateful_ids_impl(child, out, path);
+            path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            out.push((widget.resolved_id(path).unwrap(), "popover"));
+            path.push(0);
+            collect_stateful_ids_impl(anchor, out, path);
+            path.pop();
+            if *open {
+                path.push(1);
+                collect_stateful_ids_impl(content, out, path);
+                path.pop();
+            }
+        }
         Widget::VirtualList { .. } => out.push((widget.resolved_id(path).unwrap(), "vlist")),
         Widget::VirtualGrid { .. } => out.push((widget.resolved_id(path).unwrap(), "vgrid")),
         Widget::Modal { child, .. } => {
@@ -522,6 +1088,7 @@ fn find_input_props_impl<Msg: Clone>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
@@ -530,6 +1097,27 @@ fn find_input_props_impl<Msg: Clone>(
             let result = find_input_props_impl(child, target_id, path);
             path.pop();
             result
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            let result = find_input_props_impl(anchor, target_id, path);
+            path.pop();
+            if result.is_some() {
+                return result;
+            }
+            if *open {
+                path.push(1);
+                let result = find_input_props_impl(content, target_id, path);
+                path.pop();
+                result
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -565,6 +1153,7 @@ fn find_select_callback_impl<Msg: Clone>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
@@ -573,6 +1162,27 @@ fn find_select_callback_impl<Msg: Clone>(
             let result = find_select_callback_impl(child, target_id, path);
             path.pop();
             result
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            let result = find_select_callback_impl(anchor, target_id, path);
+            path.pop();
+            if result.is_some() {
+                return result;
+            }
+            if *open {
+                path.push(1);
+                let result = find_select_callback_impl(content, target_id, path);
+                path.pop();
+                result
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -608,6 +1218,7 @@ fn find_slider_callback_impl<Msg: Clone>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
@@ -616,6 +1227,27 @@ fn find_slider_callback_impl<Msg: Clone>(
             let result = find_slider_callback_impl(child, target_id, path);
             path.pop();
             result
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            let result = find_slider_callback_impl(anchor, target_id, path);
+            path.pop();
+            if result.is_some() {
+                return result;
+            }
+            if *open {
+                path.push(1);
+                let result = find_slider_callback_impl(content, target_id, path);
+                path.pop();
+                result
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -650,6 +1282,7 @@ fn find_vlist_props_impl<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
@@ -658,6 +1291,27 @@ fn find_vlist_props_impl<Msg>(
             let result = find_vlist_props_impl(child, target_id, path);
             path.pop();
             result
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            let result = find_vlist_props_impl(anchor, target_id, path);
+            path.pop();
+            if result.is_some() {
+                return result;
+            }
+            if *open {
+                path.push(1);
+                let result = find_vlist_props_impl(content, target_id, path);
+                path.pop();
+                result
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -690,6 +1344,7 @@ fn find_toast_dismiss_msg_impl<Msg: Clone>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
@@ -698,6 +1353,27 @@ fn find_toast_dismiss_msg_impl<Msg: Clone>(
             let result = find_toast_dismiss_msg_impl(child, target_id, path);
             path.pop();
             result
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            let result = find_toast_dismiss_msg_impl(anchor, target_id, path);
+            path.pop();
+            if result.is_some() {
+                return result;
+            }
+            if *open {
+                path.push(1);
+                let result = find_toast_dismiss_msg_impl(content, target_id, path);
+                path.pop();
+                result
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -744,6 +1420,7 @@ fn find_input_geometry_impl<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
@@ -756,6 +1433,38 @@ fn find_input_geometry_impl<Msg>(
             let result = find_input_geometry_impl(child, taffy, ids[0], target_id, path);
             path.pop();
             result
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            let ids = taffy.children(node_id).ok()?;
+            if let Some(anchor_node) = ids.first().copied() {
+                path.push(0);
+                let result = find_input_geometry_impl(anchor, taffy, anchor_node, target_id, path);
+                path.pop();
+                if result.is_some() {
+                    return result;
+                }
+            }
+            if *open {
+                if let Some(popup_node) = ids.get(1).copied() {
+                    if let Some(content_node) = taffy
+                        .children(popup_node)
+                        .ok()
+                        .and_then(|ids| ids.first().copied())
+                    {
+                        path.push(1);
+                        let result =
+                            find_input_geometry_impl(content, taffy, content_node, target_id, path);
+                        path.pop();
+                        return result;
+                    }
+                }
+            }
+            None
         }
         _ => None,
     }
@@ -770,6 +1479,117 @@ pub fn find_scroll_focus<Msg>(
 ) -> Option<u64> {
     let mut path = Vec::new();
     find_scroll_focus_impl(widget, taffy, node_id, mouse, abs, &mut path)
+}
+
+pub fn find_context_menu_target<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+) -> Option<u64> {
+    let mut path = Vec::new();
+    find_context_menu_target_impl(widget, taffy, node_id, mouse, abs, &mut path)
+}
+
+fn find_context_menu_target_impl<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+    path: &mut Vec<usize>,
+) -> Option<u64> {
+    let layout = taffy.layout(node_id).ok()?;
+    let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
+    let rect = SkiaRect::from_xywh(abs_pos.x, abs_pos.y, layout.size.width, layout.size.height);
+    if !rect.contains(mouse) {
+        return None;
+    }
+
+    match widget {
+        Widget::ContextMenu { child, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            if !ids.is_empty() {
+                path.push(0);
+                let hit = find_context_menu_target_impl(child, taffy, ids[0], mouse, abs_pos, path);
+                path.pop();
+                if hit.is_some() {
+                    return hit;
+                }
+            }
+            Some(widget.resolved_id(path).unwrap())
+        }
+        Widget::Popover { anchor, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            let anchor_node = ids.first().copied()?;
+            path.push(0);
+            let hit =
+                find_context_menu_target_impl(anchor, taffy, anchor_node, mouse, abs_pos, path);
+            path.pop();
+            hit
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            for (i, child) in children.iter().enumerate().rev() {
+                path.push(i);
+                let hit = find_context_menu_target_impl(child, taffy, ids[i], mouse, abs_pos, path);
+                path.pop();
+                if hit.is_some() {
+                    return hit;
+                }
+            }
+            None
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            if ids.is_empty() {
+                return None;
+            }
+            path.push(0);
+            let hit = find_context_menu_target_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            path.pop();
+            hit
+        }
+        Widget::Accordion {
+            expanded, child, ..
+        } => {
+            if !expanded {
+                return None;
+            }
+            let ids = taffy.children(node_id).ok()?;
+            if ids.is_empty() {
+                return None;
+            }
+            path.push(0);
+            let hit = find_context_menu_target_impl(
+                child,
+                taffy,
+                ids[0],
+                mouse,
+                Point::new(abs_pos.x, abs_pos.y + ACCORDION_HEADER_H),
+                path,
+            );
+            path.pop();
+            hit
+        }
+        Widget::Modal { visible, child, .. } | Widget::Dialog { visible, child, .. } => {
+            if !visible {
+                return None;
+            }
+            let ids = taffy.children(node_id).ok()?;
+            if ids.is_empty() {
+                return None;
+            }
+            path.push(0);
+            let hit = find_context_menu_target_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            path.pop();
+            hit
+        }
+        _ => None,
+    }
 }
 
 fn find_scroll_focus_impl<Msg>(
@@ -812,6 +1632,7 @@ fn find_scroll_focus_impl<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -821,6 +1642,14 @@ fn find_scroll_focus_impl<Msg>(
             }
             path.push(0);
             let result = find_scroll_focus_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            path.pop();
+            result
+        }
+        Widget::Popover { anchor, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            let anchor_node = ids.first().copied()?;
+            path.push(0);
+            let result = find_scroll_focus_impl(anchor, taffy, anchor_node, mouse, abs_pos, path);
             path.pop();
             result
         }
@@ -966,6 +1795,7 @@ fn find_scrollbar_drag_hit_impl<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -986,6 +1816,22 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             path.pop();
             result
         }
+        Widget::Popover { anchor, .. } => {
+            let ids = taffy.children(node_id).ok()?;
+            let anchor_node = ids.first().copied()?;
+            path.push(0);
+            let result = find_scrollbar_drag_hit_impl(
+                anchor,
+                taffy,
+                anchor_node,
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
+            path.pop();
+            result
+        }
         _ => None,
     }
 }
@@ -996,8 +1842,8 @@ mod tests {
 
     use taffy::prelude::Style;
 
-    use super::{collect_input_ids, collect_stateful_ids};
-    use crate::widget::{AUTO_ID, InputState, Widget};
+    use super::{collect_input_ids, collect_stateful_ids, dialog_card_rect};
+    use crate::widget::{AUTO_ID, DialogPosition, InputState, Widget};
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {
@@ -1103,5 +1949,87 @@ mod tests {
         assert_ne!(slider_ids[0].0, select_ids[0].0);
         assert_eq!(slider_ids[0].1, "slider");
         assert_eq!(select_ids[0].1, "select");
+    }
+
+    #[test]
+    fn popover_registers_stateful_id_and_open_content_inputs() {
+        let popover = Widget::popover(
+            true,
+            Widget::Button {
+                text: "Open",
+                on_press: Msg::Toggle,
+                style: Style::default(),
+                color: None,
+                variant: crate::widget::ButtonVariant::Primary,
+            },
+            Widget::text_input(
+                text_msg,
+                None,
+                Style::default(),
+                "Filter",
+                "",
+                InputState::Idle,
+                None,
+                false,
+            )
+            .with_id(88),
+            Some(Msg::Toggle),
+            Style::default(),
+            Style::default(),
+        )
+        .with_id(99);
+
+        let mut stateful = Vec::new();
+        let mut inputs = Vec::new();
+        collect_stateful_ids(&popover, &mut stateful);
+        collect_input_ids(&popover, &mut inputs);
+
+        assert!(
+            stateful
+                .iter()
+                .any(|(id, kind)| *id == 99 && *kind == "popover")
+        );
+        assert_eq!(inputs, vec![88]);
+    }
+
+    #[test]
+    fn closed_popover_skips_content_inputs() {
+        let popover = Widget::popover(
+            false,
+            Widget::Spacer {
+                style: Style::default(),
+            },
+            Widget::text_input(
+                text_msg,
+                None,
+                Style::default(),
+                "Hidden",
+                "",
+                InputState::Idle,
+                None,
+                false,
+            )
+            .with_id(88),
+            None,
+            Style::default(),
+            Style::default(),
+        );
+
+        let mut inputs = Vec::new();
+        collect_input_ids(&popover, &mut inputs);
+
+        assert!(inputs.is_empty());
+    }
+
+    #[test]
+    fn dialog_card_rect_respects_vertical_position() {
+        let viewport = (800.0, 600.0);
+        let top = dialog_card_rect(DialogPosition::Top, viewport);
+        let center = dialog_card_rect(DialogPosition::Center, viewport);
+        let bottom = dialog_card_rect(DialogPosition::Bottom, viewport);
+
+        assert!(top.top < center.top);
+        assert!(center.top < bottom.top);
+        assert!((center.top - 200.0).abs() < f32::EPSILON);
     }
 }

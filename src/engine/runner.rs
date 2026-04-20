@@ -8,7 +8,7 @@ use cosmic_text::{Action, Edit, Motion};
 use skia_safe::{Point, Rect as SkiaRect};
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, KeyEvent, MouseScrollDelta, StartCause, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::WindowId,
@@ -17,7 +17,11 @@ use winit::{
 use super::RutterEngine;
 use crate::app::AppLogic;
 use crate::engine::widget_state::WidgetState;
-use crate::render::hit_test::{HitResult, find_scroll_focus, find_scrollbar_drag_hit, hit_test};
+use crate::render::hit_test::{
+    ContextMenuOverlayHit, HitResult, PopoverOverlayHit, find_context_menu_target,
+    find_scroll_focus, find_scrollbar_drag_hit, hit_test, hit_test_context_menu_overlay,
+    hit_test_popover_overlay,
+};
 
 fn is_bidi_override_char(ch: char) -> bool {
     matches!(
@@ -265,6 +269,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             WindowEvent::ModifiersChanged(m) => self.engine.modifiers = m,
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = Point::new(position.x as f32, position.y as f32);
+                self.engine.last_mouse_pos = Point::new(
+                    self.cursor_pos.x / self.engine.scale_factor,
+                    self.cursor_pos.y / self.engine.scale_factor,
+                );
 
                 if let Some(drag) = &self.scroll_drag {
                     let id = drag.id;
@@ -328,7 +336,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 winit::event::MouseButton::Left | winit::event::MouseButton::Right
             ) =>
             {
-                self.mouse_down = true;
+                self.mouse_down = button == winit::event::MouseButton::Left;
                 let now = std::time::Instant::now();
                 let is_double = now.duration_since(self.last_click_time)
                     < Duration::from_millis(300)
@@ -344,9 +352,55 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.cursor_pos.x / self.engine.scale_factor,
                     self.cursor_pos.y / self.engine.scale_factor,
                 );
-                let (scroll_drag_hit, active_scroll_id, hit) = {
+                self.engine.last_mouse_pos = cursor;
+                let viewport_size = (
+                    size.width as f32 / self.engine.scale_factor,
+                    size.height as f32 / self.engine.scale_factor,
+                );
+                let (
+                    context_menu_overlay_hit,
+                    popover_overlay_hit,
+                    context_menu_target,
+                    scroll_drag_hit,
+                    active_scroll_id,
+                    mut hit,
+                ) = {
                     let wt = A::view(&mut self.engine.app_state);
-                    let scroll_drag_hit = if button == winit::event::MouseButton::Left {
+                    let context_menu_overlay_hit = if button == MouseButton::Left {
+                        hit_test_context_menu_overlay(
+                            &wt,
+                            cursor,
+                            viewport_size,
+                            &self.engine.widget_states,
+                            A::theme().font_body,
+                        )
+                    } else {
+                        None
+                    };
+                    let popover_overlay_hit = if button == MouseButton::Left {
+                        hit_test_popover_overlay(
+                            &wt,
+                            &self.engine.taffy,
+                            self.engine.last_root_node,
+                            cursor,
+                            viewport_size,
+                            &self.engine.widget_states,
+                        )
+                    } else {
+                        None
+                    };
+                    let context_menu_target = if button == MouseButton::Right {
+                        find_context_menu_target(
+                            &wt,
+                            &self.engine.taffy,
+                            self.engine.last_root_node,
+                            cursor,
+                            Point::new(0.0, 0.0),
+                        )
+                    } else {
+                        None
+                    };
+                    let scroll_drag_hit = if button == MouseButton::Left {
                         find_scrollbar_drag_hit(
                             &wt,
                             &self.engine.taffy,
@@ -373,10 +427,84 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         Point::new(0.0, 0.0),
                         &self.engine.widget_states,
                     );
-                    (scroll_drag_hit, active_scroll_id, hit)
+                    (
+                        context_menu_overlay_hit,
+                        popover_overlay_hit,
+                        context_menu_target,
+                        scroll_drag_hit,
+                        active_scroll_id,
+                        hit,
+                    )
                 };
 
-                if button == winit::event::MouseButton::Left {
+                if let Some(menu_hit) = context_menu_overlay_hit {
+                    self.close_all_selects();
+                    match menu_hit {
+                        ContextMenuOverlayHit::Item { msg, .. } => {
+                            self.engine.close_all_context_menus();
+                            A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
+                            self.engine.layout_dirty = true;
+                        }
+                        ContextMenuOverlayHit::Consume => {}
+                        ContextMenuOverlayHit::Dismiss => {
+                            self.engine.close_all_context_menus();
+                        }
+                    }
+                    self.redraw();
+                    return;
+                }
+
+                if let Some(popover_hit) = popover_overlay_hit {
+                    match popover_hit {
+                        PopoverOverlayHit::Content(content_hit) => {
+                            hit = Some(content_hit);
+                        }
+                        PopoverOverlayHit::Consume => {
+                            self.redraw();
+                            return;
+                        }
+                        PopoverOverlayHit::Dismiss { id, on_dismiss } => {
+                            self.close_all_selects();
+                            if let Some(msg) = on_dismiss {
+                                A::update(
+                                    &mut self.engine.app_state,
+                                    msg,
+                                    &mut self.engine.clipboard,
+                                );
+                            } else if id == 0 {
+                                self.engine.close_all_popovers();
+                            } else {
+                                self.engine.close_popover(id);
+                            }
+                            self.engine.layout_dirty = true;
+                            self.redraw();
+                            return;
+                        }
+                    }
+                }
+
+                if button == MouseButton::Right {
+                    self.close_all_selects();
+                    if let Some(id) = context_menu_target {
+                        self.engine.open_context_menu(id, cursor);
+                        self.redraw();
+                        return;
+                    }
+                    if self.engine.close_all_context_menus() {
+                        self.redraw();
+                        return;
+                    }
+                    if self.engine.close_all_popovers() {
+                        self.redraw();
+                        return;
+                    }
+                } else if self.engine.any_context_menu_open() {
+                    self.engine.close_all_context_menus();
+                    self.redraw();
+                    return;
+                }
+
+                if button == MouseButton::Left {
                     if let Some(hit) = scroll_drag_hit {
                         self.begin_scroll_drag(hit);
                         return;
@@ -1345,6 +1473,8 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
         if let Key::Named(NamedKey::Escape) = key {
             self.close_all_selects();
+            self.engine.close_all_context_menus();
+            self.engine.close_all_popovers();
             self.engine.active_scroll_id = None;
             self.redraw();
             return;

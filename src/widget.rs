@@ -52,6 +52,84 @@ pub enum ToastPosition {
     BottomLeft,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DialogPosition {
+    Top,
+    #[default]
+    Center,
+    Bottom,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContextMenuEntry<'a, Msg> {
+    Item {
+        label: &'a str,
+        on_select: Option<Msg>,
+    },
+    Separator,
+}
+
+impl<'a, Msg> ContextMenuEntry<'a, Msg> {
+    pub fn item(label: &'a str, on_select: Msg) -> Self {
+        Self::Item {
+            label,
+            on_select: Some(on_select),
+        }
+    }
+
+    pub fn disabled(label: &'a str) -> Self {
+        Self::Item {
+            label,
+            on_select: None,
+        }
+    }
+
+    pub const fn separator() -> Self {
+        Self::Separator
+    }
+
+    pub(crate) fn label(&self) -> Option<&'a str> {
+        match self {
+            Self::Item { label, .. } => Some(label),
+            Self::Separator => None,
+        }
+    }
+}
+
+pub(crate) const CONTEXT_MENU_ITEM_H: f32 = 32.0;
+pub(crate) const CONTEXT_MENU_SEPARATOR_H: f32 = 10.0;
+pub(crate) const CONTEXT_MENU_MIN_W: f32 = 168.0;
+pub(crate) const CONTEXT_MENU_PAD_X: f32 = 12.0;
+pub(crate) const CONTEXT_MENU_PAD_Y: f32 = 6.0;
+pub(crate) const CONTEXT_MENU_VIEWPORT_MARGIN: f32 = 8.0;
+pub(crate) const POPOVER_GAP: f32 = 8.0;
+pub(crate) const POPOVER_VIEWPORT_MARGIN: f32 = 8.0;
+
+pub(crate) fn estimate_context_menu_width<Msg>(
+    entries: &[ContextMenuEntry<'_, Msg>],
+    font_size: f32,
+) -> f32 {
+    let mut max_w = CONTEXT_MENU_MIN_W;
+    for entry in entries {
+        if let Some(label) = entry.label() {
+            let estimate =
+                label.chars().count() as f32 * font_size * 0.62 + CONTEXT_MENU_PAD_X * 2.0 + 24.0;
+            max_w = max_w.max(estimate);
+        }
+    }
+    max_w
+}
+
+pub(crate) fn estimate_context_menu_height<Msg>(entries: &[ContextMenuEntry<'_, Msg>]) -> f32 {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            ContextMenuEntry::Item { .. } => CONTEXT_MENU_ITEM_H,
+            ContextMenuEntry::Separator => CONTEXT_MENU_SEPARATOR_H,
+        })
+        .sum()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WidgetIdTag {
     TextInput = 1,
@@ -76,6 +154,8 @@ pub(crate) enum WidgetIdTag {
     DialogConfirm = 20,
     DialogCancel = 21,
     VirtualGrid = 22,
+    ContextMenu = 23,
+    Popover = 24,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +369,7 @@ pub enum Widget<'a, Msg> {
         on_confirm: Msg,
         on_cancel: Msg,
         on_dismiss: Option<Msg>,
+        position: DialogPosition,
         style: Style,
         child: Box<Widget<'a, Msg>>,
     },
@@ -300,6 +381,21 @@ pub enum Widget<'a, Msg> {
         position: ToastPosition,
         duration_ms: u32,
         on_dismiss: Option<Msg>,
+    },
+    ContextMenu {
+        id: u64,
+        child: Box<Widget<'a, Msg>>,
+        entries: &'a [ContextMenuEntry<'a, Msg>],
+        style: Style,
+    },
+    Popover {
+        id: u64,
+        open: bool,
+        anchor: Box<Widget<'a, Msg>>,
+        content: Box<Widget<'a, Msg>>,
+        on_dismiss: Option<Msg>,
+        style: Style,
+        popup_style: Style,
     },
     VirtualList {
         id: u64,
@@ -515,9 +611,47 @@ impl<'a, Msg> Widget<'a, Msg> {
             on_confirm,
             on_cancel,
             on_dismiss,
+            position: DialogPosition::Center,
             style,
             child: Box::new(child),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn dialog_positioned(
+        title: &'a str,
+        message: &'a str,
+        confirm_label: &'a str,
+        cancel_label: &'a str,
+        visible: bool,
+        position: DialogPosition,
+        on_confirm: Msg,
+        on_cancel: Msg,
+        on_dismiss: Option<Msg>,
+        style: Style,
+        child: Widget<'a, Msg>,
+    ) -> Self {
+        Self::Dialog {
+            id: AUTO_ID,
+            title,
+            message,
+            confirm_label,
+            cancel_label,
+            visible,
+            on_confirm,
+            on_cancel,
+            on_dismiss,
+            position,
+            style,
+            child: Box::new(child),
+        }
+    }
+
+    pub fn with_dialog_position(mut self, position: DialogPosition) -> Self {
+        if let Self::Dialog { position: slot, .. } = &mut self {
+            *slot = position;
+        }
+        self
     }
 
     pub fn toast(
@@ -536,6 +670,38 @@ impl<'a, Msg> Widget<'a, Msg> {
             position,
             duration_ms,
             on_dismiss,
+        }
+    }
+
+    pub fn context_menu(
+        child: Widget<'a, Msg>,
+        entries: &'a [ContextMenuEntry<'a, Msg>],
+        style: Style,
+    ) -> Self {
+        Self::ContextMenu {
+            id: AUTO_ID,
+            child: Box::new(child),
+            entries,
+            style,
+        }
+    }
+
+    pub fn popover(
+        open: bool,
+        anchor: Widget<'a, Msg>,
+        content: Widget<'a, Msg>,
+        on_dismiss: Option<Msg>,
+        style: Style,
+        popup_style: Style,
+    ) -> Self {
+        Self::Popover {
+            id: AUTO_ID,
+            open,
+            anchor: Box::new(anchor),
+            content: Box::new(content),
+            on_dismiss,
+            style,
+            popup_style,
         }
     }
 
@@ -590,6 +756,8 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Modal { id: slot, .. }
             | Self::Dialog { id: slot, .. }
             | Self::Toast { id: slot, .. }
+            | Self::ContextMenu { id: slot, .. }
+            | Self::Popover { id: slot, .. }
             | Self::VirtualList { id: slot, .. }
             | Self::VirtualGrid { id: slot, .. } => *slot = id,
             _ => {}
@@ -626,6 +794,10 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::Modal { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Modal, path)),
             Self::Dialog { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Dialog, path)),
             Self::Toast { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Toast, path)),
+            Self::ContextMenu { id, .. } => {
+                Some(resolve_widget_id(*id, WidgetIdTag::ContextMenu, path))
+            }
+            Self::Popover { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Popover, path)),
             Self::VirtualList { id, .. } => {
                 Some(resolve_widget_id(*id, WidgetIdTag::VirtualList, path))
             }

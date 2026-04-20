@@ -22,9 +22,12 @@ use crate::engine::widget_state::{
 };
 use crate::input_state::{InputWidgetState, TextSelection, cursor_x_in_run};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP};
+use crate::render::hit_test::{context_menu_rect, dialog_card_rect, popover_rect};
 use crate::theme::Theme;
 use crate::widget::{
-    ButtonVariant, DialogAction, InputState, Orientation, ToastKind, ToastPosition, Widget,
+    ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
+    ContextMenuEntry, DialogAction, DialogPosition, InputState, Orientation, ToastKind,
+    ToastPosition, Widget,
 };
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -36,6 +39,13 @@ struct ToastOverlay<'a> {
     position: ToastPosition,
     progress: f32,
     created_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct ContextMenuOverlay<'a, Msg> {
+    id: u64,
+    entries: &'a [ContextMenuEntry<'a, Msg>],
+    anchor: Point,
 }
 
 fn color_luminance(color: SkiaColor) -> f32 {
@@ -132,7 +142,36 @@ pub fn draw_widgets<'w, Msg>(
         scale,
         &mut path,
     );
+    let mut path = Vec::new();
+    draw_popover_overlays(
+        canvas,
+        taffy,
+        node,
+        widget,
+        fs,
+        swash,
+        mouse_pos,
+        focused_id,
+        input_states,
+        widget_states,
+        font_cache,
+        text_cache,
+        cursor_visible,
+        theme,
+        scale,
+        &mut path,
+        Point::new(0.0, 0.0),
+    );
     draw_toast_overlays(canvas, widget, widget_states, font_cache, theme, scale);
+    draw_context_menu_overlays(
+        canvas,
+        widget,
+        widget_states,
+        mouse_pos,
+        font_cache,
+        theme,
+        scale,
+    );
 }
 
 fn draw_toast_overlays<'w, Msg>(
@@ -204,6 +243,321 @@ fn draw_toast_overlays<'w, Msg>(
     canvas.restore();
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_popover_overlays<'w, Msg>(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    node: NodeId,
+    widget: &Widget<'w, Msg>,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    mouse_pos: Point,
+    focused_id: Option<u64>,
+    input_states: &HashMap<u64, InputWidgetState>,
+    widget_states: &HashMap<u64, WidgetState>,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
+    cursor_visible: bool,
+    theme: &Theme,
+    scale: f32,
+    path: &mut Vec<usize>,
+    abs: Point,
+) {
+    let Ok(layout) = taffy.layout(node) else {
+        return;
+    };
+    let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
+    match widget {
+        Widget::Popover {
+            anchor, content, ..
+        } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let Ok(node_children) = taffy.children(node) else {
+                return;
+            };
+
+            if let Some(anchor_node) = node_children.first().copied() {
+                path.push(0);
+                draw_popover_overlays(
+                    canvas,
+                    taffy,
+                    anchor_node,
+                    anchor,
+                    fs,
+                    swash,
+                    mouse_pos,
+                    focused_id,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    theme,
+                    scale,
+                    path,
+                    abs_pos,
+                );
+                path.pop();
+            }
+
+            let Some(popover) = widget_states
+                .get(&resolved_id)
+                .and_then(|state| state.as_popover())
+            else {
+                return;
+            };
+            if !popover.is_open {
+                return;
+            }
+
+            let Some(popup_node) = node_children.get(1).copied() else {
+                return;
+            };
+            let Ok(popup_layout) = taffy.layout(popup_node) else {
+                return;
+            };
+            let Some(content_node) = taffy
+                .children(popup_node)
+                .ok()
+                .and_then(|ids| ids.first().copied())
+            else {
+                return;
+            };
+
+            let dims = canvas.image_info().dimensions();
+            let viewport_size = (
+                dims.width as f32 / scale.max(f32::EPSILON),
+                dims.height as f32 / scale.max(f32::EPSILON),
+            );
+            let anchor_rect = SkiaRect::from_xywh(
+                popover.anchor_x,
+                popover.anchor_y,
+                popover.anchor_w,
+                popover.anchor_h,
+            );
+            let rect = popover_rect(
+                anchor_rect,
+                (popup_layout.size.width, popup_layout.size.height),
+                viewport_size,
+            );
+
+            draw_popover_surface(canvas, rect, theme);
+            canvas.save();
+            canvas.clip_rect(rect, None, true);
+            canvas.translate((rect.left, rect.top));
+            path.push(1);
+            draw_widgets_impl(
+                canvas,
+                taffy,
+                content_node,
+                content,
+                fs,
+                swash,
+                Point::new(mouse_pos.x - rect.left, mouse_pos.y - rect.top),
+                focused_id,
+                input_states,
+                widget_states,
+                font_cache,
+                text_cache,
+                cursor_visible,
+                theme,
+                scale,
+                path,
+            );
+            draw_popover_overlays(
+                canvas,
+                taffy,
+                content_node,
+                content,
+                fs,
+                swash,
+                Point::new(mouse_pos.x - rect.left, mouse_pos.y - rect.top),
+                focused_id,
+                input_states,
+                widget_states,
+                font_cache,
+                text_cache,
+                cursor_visible,
+                theme,
+                scale,
+                path,
+                Point::new(rect.left, rect.top),
+            );
+            path.pop();
+            canvas.restore();
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            let Ok(ids) = taffy.children(node) else {
+                return;
+            };
+            for (index, child) in children.iter().enumerate() {
+                if let Some(child_node) = ids.get(index).copied() {
+                    path.push(index);
+                    draw_popover_overlays(
+                        canvas,
+                        taffy,
+                        child_node,
+                        child,
+                        fs,
+                        swash,
+                        mouse_pos,
+                        focused_id,
+                        input_states,
+                        widget_states,
+                        font_cache,
+                        text_cache,
+                        cursor_visible,
+                        theme,
+                        scale,
+                        path,
+                        abs_pos,
+                    );
+                    path.pop();
+                }
+            }
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
+        | Widget::ScrollView { child, .. } => {
+            if let Some(child_node) = taffy
+                .children(node)
+                .ok()
+                .and_then(|ids| ids.first().copied())
+            {
+                path.push(0);
+                draw_popover_overlays(
+                    canvas,
+                    taffy,
+                    child_node,
+                    child,
+                    fs,
+                    swash,
+                    mouse_pos,
+                    focused_id,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    theme,
+                    scale,
+                    path,
+                    abs_pos,
+                );
+                path.pop();
+            }
+        }
+        Widget::Accordion {
+            expanded, child, ..
+        } => {
+            if !expanded {
+                return;
+            }
+            if let Some(child_node) = taffy
+                .children(node)
+                .ok()
+                .and_then(|ids| ids.first().copied())
+            {
+                path.push(0);
+                draw_popover_overlays(
+                    canvas,
+                    taffy,
+                    child_node,
+                    child,
+                    fs,
+                    swash,
+                    mouse_pos,
+                    focused_id,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    theme,
+                    scale,
+                    path,
+                    abs_pos,
+                );
+                path.pop();
+            }
+        }
+        Widget::Modal { visible, child, .. } | Widget::Dialog { visible, child, .. } => {
+            if !visible {
+                return;
+            }
+            if let Some(child_node) = taffy
+                .children(node)
+                .ok()
+                .and_then(|ids| ids.first().copied())
+            {
+                path.push(0);
+                draw_popover_overlays(
+                    canvas,
+                    taffy,
+                    child_node,
+                    child,
+                    fs,
+                    swash,
+                    mouse_pos,
+                    focused_id,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    theme,
+                    scale,
+                    path,
+                    abs_pos,
+                );
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn draw_context_menu_overlays<'w, Msg>(
+    canvas: &Canvas,
+    widget: &Widget<'w, Msg>,
+    widget_states: &HashMap<u64, WidgetState>,
+    mouse_pos: Point,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    theme: &Theme,
+    scale: f32,
+) {
+    let mut overlays = Vec::new();
+    let mut path = Vec::new();
+    collect_open_context_menus(widget, widget_states, &mut path, &mut overlays);
+    if overlays.is_empty() {
+        return;
+    }
+
+    let dims = canvas.image_info().dimensions();
+    let viewport_size = (
+        dims.width as f32 / scale.max(f32::EPSILON),
+        dims.height as f32 / scale.max(f32::EPSILON),
+    );
+
+    canvas.save();
+    canvas.reset_matrix();
+    canvas.scale((scale, scale));
+    for overlay in overlays {
+        draw_context_menu(
+            canvas,
+            overlay.id,
+            overlay.entries,
+            overlay.anchor,
+            viewport_size,
+            mouse_pos,
+            font_cache,
+            theme,
+        );
+    }
+    canvas.restore();
+}
+
 fn collect_visible_toasts<'w, Msg>(
     widget: &Widget<'w, Msg>,
     widget_states: &HashMap<u64, WidgetState>,
@@ -244,10 +598,26 @@ fn collect_visible_toasts<'w, Msg>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. } => {
             path.push(0);
             collect_visible_toasts(child, widget_states, path, out);
             path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            collect_visible_toasts(anchor, widget_states, path, out);
+            path.pop();
+            if *open {
+                path.push(1);
+                collect_visible_toasts(content, widget_states, path, out);
+                path.pop();
+            }
         }
         Widget::Accordion {
             expanded, child, ..
@@ -262,6 +632,80 @@ fn collect_visible_toasts<'w, Msg>(
             if *visible {
                 path.push(0);
                 collect_visible_toasts(child, widget_states, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_open_context_menus<'w, Msg>(
+    widget: &Widget<'w, Msg>,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+    out: &mut Vec<ContextMenuOverlay<'w, Msg>>,
+) {
+    match widget {
+        Widget::ContextMenu { child, entries, .. } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            if let Some(menu) = widget_states
+                .get(&resolved_id)
+                .and_then(|state| state.as_context_menu())
+            {
+                if menu.is_open {
+                    out.push(ContextMenuOverlay {
+                        id: resolved_id,
+                        entries,
+                        anchor: Point::new(menu.anchor_x, menu.anchor_y),
+                    });
+                }
+            }
+            path.push(0);
+            collect_open_context_menus(child, widget_states, path, out);
+            path.pop();
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                collect_open_context_menus(child, widget_states, path, out);
+                path.pop();
+            }
+        }
+        Widget::Container { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ScrollView { child, .. } => {
+            path.push(0);
+            collect_open_context_menus(child, widget_states, path, out);
+            path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            collect_open_context_menus(anchor, widget_states, path, out);
+            path.pop();
+            if *open {
+                path.push(1);
+                collect_open_context_menus(content, widget_states, path, out);
+                path.pop();
+            }
+        }
+        Widget::Accordion {
+            expanded, child, ..
+        } => {
+            if *expanded {
+                path.push(0);
+                collect_open_context_menus(child, widget_states, path, out);
+                path.pop();
+            }
+        }
+        Widget::Modal { visible, child, .. } | Widget::Dialog { visible, child, .. } => {
+            if *visible {
+                path.push(0);
+                collect_open_context_menus(child, widget_states, path, out);
                 path.pop();
             }
         }
@@ -417,6 +861,56 @@ fn draw_widgets_impl<'w, Msg>(
             let rect = SkiaRect::from_xywh(0.0, 0.0, size.0, size.1);
             if rect.contains(local_mouse) {
                 draw_tooltip_popup(canvas, text, local_mouse, font_cache, theme);
+            }
+        }
+        Widget::ContextMenu { child, .. } => {
+            let ids = taffy.children(node).unwrap();
+            if !ids.is_empty() {
+                path.push(0);
+                draw_widgets_impl(
+                    canvas,
+                    taffy,
+                    ids[0],
+                    child,
+                    fs,
+                    swash,
+                    local_mouse,
+                    focused_id,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    theme,
+                    scale,
+                    path,
+                );
+                path.pop();
+            }
+        }
+        Widget::Popover { anchor, .. } => {
+            let ids = taffy.children(node).unwrap();
+            if let Some(anchor_node) = ids.first().copied() {
+                path.push(0);
+                draw_widgets_impl(
+                    canvas,
+                    taffy,
+                    anchor_node,
+                    anchor,
+                    fs,
+                    swash,
+                    local_mouse,
+                    focused_id,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    theme,
+                    scale,
+                    path,
+                );
+                path.pop();
             }
         }
         Widget::Button {
@@ -717,6 +1211,7 @@ fn draw_widgets_impl<'w, Msg>(
             confirm_label,
             cancel_label,
             visible,
+            position,
             ..
         } => {
             if !*visible {
@@ -729,6 +1224,7 @@ fn draw_widgets_impl<'w, Msg>(
                 message,
                 confirm_label,
                 cancel_label,
+                *position,
                 size,
                 focused_id,
                 widget.dialog_action_focus_id(path, DialogAction::Confirm),
@@ -1389,6 +1885,7 @@ fn draw_dialog(
     message: &str,
     confirm_label: &str,
     cancel_label: &str,
+    position: DialogPosition,
     size: (f32, f32),
     focused_id: Option<u64>,
     confirm_focus_id: Option<u64>,
@@ -1405,10 +1902,11 @@ fn draw_dialog(
     bp.set_anti_alias(true);
     canvas.draw_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), &bp);
 
-    let card_w = 400.0;
-    let card_h = 200.0;
-    let card_x = (size.0 - card_w) / 2.0;
-    let card_y = (size.1 - card_h) / 2.0;
+    let card = dialog_card_rect(position, size);
+    let card_w = card.width();
+    let card_h = card.height();
+    let card_x = card.left;
+    let card_y = card.top;
 
     let mut card_p = Paint::default();
     card_p.set_color(theme.surface);
@@ -1590,6 +2088,117 @@ fn draw_toast(
         pp.set_anti_alias(true);
         canvas.draw_rect(SkiaRect::from_xywh(x, y + h - 3.0, bar_w, 3.0), &pp);
     }
+}
+
+fn draw_context_menu<Msg>(
+    canvas: &Canvas,
+    _id: u64,
+    entries: &[ContextMenuEntry<'_, Msg>],
+    anchor: Point,
+    viewport_size: (f32, f32),
+    mouse_pos: Point,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    theme: &Theme,
+) {
+    let rect = context_menu_rect(entries, anchor, viewport_size, theme.font_body);
+
+    let mut bg = Paint::default();
+    bg.set_color(Theme::alpha(SkiaColor::from_rgb(28, 28, 28), 248));
+    bg.set_anti_alias(true);
+    canvas.draw_rrect(RRect::new_rect_xy(rect, 8.0, 8.0), &bg);
+
+    let mut border = Paint::default();
+    border.set_style(paint::Style::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color(Theme::alpha(theme.primary, 70));
+    border.set_anti_alias(true);
+    canvas.draw_rrect(RRect::new_rect_xy(rect, 8.0, 8.0), &border);
+
+    let mut y = rect.top + CONTEXT_MENU_PAD_Y;
+    for entry in entries {
+        match entry {
+            ContextMenuEntry::Separator => {
+                let mut sep = Paint::default();
+                sep.set_color(Theme::alpha(theme.on_surface, 28));
+                sep.set_style(paint::Style::Stroke);
+                sep.set_stroke_width(1.0);
+                canvas.draw_line(
+                    (rect.left + 8.0, y + CONTEXT_MENU_SEPARATOR_H / 2.0),
+                    (rect.right - 8.0, y + CONTEXT_MENU_SEPARATOR_H / 2.0),
+                    &sep,
+                );
+                y += CONTEXT_MENU_SEPARATOR_H;
+            }
+            ContextMenuEntry::Item { label, on_select } => {
+                let item_rect =
+                    SkiaRect::from_xywh(rect.left, y, rect.width(), CONTEXT_MENU_ITEM_H);
+                let hovered = item_rect.contains(mouse_pos);
+                if hovered {
+                    let mut hp = Paint::default();
+                    hp.set_color(Theme::alpha(theme.primary, 34));
+                    hp.set_anti_alias(true);
+                    canvas.draw_rrect(
+                        RRect::new_rect_xy(
+                            SkiaRect::from_xywh(
+                                item_rect.left + 4.0,
+                                item_rect.top + 2.0,
+                                (item_rect.width() - 8.0).max(0.0),
+                                (item_rect.height() - 4.0).max(0.0),
+                            ),
+                            6.0,
+                            6.0,
+                        ),
+                        &hp,
+                    );
+                }
+
+                let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
+                let mut tp = Paint::default();
+                tp.set_color(if on_select.is_some() {
+                    if hovered {
+                        theme.primary
+                    } else {
+                        theme.on_surface
+                    }
+                } else {
+                    Theme::alpha(theme.on_surface, 100)
+                });
+                tp.set_anti_alias(true);
+                let text_y = item_rect.top + item_rect.height() / 2.0 + theme.font_body / 3.0;
+                canvas.draw_str(label, (rect.left + 12.0, text_y), &f, &tp);
+                y += CONTEXT_MENU_ITEM_H;
+            }
+        }
+    }
+}
+
+fn draw_popover_surface(canvas: &Canvas, rect: SkiaRect, theme: &Theme) {
+    let shadow_rect = SkiaRect::from_xywh(rect.left, rect.top + 3.0, rect.width(), rect.height());
+    let mut shadow = Paint::default();
+    shadow.set_color(Theme::alpha(SkiaColor::BLACK, 42));
+    shadow.set_anti_alias(true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(shadow_rect, theme.radius_md, theme.radius_md),
+        &shadow,
+    );
+
+    let mut bg = Paint::default();
+    bg.set_color(theme.surface);
+    bg.set_anti_alias(true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(rect, theme.radius_md, theme.radius_md),
+        &bg,
+    );
+
+    let mut border = Paint::default();
+    border.set_style(paint::Style::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color(Theme::alpha(theme.on_surface, 38));
+    border.set_anti_alias(true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(rect, theme.radius_md, theme.radius_md),
+        &border,
+    );
 }
 
 fn draw_virtual_list(

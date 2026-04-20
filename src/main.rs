@@ -13,6 +13,7 @@
 //   cargo run -- modal_toast
 //   cargo run -- vlist
 //   cargo run -- vgrid
+//   cargo run -- popover
 //   cargo run -- advanced
 // ============================================================
 
@@ -31,6 +32,7 @@ fn main() {
         "tabs" => demos::tab_demo::run(),
         "scroll" => demos::scroll_demo::run(),
         "modal_toast" => demos::modal_toast_demo::run(),
+        "popover" => demos::popover_demo::run(),
         "vlist" => demos::vlist_demo::run(),
         "vgrid" => demos::vgrid_demo::run(),
         "accordion" => demos::accordion_demo::run(),

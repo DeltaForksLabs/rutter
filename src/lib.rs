@@ -16,7 +16,7 @@ pub mod widget;
 pub use app::AppLogic;
 pub use engine::runner::RutterRunner;
 pub use theme::Theme;
-pub use widget::{AUTO_ID, ButtonVariant, InputState, Widget};
+pub use widget::{AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget};
 
 // ── Re-exports de dependências públicas ──────────────────────
 pub use arboard;

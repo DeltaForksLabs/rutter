@@ -161,6 +161,57 @@ impl LayoutBlueprint {
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
+            Widget::ContextMenu { child, style, .. } => {
+                path.push(0);
+                let child = Self::from_widget_with_path(child, widget_states, path);
+                path.pop();
+                Self::with_children(
+                    Some(widget.resolved_id(path).unwrap()),
+                    style.clone(),
+                    vec![child],
+                )
+            }
+            Widget::Popover {
+                anchor,
+                content,
+                open,
+                style,
+                popup_style,
+                ..
+            } => {
+                path.push(0);
+                let anchor = Self::from_widget_with_path(anchor, widget_states, path);
+                path.pop();
+
+                let popup = if *open {
+                    path.push(1);
+                    let content = Self::from_widget_with_path(content, widget_states, path);
+                    path.pop();
+                    Self::with_children(
+                        None,
+                        Style {
+                            position: Position::Absolute,
+                            ..popup_style.clone()
+                        },
+                        vec![content],
+                    )
+                } else {
+                    Self::leaf(
+                        None,
+                        Style {
+                            position: Position::Absolute,
+                            size: Size::zero(),
+                            ..popup_style.clone()
+                        },
+                    )
+                };
+
+                Self::with_children(
+                    Some(widget.resolved_id(path).unwrap()),
+                    style.clone(),
+                    vec![anchor, popup],
+                )
+            }
             Widget::Accordion {
                 child,
                 style,

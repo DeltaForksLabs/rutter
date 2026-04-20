@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use taffy::prelude::Style;
 
-use rutter::{ButtonVariant, InputState, Orientation, ToastKind, Widget};
+use rutter::{ButtonVariant, ContextMenuEntry, InputState, Orientation, ToastKind, Widget};
 use rutter::engine::widget_state::{
-    AnimState, ModalState, ScrollState, SelectState,
+    AnimState, ContextMenuState, ModalState, ScrollState, SelectState,
     SliderState, TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
 };
 use rutter::engine::runner::snap_to_step;
@@ -109,6 +109,11 @@ fn modal_reopen_works() {
     assert!(m.visible);
 }
 
+#[test]
+fn context_menu_default_closed() {
+    assert!(!ContextMenuState::default().is_open);
+}
+
 // ── TabState ─────────────────────────────────────────────────
 
 #[test]
@@ -173,7 +178,7 @@ fn vlist_scroll_by_negative_clamp() {
 fn vlist_scroll_to_index() {
     let mut s = VirtualListState { scroll_y: 0.0, viewport_h: 200.0, ..Default::default() };
     s.scroll_to_index(10, 30.0, 100);
-    assert!((s.scroll_y - 300.0).abs() < f32::EPSILON);
+    assert!((s.scroll_y - 130.0).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -212,7 +217,7 @@ fn vgrid_visible_rows_scrolled() {
 fn vgrid_scroll_to_index_tracks_row() {
     let mut s = VirtualGridState { viewport_h: 180.0, ..Default::default() };
     s.scroll_to_index(10, 60.0, 48, 4);
-    assert!((s.scroll_y - 120.0).abs() < f32::EPSILON);
+    assert!((s.scroll_y - 0.0).abs() < f32::EPSILON);
 }
 
 // ── WidgetState accessors ─────────────────────────────────────
@@ -330,6 +335,24 @@ fn toast_kinds_distinct() {
 }
 
 #[test]
+fn context_menu_stores_entries() {
+    let entries = [
+        ContextMenuEntry::item("Copy", M::A),
+        ContextMenuEntry::separator(),
+        ContextMenuEntry::disabled("Paste"),
+    ];
+    let w: Widget<M> = Widget::ContextMenu {
+        id: 1,
+        child: Box::new(Widget::Spacer { style: Style::default() }),
+        entries: &entries,
+        style: Style::default(),
+    };
+    if let Widget::ContextMenu { entries, .. } = w {
+        assert_eq!(entries.len(), 3);
+    }
+}
+
+#[test]
 fn vlist_stores_item_count_and_height() {
     let w: Widget<M> = Widget::VirtualList { id: 1, item_height: 32.0, item_count: 500,
         items: &|_| None, on_select: M::Usize, style: Style::default() };
@@ -439,6 +462,16 @@ fn stateful_modal() {
 }
 
 #[test]
+fn stateful_context_menu() {
+    let entries = [ContextMenuEntry::item("Open", M::A)];
+    let w: Widget<M> = Widget::ContextMenu { id: 8, entries: &entries, style: Style::default(),
+        child: Box::new(Widget::Spacer { style: Style::default() }) };
+    let mut out = vec![];
+    collect_stateful_ids(&w, &mut out);
+    assert!(out.iter().any(|(id, k)| *id == 8 && *k == "context_menu"));
+}
+
+#[test]
 fn stateful_toast() {
     let w: Widget<M> = Widget::Toast { id: 9, visible: true, message: "x", kind: ToastKind::Success,
         duration_ms: 3000, on_dismiss: None };
@@ -488,6 +521,19 @@ fn inputs_collected_inside_modal() {
     let mut ids = vec![];
     collect_input_ids(&w, &mut ids);
     assert_eq!(ids, vec![55]);
+}
+
+#[test]
+fn inputs_collected_inside_context_menu_child() {
+    let entries = [ContextMenuEntry::item("Open", M::A)];
+    let inner: Widget<M> = Widget::TextInput { id: 56, on_change: M::Str, on_submit: None,
+        style: Style::default(), label: "", placeholder: "",
+        state: InputState::Idle, error_msg: None, is_password: false };
+    let w = Widget::ContextMenu { id: 2, entries: &entries, style: Style::default(),
+        child: Box::new(inner) };
+    let mut ids = vec![];
+    collect_input_ids(&w, &mut ids);
+    assert_eq!(ids, vec![56]);
 }
 
 #[test]
