@@ -6,7 +6,9 @@
 use cosmic_text::FontSystem;
 use rutter::input_state::{InputWidgetState, TextSelection, UndoStack};
 
-fn fs() -> FontSystem { FontSystem::new() }
+fn fs() -> FontSystem {
+    FontSystem::new()
+}
 
 // ── UndoStack — integração ───────────────────────────────────
 
@@ -30,9 +32,11 @@ fn redo_three_steps() {
     s.push("x".into());
     s.push("xy".into());
     s.push("xyz".into());
-    s.undo(); s.undo(); s.undo();
+    s.undo();
+    s.undo();
+    s.undo();
 
-    assert_eq!(s.redo(), Some("x"));
+    assert_eq!(s.current(), Some("x"));
     assert_eq!(s.redo(), Some("xy"));
     assert_eq!(s.redo(), Some("xyz"));
     assert!(s.redo().is_none());
@@ -44,7 +48,7 @@ fn new_push_after_undo_clears_redo_history() {
     s.push("v1".into());
     s.push("v2".into());
     s.push("v3".into());
-    s.undo();           // agora em v2
+    s.undo(); // agora em v2
     s.push("v2b".into()); // novo branch
     assert!(s.redo().is_none(), "v3 deve ter sido descartado");
 }
@@ -100,7 +104,7 @@ fn new_state_is_empty() {
 #[test]
 fn set_text_and_read_back() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.set_text(&mut fs, "hello world");
     assert_eq!(s.text(), "hello world");
 }
@@ -108,7 +112,7 @@ fn set_text_and_read_back() {
 #[test]
 fn set_text_preserves_newlines() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.set_text(&mut fs, "line 1\nline 2");
     assert_eq!(s.text(), "line 1\nline 2");
 }
@@ -116,13 +120,13 @@ fn set_text_preserves_newlines() {
 #[test]
 fn snapshot_undo_redo_full_cycle() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
 
-    s.snapshot();                    // ""
+    s.snapshot(); // ""
     s.set_text(&mut fs, "step1");
-    s.snapshot();                    // "step1"
+    s.snapshot(); // "step1"
     s.set_text(&mut fs, "step2");
-    s.snapshot();                    // "step2"
+    s.snapshot(); // "step2"
 
     s.undo(&mut fs);
     assert_eq!(s.text(), "step1");
@@ -140,7 +144,7 @@ fn snapshot_undo_redo_full_cycle() {
 #[test]
 fn undo_at_start_is_noop() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.snapshot();
     s.undo(&mut fs); // volta para ""
     s.undo(&mut fs); // não deve panic ou mudar estado
@@ -150,7 +154,7 @@ fn undo_at_start_is_noop() {
 #[test]
 fn redo_at_end_is_noop() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.set_text(&mut fs, "abc");
     s.snapshot();
     s.redo(&mut fs); // noop
@@ -160,7 +164,7 @@ fn redo_at_end_is_noop() {
 #[test]
 fn select_all_covers_full_text() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.set_text(&mut fs, "hello");
     s.select_all(&mut fs);
     let sel = s.selection.expect("deve ter seleção após select_all");
@@ -171,7 +175,7 @@ fn select_all_covers_full_text() {
 #[test]
 fn clear_selection_removes_it() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.set_text(&mut fs, "text");
     s.select_all(&mut fs);
     assert!(s.selection.is_some());
@@ -182,7 +186,7 @@ fn clear_selection_removes_it() {
 #[test]
 fn select_all_on_empty_text_yields_no_selection() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.select_all(&mut fs);
     // Texto vazio: select_all retorna sem criar seleção
     assert!(s.selection.is_none());
@@ -191,7 +195,7 @@ fn select_all_on_empty_text_yields_no_selection() {
 #[test]
 fn scroll_x_advances_when_cursor_past_visible() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.scroll_x = 0.0;
     let visible = 100.0_f32;
     let fake_cursor_x = 150.0_f32; // além do visível
@@ -207,7 +211,7 @@ fn scroll_x_advances_when_cursor_past_visible() {
 #[test]
 fn scroll_x_retracts_when_cursor_left_of_scroll() {
     let mut fs = fs();
-    let mut s  = InputWidgetState::new(&mut fs);
+    let mut s = InputWidgetState::new(&mut fs);
     s.scroll_x = 100.0;
     let fake_cursor_x = 40.0_f32; // antes do início visível
 
@@ -219,9 +223,9 @@ fn scroll_x_retracts_when_cursor_left_of_scroll() {
 
 #[test]
 fn multiple_inputs_independent_state() {
-    let mut fs  = fs();
-    let mut s1  = InputWidgetState::new(&mut fs);
-    let mut s2  = InputWidgetState::new(&mut fs);
+    let mut fs = fs();
+    let mut s1 = InputWidgetState::new(&mut fs);
+    let mut s2 = InputWidgetState::new(&mut fs);
 
     s1.set_text(&mut fs, "user");
     s2.set_text(&mut fs, "pass");

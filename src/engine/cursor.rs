@@ -1,3 +1,6 @@
+// Copyright (c) DeltaForks Labs
+// Licensed under the MIT License OR Apache 2.0.
+
 // ============================================================
 // Rutter Framework — engine/cursor.rs
 // Gerencia o estado de visibilidade do cursor piscante.

@@ -3,23 +3,27 @@
 // TextInput não carrega mais &mut Editor.
 // ============================================================
 
-use taffy::prelude::Style;
-use rutter::{ButtonVariant, InputState, Widget};
 use rutter::render::hit_test::collect_input_ids;
+use rutter::{ButtonVariant, InputState, Widget};
+use taffy::prelude::Style;
 
 #[derive(Debug, Clone, PartialEq)]
-enum Msg { Changed(String), Submit, Clear }
+enum Msg {
+    Changed(String),
+    Submit,
+    Clear,
+}
 
 fn input(id: u64) -> Widget<'static, Msg> {
     Widget::TextInput {
-        on_change:   |s| Msg::Changed(s),
-        on_submit:   Some(Msg::Submit),
-        style:       Style::default(),
+        on_change: |s| Msg::Changed(s),
+        on_submit: Some(Msg::Submit),
+        style: Style::default(),
         id,
-        label:       "Field",
+        label: "Field",
         placeholder: "type here",
-        state:       InputState::Idle,
-        error_msg:   None,
+        state: InputState::Idle,
+        error_msg: None,
         is_password: false,
     }
 }
@@ -30,9 +34,9 @@ fn input(id: u64) -> Widget<'static, Msg> {
 fn text_widget_stores_content_and_size() {
     let w: Widget<()> = Widget::Text {
         content: "Hello!".into(),
-        style:   Style::default(),
-        color:   None,
-        size:    18.0,
+        style: Style::default(),
+        color: None,
+        size: 18.0,
     };
     if let Widget::Text { content, size, .. } = w {
         assert_eq!(content, "Hello!");
@@ -82,11 +86,16 @@ fn text_input_on_submit_is_some() {
 #[test]
 fn button_primary_variant() {
     let w: Widget<Msg> = Widget::Button {
-        text: "OK", on_press: Msg::Submit,
-        style: Style::default(), color: None,
+        text: "OK",
+        on_press: Msg::Submit,
+        style: Style::default(),
+        color: None,
         variant: ButtonVariant::Primary,
     };
-    if let Widget::Button { variant, on_press, .. } = w {
+    if let Widget::Button {
+        variant, on_press, ..
+    } = w
+    {
         assert_eq!(variant, ButtonVariant::Primary);
         assert_eq!(on_press, Msg::Submit);
     }
@@ -95,8 +104,10 @@ fn button_primary_variant() {
 #[test]
 fn button_ghost_variant() {
     let w: Widget<Msg> = Widget::Button {
-        text: "Cancel", on_press: Msg::Clear,
-        style: Style::default(), color: None,
+        text: "Cancel",
+        on_press: Msg::Clear,
+        style: Style::default(),
+        color: None,
         variant: ButtonVariant::Ghost,
     };
     if let Widget::Button { variant, .. } = w {
@@ -107,8 +118,10 @@ fn button_ghost_variant() {
 #[test]
 fn button_text_variant() {
     let w: Widget<Msg> = Widget::Button {
-        text: "More", on_press: Msg::Clear,
-        style: Style::default(), color: None,
+        text: "More",
+        on_press: Msg::Clear,
+        style: Style::default(),
+        color: None,
         variant: ButtonVariant::Text,
     };
     if let Widget::Button { variant, .. } = w {
@@ -152,8 +165,19 @@ fn collect_skips_button_and_text() {
     let w: Widget<Msg> = Widget::Column {
         style: Style::default(),
         children: vec![
-            Widget::Text { content: "x".into(), style: Style::default(), color: None, size: 14.0 },
-            Widget::Button { text: "b", on_press: Msg::Submit, style: Style::default(), color: None, variant: ButtonVariant::Primary },
+            Widget::Text {
+                content: "x".into(),
+                style: Style::default(),
+                color: None,
+                size: 14.0,
+            },
+            Widget::Button {
+                text: "b",
+                on_press: Msg::Submit,
+                style: Style::default(),
+                color: None,
+                variant: ButtonVariant::Primary,
+            },
         ],
     };
     let mut ids = vec![];
@@ -164,7 +188,9 @@ fn collect_skips_button_and_text() {
 #[test]
 fn collect_nested_in_container() {
     let w = Widget::Container::<Msg> {
-        style: Style::default(), color: None, radius: 4.0,
+        style: Style::default(),
+        color: None,
+        radius: 4.0,
         child: Box::new(input(99)),
     };
     let mut ids = vec![];
@@ -178,7 +204,9 @@ fn collect_deep_tree() {
         style: Style::default(),
         children: vec![
             Widget::Container {
-                style: Style::default(), color: None, radius: 4.0,
+                style: Style::default(),
+                color: None,
+                radius: 4.0,
                 child: Box::new(Widget::Row {
                     style: Style::default(),
                     children: vec![input(100), input(200)],
@@ -202,7 +230,7 @@ fn input_state_default_is_idle() {
 #[test]
 fn input_states_are_distinct() {
     assert_ne!(InputState::Error, InputState::Success);
-    assert_ne!(InputState::Idle,  InputState::Focused);
+    assert_ne!(InputState::Idle, InputState::Focused);
     assert_ne!(InputState::Error, InputState::Idle);
 }
 
@@ -220,12 +248,17 @@ fn text_input_error_state() {
         on_change: |_| Msg::Clear,
         on_submit: None,
         style: Style::default(),
-        id: 1, label: "x", placeholder: "",
+        id: 1,
+        label: "x",
+        placeholder: "",
         state: InputState::Error,
         error_msg: Some("required".into()),
         is_password: false,
     };
-    if let Widget::TextInput { state, error_msg, .. } = w {
+    if let Widget::TextInput {
+        state, error_msg, ..
+    } = w
+    {
         assert_eq!(state, InputState::Error);
         assert_eq!(error_msg, Some("required".into()));
     }
@@ -237,7 +270,9 @@ fn text_input_password_flag() {
         on_change: |_| Msg::Clear,
         on_submit: None,
         style: Style::default(),
-        id: 2, label: "Password", placeholder: "",
+        id: 2,
+        label: "Password",
+        placeholder: "",
         state: InputState::Idle,
         error_msg: None,
         is_password: true,

@@ -113,7 +113,7 @@ cargo run -- popover
 cargo run -- advanced
 ```
 
-The demos live in `src/demos` and are intended to exercise isolated widgets and interaction patterns.
+The widget demos live in `examples/widgets` and are intended to exercise isolated widgets and interaction patterns. The `examples/apps` directory is reserved for future complete example applications built with Rutter.
 
 ## Quick Start
 
@@ -279,7 +279,10 @@ src/
   render/                 Skia rendering, hit testing, text pipeline
   theme.rs                Theme values and visual defaults
   widget.rs               Widget definitions and constructors
-  demos/                  Demo applications for individual widgets
+examples/
+  apps/                   Future complete example applications
+  widgets/                Widget-focused demo modules used by the demo runner
+tests/                    Integration tests and future black-box test suites
 ```
 
 ## Documentation
@@ -289,7 +292,7 @@ Official documentation is under construction.
 Until the documentation site is available, use:
 
 - This README for project orientation.
-- `src/demos` for practical examples.
+- `examples/widgets` for practical widget examples.
 - The public exports in `src/lib.rs` for the current API surface.
 - Tests as behavior references for layout, input, rendering, and widget state.
 
@@ -329,4 +332,3 @@ You may choose either license when using, modifying, or distributing the project
 ## Credits
 
 Built by https://github.com/DeltaForksLabs.
-

@@ -1,16 +1,12 @@
 // ============================================================
-// Rutter Framework — src/demos/mod.rs
+// Rutter Framework — examples/widgets/mod.rs
 //
 // Módulo de demonstrações individuais por widget.
-// Cada sub-módulo é um binário independente (AppLogic completo).
+// Cada sub-módulo expõe um AppLogic completo usado pelo binário principal.
 //
 // Para rodar uma demo específica via Cargo:
-//   cargo run --example text_input
-//   cargo run --example slider
-//   ... (configure em Cargo.toml com [[example]])
-//
-// Ou, para rodar a demo completa integrada (original):
-//   cargo run
+//   cargo run -- text_input
+//   cargo run -- slider
 // ============================================================
 
 pub mod controls_demo;

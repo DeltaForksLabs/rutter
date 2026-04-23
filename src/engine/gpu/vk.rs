@@ -1,3 +1,6 @@
+// Copyright (c) DeltaForks Labs
+// Licensed under the MIT License OR Apache 2.0.
+
 use std::ffi::{CStr, CString};
 use std::rc::Rc;
 

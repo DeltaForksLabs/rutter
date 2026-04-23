@@ -1,3 +1,6 @@
+// Copyright (c) DeltaForks Labs
+// Licensed under the MIT License OR Apache 2.0.
+
 pub mod cpu;
 pub mod gl;
 pub mod vk;

@@ -3,27 +3,27 @@
 // ============================================================
 
 use std::collections::HashMap;
-use taffy::prelude::Style;
+use taffy::{TraversePartialTree, prelude::Style};
 
-use rutter::{ButtonVariant, InputState, Orientation, Widget};
-use rutter::engine::widget_state::{
-    AnimState, ScrollState, SelectState, SliderState, WidgetState,
-};
 use rutter::engine::runner::snap_to_step;
-use rutter::layout::{build_taffy_tree, RutterContext, OPTION_HEIGHT};
+use rutter::engine::widget_state::{AnimState, ScrollState, SelectState, SliderState, WidgetState};
+use rutter::layout::{OPTION_HEIGHT, build_taffy_tree};
 use rutter::render::hit_test::{
-    collect_input_ids, collect_stateful_ids,
-    find_select_callback, find_slider_callback,
+    collect_input_ids, collect_stateful_ids, find_select_callback, find_slider_callback,
 };
+use rutter::widget::Orientation;
+use rutter::{InputState, Widget};
 
+use cosmic_text::FontSystem;
 use std::cell::RefCell;
 use std::rc::Rc;
-use cosmic_text::FontSystem;
 
 fn fs() -> Rc<RefCell<FontSystem>> {
     Rc::new(RefCell::new(FontSystem::new()))
 }
-fn empty_states() -> HashMap<u64, WidgetState> { HashMap::new() }
+fn empty_states() -> HashMap<u64, WidgetState> {
+    HashMap::new()
+}
 
 // ── Mensagens de teste ───────────────────────────────────────
 
@@ -38,7 +38,7 @@ enum M {
 
 // ── Construtores ─────────────────────────────────────────────
 
-fn checkbox(id_hint: u64, checked: bool) -> Widget<'static, M> {
+fn checkbox(_id_hint: u64, checked: bool) -> Widget<'static, M> {
     Widget::Checkbox {
         checked,
         on_change: M::Bool,
@@ -48,52 +48,88 @@ fn checkbox(id_hint: u64, checked: bool) -> Widget<'static, M> {
 }
 
 fn switch_(checked: bool) -> Widget<'static, M> {
-    Widget::Switch { checked, on_change: M::Bool, style: Style::default() }
+    Widget::Switch {
+        checked,
+        on_change: M::Bool,
+        style: Style::default(),
+    }
 }
 
 fn radio_(selected: bool) -> Widget<'static, M> {
-    Widget::Radio { selected, on_select: || M::Unit, label: "opt", style: Style::default() }
+    Widget::Radio {
+        selected,
+        on_select: || M::Unit,
+        label: "opt",
+        style: Style::default(),
+    }
 }
 
 fn slider_(id: u64, val: f32) -> Widget<'static, M> {
-    Widget::Slider { id, value: val, min: 0.0, max: 100.0, step: 1.0,
-        on_change: M::Float, style: Style::default(), label: "" }
+    Widget::Slider {
+        id,
+        value: val,
+        min: 0.0,
+        max: 100.0,
+        step: 1.0,
+        on_change: M::Float,
+        style: Style::default(),
+        label: "",
+    }
 }
 
 fn progress_(val: f32) -> Widget<'static, M> {
-    Widget::ProgressBar { value: val, indeterminate: false, style: Style::default() }
+    Widget::ProgressBar {
+        id: 0,
+        value: val,
+        indeterminate: false,
+        style: Style::default(),
+    }
 }
 
 fn spinner_(id: u64) -> Widget<'static, M> {
-    Widget::Spinner { id, style: Style::default() }
+    Widget::Spinner {
+        id,
+        style: Style::default(),
+    }
 }
 
 fn select_(id: u64) -> Widget<'static, M> {
     Widget::Select {
-        id, options: &["A","B","C"], selected_index: 0,
-        on_change: M::Usize, style: Style::default(),
-        label: "", placeholder: "",
+        id,
+        options: &["A", "B", "C"],
+        selected_index: 0,
+        on_change: M::Usize,
+        style: Style::default(),
+        label: "",
+        placeholder: "",
     }
 }
 
 fn divider_() -> Widget<'static, M> {
-    Widget::Divider { style: Style::default(), orientation: Orientation::Horizontal }
+    Widget::Divider {
+        style: Style::default(),
+        orientation: Orientation::Horizontal,
+    }
 }
 
 fn spacer_() -> Widget<'static, M> {
-    Widget::Spacer { style: Style::default() }
+    Widget::Spacer {
+        style: Style::default(),
+    }
 }
 
 fn scroll_(id: u64) -> Widget<'static, M> {
     Widget::ScrollView {
-        id, style: Style::default(),
+        id,
+        style: Style::default(),
         child: Box::new(spacer_()),
     }
 }
 
 fn tooltip_() -> Widget<'static, M> {
     Widget::Tooltip {
-        text: "hint", style: Style::default(),
+        text: "hint",
+        style: Style::default(),
         child: Box::new(spacer_()),
     }
 }
@@ -103,13 +139,18 @@ fn tooltip_() -> Widget<'static, M> {
 #[test]
 fn checkbox_stores_checked_state() {
     let w = checkbox(1, true);
-    if let Widget::Checkbox { checked, .. } = w { assert!(checked); }
+    if let Widget::Checkbox { checked, .. } = w {
+        assert!(checked);
+    }
 }
 
 #[test]
 fn checkbox_on_change_inverts() {
     let w = checkbox(1, false);
-    if let Widget::Checkbox { on_change, checked, .. } = w {
+    if let Widget::Checkbox {
+        on_change, checked, ..
+    } = w
+    {
         assert_eq!(on_change(!checked), M::Bool(true));
     }
 }
@@ -117,13 +158,18 @@ fn checkbox_on_change_inverts() {
 #[test]
 fn switch_stores_state() {
     let w = switch_(true);
-    if let Widget::Switch { checked, .. } = w { assert!(checked); }
+    if let Widget::Switch { checked, .. } = w {
+        assert!(checked);
+    }
 }
 
 #[test]
 fn switch_on_change_inverts() {
     let w = switch_(true);
-    if let Widget::Switch { on_change, checked, .. } = w {
+    if let Widget::Switch {
+        on_change, checked, ..
+    } = w
+    {
         assert_eq!(on_change(!checked), M::Bool(false));
     }
 }
@@ -131,25 +177,34 @@ fn switch_on_change_inverts() {
 #[test]
 fn radio_selected_flag() {
     let w = radio_(true);
-    if let Widget::Radio { selected, .. } = w { assert!(selected); }
+    if let Widget::Radio { selected, .. } = w {
+        assert!(selected);
+    }
 }
 
 #[test]
 fn radio_unselected_flag() {
     let w = radio_(false);
-    if let Widget::Radio { selected, .. } = w { assert!(!selected); }
+    if let Widget::Radio { selected, .. } = w {
+        assert!(!selected);
+    }
 }
 
 #[test]
 fn radio_on_select_produces_message() {
     let w = radio_(false);
-    if let Widget::Radio { on_select, .. } = w { assert_eq!(on_select(), M::Unit); }
+    if let Widget::Radio { on_select, .. } = w {
+        assert_eq!(on_select(), M::Unit);
+    }
 }
 
 #[test]
 fn slider_stores_value_and_range() {
     let w = slider_(1, 42.0);
-    if let Widget::Slider { value, min, max, .. } = w {
+    if let Widget::Slider {
+        value, min, max, ..
+    } = w
+    {
         assert!((value - 42.0).abs() < f32::EPSILON);
         assert!((min - 0.0).abs() < f32::EPSILON);
         assert!((max - 100.0).abs() < f32::EPSILON);
@@ -167,7 +222,12 @@ fn slider_on_change_produces_float() {
 #[test]
 fn progress_bar_value_stored() {
     let w = progress_(0.75);
-    if let Widget::ProgressBar { value, indeterminate, .. } = w {
+    if let Widget::ProgressBar {
+        value,
+        indeterminate,
+        ..
+    } = w
+    {
         assert!((value - 0.75).abs() < f32::EPSILON);
         assert!(!indeterminate);
     }
@@ -175,20 +235,35 @@ fn progress_bar_value_stored() {
 
 #[test]
 fn progress_bar_indeterminate_flag() {
-    let w = Widget::ProgressBar { value: 0.0, indeterminate: true, style: Style::default() };
-    if let Widget::ProgressBar { indeterminate, .. } = w { assert!(indeterminate); }
+    let w: Widget<M> = Widget::ProgressBar {
+        id: 7,
+        value: 0.0,
+        indeterminate: true,
+        style: Style::default(),
+    };
+    if let Widget::ProgressBar { indeterminate, .. } = w {
+        assert!(indeterminate);
+    }
 }
 
 #[test]
 fn spinner_stores_id() {
     let w = spinner_(7);
-    if let Widget::Spinner { id, .. } = w { assert_eq!(id, 7); }
+    if let Widget::Spinner { id, .. } = w {
+        assert_eq!(id, 7);
+    }
 }
 
 #[test]
 fn select_stores_options_and_index() {
     let w = select_(5);
-    if let Widget::Select { id, options, selected_index, .. } = w {
+    if let Widget::Select {
+        id,
+        options,
+        selected_index,
+        ..
+    } = w
+    {
         assert_eq!(id, 5);
         assert_eq!(options.len(), 3);
         assert_eq!(selected_index, 0);
@@ -213,7 +288,10 @@ fn divider_orientation_horizontal() {
 
 #[test]
 fn divider_orientation_vertical() {
-    let w = Widget::Divider { style: Style::default(), orientation: Orientation::Vertical };
+    let w: Widget<M> = Widget::Divider {
+        style: Style::default(),
+        orientation: Orientation::Vertical,
+    };
     if let Widget::Divider { orientation, .. } = w {
         assert_eq!(orientation, Orientation::Vertical);
     }
@@ -222,13 +300,17 @@ fn divider_orientation_vertical() {
 #[test]
 fn scroll_view_wraps_child() {
     let w = scroll_(3);
-    if let Widget::ScrollView { id, .. } = w { assert_eq!(id, 3); }
+    if let Widget::ScrollView { id, .. } = w {
+        assert_eq!(id, 3);
+    }
 }
 
 #[test]
 fn tooltip_stores_text() {
     let w = tooltip_();
-    if let Widget::Tooltip { text, .. } = w { assert_eq!(text, "hint"); }
+    if let Widget::Tooltip { text, .. } = w {
+        assert_eq!(text, "hint");
+    }
 }
 
 // ── Layout / Taffy ────────────────────────────────────────────
@@ -286,8 +368,13 @@ fn select_closed_keeps_base_height() {
         ..Default::default()
     };
     let w: Widget<M> = Widget::Select {
-        id: 99, options: &["X","Y","Z"], selected_index: 0,
-        on_change: M::Usize, style: base, label: "", placeholder: "",
+        id: 99,
+        options: &["X", "Y", "Z"],
+        selected_index: 0,
+        on_change: M::Usize,
+        style: base,
+        label: "",
+        placeholder: "",
     };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &empty_states());
     let style = taffy.style(node).unwrap();
@@ -298,7 +385,13 @@ fn select_closed_keeps_base_height() {
 fn select_open_expands_height_by_options() {
     use rutter::engine::widget_state::SelectState;
     let mut states: HashMap<u64, WidgetState> = HashMap::new();
-    states.insert(55, WidgetState::Select(SelectState { is_open: true, hovered_option: None }));
+    states.insert(
+        55,
+        WidgetState::Select(SelectState {
+            is_open: true,
+            hovered_option: None,
+        }),
+    );
 
     let mut taffy = taffy::TaffyTree::new();
     let base = Style {
@@ -309,8 +402,13 @@ fn select_open_expands_height_by_options() {
         ..Default::default()
     };
     let w: Widget<M> = Widget::Select {
-        id: 55, options: &["A","B","C","D"], selected_index: 0,
-        on_change: M::Usize, style: base, label: "", placeholder: "",
+        id: 55,
+        options: &["A", "B", "C", "D"],
+        selected_index: 0,
+        on_change: M::Usize,
+        style: base,
+        label: "",
+        placeholder: "",
     };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &states);
     let style = taffy.style(node).unwrap();
@@ -365,12 +463,19 @@ fn collect_ignores_slider_spinner_progress() {
 #[test]
 fn collect_descends_into_scroll_view() {
     let inner: Widget<M> = Widget::TextInput {
-        id: 77, on_change: M::Str, on_submit: None,
-        style: Style::default(), label: "", placeholder: "",
-        state: InputState::Idle, error_msg: None, is_password: false,
+        id: 77,
+        on_change: M::Str,
+        on_submit: None,
+        style: Style::default(),
+        label: "",
+        placeholder: "",
+        state: InputState::Idle,
+        error_msg: None,
+        is_password: false,
     };
     let w = Widget::ScrollView {
-        id: 1, style: Style::default(),
+        id: 1,
+        style: Style::default(),
         child: Box::new(inner),
     };
     let mut ids = vec![];
@@ -381,12 +486,19 @@ fn collect_descends_into_scroll_view() {
 #[test]
 fn collect_descends_into_tooltip() {
     let inner: Widget<M> = Widget::TextInput {
-        id: 88, on_change: M::Str, on_submit: None,
-        style: Style::default(), label: "", placeholder: "",
-        state: InputState::Idle, error_msg: None, is_password: false,
+        id: 88,
+        on_change: M::Str,
+        on_submit: None,
+        style: Style::default(),
+        label: "",
+        placeholder: "",
+        state: InputState::Idle,
+        error_msg: None,
+        is_password: false,
     };
     let w = Widget::Tooltip {
-        text: "x", style: Style::default(),
+        text: "x",
+        style: Style::default(),
         child: Box::new(inner),
     };
     let mut ids = vec![];
@@ -505,13 +617,18 @@ fn widget_state_slider_mut_accessible() {
 fn widget_state_scroll_mut_accessible() {
     let mut ws = WidgetState::Scroll(ScrollState::default());
     ws.as_scroll_mut().unwrap().scroll_by(50.0);
-    assert!((ws.as_scroll().unwrap().offset_y - 0.0).abs() < f32::EPSILON, "clampado em 0 pois content_height=0");
+    assert!(
+        (ws.as_scroll().unwrap().offset_y - 0.0).abs() < f32::EPSILON,
+        "clampado em 0 pois content_height=0"
+    );
 }
 
 #[test]
 fn widget_state_scroll_scrolls_with_content() {
     let mut ws = WidgetState::Scroll(ScrollState {
-        offset_y: 0.0, content_height: 500.0, viewport_h: 200.0,
+        offset_y: 0.0,
+        content_height: 500.0,
+        viewport_h: 200.0,
     });
     ws.as_scroll_mut().unwrap().scroll_by(80.0);
     assert!((ws.as_scroll().unwrap().offset_y - 80.0).abs() < f32::EPSILON);
@@ -538,20 +655,37 @@ fn widget_state_anim_ticks() {
 
 #[test]
 fn scroll_thumb_ratio_quarter() {
-    let s = ScrollState { offset_y: 0.0, content_height: 800.0, viewport_h: 200.0 };
+    let s = ScrollState {
+        offset_y: 0.0,
+        content_height: 800.0,
+        viewport_h: 200.0,
+    };
     assert!((s.thumb_ratio() - 0.25).abs() < 0.001);
 }
 
 #[test]
 fn scroll_multiple_scrolls_clamp() {
-    let mut s = ScrollState { offset_y: 0.0, content_height: 300.0, viewport_h: 200.0 };
-    for _ in 0..10 { s.scroll_by(40.0); }
-    assert!((s.offset_y - 100.0).abs() < f32::EPSILON, "max_offset = 100");
+    let mut s = ScrollState {
+        offset_y: 0.0,
+        content_height: 300.0,
+        viewport_h: 200.0,
+    };
+    for _ in 0..10 {
+        s.scroll_by(40.0);
+    }
+    assert!(
+        (s.offset_y - 100.0).abs() < f32::EPSILON,
+        "max_offset = 100"
+    );
 }
 
 #[test]
 fn scroll_reverse_scrolls() {
-    let mut s = ScrollState { offset_y: 50.0, content_height: 300.0, viewport_h: 200.0 };
+    let mut s = ScrollState {
+        offset_y: 50.0,
+        content_height: 300.0,
+        viewport_h: 200.0,
+    };
     s.scroll_by(-30.0);
     assert!((s.offset_y - 20.0).abs() < f32::EPSILON);
 }
@@ -570,14 +704,22 @@ fn slider_drag_state_transitions() {
 
 #[test]
 fn slider_quarter_position() {
-    let s = SliderState { track_abs_x: 0.0, track_width: 200.0, ..Default::default() };
+    let s = SliderState {
+        track_abs_x: 0.0,
+        track_width: 200.0,
+        ..Default::default()
+    };
     let v = s.value_from_cursor(50.0);
     assert!((v - 0.25).abs() < 0.001);
 }
 
 #[test]
 fn slider_three_quarter_position() {
-    let s = SliderState { track_abs_x: 0.0, track_width: 200.0, ..Default::default() };
+    let s = SliderState {
+        track_abs_x: 0.0,
+        track_width: 200.0,
+        ..Default::default()
+    };
     let v = s.value_from_cursor(150.0);
     assert!((v - 0.75).abs() < 0.001);
 }

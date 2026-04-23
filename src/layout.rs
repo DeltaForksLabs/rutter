@@ -1,3 +1,6 @@
+// Copyright (c) DeltaForks Labs
+// Licensed under the MIT License OR Apache 2.0.
+
 // ============================================================
 // Rutter Framework — layout.rs
 // ============================================================
@@ -500,8 +503,8 @@ pub fn compute_layout(
         .unwrap();
 }
 
-fn extract_height(_style: &Style) -> f32 {
-    return 40.0;
+fn extract_height(style: &Style) -> f32 {
+    style.size.height.into_option().unwrap_or(40.0)
 }
 
 #[cfg(test)]

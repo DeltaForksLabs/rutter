@@ -7,29 +7,35 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
-use taffy::prelude::Style;
+use taffy::{TraversePartialTree, prelude::Style};
 
-use rutter::{ButtonVariant, ContextMenuEntry, InputState, Orientation, ToastKind, Widget};
-use rutter::engine::widget_state::{
-    AnimState, ContextMenuState, ModalState, ScrollState, SelectState,
-    SliderState, TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
-};
 use rutter::engine::runner::snap_to_step;
-use rutter::layout::{build_taffy_tree, OPTION_HEIGHT};
-use rutter::render::hit_test::{
-    collect_input_ids, collect_stateful_ids,
-    find_input_callbacks, find_select_callback, find_slider_callback,
+use rutter::engine::widget_state::{
+    ContextMenuState, ModalState, TabState, ToastState, VirtualGridState, VirtualListState,
+    WidgetState,
 };
+use rutter::layout::build_taffy_tree;
+use rutter::render::hit_test::{collect_input_ids, collect_stateful_ids};
+use rutter::widget::{ToastKind, ToastPosition};
+use rutter::{ContextMenuEntry, InputState, Widget};
 
+use cosmic_text::FontSystem;
 use std::cell::RefCell;
 use std::rc::Rc;
-use cosmic_text::FontSystem;
 
-fn fs() -> Rc<RefCell<FontSystem>> { Rc::new(RefCell::new(FontSystem::new())) }
-fn empty() -> HashMap<u64, WidgetState> { HashMap::new() }
+fn fs() -> Rc<RefCell<FontSystem>> {
+    Rc::new(RefCell::new(FontSystem::new()))
+}
+fn empty() -> HashMap<u64, WidgetState> {
+    HashMap::new()
+}
 
 #[derive(Debug, Clone, PartialEq)]
-enum M { A, Str(String), Bool(bool), Usize(usize), Float(f32) }
+enum M {
+    A,
+    Str(String),
+    Usize(usize),
+}
 
 // ── ToastState ───────────────────────────────────────────────
 
@@ -88,24 +94,33 @@ fn toast_permanent_progress_always_one() {
 // ── ModalState ───────────────────────────────────────────────
 
 #[test]
-fn modal_default_hidden() { assert!(!ModalState::default().visible); }
+fn modal_default_hidden() {
+    assert!(!ModalState::default().visible);
+}
 
 #[test]
 fn modal_open_makes_visible() {
-    let mut m = ModalState::default(); m.open();
-    assert!(m.visible); assert!(m.backdrop_alpha > 0);
+    let mut m = ModalState::default();
+    m.open();
+    assert!(m.visible);
+    assert!(m.backdrop_alpha > 0);
 }
 
 #[test]
 fn modal_close_after_open() {
-    let mut m = ModalState::default(); m.open(); m.close();
-    assert!(!m.visible); assert_eq!(m.backdrop_alpha, 0);
+    let mut m = ModalState::default();
+    m.open();
+    m.close();
+    assert!(!m.visible);
+    assert_eq!(m.backdrop_alpha, 0);
 }
 
 #[test]
 fn modal_reopen_works() {
     let mut m = ModalState::default();
-    m.open(); m.close(); m.open();
+    m.open();
+    m.close();
+    m.open();
     assert!(m.visible);
 }
 
@@ -117,23 +132,28 @@ fn context_menu_default_closed() {
 // ── TabState ─────────────────────────────────────────────────
 
 #[test]
-fn tab_default_zero() { assert_eq!(TabState::default().active, 0); }
+fn tab_default_zero() {
+    assert_eq!(TabState::default().active, 0);
+}
 
 #[test]
 fn tab_set_active_updates() {
-    let mut t = TabState::default(); t.set_active(2, 100.0);
+    let mut t = TabState::default();
+    t.set_active(2, 100.0);
     assert_eq!(t.active, 2);
 }
 
 #[test]
 fn tab_underline_x_computed() {
-    let mut t = TabState::default(); t.set_active(3, 80.0);
+    let mut t = TabState::default();
+    t.set_active(3, 80.0);
     assert!((t.underline_x - 240.0).abs() < f32::EPSILON);
 }
 
 #[test]
 fn tab_first_tab_zero_offset() {
-    let mut t = TabState::default(); t.set_active(0, 80.0);
+    let mut t = TabState::default();
+    t.set_active(0, 80.0);
     assert!((t.underline_x - 0.0).abs() < f32::EPSILON);
 }
 
@@ -141,58 +161,89 @@ fn tab_first_tab_zero_offset() {
 
 #[test]
 fn vlist_visible_range_from_start() {
-    let s = VirtualListState { scroll_y: 0.0, viewport_h: 300.0, ..Default::default() };
+    let s = VirtualListState {
+        scroll_y: 0.0,
+        viewport_h: 300.0,
+        ..Default::default()
+    };
     let (f, l) = s.visible_range(30.0, 1000);
-    assert_eq!(f, 0); assert!(l > 0 && l <= 12);
+    assert_eq!(f, 0);
+    assert!(l > 0 && l <= 12);
 }
 
 #[test]
 fn vlist_visible_range_scrolled_down() {
-    let s = VirtualListState { scroll_y: 300.0, viewport_h: 300.0, ..Default::default() };
+    let s = VirtualListState {
+        scroll_y: 300.0,
+        viewport_h: 300.0,
+        ..Default::default()
+    };
     let (f, _l) = s.visible_range(30.0, 1000);
     assert_eq!(f, 10);
 }
 
 #[test]
 fn vlist_visible_range_clips_at_count() {
-    let s = VirtualListState { scroll_y: 0.0, viewport_h: 600.0, ..Default::default() };
+    let s = VirtualListState {
+        scroll_y: 0.0,
+        viewport_h: 600.0,
+        ..Default::default()
+    };
     let (_, l) = s.visible_range(30.0, 5);
     assert_eq!(l, 5);
 }
 
 #[test]
 fn vlist_scroll_by_positive() {
-    let mut s = VirtualListState { scroll_y: 0.0, viewport_h: 200.0, ..Default::default() };
+    let mut s = VirtualListState {
+        scroll_y: 0.0,
+        viewport_h: 200.0,
+        ..Default::default()
+    };
     s.scroll_by(120.0, 30.0, 100);
     assert!((s.scroll_y - 120.0).abs() < f32::EPSILON);
 }
 
 #[test]
 fn vlist_scroll_by_negative_clamp() {
-    let mut s = VirtualListState { scroll_y: 10.0, viewport_h: 200.0, ..Default::default() };
+    let mut s = VirtualListState {
+        scroll_y: 10.0,
+        viewport_h: 200.0,
+        ..Default::default()
+    };
     s.scroll_by(-50.0, 30.0, 100);
     assert!((s.scroll_y - 0.0).abs() < f32::EPSILON);
 }
 
 #[test]
 fn vlist_scroll_to_index() {
-    let mut s = VirtualListState { scroll_y: 0.0, viewport_h: 200.0, ..Default::default() };
+    let mut s = VirtualListState {
+        scroll_y: 0.0,
+        viewport_h: 200.0,
+        ..Default::default()
+    };
     s.scroll_to_index(10, 30.0, 100);
     assert!((s.scroll_y - 130.0).abs() < f32::EPSILON);
 }
 
 #[test]
 fn vlist_max_scroll() {
-    let s = VirtualListState { viewport_h: 200.0, ..Default::default() };
+    let s = VirtualListState {
+        viewport_h: 200.0,
+        ..Default::default()
+    };
     assert!((s.max_scroll(30.0, 100) - 2800.0).abs() < f32::EPSILON);
 }
 
 #[test]
 fn vlist_thumb_ratio_quarter() {
-    let s = VirtualListState { viewport_h: 200.0, ..Default::default() };
+    let s = VirtualListState {
+        viewport_h: 200.0,
+        ..Default::default()
+    };
     // 100*30 = 3000, 200/3000 ≈ 0.067
     let r = s.thumb_ratio(30.0, 100);
-    assert!((r - 200.0/3000.0).abs() < 0.001);
+    assert!((r - 200.0 / 3000.0).abs() < 0.001);
 }
 
 #[test]
@@ -207,7 +258,11 @@ fn vlist_hovered_row_none_default() {
 
 #[test]
 fn vgrid_visible_rows_scrolled() {
-    let s = VirtualGridState { scroll_y: 120.0, viewport_h: 180.0, ..Default::default() };
+    let s = VirtualGridState {
+        scroll_y: 120.0,
+        viewport_h: 180.0,
+        ..Default::default()
+    };
     let (first, last) = s.visible_row_range(60.0, 48, 4);
     assert_eq!(first, 2);
     assert!(last > first);
@@ -215,7 +270,10 @@ fn vgrid_visible_rows_scrolled() {
 
 #[test]
 fn vgrid_scroll_to_index_tracks_row() {
-    let mut s = VirtualGridState { viewport_h: 180.0, ..Default::default() };
+    let mut s = VirtualGridState {
+        viewport_h: 180.0,
+        ..Default::default()
+    };
     s.scroll_to_index(10, 60.0, 48, 4);
     assert!((s.scroll_y - 0.0).abs() < f32::EPSILON);
 }
@@ -225,25 +283,29 @@ fn vgrid_scroll_to_index_tracks_row() {
 #[test]
 fn toast_state_accessor() {
     let ws = WidgetState::Toast(ToastState::new(1000));
-    assert!(ws.as_toast().is_some()); assert!(ws.as_modal().is_none());
+    assert!(ws.as_toast().is_some());
+    assert!(ws.as_modal().is_none());
 }
 
 #[test]
 fn modal_state_accessor() {
     let ws = WidgetState::Modal(ModalState::default());
-    assert!(ws.as_modal().is_some()); assert!(ws.as_tab().is_none());
+    assert!(ws.as_modal().is_some());
+    assert!(ws.as_tab().is_none());
 }
 
 #[test]
 fn tab_state_accessor() {
     let ws = WidgetState::Tab(TabState::default());
-    assert!(ws.as_tab().is_some()); assert!(ws.as_vlist().is_none());
+    assert!(ws.as_tab().is_some());
+    assert!(ws.as_vlist().is_none());
 }
 
 #[test]
 fn vlist_state_accessor() {
     let ws = WidgetState::VList(VirtualListState::default());
-    assert!(ws.as_vlist().is_some()); assert!(ws.as_slider().is_none());
+    assert!(ws.as_vlist().is_some());
+    assert!(ws.as_slider().is_none());
 }
 
 #[test]
@@ -277,7 +339,8 @@ fn vlist_state_mut() {
 #[test]
 fn vgrid_state_accessor() {
     let ws = WidgetState::VGrid(VirtualGridState::default());
-    assert!(ws.as_vgrid().is_some()); assert!(ws.as_slider().is_none());
+    assert!(ws.as_vgrid().is_some());
+    assert!(ws.as_slider().is_none());
 }
 
 #[test]
@@ -291,17 +354,32 @@ fn vgrid_state_mut() {
 
 #[test]
 fn tabbar_stores_tabs_and_active() {
-    let w: Widget<M> = Widget::TabBar { id: 1, tabs: &["A","B","C"], active: 1,
-        on_change: M::Usize, style: Style::default() };
-    if let Widget::TabBar { tabs, active, id, .. } = w {
-        assert_eq!(tabs.len(), 3); assert_eq!(active, 1); assert_eq!(id, 1);
+    let w: Widget<M> = Widget::TabBar {
+        id: 1,
+        tabs: &["A", "B", "C"],
+        active: 1,
+        on_change: M::Usize,
+        style: Style::default(),
+    };
+    if let Widget::TabBar {
+        tabs, active, id, ..
+    } = w
+    {
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(active, 1);
+        assert_eq!(id, 1);
     }
 }
 
 #[test]
 fn tabbar_on_change_produces_message() {
-    let w: Widget<M> = Widget::TabBar { id: 1, tabs: &["A"], active: 0,
-        on_change: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::TabBar {
+        id: 1,
+        tabs: &["A"],
+        active: 0,
+        on_change: M::Usize,
+        style: Style::default(),
+    };
     if let Widget::TabBar { on_change, .. } = w {
         assert_eq!(on_change(2), M::Usize(2));
     }
@@ -309,23 +387,50 @@ fn tabbar_on_change_produces_message() {
 
 #[test]
 fn modal_stores_visible_flag() {
-    let w: Widget<M> = Widget::Modal { id: 1, visible: true, on_dismiss: Some(M::A),
-        style: Style::default(), child: Box::new(Widget::Spacer { style: Style::default() }) };
-    if let Widget::Modal { visible, .. } = w { assert!(visible); }
+    let w: Widget<M> = Widget::Modal {
+        id: 1,
+        visible: true,
+        on_dismiss: Some(M::A),
+        style: Style::default(),
+        child: Box::new(Widget::Spacer {
+            style: Style::default(),
+        }),
+    };
+    if let Widget::Modal { visible, .. } = w {
+        assert!(visible);
+    }
 }
 
 #[test]
 fn modal_stores_on_dismiss() {
-    let w: Widget<M> = Widget::Modal { id: 1, visible: false, on_dismiss: Some(M::A),
-        style: Style::default(), child: Box::new(Widget::Spacer { style: Style::default() }) };
-    if let Widget::Modal { on_dismiss, .. } = w { assert_eq!(on_dismiss, Some(M::A)); }
+    let w: Widget<M> = Widget::Modal {
+        id: 1,
+        visible: false,
+        on_dismiss: Some(M::A),
+        style: Style::default(),
+        child: Box::new(Widget::Spacer {
+            style: Style::default(),
+        }),
+    };
+    if let Widget::Modal { on_dismiss, .. } = w {
+        assert_eq!(on_dismiss, Some(M::A));
+    }
 }
 
 #[test]
 fn toast_stores_kind() {
-    let w: Widget<M> = Widget::Toast { id: 1, visible: true, message: "hi", kind: ToastKind::Error,
-        duration_ms: 3000, on_dismiss: None };
-    if let Widget::Toast { kind, .. } = w { assert_eq!(kind, ToastKind::Error); }
+    let w: Widget<M> = Widget::Toast {
+        id: 1,
+        visible: true,
+        message: "hi",
+        kind: ToastKind::Error,
+        position: ToastPosition::BottomRight,
+        duration_ms: 3000,
+        on_dismiss: None,
+    };
+    if let Widget::Toast { kind, .. } = w {
+        assert_eq!(kind, ToastKind::Error);
+    }
 }
 
 #[test]
@@ -343,7 +448,9 @@ fn context_menu_stores_entries() {
     ];
     let w: Widget<M> = Widget::ContextMenu {
         id: 1,
-        child: Box::new(Widget::Spacer { style: Style::default() }),
+        child: Box::new(Widget::Spacer {
+            style: Style::default(),
+        }),
         entries: &entries,
         style: Style::default(),
     };
@@ -354,9 +461,20 @@ fn context_menu_stores_entries() {
 
 #[test]
 fn vlist_stores_item_count_and_height() {
-    let w: Widget<M> = Widget::VirtualList { id: 1, item_height: 32.0, item_count: 500,
-        items: &|_| None, on_select: M::Usize, style: Style::default() };
-    if let Widget::VirtualList { item_count, item_height, .. } = w {
+    let w: Widget<M> = Widget::VirtualList {
+        id: 1,
+        item_height: 32.0,
+        item_count: 500,
+        items: &|_| None,
+        on_select: M::Usize,
+        style: Style::default(),
+    };
+    if let Widget::VirtualList {
+        item_count,
+        item_height,
+        ..
+    } = w
+    {
         assert_eq!(item_count, 500);
         assert!((item_height - 32.0).abs() < f32::EPSILON);
     }
@@ -364,8 +482,14 @@ fn vlist_stores_item_count_and_height() {
 
 #[test]
 fn vlist_items_fn_called() {
-    let w: Widget<M> = Widget::VirtualList { id: 1, item_height: 30.0, item_count: 3,
-        items: &|i| Some(format!("item-{i}")), on_select: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::VirtualList {
+        id: 1,
+        item_height: 30.0,
+        item_count: 3,
+        items: &|i| Some(format!("item-{i}")),
+        on_select: M::Usize,
+        style: Style::default(),
+    };
     if let Widget::VirtualList { items, .. } = w {
         assert_eq!(items(0), Some("item-0".to_string()));
         assert_eq!(items(2), Some("item-2".to_string()));
@@ -374,9 +498,22 @@ fn vlist_items_fn_called() {
 
 #[test]
 fn vgrid_stores_columns_and_items() {
-    let w: Widget<M> = Widget::VirtualGrid { id: 1, columns: 4, item_height: 64.0, item_count: 12,
-        items: &|i| Some(format!("cell-{i}")), on_select: M::Usize, style: Style::default() };
-    if let Widget::VirtualGrid { columns, item_height, items, .. } = w {
+    let w: Widget<M> = Widget::VirtualGrid {
+        id: 1,
+        columns: 4,
+        item_height: 64.0,
+        item_count: 12,
+        items: &|i| Some(format!("cell-{i}")),
+        on_select: M::Usize,
+        style: Style::default(),
+    };
+    if let Widget::VirtualGrid {
+        columns,
+        item_height,
+        items,
+        ..
+    } = w
+    {
         assert_eq!(columns, 4);
         assert!((item_height - 64.0).abs() < f32::EPSILON);
         assert_eq!(items(5), Some("cell-5".to_string()));
@@ -388,8 +525,13 @@ fn vgrid_stores_columns_and_items() {
 #[test]
 fn tabbar_taffy_leaf() {
     let mut taffy = taffy::TaffyTree::new();
-    let w: Widget<M> = Widget::TabBar { id: 1, tabs: &["A","B"], active: 0,
-        on_change: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::TabBar {
+        id: 1,
+        tabs: &["A", "B"],
+        active: 0,
+        on_change: M::Usize,
+        style: Style::default(),
+    };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
     assert_eq!(taffy.child_count(node), 0);
 }
@@ -397,8 +539,15 @@ fn tabbar_taffy_leaf() {
 #[test]
 fn modal_invisible_zero_size_taffy() {
     let mut taffy = taffy::TaffyTree::new();
-    let w: Widget<M> = Widget::Modal { id: 1, visible: false, on_dismiss: None,
-        style: Style::default(), child: Box::new(Widget::Spacer { style: Style::default() }) };
+    let w: Widget<M> = Widget::Modal {
+        id: 1,
+        visible: false,
+        on_dismiss: None,
+        style: Style::default(),
+        child: Box::new(Widget::Spacer {
+            style: Style::default(),
+        }),
+    };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
     let s = taffy.style(node).unwrap();
     assert_eq!(s.size.width, taffy::style::Dimension::length(0.0));
@@ -407,8 +556,15 @@ fn modal_invisible_zero_size_taffy() {
 #[test]
 fn modal_visible_has_child_in_taffy() {
     let mut taffy = taffy::TaffyTree::new();
-    let w: Widget<M> = Widget::Modal { id: 1, visible: true, on_dismiss: None,
-        style: Style::default(), child: Box::new(Widget::Spacer { style: Style::default() }) };
+    let w: Widget<M> = Widget::Modal {
+        id: 1,
+        visible: true,
+        on_dismiss: None,
+        style: Style::default(),
+        child: Box::new(Widget::Spacer {
+            style: Style::default(),
+        }),
+    };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
     assert_eq!(taffy.child_count(node), 1);
 }
@@ -416,8 +572,15 @@ fn modal_visible_has_child_in_taffy() {
 #[test]
 fn toast_zero_layout_size() {
     let mut taffy = taffy::TaffyTree::new();
-    let w: Widget<M> = Widget::Toast { id: 1, visible: true, message: "x", kind: ToastKind::Info,
-        duration_ms: 1000, on_dismiss: None };
+    let w: Widget<M> = Widget::Toast {
+        id: 1,
+        visible: true,
+        message: "x",
+        kind: ToastKind::Info,
+        position: ToastPosition::BottomRight,
+        duration_ms: 1000,
+        on_dismiss: None,
+    };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
     let s = taffy.style(node).unwrap();
     assert_eq!(s.size.width, taffy::style::Dimension::length(0.0));
@@ -426,8 +589,14 @@ fn toast_zero_layout_size() {
 #[test]
 fn vlist_taffy_leaf() {
     let mut taffy = taffy::TaffyTree::new();
-    let w: Widget<M> = Widget::VirtualList { id: 1, item_height: 30.0, item_count: 100,
-        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::VirtualList {
+        id: 1,
+        item_height: 30.0,
+        item_count: 100,
+        items: &|_| None,
+        on_select: M::Usize,
+        style: Style::default(),
+    };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
     assert_eq!(taffy.child_count(node), 0);
 }
@@ -435,8 +604,15 @@ fn vlist_taffy_leaf() {
 #[test]
 fn vgrid_taffy_leaf() {
     let mut taffy = taffy::TaffyTree::new();
-    let w: Widget<M> = Widget::VirtualGrid { id: 1, columns: 3, item_height: 64.0, item_count: 100,
-        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::VirtualGrid {
+        id: 1,
+        columns: 3,
+        item_height: 64.0,
+        item_count: 100,
+        items: &|_| None,
+        on_select: M::Usize,
+        style: Style::default(),
+    };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &empty());
     assert_eq!(taffy.child_count(node), 0);
 }
@@ -445,8 +621,13 @@ fn vgrid_taffy_leaf() {
 
 #[test]
 fn stateful_tabbar() {
-    let w: Widget<M> = Widget::TabBar { id: 5, tabs: &["A"], active: 0,
-        on_change: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::TabBar {
+        id: 5,
+        tabs: &["A"],
+        active: 0,
+        on_change: M::Usize,
+        style: Style::default(),
+    };
     let mut out = vec![];
     collect_stateful_ids(&w, &mut out);
     assert!(out.iter().any(|(id, k)| *id == 5 && *k == "tab"));
@@ -454,8 +635,15 @@ fn stateful_tabbar() {
 
 #[test]
 fn stateful_modal() {
-    let w: Widget<M> = Widget::Modal { id: 7, visible: false, on_dismiss: None,
-        style: Style::default(), child: Box::new(Widget::Spacer { style: Style::default() }) };
+    let w: Widget<M> = Widget::Modal {
+        id: 7,
+        visible: false,
+        on_dismiss: None,
+        style: Style::default(),
+        child: Box::new(Widget::Spacer {
+            style: Style::default(),
+        }),
+    };
     let mut out = vec![];
     collect_stateful_ids(&w, &mut out);
     assert!(out.iter().any(|(id, k)| *id == 7 && *k == "modal"));
@@ -464,8 +652,14 @@ fn stateful_modal() {
 #[test]
 fn stateful_context_menu() {
     let entries = [ContextMenuEntry::item("Open", M::A)];
-    let w: Widget<M> = Widget::ContextMenu { id: 8, entries: &entries, style: Style::default(),
-        child: Box::new(Widget::Spacer { style: Style::default() }) };
+    let w: Widget<M> = Widget::ContextMenu {
+        id: 8,
+        entries: &entries,
+        style: Style::default(),
+        child: Box::new(Widget::Spacer {
+            style: Style::default(),
+        }),
+    };
     let mut out = vec![];
     collect_stateful_ids(&w, &mut out);
     assert!(out.iter().any(|(id, k)| *id == 8 && *k == "context_menu"));
@@ -473,8 +667,15 @@ fn stateful_context_menu() {
 
 #[test]
 fn stateful_toast() {
-    let w: Widget<M> = Widget::Toast { id: 9, visible: true, message: "x", kind: ToastKind::Success,
-        duration_ms: 3000, on_dismiss: None };
+    let w: Widget<M> = Widget::Toast {
+        id: 9,
+        visible: true,
+        message: "x",
+        kind: ToastKind::Success,
+        position: ToastPosition::BottomRight,
+        duration_ms: 3000,
+        on_dismiss: None,
+    };
     let mut out = vec![];
     collect_stateful_ids(&w, &mut out);
     assert!(out.iter().any(|(id, k)| *id == 9 && *k == "toast"));
@@ -482,8 +683,14 @@ fn stateful_toast() {
 
 #[test]
 fn stateful_vlist() {
-    let w: Widget<M> = Widget::VirtualList { id: 11, item_height: 30.0, item_count: 50,
-        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::VirtualList {
+        id: 11,
+        item_height: 30.0,
+        item_count: 50,
+        items: &|_| None,
+        on_select: M::Usize,
+        style: Style::default(),
+    };
     let mut out = vec![];
     collect_stateful_ids(&w, &mut out);
     assert!(out.iter().any(|(id, k)| *id == 11 && *k == "vlist"));
@@ -491,8 +698,15 @@ fn stateful_vlist() {
 
 #[test]
 fn stateful_vgrid() {
-    let w: Widget<M> = Widget::VirtualGrid { id: 12, columns: 4, item_height: 64.0, item_count: 50,
-        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::VirtualGrid {
+        id: 12,
+        columns: 4,
+        item_height: 64.0,
+        item_count: 50,
+        items: &|_| None,
+        on_select: M::Usize,
+        style: Style::default(),
+    };
     let mut out = vec![];
     collect_stateful_ids(&w, &mut out);
     assert!(out.iter().any(|(id, k)| *id == 12 && *k == "vgrid"));
@@ -501,11 +715,19 @@ fn stateful_vgrid() {
 #[test]
 fn no_duplicate_scroll_id_in_collect() {
     // FIX WARNING: padrão duplicado do v5 causaria double-push
-    let w: Widget<M> = Widget::ScrollView { id: 5, style: Style::default(),
-        child: Box::new(Widget::Spacer { style: Style::default() }) };
+    let w: Widget<M> = Widget::ScrollView {
+        id: 5,
+        style: Style::default(),
+        child: Box::new(Widget::Spacer {
+            style: Style::default(),
+        }),
+    };
     let mut out = vec![];
     collect_stateful_ids(&w, &mut out);
-    let count = out.iter().filter(|(id, k)| *id == 5 && *k == "scroll").count();
+    let count = out
+        .iter()
+        .filter(|(id, k)| *id == 5 && *k == "scroll")
+        .count();
     assert_eq!(count, 1, "scroll ID deve aparecer apenas uma vez");
 }
 
@@ -513,11 +735,24 @@ fn no_duplicate_scroll_id_in_collect() {
 
 #[test]
 fn inputs_collected_inside_modal() {
-    let inner: Widget<M> = Widget::TextInput { id: 55, on_change: M::Str, on_submit: None,
-        style: Style::default(), label: "", placeholder: "",
-        state: InputState::Idle, error_msg: None, is_password: false };
-    let w = Widget::Modal { id: 1, visible: true, on_dismiss: None,
-        style: Style::default(), child: Box::new(inner) };
+    let inner: Widget<M> = Widget::TextInput {
+        id: 55,
+        on_change: M::Str,
+        on_submit: None,
+        style: Style::default(),
+        label: "",
+        placeholder: "",
+        state: InputState::Idle,
+        error_msg: None,
+        is_password: false,
+    };
+    let w = Widget::Modal {
+        id: 1,
+        visible: true,
+        on_dismiss: None,
+        style: Style::default(),
+        child: Box::new(inner),
+    };
     let mut ids = vec![];
     collect_input_ids(&w, &mut ids);
     assert_eq!(ids, vec![55]);
@@ -526,11 +761,23 @@ fn inputs_collected_inside_modal() {
 #[test]
 fn inputs_collected_inside_context_menu_child() {
     let entries = [ContextMenuEntry::item("Open", M::A)];
-    let inner: Widget<M> = Widget::TextInput { id: 56, on_change: M::Str, on_submit: None,
-        style: Style::default(), label: "", placeholder: "",
-        state: InputState::Idle, error_msg: None, is_password: false };
-    let w = Widget::ContextMenu { id: 2, entries: &entries, style: Style::default(),
-        child: Box::new(inner) };
+    let inner: Widget<M> = Widget::TextInput {
+        id: 56,
+        on_change: M::Str,
+        on_submit: None,
+        style: Style::default(),
+        label: "",
+        placeholder: "",
+        state: InputState::Idle,
+        error_msg: None,
+        is_password: false,
+    };
+    let w = Widget::ContextMenu {
+        id: 2,
+        entries: &entries,
+        style: Style::default(),
+        child: Box::new(inner),
+    };
     let mut ids = vec![];
     collect_input_ids(&w, &mut ids);
     assert_eq!(ids, vec![56]);
@@ -538,8 +785,14 @@ fn inputs_collected_inside_context_menu_child() {
 
 #[test]
 fn vlist_not_in_input_ids() {
-    let w: Widget<M> = Widget::VirtualList { id: 1, item_height: 30.0, item_count: 10,
-        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::VirtualList {
+        id: 1,
+        item_height: 30.0,
+        item_count: 10,
+        items: &|_| None,
+        on_select: M::Usize,
+        style: Style::default(),
+    };
     let mut ids = vec![];
     collect_input_ids(&w, &mut ids);
     assert!(ids.is_empty());
@@ -547,8 +800,15 @@ fn vlist_not_in_input_ids() {
 
 #[test]
 fn vgrid_not_in_input_ids() {
-    let w: Widget<M> = Widget::VirtualGrid { id: 1, columns: 4, item_height: 64.0, item_count: 10,
-        items: &|_| None, on_select: M::Usize, style: Style::default() };
+    let w: Widget<M> = Widget::VirtualGrid {
+        id: 1,
+        columns: 4,
+        item_height: 64.0,
+        item_count: 10,
+        items: &|_| None,
+        on_select: M::Usize,
+        style: Style::default(),
+    };
     let mut ids = vec![];
     collect_input_ids(&w, &mut ids);
     assert!(ids.is_empty());

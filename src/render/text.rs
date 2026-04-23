@@ -1,3 +1,6 @@
+// Copyright (c) DeltaForks Labs
+// Licensed under the MIT License OR Apache 2.0.
+
 // ============================================================
 // Rutter Framework — render/text.rs
 // Utilitários de renderização de texto via Skia.

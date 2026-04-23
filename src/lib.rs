@@ -1,3 +1,6 @@
+// Copyright (c) DeltaForks Labs
+// Licensed under the MIT License OR Apache 2.0.
+
 // ============================================================
 // Rutter Framework — lib.rs
 // Ponto de entrada público. Declare módulos e re-exporte o
