@@ -18,13 +18,21 @@ use arboard::Clipboard;
 use cosmic_text::{FontSystem, SwashCache};
 use skia_safe::{Color as SkiaColor, Font, Point};
 use taffy::prelude::{NodeId, Style, TaffyTree};
-use winit::{dpi::PhysicalSize, event::Modifiers, window::Window};
+use winit::{
+    dpi::PhysicalSize,
+    event::{Modifiers, WindowEvent},
+    window::Window,
+};
 
 use self::cursor::CursorBlink;
 use self::gpu::{BackendType, GraphicsBackend, create_best_backend};
 use self::widget_state::{
     AnimState, ContextMenuState, ModalState, PopoverState, ScrollState, SelectState, SliderState,
     TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
+};
+use crate::accessibility::{
+    AccessibilityInputs, IgnoredActionHandler, IgnoredDeactivationHandler, LazyActivationHandler,
+    build_accessibility_update,
 };
 use crate::app::AppLogic;
 use crate::layout::{RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree};
@@ -388,6 +396,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
 
 pub struct RutterEngine<A: AppLogic> {
     pub window: Option<Rc<Window>>,
+    accessibility_adapter: Option<accesskit_winit::Adapter>,
     graphics_backend: Option<Box<dyn GraphicsBackend>>,
     pub font_system: Rc<RefCell<FontSystem>>,
     pub swash_cache: SwashCache,
@@ -422,6 +431,7 @@ impl<A: AppLogic> RutterEngine<A> {
         let root = taffy.new_leaf(Style::default()).unwrap();
         Self {
             window: None,
+            accessibility_adapter: None,
             graphics_backend: None,
             font_system: Rc::new(RefCell::new(fs)),
             swash_cache: SwashCache::new(),
@@ -450,14 +460,24 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn handle_resumed(&mut self, el: &winit::event_loop::ActiveEventLoop) {
-        let attrs = Window::default_attributes().with_title("Rutter");
+        let attrs = Window::default_attributes()
+            .with_title("Rutter")
+            .with_visible(false);
         let backend = create_best_backend(el, attrs)
             .unwrap_or_else(|err| panic!("graphics backend init failed: {err}"));
         if cfg!(debug_assertions) {
             eprintln!("rutter: initialized {} backend", backend.backend_type());
         }
         let window = backend.window().clone();
+        self.accessibility_adapter = Some(accesskit_winit::Adapter::with_direct_handlers(
+            el,
+            &window,
+            LazyActivationHandler,
+            IgnoredActionHandler,
+            IgnoredDeactivationHandler,
+        ));
         self.scale_factor = window.scale_factor() as f32;
+        window.set_visible(true);
         self.window = Some(window);
         self.graphics_backend = Some(backend);
         self.handle_resize(self.window.as_ref().unwrap().inner_size());
@@ -471,6 +491,16 @@ impl<A: AppLogic> RutterEngine<A> {
                 .unwrap_or_else(|err| panic!("graphics backend resize failed: {err}"));
         }
         self.layout_dirty = true;
+    }
+
+    pub fn process_accessibility_event(&mut self, event: &WindowEvent) {
+        let Some(adapter) = self.accessibility_adapter.as_mut() else {
+            return;
+        };
+        let Some(window) = self.window.as_ref().cloned() else {
+            return;
+        };
+        adapter.process_event(&window, event);
     }
 
     pub fn backend_type(&self) -> Option<BackendType> {
@@ -1257,6 +1287,22 @@ impl<A: AppLogic> RutterEngine<A> {
             cursor_pos.x / self.scale_factor,
             cursor_pos.y / self.scale_factor,
         );
+        let accessibility_update = self.accessibility_adapter.is_some().then(|| {
+            build_accessibility_update(
+                &self.taffy,
+                &widget_tree,
+                self.last_root_node,
+                AccessibilityInputs {
+                    input_states: &self.input_states,
+                    focused_widget_id: self.focused_widget_id,
+                },
+            )
+        });
+        if let (Some(adapter), Some(update)) =
+            (self.accessibility_adapter.as_mut(), accessibility_update)
+        {
+            adapter.update_if_active(|| update);
+        }
 
         {
             let backend = self

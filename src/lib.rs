@@ -7,6 +7,7 @@
 // que o usuário do framework precisa importar.
 // ============================================================
 
+pub(crate) mod accessibility;
 pub mod app;
 pub mod engine;
 pub mod input_state;

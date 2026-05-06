@@ -258,6 +258,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        self.engine.process_accessibility_event(&event);
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(size) => {

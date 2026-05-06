@@ -1,12 +1,13 @@
 [package]
 name    = "rutter"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "High-performance Rust UI framework featuring Skia rendering (Vulkan/OpenGL), Taffy flexbox layouts, and advanced typography."
+authors = ["Paulo Daniel <paulodanielpro@proton.me>"]
 repository = "https://github.com/DeltaForksLabs/rutter"
-readme = "README.md"
 keywords = ["rutter", "graphics", "gui"]
+readme = "README.md"
 
 [dependencies]
 winit       = "0.30.13"
@@ -14,6 +15,8 @@ taffy       = "0.10.1"
 skia-safe   = { version = "0.93.1", features = ["gl", "vulkan", "textlayout"] }
 cosmic-text = "0.18.2"
 arboard     = "3.6.1"
+accesskit   = "0.24.0"
+accesskit_winit = "0.32.2"
 # Fase 3: decodificação de imagens PNG/JPEG/WebP
 image       = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 # --- Backend Vulkan ---
