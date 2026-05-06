@@ -1451,8 +1451,7 @@ fn draw_text_input(
 
     canvas.translate((-s.scroll_x, -s.scroll_y));
 
-    let text = s.text();
-    if text.is_empty() && !placeholder.is_empty() && !is_focused {
+    if s.text_is_empty() && !placeholder.is_empty() && !is_focused {
         let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
         let mut p = Paint::default();
         p.set_color(Theme::alpha(theme.on_surface, 120));
@@ -1476,23 +1475,16 @@ fn draw_text_input(
 
     let cursor = s.editor.cursor();
     let mapped_cursor = if is_password {
-        Cursor::new(
-            cursor.line,
-            password_display_index(&text, cursor.index.min(text.len())),
-        )
+        Cursor::new(cursor.line, s.password_display_index(cursor.index))
     } else {
         cursor
     };
     let mapped_selection = s
         .selection
         .filter(|selection| !selection.is_empty())
-        .map(|selection| map_selection_for_display(selection, &text, is_password));
+        .map(|selection| map_selection_for_display(selection, s, is_password));
 
-    let display = if is_password {
-        "•".repeat(text.chars().count())
-    } else {
-        text.clone()
-    };
+    let display = s.display_text(is_password);
 
     let buffer = text_cache.get_or_shape(
         fs,
@@ -1578,14 +1570,9 @@ fn draw_search_bar(
     canvas.draw_str("⌕", (10.0, size.1 / 2.0 + theme.font_body / 3.0), &f, &p);
 }
 
-fn password_display_index(text: &str, byte_index: usize) -> usize {
-    const BULLET_UTF8_LEN: usize = "•".len();
-    text[..byte_index].chars().count() * BULLET_UTF8_LEN
-}
-
 fn map_selection_for_display(
     selection: TextSelection,
-    text: &str,
+    state: &InputWidgetState,
     is_password: bool,
 ) -> TextSelection {
     if !is_password {
@@ -1594,8 +1581,8 @@ fn map_selection_for_display(
 
     let (start, end) = selection.normalized();
     TextSelection {
-        start: password_display_index(text, start.min(text.len())),
-        end: password_display_index(text, end.min(text.len())),
+        start: state.password_display_index(start),
+        end: state.password_display_index(end),
     }
 }
 

@@ -11,11 +11,13 @@ use cosmic_text::{
     Action, Attrs, Buffer, Cursor, Edit, Editor, FontSystem, LayoutRun, Metrics, Motion, Shaping,
     Wrap,
 };
+use zeroize::Zeroize;
 
 pub struct UndoStack {
     stack: VecDeque<String>,
     position: usize,
     max_size: usize,
+    sensitive: bool,
 }
 
 impl UndoStack {
@@ -24,20 +26,56 @@ impl UndoStack {
             stack: VecDeque::new(),
             position: 0,
             max_size,
+            sensitive: false,
         }
     }
-    pub fn push(&mut self, text: String) {
+    pub(crate) fn set_sensitive(&mut self, sensitive: bool) {
+        if self.sensitive == sensitive {
+            return;
+        }
+        self.sensitive = sensitive;
+        self.clear_secure();
+    }
+    pub(crate) fn clear_secure(&mut self) {
+        for text in &mut self.stack {
+            text.zeroize();
+        }
+        self.stack.clear();
+        self.position = 0;
+    }
+    pub fn push(&mut self, mut text: String) {
+        if self.sensitive {
+            text.zeroize();
+            self.clear_secure();
+            return;
+        }
         if self.stack.back().map(|s| s == &text).unwrap_or(false) {
             return;
         }
-        while self.stack.len() > self.position + 1 {
-            self.stack.pop_back();
-        }
+        self.discard_redo_entries();
         self.stack.push_back(text);
-        if self.stack.len() > self.max_size {
-            self.stack.pop_front();
-        }
+        self.trim_to_max_size();
         self.position = self.stack.len().saturating_sub(1);
+    }
+    fn discard_redo_entries(&mut self) {
+        while self.stack.len() > self.position + 1 {
+            self.pop_back_secure();
+        }
+    }
+    fn trim_to_max_size(&mut self) {
+        if self.stack.len() > self.max_size {
+            self.pop_front_secure();
+        }
+    }
+    fn pop_back_secure(&mut self) {
+        if let Some(mut dropped) = self.stack.pop_back() {
+            dropped.zeroize();
+        }
+    }
+    fn pop_front_secure(&mut self) {
+        if let Some(mut dropped) = self.stack.pop_front() {
+            dropped.zeroize();
+        }
     }
     pub fn undo(&mut self) -> Option<&str> {
         if self.position > 0 {
@@ -63,6 +101,12 @@ impl UndoStack {
     }
     pub fn can_redo(&self) -> bool {
         self.position + 1 < self.stack.len()
+    }
+}
+
+impl Drop for UndoStack {
+    fn drop(&mut self) {
+        self.clear_secure();
     }
 }
 
@@ -98,6 +142,7 @@ pub struct InputWidgetState {
     pub undo: UndoStack,
     pub selection: Option<TextSelection>,
     pub selection_anchor: Option<usize>,
+    sensitive: bool,
 }
 
 pub(crate) fn cursor_x_in_run(cursor: Cursor, run: &LayoutRun<'_>) -> Option<f32> {
@@ -157,7 +202,16 @@ impl InputWidgetState {
             undo,
             selection: None,
             selection_anchor: None,
+            sensitive: false,
         }
+    }
+
+    pub(crate) fn set_sensitive(&mut self, sensitive: bool) {
+        if self.sensitive == sensitive {
+            return;
+        }
+        self.sensitive = sensitive;
+        self.undo.set_sensitive(sensitive);
     }
 
     pub fn text(&self) -> String {
@@ -170,6 +224,43 @@ impl InputWidgetState {
                 text.push_str(line.text());
             }
             text
+        })
+    }
+
+    pub(crate) fn text_is_empty(&self) -> bool {
+        self.editor
+            .with_buffer(|b| b.lines.iter().all(|line| line.text().is_empty()))
+    }
+
+    fn text_byte_len(&self) -> usize {
+        self.editor.with_buffer(|b| {
+            b.lines.iter().enumerate().fold(0, |total, (index, line)| {
+                total + line.text().len() + usize::from(index > 0)
+            })
+        })
+    }
+
+    fn text_char_count(&self) -> usize {
+        self.editor.with_buffer(|b| {
+            b.lines.iter().enumerate().fold(0, |total, (index, line)| {
+                total + line.text().chars().count() + usize::from(index > 0)
+            })
+        })
+    }
+
+    pub(crate) fn password_display_index(&self, byte_index: usize) -> usize {
+        const BULLET_UTF8_LEN: usize = "•".len();
+        let chars = self.chars_before_byte_index(byte_index);
+        chars * BULLET_UTF8_LEN
+    }
+
+    fn chars_before_byte_index(&self, byte_index: usize) -> usize {
+        self.editor.with_buffer(|b| {
+            let Some(line) = b.lines.first() else {
+                return 0;
+            };
+            let index = byte_index.min(line.text().len());
+            line.text()[..index].chars().count()
         })
     }
 
@@ -207,6 +298,9 @@ impl InputWidgetState {
     }
 
     pub fn set_text(&mut self, fs: &mut FontSystem, text: &str) {
+        if self.sensitive {
+            self.zeroize_editor_text();
+        }
         self.editor
             .with_buffer_mut(|b| b.set_text(fs, text, &Attrs::new(), Shaping::Advanced, None));
         self.editor.shape_as_needed(fs, false);
@@ -238,13 +332,13 @@ impl InputWidgetState {
     }
 
     pub fn select_all(&mut self, fs: &mut FontSystem) {
-        let text = self.text();
-        if text.is_empty() {
+        let text_len = self.text_byte_len();
+        if text_len == 0 {
             return;
         }
         self.selection = Some(TextSelection {
             start: 0,
-            end: text.len(),
+            end: text_len,
         });
         self.selection_anchor = Some(0);
         self.editor.action(fs, Action::Motion(Motion::End));
@@ -285,15 +379,23 @@ impl InputWidgetState {
             self.selection_anchor = None;
             return false;
         }
-        let text = self.text();
+        let mut text = self.text();
         let (a, b) = sel.normalized();
         let b = b.min(text.len());
-        let new_text = format!("{}{}", &text[..a], &text[b..]);
+        let mut new_text = format!("{}{}", &text[..a], &text[b..]);
         self.set_text(fs, &new_text);
+        if self.sensitive {
+            text.zeroize();
+            new_text.zeroize();
+        }
         true
     }
 
     pub fn snapshot(&mut self) {
+        if self.sensitive {
+            self.undo.clear_secure();
+            return;
+        }
         let t = self.text();
         self.undo.push(t);
     }
@@ -311,11 +413,10 @@ impl InputWidgetState {
     }
 
     pub fn display_text(&self, is_password: bool) -> String {
-        let text = self.text();
         if is_password {
-            "•".repeat(text.chars().count())
+            "•".repeat(self.text_char_count())
         } else {
-            text
+            self.text()
         }
     }
 
@@ -351,9 +452,7 @@ impl InputWidgetState {
 
         let cursor = self.editor.cursor();
         let mapped_cursor = if is_password {
-            let text = self.text();
-            let chars_before = text[..cursor.index].chars().count();
-            cosmic_text::Cursor::new(cursor.line, chars_before * 3)
+            Cursor::new(cursor.line, self.password_display_index(cursor.index))
         } else {
             cursor
         };
@@ -406,9 +505,7 @@ impl InputWidgetState {
 
         let cursor = self.editor.cursor();
         let mapped_cursor = if is_password {
-            let text = self.text();
-            let chars_before = text[..cursor.index].chars().count();
-            Cursor::new(cursor.line, chars_before * 3)
+            Cursor::new(cursor.line, self.password_display_index(cursor.index))
         } else {
             cursor
         };
@@ -448,6 +545,24 @@ impl InputWidgetState {
             }
         }
     }
+
+    fn zeroize_editor_text(&mut self) {
+        self.editor.with_buffer_mut(|buffer| {
+            for line in &mut buffer.lines {
+                let zeroed = "\0".repeat(line.text().len());
+                let attrs = line.attrs_list().clone();
+                line.set_text(zeroed, line.ending(), attrs);
+            }
+        });
+    }
+}
+
+impl Drop for InputWidgetState {
+    fn drop(&mut self) {
+        if self.sensitive {
+            self.zeroize_editor_text();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -485,5 +600,30 @@ mod tests {
 
         assert!(state.scroll_y > 0.0);
         assert!((state.scroll_x - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sensitive_snapshot_does_not_keep_undo_text() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_sensitive(true);
+        state.set_text(&mut fs, "correct horse battery staple");
+
+        state.snapshot();
+
+        assert!(!state.undo.can_undo());
+        assert_eq!(state.undo.current(), None);
+    }
+
+    #[test]
+    fn password_display_text_uses_bullets_without_plaintext() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_sensitive(true);
+        state.set_text(&mut fs, "secret");
+
+        assert_eq!(state.display_text(true), "••••••");
+        assert!(!state.text_is_empty());
+        assert_eq!(state.password_display_index(3), "•••".len());
     }
 }

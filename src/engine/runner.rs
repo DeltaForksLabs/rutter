@@ -16,6 +16,7 @@ use winit::{
     keyboard::{Key, NamedKey},
     window::WindowId,
 };
+use zeroize::Zeroize;
 
 use super::RutterEngine;
 use crate::app::AppLogic;
@@ -1690,6 +1691,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
     fn do_copy(&mut self) {
         if let Some(fid) = self.engine.focused_input_id() {
+            if self
+                .engine
+                .runtime_caches
+                .inputs
+                .get(&fid)
+                .is_some_and(|input| input.is_password)
+            {
+                self.redraw();
+                return;
+            }
             if let Some(s) = self.engine.input_states.get(&fid) {
                 let text_to_copy = s
                     .selection
@@ -1708,17 +1719,22 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn do_paste(&mut self) {
-        let Ok(txt) = self.engine.clipboard.get_text() else {
+        let Ok(mut clipboard_text) = self.engine.clipboard.get_text() else {
             return;
         };
         let Some(fid) = self.engine.focused_input_id() else {
+            clipboard_text.zeroize();
             return;
         };
 
         let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
+            clipboard_text.zeroize();
             return;
         };
-        let txt = sanitize_clipboard_text(&txt, input.is_multiline);
+        let mut txt = sanitize_clipboard_text(&clipboard_text, input.is_multiline);
+        if input.is_password {
+            clipboard_text.zeroize();
+        }
         if txt.is_empty() {
             return;
         }
@@ -1750,6 +1766,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         };
 
+        if input.is_password {
+            txt.zeroize();
+        }
         A::update(
             &mut self.engine.app_state,
             (input.on_change)(full),

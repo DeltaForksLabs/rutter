@@ -1777,7 +1777,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rutter"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "arboard",
  "ash",
@@ -1792,6 +1792,7 @@ dependencies = [
  "softbuffer",
  "taffy",
  "winit",
+ "zeroize",
 ]
 
 [[package]]
@@ -2947,6 +2948,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
 
 [[package]]
 name = "zune-core"

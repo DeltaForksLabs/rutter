@@ -504,11 +504,20 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn ensure_input_state(&mut self, id: u64) {
+        let sensitive = self
+            .runtime_caches
+            .inputs
+            .get(&id)
+            .map(|input| input.is_password)
+            .unwrap_or(false);
         if !self.input_states.contains_key(&id) {
             let mut fs = self.font_system.borrow_mut();
             let mut state = crate::input_state::InputWidgetState::new(&mut fs);
             state.set_metrics(&mut fs, A::theme().font_body);
             self.input_states.insert(id, state);
+        }
+        if let Some(state) = self.input_states.get_mut(&id) {
+            state.set_sensitive(sensitive);
         }
     }
 
@@ -1179,6 +1188,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 continue;
             };
 
+            state.set_sensitive(runtime.is_password);
             state.sync_layout(
                 &mut fs,
                 runtime.visible_w,

@@ -1,6 +1,6 @@
 [package]
 name    = "rutter"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "High-performance Rust UI framework featuring Skia rendering (Vulkan/OpenGL), Taffy flexbox layouts, and advanced typography."
@@ -28,6 +28,7 @@ raw-window-handle = "0.6.2"
 
 # --- Backend CPU ---
 softbuffer  = "0.4.8"
+zeroize     = "1.8.2"
 
 [dev-dependencies]
 # sem deps extras — testes usam apenas a stdlib + deps acima
