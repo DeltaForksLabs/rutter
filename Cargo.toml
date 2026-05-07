@@ -1,6 +1,6 @@
 [package]
 name    = "rutter"
-version = "0.10.2"
+version = "0.11.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "High-performance Rust UI framework featuring Skia rendering (Vulkan/OpenGL), Taffy flexbox layouts, and advanced typography."
@@ -19,8 +19,8 @@ accesskit   = "0.24.0"
 accesskit_winit = "0.32.2"
 fluent      = "0.17.0"
 unic-langid = "0.9.6"
-# Fase 3: decodificação de imagens PNG/JPEG/WebP
-image       = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+# Decoder opcional via image-rs; Skia é o decoder padrão do Rutter.
+image       = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
 # --- Backend Vulkan ---
 ash = "0.38.0"
 ash-window = "0.13.0"
@@ -40,6 +40,7 @@ zeroize     = "1.8.2"
 
 [features]
 default = []
+image-rs-decoder = ["dep:image"]
 
 [profile.dev-opt]
 inherits  = "dev"

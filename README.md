@@ -79,6 +79,8 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - OpenGL backend used as GPU fallback.
 - CPU softbuffer backend used as final fallback.
 - Skia canvas abstraction shared across rendering backends.
+- Image decoding uses Skia by default through Rutter-owned decode limits.
+- The `image-rs-decoder` Cargo feature switches raster decoding to the `image` crate.
 - Cached text shaping buffers for repeated text rendering paths.
 
 ### Internationalization
