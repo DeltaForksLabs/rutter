@@ -254,6 +254,14 @@ pub enum Widget<'a, Msg> {
         color: Option<SkiaColor>,
         variant: ButtonVariant,
     },
+    ButtonContent {
+        label: &'a str,
+        child: Box<Widget<'a, Msg>>,
+        on_press: Msg,
+        style: Style,
+        color: Option<SkiaColor>,
+        variant: ButtonVariant,
+    },
     TextInput {
         on_change: fn(String) -> Msg,
         on_submit: Option<Msg>,
@@ -420,6 +428,45 @@ pub enum Widget<'a, Msg> {
 }
 
 impl<'a, Msg> Widget<'a, Msg> {
+    /// Creates a button whose visual content is another widget.
+    ///
+    /// Example:
+    /// ```
+    /// # use rutter::{ButtonVariant, Widget};
+    /// # use taffy::prelude::Style;
+    /// # enum Msg { Save }
+    /// let button = Widget::button_content(
+    ///     "Save",
+    ///     Widget::Text {
+    ///         content: "Save".into(),
+    ///         style: Style::default(),
+    ///         color: None,
+    ///         size: 14.0,
+    ///     },
+    ///     Msg::Save,
+    ///     Style::default(),
+    ///     None,
+    ///     ButtonVariant::Primary,
+    /// );
+    /// ```
+    pub fn button_content(
+        label: &'a str,
+        child: Widget<'a, Msg>,
+        on_press: Msg,
+        style: Style,
+        color: Option<SkiaColor>,
+        variant: ButtonVariant,
+    ) -> Self {
+        Self::ButtonContent {
+            label,
+            child: Box::new(child),
+            on_press,
+            style,
+            color,
+            variant,
+        }
+    }
+
     pub fn text_input(
         on_change: fn(String) -> Msg,
         on_submit: Option<Msg>,
@@ -813,7 +860,9 @@ impl<'a, Msg> Widget<'a, Msg> {
 
     pub(crate) fn keyboard_focus_id(&self, path: &[usize]) -> Option<u64> {
         match self {
-            Self::Button { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Button, path)),
+            Self::Button { .. } | Self::ButtonContent { .. } => {
+                Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Button, path))
+            }
             Self::Checkbox { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Checkbox, path)),
             Self::Switch { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Switch, path)),
             Self::Radio { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Radio, path)),

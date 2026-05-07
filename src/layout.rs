@@ -296,6 +296,12 @@ impl LayoutBlueprint {
                     )
                 }
             }
+            Widget::ButtonContent { child, style, .. } => {
+                path.push(0);
+                let child = Self::from_widget_with_path(child, widget_states, path);
+                path.pop();
+                Self::with_children(None, style.clone(), vec![child])
+            }
             Widget::Select { options, style, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 let is_open = widget_states
@@ -683,6 +689,23 @@ mod tests {
         }
     }
 
+    fn button_content(width: f32) -> Widget<'static, ()> {
+        Widget::button_content(
+            "Run",
+            text("Run", 14.0),
+            (),
+            Style {
+                size: Size {
+                    width: Dimension::length(width),
+                    height: Dimension::length(36.0),
+                },
+                ..Style::default()
+            },
+            None,
+            crate::widget::ButtonVariant::Primary,
+        )
+    }
+
     fn slider(id: u64, width: f32) -> Widget<'static, ()> {
         Widget::Slider {
             id,
@@ -782,6 +805,24 @@ mod tests {
         assert_eq!(
             taffy.style(tree.children[1].node_id).unwrap().direction,
             Direction::Rtl
+        );
+    }
+
+    #[test]
+    fn button_content_creates_child_layout_node() {
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &button_content(120.0), fs(), &empty_states());
+        compute_layout(&mut taffy, root, PhysicalSize::new(200, 100), fs());
+        let children = taffy.children(root).unwrap();
+
+        assert_eq!(children.len(), 1);
+        assert_eq!(taffy.layout(root).unwrap().size.width, 120.0);
+        assert_eq!(
+            taffy.get_node_context(children[0]),
+            Some(&RutterContext::Text(TextContext {
+                content: "Run".to_string(),
+                font_size: 14.0,
+            }))
         );
     }
 

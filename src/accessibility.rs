@@ -400,7 +400,7 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
     Some(match widget {
         Widget::Text { .. } => Role::TextRun,
         Widget::Image { .. } => Role::Image,
-        Widget::Button { .. } => Role::Button,
+        Widget::Button { .. } | Widget::ButtonContent { .. } => Role::Button,
         Widget::TextInput { is_password, .. } if *is_password => Role::PasswordInput,
         Widget::TextInput { .. } => Role::TextInput,
         Widget::TextArea { .. } => Role::MultilineTextInput,
@@ -452,6 +452,7 @@ fn apply_leaf_props<Msg>(
 fn apply_actions<Msg>(node: &mut Node, widget: &Widget<Msg>) {
     match widget {
         Widget::Button { .. }
+        | Widget::ButtonContent { .. }
         | Widget::Checkbox { .. }
         | Widget::Switch { .. }
         | Widget::Radio { .. }
@@ -566,6 +567,7 @@ fn set_widget_label<Msg>(
     match widget {
         Widget::Text { content, .. } => node.set_label(content.clone()),
         Widget::Button { text, .. } => node.set_label(*text),
+        Widget::ButtonContent { label, .. } => node.set_label(*label),
         Widget::TextInput { label, .. } | Widget::TextArea { label, .. } => node.set_label(*label),
         Widget::SearchBar { .. } => node.set_label("Search"),
         Widget::Checkbox { label, .. } | Widget::Radio { label, .. } => node.set_label(*label),
@@ -703,6 +705,28 @@ mod tests {
             update.tree.as_ref().unwrap().root,
             NodeId(ROOT_ACCESSIBILITY_ID)
         );
+    }
+
+    #[test]
+    fn accessibility_update_exposes_button_content_label() {
+        let widget = Widget::button_content(
+            "Upload image",
+            Widget::Image {
+                data: &[],
+                style: base_style(16.0, 16.0),
+                radius: 0.0,
+            },
+            (),
+            base_style(100.0, 40.0),
+            None,
+            ButtonVariant::Primary,
+        );
+
+        let update = build_update(&widget);
+        let button = node_for(&update, Role::Button);
+
+        assert_eq!(button.label(), Some("Upload image"));
+        assert!(button.supports_action(Action::Click));
     }
 
     #[test]

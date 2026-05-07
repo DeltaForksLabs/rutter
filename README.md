@@ -61,7 +61,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 ### Widgets
 
 - Text, image, spacer, divider, container, row, and column primitives.
-- Button variants, checkbox, switch, radio, slider, select, progress bar, and spinner.
+- Text and rich-content button variants, checkbox, switch, radio, slider, select, progress bar, and spinner.
 - Text input, search bar, and multiline text area.
 - Scroll view, virtual list, and virtual grid for large item sets.
 - Accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
@@ -240,6 +240,8 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `TextArea`
 - `SearchBar`
 - `Checkbox`
+- `Button`
+- `ButtonContent`
 - `Switch`
 - `Radio`
 - `Slider`

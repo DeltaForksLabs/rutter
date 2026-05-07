@@ -923,7 +923,7 @@ fn draw_widgets_impl<'w, Msg>(
             color,
             variant,
             ..
-        } => draw_button(
+        } => draw_text_button(
             canvas,
             text,
             *color,
@@ -934,6 +934,45 @@ fn draw_widgets_impl<'w, Msg>(
             font_cache,
             theme,
         ),
+        Widget::ButtonContent {
+            child,
+            color,
+            variant,
+            ..
+        } => {
+            draw_button_frame(
+                canvas,
+                *color,
+                *variant,
+                is_focused,
+                size,
+                local_mouse,
+                theme,
+            );
+            let ids = taffy.children(node).unwrap();
+            if let Some(child_node) = ids.first().copied() {
+                path.push(0);
+                draw_widgets_impl(
+                    canvas,
+                    taffy,
+                    child_node,
+                    child,
+                    fs,
+                    swash,
+                    local_mouse,
+                    focused_id,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    theme,
+                    scale,
+                    path,
+                );
+                path.pop();
+            }
+        }
         Widget::TextInput {
             label,
             placeholder,
@@ -2451,7 +2490,7 @@ fn draw_virtual_grid(
     }
 }
 
-fn draw_button(
+fn draw_text_button(
     canvas: &Canvas,
     text: &str,
     color: Option<SkiaColor>,
@@ -2462,76 +2501,33 @@ fn draw_button(
     font_cache: &mut HashMap<(String, u32), Font>,
     theme: &Theme,
 ) {
-    let rect = SkiaRect::from_xywh(0.0, 0.0, size.0, size.1);
-    let hovered = rect.contains(mouse);
+    let hovered = button_hovered(size, mouse);
+    let text_color = button_text_color(color, variant, hovered, theme);
+    draw_button_frame(canvas, color, variant, is_focused, size, mouse, theme);
+    draw_text(
+        canvas,
+        text,
+        (0.0, 0.0).into(),
+        size,
+        text_color,
+        theme.font_body,
+        font_cache,
+        true,
+    );
+}
+
+fn draw_button_frame(
+    canvas: &Canvas,
+    color: Option<SkiaColor>,
+    variant: ButtonVariant,
+    is_focused: bool,
+    size: (f32, f32),
+    mouse: Point,
+    theme: &Theme,
+) {
+    let hovered = button_hovered(size, mouse);
     let accent = color.unwrap_or(theme.primary);
-    match variant {
-        ButtonVariant::Primary => {
-            let fill = if hovered {
-                Theme::darken(accent, 0.15)
-            } else {
-                accent
-            };
-            let mut p = Paint::default();
-            p.set_color(fill);
-            p.set_anti_alias(true);
-            canvas.draw_rrect(rrect(size, theme.radius_sm), &p);
-            draw_text(
-                canvas,
-                text,
-                (0.0, 0.0).into(),
-                size,
-                theme.on_primary,
-                theme.font_body,
-                font_cache,
-                true,
-            );
-        }
-        ButtonVariant::Ghost => {
-            if hovered {
-                let mut bg = Paint::default();
-                bg.set_color(Theme::alpha(theme.on_surface, 20));
-                bg.set_anti_alias(true);
-                canvas.draw_rrect(rrect(size, theme.radius_sm), &bg);
-            }
-            let mut b = Paint::default();
-            b.set_style(paint::Style::Stroke);
-            b.set_stroke_width(1.0);
-            b.set_color(if hovered {
-                accent
-            } else {
-                Theme::alpha(theme.on_surface, 100)
-            });
-            b.set_anti_alias(true);
-            canvas.draw_rrect(rrect(size, theme.radius_sm), &b);
-            draw_text(
-                canvas,
-                text,
-                (0.0, 0.0).into(),
-                size,
-                if hovered { accent } else { theme.on_surface },
-                theme.font_body,
-                font_cache,
-                true,
-            );
-        }
-        ButtonVariant::Text => {
-            draw_text(
-                canvas,
-                text,
-                (0.0, 0.0).into(),
-                size,
-                if hovered {
-                    accent
-                } else {
-                    Theme::alpha(theme.on_surface, 180)
-                },
-                theme.font_body,
-                font_cache,
-                true,
-            );
-        }
-    }
+    draw_button_surface(canvas, variant, hovered, accent, size, theme);
     if is_focused {
         draw_focus_outline_with_colors(
             canvas,
@@ -2540,6 +2536,102 @@ fn draw_button(
             accent,
             theme.surface,
         );
+    }
+}
+
+fn draw_button_surface(
+    canvas: &Canvas,
+    variant: ButtonVariant,
+    hovered: bool,
+    accent: SkiaColor,
+    size: (f32, f32),
+    theme: &Theme,
+) {
+    match variant {
+        ButtonVariant::Primary => draw_primary_button_surface(canvas, hovered, accent, size, theme),
+        ButtonVariant::Ghost => draw_ghost_button_surface(canvas, hovered, accent, size, theme),
+        ButtonVariant::Text => {}
+    }
+}
+
+fn draw_primary_button_surface(
+    canvas: &Canvas,
+    hovered: bool,
+    accent: SkiaColor,
+    size: (f32, f32),
+    theme: &Theme,
+) {
+    let fill = if hovered {
+        Theme::darken(accent, 0.15)
+    } else {
+        accent
+    };
+    let mut paint = Paint::default();
+    paint.set_color(fill);
+    paint.set_anti_alias(true);
+    canvas.draw_rrect(rrect(size, theme.radius_sm), &paint);
+}
+
+fn draw_ghost_button_surface(
+    canvas: &Canvas,
+    hovered: bool,
+    accent: SkiaColor,
+    size: (f32, f32),
+    theme: &Theme,
+) {
+    if hovered {
+        draw_button_hover_fill(canvas, size, theme);
+    }
+    draw_button_border(canvas, hovered, accent, size, theme);
+}
+
+fn draw_button_hover_fill(canvas: &Canvas, size: (f32, f32), theme: &Theme) {
+    let mut bg = Paint::default();
+    bg.set_color(Theme::alpha(theme.on_surface, 20));
+    bg.set_anti_alias(true);
+    canvas.draw_rrect(rrect(size, theme.radius_sm), &bg);
+}
+
+fn draw_button_border(
+    canvas: &Canvas,
+    hovered: bool,
+    accent: SkiaColor,
+    size: (f32, f32),
+    theme: &Theme,
+) {
+    let mut border = Paint::default();
+    border.set_style(paint::Style::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color(button_border_color(hovered, accent, theme));
+    border.set_anti_alias(true);
+    canvas.draw_rrect(rrect(size, theme.radius_sm), &border);
+}
+
+fn button_hovered(size: (f32, f32), mouse: Point) -> bool {
+    SkiaRect::from_xywh(0.0, 0.0, size.0, size.1).contains(mouse)
+}
+
+fn button_text_color(
+    color: Option<SkiaColor>,
+    variant: ButtonVariant,
+    hovered: bool,
+    theme: &Theme,
+) -> SkiaColor {
+    let accent = color.unwrap_or(theme.primary);
+    match variant {
+        ButtonVariant::Primary => theme.on_primary,
+        ButtonVariant::Ghost if hovered => accent,
+        ButtonVariant::Ghost => theme.on_surface,
+        ButtonVariant::Text if hovered => accent,
+        ButtonVariant::Text => Theme::alpha(theme.on_surface, 180),
+    }
+}
+
+fn button_border_color(hovered: bool, accent: SkiaColor, theme: &Theme) -> SkiaColor {
+    if hovered {
+        accent
+    } else {
+        Theme::alpha(theme.on_surface, 100)
     }
 }
 

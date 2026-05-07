@@ -598,10 +598,12 @@ fn hit_test_impl<Msg: Clone>(
     }
 
     match widget {
-        Widget::Button { on_press, .. } => Some(HitResult::Message {
-            focus_id: widget.keyboard_focus_id(path),
-            msg: on_press.clone(),
-        }),
+        Widget::Button { on_press, .. } | Widget::ButtonContent { on_press, .. } => {
+            Some(HitResult::Message {
+                focus_id: widget.keyboard_focus_id(path),
+                msg: on_press.clone(),
+            })
+        }
         Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
             Some(HitResult::InputFocus {
                 id: widget.resolved_id(path).unwrap(),
@@ -1051,6 +1053,7 @@ fn collect_stateful_ids_impl<Msg>(
         }
         Widget::Dialog { child, .. }
         | Widget::Accordion { child, .. }
+        | Widget::ButtonContent { child, .. }
         | Widget::Container { child, .. }
         | Widget::Tooltip { child, .. } => {
             path.push(0);
@@ -1915,6 +1918,28 @@ mod tests {
         }
     }
 
+    fn rich_button() -> Widget<'static, Msg> {
+        Widget::button_content(
+            "OK",
+            Widget::Text {
+                content: "OK".into(),
+                style: Style::default(),
+                color: None,
+                size: 14.0,
+            },
+            Msg::Toggle,
+            Style {
+                size: Size {
+                    width: Dimension::length(100.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Style::default()
+            },
+            None,
+            ButtonVariant::Primary,
+        )
+    }
+
     #[test]
     fn auto_input_ids_are_stable_and_distinct_by_path() {
         let widget = Widget::Column {
@@ -2035,6 +2060,42 @@ mod tests {
             &taffy,
             root,
             Point::new(70.0, 60.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+
+        assert!(matches!(
+            hit,
+            Some(HitResult::Message {
+                msg: Msg::Toggle,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn button_content_hit_test_returns_button_message() {
+        let widget = rich_button();
+        let states = HashMap::new();
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(
+            &mut taffy,
+            &widget,
+            std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new())),
+            &states,
+        );
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(120, 60),
+            std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new())),
+        );
+
+        let hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(8.0, 8.0),
             Point::new(0.0, 0.0),
             &states,
         );

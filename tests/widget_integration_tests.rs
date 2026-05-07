@@ -129,6 +129,33 @@ fn button_text_variant() {
     }
 }
 
+#[test]
+fn button_content_stores_visual_child_and_accessible_label() {
+    let w: Widget<Msg> = Widget::button_content(
+        "Save item",
+        Widget::Image {
+            data: &[],
+            style: Style::default(),
+            radius: 2.0,
+        },
+        Msg::Submit,
+        Style::default(),
+        None,
+        ButtonVariant::Primary,
+    );
+    if let Widget::ButtonContent {
+        label,
+        on_press,
+        child,
+        ..
+    } = w
+    {
+        assert_eq!(label, "Save item");
+        assert_eq!(on_press, Msg::Submit);
+        assert!(matches!(*child, Widget::Image { .. }));
+    }
+}
+
 // ── collect_input_ids ────────────────────────────────────────
 
 #[test]

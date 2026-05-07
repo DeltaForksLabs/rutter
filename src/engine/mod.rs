@@ -207,6 +207,7 @@ fn collect_overlay_focus_scope<Msg>(
 fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path: &mut Vec<usize>) {
     match widget {
         Widget::Button { .. }
+        | Widget::ButtonContent { .. }
         | Widget::Checkbox { .. }
         | Widget::Switch { .. }
         | Widget::Radio { .. }
@@ -822,7 +823,7 @@ impl<A: AppLogic> RutterEngine<A> {
             .map(|layout| Point::new(abs.x + layout.location.x, abs.y + layout.location.y))
             .unwrap_or(abs);
         match widget {
-            Widget::Button { on_press, .. } => {
+            Widget::Button { on_press, .. } | Widget::ButtonContent { on_press, .. } => {
                 runtime_caches
                     .buttons
                     .insert(widget.keyboard_focus_id(path).unwrap(), on_press.clone());
