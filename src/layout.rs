@@ -285,7 +285,7 @@ impl LayoutBlueprint {
                     path.push(0);
                     let child = Self::from_widget_with_path(child, widget_states, path);
                     path.pop();
-                    Self::with_children(Some(resolved_id), style.clone(), vec![child])
+                    Self::with_children(Some(resolved_id), overlay_style(style), vec![child])
                 } else {
                     Self::leaf(
                         Some(resolved_id),
@@ -830,6 +830,59 @@ mod tests {
         assert_eq!(modal_style.position, Position::Absolute);
         assert_eq!(taffy.layout(modal).unwrap().size.width, 400.0);
         assert_eq!(taffy.layout(modal).unwrap().size.height, 300.0);
+        assert_eq!(second.location.y, first.size.height);
+    }
+
+    #[test]
+    fn visible_dialog_is_absolute_overlay_and_does_not_shift_siblings() {
+        let mut taffy = TaffyTree::new();
+        let widget = Widget::Column {
+            style: Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Style::default()
+            },
+            children: vec![
+                button(100.0),
+                Widget::Dialog {
+                    id: 12,
+                    title: "Confirm",
+                    message: "Continue?",
+                    confirm_label: "Yes",
+                    cancel_label: "No",
+                    visible: true,
+                    on_confirm: (),
+                    on_cancel: (),
+                    on_dismiss: None,
+                    position: crate::widget::DialogPosition::Center,
+                    style: Style::default(),
+                    child: Box::new(button(200.0)),
+                },
+                button(120.0),
+            ],
+        };
+
+        let root = build_taffy_tree(&mut taffy, &widget, fs(), &empty_states());
+        compute_layout(&mut taffy, root, PhysicalSize::new(400, 300), fs());
+        let children = taffy.children(root).unwrap();
+        let dialog = children
+            .iter()
+            .copied()
+            .find(|node| taffy.style(*node).unwrap().position == Position::Absolute)
+            .unwrap();
+        let first = taffy.layout(children[0]).unwrap();
+        let second = children
+            .iter()
+            .copied()
+            .filter(|node| taffy.style(*node).unwrap().position != Position::Absolute)
+            .nth(1)
+            .and_then(|node| taffy.layout(node).ok())
+            .unwrap();
+
+        assert_eq!(taffy.layout(dialog).unwrap().size.width, 400.0);
+        assert_eq!(taffy.layout(dialog).unwrap().size.height, 300.0);
         assert_eq!(second.location.y, first.size.height);
     }
 
