@@ -257,8 +257,24 @@ impl LayoutBlueprint {
                 style,
                 visible,
                 ..
+            } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
+                if *visible {
+                    path.push(0);
+                    let child = Self::from_widget_with_path(child, widget_states, path);
+                    path.pop();
+                    Self::with_children(Some(resolved_id), overlay_style(style), vec![child])
+                } else {
+                    Self::leaf(
+                        Some(resolved_id),
+                        Style {
+                            size: Size::zero(),
+                            ..style.clone()
+                        },
+                    )
+                }
             }
-            | Widget::Dialog {
+            Widget::Dialog {
                 child,
                 style,
                 visible,
@@ -596,6 +612,22 @@ fn extract_height(style: &Style) -> f32 {
     style.size.height.into_option().unwrap_or(40.0)
 }
 
+fn overlay_style(style: &Style) -> Style {
+    let mut overlay = style.clone();
+    overlay.position = Position::Absolute;
+    overlay.inset = Rect {
+        left: LengthPercentageAuto::length(0.0),
+        right: LengthPercentageAuto::length(0.0),
+        top: LengthPercentageAuto::length(0.0),
+        bottom: LengthPercentageAuto::length(0.0),
+    };
+    overlay.size = Size {
+        width: Dimension::percent(1.0),
+        height: Dimension::percent(1.0),
+    };
+    overlay
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +635,10 @@ mod tests {
 
     fn empty_states() -> HashMap<u64, WidgetState> {
         HashMap::new()
+    }
+
+    fn fs() -> Rc<RefCell<FontSystem>> {
+        Rc::new(RefCell::new(FontSystem::new()))
     }
 
     fn sync_tree<'a>(
@@ -747,6 +783,54 @@ mod tests {
             taffy.style(tree.children[1].node_id).unwrap().direction,
             Direction::Rtl
         );
+    }
+
+    #[test]
+    fn visible_modal_is_absolute_overlay_and_does_not_shift_siblings() {
+        let mut taffy = TaffyTree::new();
+        let widget = Widget::Column {
+            style: Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Style::default()
+            },
+            children: vec![
+                button(100.0),
+                Widget::Modal {
+                    id: 11,
+                    visible: true,
+                    child: Box::new(button(200.0)),
+                    on_dismiss: None,
+                    style: Style::default(),
+                },
+                button(120.0),
+            ],
+        };
+
+        let root = build_taffy_tree(&mut taffy, &widget, fs(), &empty_states());
+        compute_layout(&mut taffy, root, PhysicalSize::new(400, 300), fs());
+        let children = taffy.children(root).unwrap();
+        let modal = children
+            .iter()
+            .copied()
+            .find(|node| taffy.style(*node).unwrap().position == Position::Absolute)
+            .unwrap();
+        let modal_style = taffy.style(modal).unwrap();
+        let first = taffy.layout(children[0]).unwrap();
+        let second = children
+            .iter()
+            .copied()
+            .filter(|node| taffy.style(*node).unwrap().position != Position::Absolute)
+            .nth(1)
+            .and_then(|node| taffy.layout(node).ok())
+            .unwrap();
+
+        assert_eq!(modal_style.position, Position::Absolute);
+        assert_eq!(taffy.layout(modal).unwrap().size.width, 400.0);
+        assert_eq!(taffy.layout(modal).unwrap().size.height, 300.0);
+        assert_eq!(second.location.y, first.size.height);
     }
 
     #[test]

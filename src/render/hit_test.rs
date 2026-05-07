@@ -18,6 +18,8 @@ use crate::widget::{
 };
 
 const ACCORDION_HEADER_H: f32 = 44.0;
+const MODAL_MAX_CARD_W: f32 = 480.0;
+const MODAL_MIN_CARD_H: f32 = 200.0;
 const DIALOG_CARD_W: f32 = 400.0;
 const DIALOG_CARD_H: f32 = 200.0;
 const DIALOG_VIEWPORT_MARGIN: f32 = 32.0;
@@ -162,6 +164,16 @@ pub(crate) fn dialog_card_rect(position: DialogPosition, viewport_size: (f32, f3
         (viewport_size.1 - height - DIALOG_VIEWPORT_MARGIN)
             .max(DIALOG_VIEWPORT_MARGIN.min(viewport_size.1)),
     );
+    SkiaRect::from_xywh(x, y, width, height)
+}
+
+pub(crate) fn modal_card_rect(content_height: f32, viewport_size: (f32, f32)) -> SkiaRect {
+    let width = (viewport_size.0 * 0.85).min(MODAL_MAX_CARD_W).max(1.0);
+    let height = content_height
+        .max(MODAL_MIN_CARD_H)
+        .min((viewport_size.1 * 0.9).max(1.0));
+    let x = (viewport_size.0 - width) / 2.0;
+    let y = (viewport_size.1 - height) / 2.0;
     SkiaRect::from_xywh(x, y, width, height)
 }
 
@@ -764,12 +776,33 @@ fn hit_test_impl<Msg: Clone>(
                 return None;
             }
             let ids = taffy.children(node_id).unwrap();
+            let child_layout = taffy.layout(ids[0]).unwrap();
+            let card = modal_card_rect(
+                child_layout.size.height,
+                (layout.size.width, layout.size.height),
+            );
+            let abs_card = SkiaRect::from_xywh(
+                abs_pos.x + card.left,
+                abs_pos.y + card.top,
+                card.width(),
+                card.height(),
+            );
             path.push(0);
-            let child_hit =
-                hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
+            let child_hit = hit_test_impl(
+                child,
+                taffy,
+                ids[0],
+                mouse,
+                Point::new(abs_card.left, abs_card.top),
+                widget_states,
+                path,
+            );
             path.pop();
             if child_hit.is_some() {
                 return child_hit;
+            }
+            if abs_card.contains(mouse) {
+                return None;
             }
             if let Some(msg) = on_dismiss.clone() {
                 Some(HitResult::Message {
@@ -1841,12 +1874,15 @@ fn find_scrollbar_drag_hit_impl<Msg>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
-    use taffy::prelude::Style;
+    use skia_safe::Point;
+    use taffy::prelude::{Dimension, Size, Style, TaffyTree};
+    use winit::dpi::PhysicalSize;
 
-    use super::{collect_input_ids, collect_stateful_ids, dialog_card_rect};
-    use crate::widget::{AUTO_ID, DialogPosition, InputState, Widget};
+    use super::{HitResult, collect_input_ids, collect_stateful_ids, dialog_card_rect, hit_test};
+    use crate::layout::{build_taffy_tree, compute_layout};
+    use crate::widget::{AUTO_ID, ButtonVariant, DialogPosition, InputState, Widget};
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {
@@ -1861,6 +1897,22 @@ mod tests {
 
     fn usize_msg(value: usize) -> Msg {
         Msg::Usize(value)
+    }
+
+    fn sized_button() -> Widget<'static, Msg> {
+        Widget::Button {
+            text: "OK",
+            on_press: Msg::Toggle,
+            style: Style {
+                size: Size {
+                    width: Dimension::length(100.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Style::default()
+            },
+            color: None,
+            variant: ButtonVariant::Primary,
+        }
     }
 
     #[test]
@@ -1952,6 +2004,48 @@ mod tests {
         assert_ne!(slider_ids[0].0, select_ids[0].0);
         assert_eq!(slider_ids[0].1, "slider");
         assert_eq!(select_ids[0].1, "select");
+    }
+
+    #[test]
+    fn modal_hit_test_uses_centered_card_origin() {
+        let widget = Widget::Modal {
+            id: 10,
+            visible: true,
+            child: Box::new(sized_button()),
+            on_dismiss: Some(Msg::Usize(99)),
+            style: Style::default(),
+        };
+        let states = HashMap::new();
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(
+            &mut taffy,
+            &widget,
+            std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new())),
+            &states,
+        );
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(400, 300),
+            std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new())),
+        );
+
+        let hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(70.0, 60.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+
+        assert!(matches!(
+            hit,
+            Some(HitResult::Message {
+                msg: Msg::Toggle,
+                ..
+            })
+        ));
     }
 
     #[test]

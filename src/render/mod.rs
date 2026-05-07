@@ -25,7 +25,7 @@ use crate::engine::widget_state::{
 };
 use crate::input_state::{InputWidgetState, TextSelection, cursor_x_in_run};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP};
-use crate::render::hit_test::{context_menu_rect, dialog_card_rect, popover_rect};
+use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
 use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
@@ -1812,12 +1812,13 @@ fn draw_modal<Msg>(
     bp.set_anti_alias(true);
     canvas.draw_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), &bp);
 
-    let card_w = (size.0 * 0.85).min(480.0);
     let ids = taffy.children(node).unwrap();
     let child_layout = taffy.layout(ids[0]).unwrap();
-    let card_h = child_layout.size.height.max(200.0);
-    let card_x = (size.0 - card_w) / 2.0;
-    let card_y = (size.1 - card_h) / 2.0;
+    let card = modal_card_rect(child_layout.size.height, size);
+    let card_w = card.width();
+    let card_h = card.height();
+    let card_x = card.left;
+    let card_y = card.top;
 
     let mut card_p = Paint::default();
     card_p.set_color(theme.surface);
