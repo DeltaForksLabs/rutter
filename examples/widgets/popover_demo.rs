@@ -46,7 +46,7 @@ impl AppLogic for PopoverDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0),
+            padding: Rect::length(32.0_f32),
             gap: Size {
                 width: LengthPercentage::length(0.0),
                 height: LengthPercentage::length(16.0),
@@ -76,7 +76,7 @@ impl AppLogic for PopoverDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(16.0),
+            padding: Rect::length(16.0_f32),
             gap: Size {
                 width: LengthPercentage::length(0.0),
                 height: LengthPercentage::length(10.0),

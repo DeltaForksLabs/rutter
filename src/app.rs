@@ -11,6 +11,7 @@
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
 
+use crate::i18n::Locale;
 use crate::widget::Widget;
 
 /// Contrato principal do padrão Elm usado pelo Rutter.
@@ -67,5 +68,10 @@ pub trait AppLogic {
     /// Retorna o tema da aplicação.
     fn theme() -> crate::theme::Theme {
         crate::theme::Theme::default()
+    }
+
+    /// Retorna o locale usado para direção de layout e catálogos i18n.
+    fn locale() -> Locale {
+        Locale::default()
     }
 }

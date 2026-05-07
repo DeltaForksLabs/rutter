@@ -472,7 +472,7 @@ impl AppLogic for MyApp {
                 style: Style {
                     flex_direction: FlexDirection::Column,
                     align_items: Some(AlignItems::Stretch),
-                    padding: Rect::length(24.0),
+                    padding: Rect::length(24.0_f32),
                     gap: Size {
                         width: LengthPercentage::length(0.0),
                         height: LengthPercentage::length(16.0),

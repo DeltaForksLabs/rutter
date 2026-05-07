@@ -32,6 +32,7 @@ The current implementation combines:
 - `taffy` for flexbox-style layout.
 - `skia-safe` for drawing primitives, text, images, shadows, rounded rectangles, and GPU surfaces.
 - `cosmic-text` for text shaping and editable text buffers.
+- `fluent-rs` for locale-aware message formatting and RTL layout direction.
 - `ash`, `glutin`, and `softbuffer` for Vulkan, OpenGL, and CPU fallback rendering paths.
 
 The framework is still evolving, but it already includes a broad set of widgets, demos, input handling, layout synchronization, text editing, virtualized views, and overlay components.
@@ -44,9 +45,18 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Declarative widget tree with manual or automatic widget IDs.
 - Taffy-backed layout tree with synchronization instead of full rebuilds on every layout update.
 - Theme support through a central `Theme` type.
+- Locale and Project Fluent catalog helpers for i18n and RTL layout direction.
 - Keyboard focus traversal for interactive widgets.
 - Clipboard paste sanitization for text inputs.
 - Safe image decoding limits to reduce malicious allocation risk.
+
+### Accessibility
+
+- AccessKit-backed accessibility tree integrated with `winit`.
+- Semantic roles for buttons, text inputs, toggles, sliders, progress indicators, lists, grids, dialogs, and status messages.
+- Accessible labels, values, toggle state, numeric ranges, and focus propagation from the Rutter widget tree.
+- Window events are forwarded to the AccessKit adapter so platform assistive technologies can observe the active UI.
+- The window is kept hidden until the accessibility adapter is initialized, avoiding an initial inaccessible window snapshot.
 
 ### Widgets
 
@@ -70,6 +80,12 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - CPU softbuffer backend used as final fallback.
 - Skia canvas abstraction shared across rendering backends.
 - Cached text shaping buffers for repeated text rendering paths.
+
+### Internationalization
+
+- Fluent FTL resources can be loaded through `FluentCatalog`.
+- `Locale` infers `LayoutDirection::Rtl` for Arabic, Hebrew, Persian, Urdu, and other RTL scripts.
+- `AppLogic::locale()` drives the root Taffy layout direction without changing state/update/view flow.
 
 ## Project Status
 
@@ -317,6 +333,7 @@ Near-term priorities:
 - Improve official documentation and examples.
 - Stabilize the public widget API.
 - Expand accessibility behavior.
+- Expand locale-aware examples and text rendering coverage.
 - Harden Vulkan/OpenGL backend behavior across more systems.
 - Improve test coverage for overlays, keyboard navigation, and complex layouts.
 

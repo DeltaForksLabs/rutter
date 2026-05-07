@@ -14,6 +14,7 @@ use taffy::prelude::*;
 use winit::dpi::PhysicalSize;
 
 use crate::engine::widget_state::WidgetState;
+use crate::i18n::LayoutDirection;
 use crate::widget::Widget;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -103,6 +104,23 @@ impl LayoutBlueprint {
     ) -> Self {
         let mut path = Vec::new();
         Self::from_widget_with_path(widget, widget_states, &mut path)
+    }
+
+    fn from_widget_with_direction<'a, Msg>(
+        widget: &Widget<'a, Msg>,
+        widget_states: &HashMap<u64, WidgetState>,
+        direction: LayoutDirection,
+    ) -> Self {
+        let mut blueprint = Self::from_widget(widget, widget_states);
+        blueprint.apply_direction(direction);
+        blueprint
+    }
+
+    fn apply_direction(&mut self, direction: LayoutDirection) {
+        self.style.direction = direction.into();
+        for child in &mut self.children {
+            child.apply_direction(direction);
+        }
     }
 
     fn from_widget_with_path<'a, Msg>(
@@ -333,7 +351,45 @@ pub fn build_taffy_tree<'a, Msg>(
     _fs: Rc<RefCell<FontSystem>>,
     widget_states: &HashMap<u64, WidgetState>,
 ) -> NodeId {
-    let blueprint = LayoutBlueprint::from_widget(widget, widget_states);
+    build_taffy_tree_with_direction(
+        taffy,
+        widget,
+        _fs,
+        widget_states,
+        LayoutDirection::default(),
+    )
+}
+
+/// Builds a Taffy tree and applies one global layout direction.
+///
+/// # Example
+/// ```rust
+/// # use std::{cell::RefCell, collections::HashMap, rc::Rc};
+/// # use cosmic_text::FontSystem;
+/// # use rutter::{LayoutDirection, Widget};
+/// # use rutter::layout::{RutterContext, build_taffy_tree_with_direction};
+/// # use rutter::engine::widget_state::WidgetState;
+/// # use taffy::prelude::{Style, TaffyTree};
+/// let mut taffy = TaffyTree::<RutterContext>::new();
+/// let states = HashMap::<u64, WidgetState>::new();
+/// let widget: Widget<'static, ()> = Widget::Spacer { style: Style::default() };
+/// let root = build_taffy_tree_with_direction(
+///     &mut taffy,
+///     &widget,
+///     Rc::new(RefCell::new(FontSystem::new())),
+///     &states,
+///     LayoutDirection::Rtl,
+/// );
+/// assert_eq!(taffy.style(root).unwrap().direction, taffy::style::Direction::Rtl);
+/// ```
+pub fn build_taffy_tree_with_direction<'a, Msg>(
+    taffy: &mut TaffyTree<RutterContext>,
+    widget: &Widget<'a, Msg>,
+    _fs: Rc<RefCell<FontSystem>>,
+    widget_states: &HashMap<u64, WidgetState>,
+    direction: LayoutDirection,
+) -> NodeId {
+    let blueprint = LayoutBlueprint::from_widget_with_direction(widget, widget_states, direction);
     mount_layout_blueprint(taffy, &blueprint).node_id
 }
 
@@ -343,7 +399,40 @@ pub fn sync_taffy_tree<'a, Msg>(
     widget: &Widget<'a, Msg>,
     widget_states: &HashMap<u64, WidgetState>,
 ) -> NodeId {
-    let blueprint = LayoutBlueprint::from_widget(widget, widget_states);
+    sync_taffy_tree_with_direction(
+        taffy,
+        tree,
+        widget,
+        widget_states,
+        LayoutDirection::default(),
+    )
+}
+
+/// Syncs a reusable Taffy tree and applies one global layout direction.
+///
+/// # Example
+/// ```rust
+/// # use std::collections::HashMap;
+/// # use rutter::{LayoutDirection, Widget};
+/// # use rutter::layout::{RutterContext, SyncedLayoutTree, sync_taffy_tree_with_direction};
+/// # use rutter::engine::widget_state::WidgetState;
+/// # use taffy::prelude::{Style, TaffyTree};
+/// let mut taffy = TaffyTree::<RutterContext>::new();
+/// let root = taffy.new_leaf(Style::default()).unwrap();
+/// let mut tree = SyncedLayoutTree::placeholder(root);
+/// let states = HashMap::<u64, WidgetState>::new();
+/// let widget: Widget<'static, ()> = Widget::Spacer { style: Style::default() };
+/// sync_taffy_tree_with_direction(&mut taffy, &mut tree, &widget, &states, LayoutDirection::Rtl);
+/// assert_eq!(taffy.style(root).unwrap().direction, taffy::style::Direction::Rtl);
+/// ```
+pub fn sync_taffy_tree_with_direction<'a, Msg>(
+    taffy: &mut TaffyTree<RutterContext>,
+    tree: &mut SyncedLayoutTree,
+    widget: &Widget<'a, Msg>,
+    widget_states: &HashMap<u64, WidgetState>,
+    direction: LayoutDirection,
+) -> NodeId {
+    let blueprint = LayoutBlueprint::from_widget_with_direction(widget, widget_states, direction);
     sync_layout_blueprint(taffy, tree, &blueprint);
     tree.node_id()
 }
@@ -510,6 +599,7 @@ fn extract_height(style: &Style) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taffy::style::Direction;
 
     fn empty_states() -> HashMap<u64, WidgetState> {
         HashMap::new()
@@ -521,6 +611,15 @@ mod tests {
         widget: &Widget<'a, ()>,
     ) {
         sync_taffy_tree(taffy, tree, widget, &empty_states());
+    }
+
+    fn sync_tree_with_direction<'a>(
+        taffy: &mut TaffyTree<RutterContext>,
+        tree: &mut SyncedLayoutTree,
+        widget: &Widget<'a, ()>,
+        direction: LayoutDirection,
+    ) {
+        sync_taffy_tree_with_direction(taffy, tree, widget, &empty_states(), direction);
     }
 
     fn text(content: &str, size: f32) -> Widget<'static, ()> {
@@ -624,6 +723,29 @@ mod tests {
                 content: "updated".to_string(),
                 font_size: 18.0,
             }))
+        );
+    }
+
+    #[test]
+    fn sync_taffy_tree_applies_rtl_direction_to_descendants() {
+        let mut taffy = TaffyTree::new();
+        let root = taffy.new_leaf(Style::default()).unwrap();
+        let mut tree = SyncedLayoutTree::placeholder(root);
+        let widget = Widget::Row {
+            children: vec![text("مرحبا", 16.0), button(96.0)],
+            style: Style::default(),
+        };
+
+        sync_tree_with_direction(&mut taffy, &mut tree, &widget, LayoutDirection::Rtl);
+
+        assert_eq!(taffy.style(root).unwrap().direction, Direction::Rtl);
+        assert_eq!(
+            taffy.style(tree.children[0].node_id).unwrap().direction,
+            Direction::Rtl
+        );
+        assert_eq!(
+            taffy.style(tree.children[1].node_id).unwrap().direction,
+            Direction::Rtl
         );
     }
 

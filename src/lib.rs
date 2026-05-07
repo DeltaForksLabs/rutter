@@ -10,6 +10,7 @@
 pub(crate) mod accessibility;
 pub mod app;
 pub mod engine;
+pub mod i18n;
 pub mod input_state;
 pub mod layout;
 pub mod render;
@@ -19,6 +20,7 @@ pub mod widget;
 // ── Re-exports ergonômicos ───────────────────────────────────
 pub use app::AppLogic;
 pub use engine::runner::RutterRunner;
+pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};
 pub use theme::Theme;
 pub use widget::{AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget};
 

@@ -35,7 +35,9 @@ use crate::accessibility::{
     build_accessibility_update,
 };
 use crate::app::AppLogic;
-use crate::layout::{RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree};
+use crate::layout::{
+    RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
+};
 use crate::render::draw_widgets;
 use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
 use crate::render::text::TextBufferCache;
@@ -754,11 +756,12 @@ impl<A: AppLogic> RutterEngine<A> {
             (size.height as f32 / self.scale_factor) as u32,
         );
         let widget_tree = A::view(&mut self.app_state);
-        let root = sync_taffy_tree(
+        let root = sync_taffy_tree_with_direction(
             &mut self.taffy,
             &mut self.layout_tree,
             &widget_tree,
             &self.widget_states,
+            A::locale().direction(),
         );
         self.last_root_node = root;
         compute_layout(&mut self.taffy, root, logical, self.font_system.clone());

@@ -40,7 +40,7 @@ impl AppLogic for TextAreaDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0),
+            padding: Rect::length(32.0_f32),
             gap: Size {
                 width: LengthPercentage::length(0.0),
                 height: LengthPercentage::length(18.0),
@@ -113,7 +113,7 @@ impl AppLogic for TextAreaDemo {
                 },
                 Widget::Container {
                     style: Style {
-                        padding: Rect::length(16.0),
+                        padding: Rect::length(16.0_f32),
                         size: Size {
                             width: Dimension::length(560.0),
                             height: Dimension::auto(),

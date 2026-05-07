@@ -59,7 +59,7 @@ impl AppLogic for SearchBarDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0),
+            padding: Rect::length(32.0_f32),
             gap: Size {
                 width: LengthPercentage::length(0.0),
                 height: LengthPercentage::length(16.0),
@@ -160,7 +160,7 @@ impl AppLogic for SearchBarDemo {
             },
             Widget::Container {
                 style: Style {
-                    padding: Rect::length(16.0),
+                    padding: Rect::length(16.0_f32),
                     size: Size {
                         width: Dimension::length(560.0),
                         height: Dimension::auto(),
@@ -198,7 +198,7 @@ impl AppLogic for SearchBarDemo {
                     color: None,
                     size: 14.0,
                     style: Style {
-                        padding: Rect::length(8.0),
+                        padding: Rect::length(8.0_f32),
                         ..Default::default()
                     },
                 });
