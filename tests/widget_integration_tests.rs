@@ -156,6 +156,52 @@ fn button_content_stores_visual_child_and_accessible_label() {
     }
 }
 
+#[test]
+fn virtual_list_content_stores_widget_item_renderer() {
+    let item = |_: usize| Some(icon_widget());
+    let w = Widget::virtual_list_content(32.0, 8, &item, |_| Msg::Submit, Style::default());
+
+    if let Widget::VirtualListContent {
+        item_height,
+        item_count,
+        items,
+        ..
+    } = w
+    {
+        assert_eq!(item_height, 32.0);
+        assert_eq!(item_count, 8);
+        assert!(matches!(items(0), Some(Widget::Image { .. })));
+    }
+}
+
+#[test]
+fn virtual_grid_content_stores_widget_item_renderer() {
+    let item = |_: usize| Some(icon_widget());
+    let w = Widget::virtual_grid_content(3, 40.0, 9, &item, |_| Msg::Submit, Style::default());
+
+    if let Widget::VirtualGridContent {
+        columns,
+        item_height,
+        item_count,
+        items,
+        ..
+    } = w
+    {
+        assert_eq!(columns, 3);
+        assert_eq!(item_height, 40.0);
+        assert_eq!(item_count, 9);
+        assert!(matches!(items(0), Some(Widget::Image { .. })));
+    }
+}
+
+fn icon_widget<'a>() -> Widget<'a, Msg> {
+    Widget::Image {
+        data: &[],
+        style: Style::default(),
+        radius: 2.0,
+    }
+}
+
 // ── collect_input_ids ────────────────────────────────────────
 
 #[test]

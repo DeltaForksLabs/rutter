@@ -217,7 +217,9 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::Slider { .. }
         | Widget::Select { .. }
         | Widget::VirtualList { .. }
+        | Widget::VirtualListContent { .. }
         | Widget::VirtualGrid { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
+        Widget::VirtualGridContent { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
         Widget::TabBar { tabs, .. } => {
             for index in 0..tabs.len() {
                 if let Some(focus_id) = widget.tab_focus_id(path, index) {
@@ -394,6 +396,47 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.vlists.clear();
         self.vgrids.clear();
         self.toast_dismiss.clear();
+    }
+}
+
+fn sync_virtual_list_runtime<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+    widget: &Widget<Msg>,
+    layout: Option<&taffy::tree::Layout>,
+    path: &[usize],
+    runtime: VListRuntime<Msg>,
+) {
+    let resolved_id = widget.resolved_id(path).unwrap();
+    caches.vlists.insert(resolved_id, runtime);
+    if let Some(layout) = layout {
+        if let Some(s) = states
+            .get_mut(&resolved_id)
+            .and_then(|ws| ws.as_vlist_mut())
+        {
+            s.viewport_h = layout.size.height;
+        }
+    }
+}
+
+fn sync_virtual_grid_runtime<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+    widget: &Widget<Msg>,
+    layout: Option<&taffy::tree::Layout>,
+    path: &[usize],
+    runtime: VGridRuntime<Msg>,
+) {
+    let resolved_id = widget.resolved_id(path).unwrap();
+    caches.vgrids.insert(resolved_id, runtime);
+    if let Some(layout) = layout {
+        if let Some(s) = states
+            .get_mut(&resolved_id)
+            .and_then(|ws| ws.as_vgrid_mut())
+        {
+            s.viewport_w = layout.size.width;
+            s.viewport_h = layout.size.height;
+        }
     }
 }
 
@@ -1060,50 +1103,50 @@ impl<A: AppLogic> RutterEngine<A> {
                 item_count,
                 on_select,
                 ..
-            } => {
-                let resolved_id = widget.resolved_id(path).unwrap();
-                runtime_caches.vlists.insert(
-                    resolved_id,
-                    VListRuntime {
-                        on_select: *on_select,
-                        item_height: *item_height,
-                        item_count: *item_count,
-                    },
-                );
-                if let Some(layout) = layout {
-                    if let Some(ws) = widget_states.get_mut(&resolved_id) {
-                        if let Some(s) = ws.as_vlist_mut() {
-                            s.viewport_h = layout.size.height;
-                        }
-                    }
-                }
             }
+            | Widget::VirtualListContent {
+                item_height,
+                item_count,
+                on_select,
+                ..
+            } => sync_virtual_list_runtime(
+                runtime_caches,
+                widget_states,
+                widget,
+                layout,
+                path,
+                VListRuntime {
+                    on_select: *on_select,
+                    item_height: *item_height,
+                    item_count: *item_count,
+                },
+            ),
             Widget::VirtualGrid {
                 columns,
                 item_height,
                 item_count,
                 on_select,
                 ..
-            } => {
-                let resolved_id = widget.resolved_id(path).unwrap();
-                runtime_caches.vgrids.insert(
-                    resolved_id,
-                    VGridRuntime {
-                        on_select: *on_select,
-                        columns: *columns,
-                        item_height: *item_height,
-                        item_count: *item_count,
-                    },
-                );
-                if let Some(layout) = layout {
-                    if let Some(ws) = widget_states.get_mut(&resolved_id) {
-                        if let Some(s) = ws.as_vgrid_mut() {
-                            s.viewport_w = layout.size.width;
-                            s.viewport_h = layout.size.height;
-                        }
-                    }
-                }
             }
+            | Widget::VirtualGridContent {
+                columns,
+                item_height,
+                item_count,
+                on_select,
+                ..
+            } => sync_virtual_grid_runtime(
+                runtime_caches,
+                widget_states,
+                widget,
+                layout,
+                path,
+                VGridRuntime {
+                    on_select: *on_select,
+                    columns: *columns,
+                    item_height: *item_height,
+                    item_count: *item_count,
+                },
+            ),
             Widget::Popover {
                 anchor,
                 content,

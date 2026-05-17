@@ -877,6 +877,11 @@ fn hit_test_impl<Msg: Clone>(
             item_height,
             item_count,
             ..
+        }
+        | Widget::VirtualListContent {
+            item_height,
+            item_count,
+            ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let scroll_y = widget_states
@@ -896,6 +901,12 @@ fn hit_test_impl<Msg: Clone>(
             }
         }
         Widget::VirtualGrid {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridContent {
             columns,
             item_height,
             item_count,
@@ -1043,8 +1054,12 @@ fn collect_stateful_ids_impl<Msg>(
                 path.pop();
             }
         }
-        Widget::VirtualList { .. } => out.push((widget.resolved_id(path).unwrap(), "vlist")),
-        Widget::VirtualGrid { .. } => out.push((widget.resolved_id(path).unwrap(), "vgrid")),
+        Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "vlist"))
+        }
+        Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "vgrid"))
+        }
         Widget::Modal { child, .. } => {
             out.push((widget.resolved_id(path).unwrap(), "modal"));
             path.push(0);
@@ -1304,6 +1319,11 @@ fn find_vlist_props_impl<Msg>(
 ) -> Option<(f32, usize)> {
     match widget {
         Widget::VirtualList {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContent {
             item_height,
             item_count,
             ..
@@ -1654,9 +1674,10 @@ fn find_scroll_focus_impl<Msg>(
             path.pop();
             result.or(Some(widget.resolved_id(path).unwrap()))
         }
-        Widget::VirtualList { .. } | Widget::VirtualGrid { .. } => {
-            Some(widget.resolved_id(path).unwrap())
-        }
+        Widget::VirtualList { .. }
+        | Widget::VirtualListContent { .. }
+        | Widget::VirtualGrid { .. }
+        | Widget::VirtualGridContent { .. } => Some(widget.resolved_id(path).unwrap()),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
             for (i, child) in children.iter().enumerate().rev() {
@@ -1764,6 +1785,11 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             item_count,
             item_height,
             ..
+        }
+        | Widget::VirtualListContent {
+            item_count,
+            item_height,
+            ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let s = widget_states.get(&resolved_id)?.as_vlist()?;
@@ -1786,6 +1812,12 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             None
         }
         Widget::VirtualGrid {
+            item_count,
+            item_height,
+            columns,
+            ..
+        }
+        | Widget::VirtualGridContent {
             item_count,
             item_height,
             columns,

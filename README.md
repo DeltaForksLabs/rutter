@@ -264,7 +264,11 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `ContextMenu`
 - `Popover`
 - `VirtualList`
+- `VirtualListContent`
 - `VirtualGrid`
+- `VirtualGridContent`
+
+`VirtualListContent` and `VirtualGridContent` keep row and cell virtualization while allowing each visible item to render arbitrary widget content, including images, icons, and composed layouts.
 
 ## Rendering Backends
 

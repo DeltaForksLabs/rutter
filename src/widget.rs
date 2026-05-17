@@ -416,12 +416,29 @@ pub enum Widget<'a, Msg> {
         on_select: fn(usize) -> Msg,
         style: Style,
     },
+    VirtualListContent {
+        id: u64,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    },
     VirtualGrid {
         id: u64,
         columns: usize,
         item_height: f32,
         item_count: usize,
         items: &'a dyn Fn(usize) -> Option<String>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    },
+    VirtualGridContent {
+        id: u64,
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
         on_select: fn(usize) -> Msg,
         style: Style,
     },
@@ -772,6 +789,44 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a virtualized list whose visible rows are rendered from widgets.
+    ///
+    /// Example:
+    ///
+    /// ```rust
+    /// use rutter::Widget;
+    /// use taffy::prelude::Style;
+    ///
+    /// #[derive(Clone)]
+    /// enum Msg {
+    ///     Select(usize),
+    /// }
+    ///
+    /// let rows = |index| Some(Widget::Text {
+    ///     content: (if index == 0 { "Inbox" } else { "Archive" }).into(),
+    ///     style: Style::default(),
+    ///     color: None,
+    ///     size: 14.0,
+    /// });
+    /// let list = Widget::virtual_list_content(40.0, 2, &rows, Msg::Select, Style::default());
+    /// ```
+    pub fn virtual_list_content(
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    ) -> Self {
+        Self::VirtualListContent {
+            id: AUTO_ID,
+            item_height,
+            item_count,
+            items,
+            on_select,
+            style,
+        }
+    }
+
     pub fn virtual_grid(
         columns: usize,
         item_height: f32,
@@ -781,6 +836,46 @@ impl<'a, Msg> Widget<'a, Msg> {
         style: Style,
     ) -> Self {
         Self::VirtualGrid {
+            id: AUTO_ID,
+            columns,
+            item_height,
+            item_count,
+            items,
+            on_select,
+            style,
+        }
+    }
+
+    /// Creates a virtualized grid whose visible cells are rendered from widgets.
+    ///
+    /// Example:
+    ///
+    /// ```rust
+    /// use rutter::Widget;
+    /// use taffy::prelude::Style;
+    ///
+    /// #[derive(Clone)]
+    /// enum Msg {
+    ///     Open(usize),
+    /// }
+    ///
+    /// let cells = |index| Some(Widget::Text {
+    ///     content: (if index == 0 { "File" } else { "Folder" }).into(),
+    ///     style: Style::default(),
+    ///     color: None,
+    ///     size: 14.0,
+    /// });
+    /// let grid = Widget::virtual_grid_content(3, 48.0, 6, &cells, Msg::Open, Style::default());
+    /// ```
+    pub fn virtual_grid_content(
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    ) -> Self {
+        Self::VirtualGridContent {
             id: AUTO_ID,
             columns,
             item_height,
@@ -809,7 +904,9 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::ContextMenu { id: slot, .. }
             | Self::Popover { id: slot, .. }
             | Self::VirtualList { id: slot, .. }
-            | Self::VirtualGrid { id: slot, .. } => *slot = id,
+            | Self::VirtualListContent { id: slot, .. }
+            | Self::VirtualGrid { id: slot, .. }
+            | Self::VirtualGridContent { id: slot, .. } => *slot = id,
             _ => {}
         }
         self
@@ -851,7 +948,13 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::VirtualList { id, .. } => {
                 Some(resolve_widget_id(*id, WidgetIdTag::VirtualList, path))
             }
+            Self::VirtualListContent { id, .. } => {
+                Some(resolve_widget_id(*id, WidgetIdTag::VirtualList, path))
+            }
             Self::VirtualGrid { id, .. } => {
+                Some(resolve_widget_id(*id, WidgetIdTag::VirtualGrid, path))
+            }
+            Self::VirtualGridContent { id, .. } => {
                 Some(resolve_widget_id(*id, WidgetIdTag::VirtualGrid, path))
             }
             _ => None,
@@ -874,7 +977,9 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Accordion { .. }
             | Self::TabBar { .. }
             | Self::VirtualList { .. }
-            | Self::VirtualGrid { .. } => self.resolved_id(path),
+            | Self::VirtualListContent { .. }
+            | Self::VirtualGrid { .. }
+            | Self::VirtualGridContent { .. } => self.resolved_id(path),
             _ => None,
         }
     }

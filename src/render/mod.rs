@@ -10,7 +10,7 @@ pub mod image;
 pub mod pipeline;
 pub mod text;
 
-use std::{collections::HashMap, time::Instant};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 
 use cosmic_text::{Cursor, Edit, FontSystem, LayoutRun, SwashCache, Wrap};
 use skia_safe::{
@@ -25,7 +25,9 @@ use crate::engine::widget_state::{
     virtual_grid_cell_width, virtual_grid_row_count,
 };
 use crate::input_state::{InputWidgetState, TextSelection, cursor_x_in_run};
-use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP};
+use crate::layout::{
+    OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree, compute_layout,
+};
 use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
 use crate::render::image::decode_rutter_image;
 use crate::theme::Theme;
@@ -34,6 +36,7 @@ use crate::widget::{
     ContextMenuEntry, DialogAction, DialogPosition, InputState, Orientation, ToastKind,
     ToastPosition, Widget,
 };
+use winit::dpi::PhysicalSize;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
 
@@ -1307,6 +1310,41 @@ fn draw_widgets_impl<'w, Msg>(
                 theme,
             );
         }
+        Widget::VirtualListContent {
+            item_height,
+            item_count,
+            items,
+            ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let vstate = widget_states.get(&resolved_id).and_then(|s| s.as_vlist());
+            let scroll_y = vstate.map(|v| v.scroll_y).unwrap_or(0.0);
+            let selected = vstate.and_then(|v| v.selected_row);
+            let hovered = vstate.and_then(|v| v.hovered_row);
+            draw_virtual_list_content(
+                canvas,
+                item_height,
+                item_count,
+                items,
+                scroll_y,
+                selected,
+                hovered,
+                size,
+                local_mouse,
+                theme,
+                &mut VirtualItemDrawContext {
+                    fs,
+                    swash,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    scale,
+                },
+                path,
+            );
+        }
         Widget::VirtualGrid {
             columns,
             item_height,
@@ -1334,6 +1372,45 @@ fn draw_widgets_impl<'w, Msg>(
                 is_focused,
                 font_cache,
                 theme,
+            );
+        }
+        Widget::VirtualGridContent {
+            columns,
+            item_height,
+            item_count,
+            items,
+            ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let gstate = widget_states.get(&resolved_id).and_then(|s| s.as_vgrid());
+            let scroll_y = gstate.map(|g| g.scroll_y).unwrap_or(0.0);
+            let selected = gstate.and_then(|g| g.selected_item);
+            let hovered = gstate.and_then(|g| g.hovered_item);
+            draw_virtual_grid_content(
+                canvas,
+                columns,
+                item_height,
+                item_count,
+                items,
+                gstate,
+                scroll_y,
+                selected,
+                hovered,
+                size,
+                local_mouse,
+                is_focused,
+                theme,
+                &mut VirtualItemDrawContext {
+                    fs,
+                    swash,
+                    input_states,
+                    widget_states,
+                    font_cache,
+                    text_cache,
+                    cursor_visible,
+                    scale,
+                },
+                path,
             );
         }
     }
@@ -2309,6 +2386,107 @@ fn draw_virtual_list(
     }
 }
 
+struct VirtualItemDrawContext<'a> {
+    fs: &'a mut FontSystem,
+    swash: &'a mut SwashCache,
+    input_states: &'a HashMap<u64, InputWidgetState>,
+    widget_states: &'a HashMap<u64, WidgetState>,
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    text_cache: &'a mut TextBufferCache,
+    cursor_visible: bool,
+    scale: f32,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_virtual_list_content<'w, Msg>(
+    canvas: &Canvas,
+    item_height: &f32,
+    item_count: &usize,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    scroll_y: f32,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    size: (f32, f32),
+    mouse: Point,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    let ih = *item_height;
+    let count = *item_count;
+    draw_virtual_background(canvas, size, theme);
+    canvas.save();
+    canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
+    for i in visible_virtual_rows(scroll_y, ih, size.1, count) {
+        draw_virtual_list_content_row(
+            canvas, items, i, ih, scroll_y, selected, hovered, size, mouse, theme, ctx, path,
+        );
+    }
+    canvas.restore();
+    draw_list_scrollbar_if_needed(canvas, scroll_y, ih * count as f32, size, theme);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_virtual_list_content_row<'w, Msg>(
+    canvas: &Canvas,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    index: usize,
+    item_height: f32,
+    scroll_y: f32,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    size: (f32, f32),
+    mouse: Point,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    let y = index as f32 * item_height - scroll_y;
+    let rect = SkiaRect::from_xywh(0.0, y, size.0 - SCROLLBAR_W - 4.0, item_height);
+    let is_hovered =
+        hovered == Some(index) || SkiaRect::from_xywh(0.0, y, size.0, item_height).contains(mouse);
+    draw_virtual_item_highlight(canvas, rect, selected == Some(index), is_hovered, theme);
+    if let Some(item) = items(index) {
+        path.push(index);
+        draw_virtual_item_widget(
+            canvas,
+            &item,
+            (0.0, y),
+            rect_size(rect),
+            mouse,
+            theme,
+            ctx,
+            path,
+        );
+        path.pop();
+    }
+    draw_virtual_row_separator(canvas, y, item_height, size.0, theme);
+}
+
+fn visible_virtual_rows(
+    scroll_y: f32,
+    item_height: f32,
+    viewport_h: f32,
+    count: usize,
+) -> std::ops::Range<usize> {
+    let first = (scroll_y / item_height).floor() as usize;
+    let visible = (viewport_h / item_height).ceil() as usize + 1;
+    first..(first + visible).min(count)
+}
+
+fn draw_list_scrollbar_if_needed(
+    canvas: &Canvas,
+    scroll_y: f32,
+    total_h: f32,
+    size: (f32, f32),
+    theme: &Theme,
+) {
+    if total_h > size.1 {
+        let (ratio, thumb_y) = fallback_scrollbar_metrics(scroll_y, total_h, size.1);
+        draw_virtual_scrollbar(canvas, size, ratio, thumb_y, theme);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_virtual_grid(
     canvas: &Canvas,
@@ -2440,6 +2618,116 @@ fn draw_virtual_grid(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_virtual_grid_content<'w, Msg>(
+    canvas: &Canvas,
+    columns: &usize,
+    item_height: &f32,
+    item_count: &usize,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    state: Option<&VirtualGridState>,
+    scroll_y: f32,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    size: (f32, f32),
+    mouse: Point,
+    is_focused: bool,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    let columns = normalize_virtual_grid_columns(*columns);
+    let row_h = *item_height;
+    let count = *item_count;
+    let row_count = virtual_grid_row_count(count, columns);
+    draw_virtual_background(canvas, size, theme);
+    canvas.save();
+    canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
+    for row in visible_virtual_rows(scroll_y, row_h, size.1, row_count) {
+        draw_virtual_grid_content_row(
+            canvas, items, row, columns, row_h, count, scroll_y, selected, hovered, size, mouse,
+            is_focused, theme, ctx, path,
+        );
+    }
+    canvas.restore();
+    if let Some((ratio, thumb_y)) =
+        virtual_grid_scrollbar_metrics(state, scroll_y, row_h, count, columns, row_count, size.1)
+    {
+        draw_virtual_scrollbar(canvas, size, ratio, thumb_y, theme);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_virtual_grid_content_row<'w, Msg>(
+    canvas: &Canvas,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    row: usize,
+    columns: usize,
+    row_h: f32,
+    count: usize,
+    scroll_y: f32,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    size: (f32, f32),
+    mouse: Point,
+    is_focused: bool,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    let y = row as f32 * row_h - scroll_y;
+    for col in 0..columns {
+        let index = row * columns + col;
+        if index >= count {
+            break;
+        }
+        draw_virtual_grid_content_cell(
+            canvas, items, index, col, y, row_h, columns, selected, hovered, size, mouse,
+            is_focused, theme, ctx, path,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_virtual_grid_content_cell<'w, Msg>(
+    canvas: &Canvas,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    index: usize,
+    col: usize,
+    y: f32,
+    row_h: f32,
+    columns: usize,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    size: (f32, f32),
+    mouse: Point,
+    is_focused: bool,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    let rect = virtual_grid_cell_rect(col, y, row_h, size.0, columns);
+    let is_hovered = hovered == Some(index) || rect.contains(mouse);
+    draw_virtual_grid_cell_frame(canvas, rect, selected == Some(index), is_hovered, theme);
+    if is_focused && selected == Some(index) {
+        draw_focus_outline(canvas, inset_rect(rect, 1.0), theme.radius_sm, theme);
+    }
+    if let Some(item) = items(index) {
+        path.push(index);
+        draw_virtual_item_widget(
+            canvas,
+            &item,
+            (rect.left, rect.top),
+            rect_size(rect),
+            mouse,
+            theme,
+            ctx,
+            path,
+        );
+        path.pop();
+    }
+}
+
 fn virtual_grid_scrollbar_metrics(
     state: Option<&VirtualGridState>,
     scroll_y: f32,
@@ -2467,6 +2755,164 @@ fn fallback_scrollbar_metrics(scroll_y: f32, total_h: f32, viewport_h: f32) -> (
     let ratio = (viewport_h / total_h).clamp(0.0, 1.0);
     let thumb_h = (viewport_h * ratio).max(20.0);
     (ratio, (scroll_y / max_scroll) * (viewport_h - thumb_h))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_virtual_item_widget<'w, Msg>(
+    canvas: &Canvas,
+    item: &Widget<'w, Msg>,
+    origin: (f32, f32),
+    size: (f32, f32),
+    mouse: Point,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    let mut taffy = TaffyTree::new();
+    let fs_rc = Rc::new(RefCell::new(FontSystem::new()));
+    let root = build_taffy_tree(&mut taffy, item, fs_rc.clone(), ctx.widget_states);
+    compute_layout(&mut taffy, root, physical_size(size), fs_rc);
+    canvas.save();
+    canvas.translate(origin);
+    canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
+    draw_widgets_impl(
+        canvas,
+        &taffy,
+        root,
+        item,
+        ctx.fs,
+        ctx.swash,
+        Point::new(mouse.x - origin.0, mouse.y - origin.1),
+        None,
+        ctx.input_states,
+        ctx.widget_states,
+        ctx.font_cache,
+        ctx.text_cache,
+        ctx.cursor_visible,
+        theme,
+        ctx.scale,
+        path,
+    );
+    canvas.restore();
+}
+
+fn physical_size(size: (f32, f32)) -> PhysicalSize<u32> {
+    PhysicalSize::new(size.0.max(1.0).ceil() as u32, size.1.max(1.0).ceil() as u32)
+}
+
+fn draw_virtual_background(canvas: &Canvas, size: (f32, f32), theme: &Theme) {
+    let mut bg = Paint::default();
+    bg.set_color(theme.surface);
+    bg.set_anti_alias(true);
+    canvas.draw_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), &bg);
+}
+
+fn draw_virtual_item_highlight(
+    canvas: &Canvas,
+    rect: SkiaRect,
+    selected: bool,
+    hovered: bool,
+    theme: &Theme,
+) {
+    if !selected && !hovered {
+        return;
+    }
+    let mut paint = Paint::default();
+    paint.set_color(virtual_item_fill(selected, theme));
+    paint.set_anti_alias(true);
+    canvas.draw_rect(rect, &paint);
+}
+
+fn virtual_item_fill(selected: bool, theme: &Theme) -> SkiaColor {
+    if selected {
+        Theme::alpha(theme.primary, 40)
+    } else {
+        Theme::alpha(theme.on_surface, 12)
+    }
+}
+
+fn draw_virtual_row_separator(
+    canvas: &Canvas,
+    y: f32,
+    item_height: f32,
+    width: f32,
+    theme: &Theme,
+) {
+    let mut sep = Paint::default();
+    sep.set_color(Theme::alpha(theme.on_surface, 15));
+    sep.set_style(paint::Style::Stroke);
+    sep.set_stroke_width(0.5);
+    canvas.draw_line(
+        (0.0, y + item_height - 0.5),
+        (width, y + item_height - 0.5),
+        &sep,
+    );
+}
+
+fn virtual_grid_cell_rect(col: usize, y: f32, row_h: f32, width: f32, columns: usize) -> SkiaRect {
+    let cell_h = (row_h - VIRTUAL_GRID_GAP).max(12.0);
+    SkiaRect::from_xywh(
+        virtual_grid_cell_left(col, width, columns),
+        y + VIRTUAL_GRID_GAP * 0.5,
+        virtual_grid_cell_width(width, columns),
+        cell_h,
+    )
+}
+
+fn draw_virtual_grid_cell_frame(
+    canvas: &Canvas,
+    rect: SkiaRect,
+    selected: bool,
+    hovered: bool,
+    theme: &Theme,
+) {
+    let mut cell_bg = Paint::default();
+    cell_bg.set_color(virtual_grid_cell_fill(selected, hovered, theme));
+    cell_bg.set_anti_alias(true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(rect, theme.radius_sm, theme.radius_sm),
+        &cell_bg,
+    );
+    draw_virtual_grid_cell_border(canvas, rect, selected, theme);
+}
+
+fn draw_virtual_grid_cell_border(canvas: &Canvas, rect: SkiaRect, selected: bool, theme: &Theme) {
+    let mut border = Paint::default();
+    border.set_style(paint::Style::Stroke);
+    border.set_stroke_width(1.0);
+    border.set_color(if selected {
+        Theme::alpha(theme.primary, 130)
+    } else {
+        Theme::alpha(theme.on_surface, 22)
+    });
+    border.set_anti_alias(true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(rect, theme.radius_sm, theme.radius_sm),
+        &border,
+    );
+}
+
+fn virtual_grid_cell_fill(selected: bool, hovered: bool, theme: &Theme) -> SkiaColor {
+    if selected {
+        Theme::alpha(theme.primary, 36)
+    } else if hovered {
+        Theme::alpha(theme.on_surface, 12)
+    } else {
+        Theme::alpha(theme.on_surface, 6)
+    }
+}
+
+fn inset_rect(rect: SkiaRect, inset: f32) -> SkiaRect {
+    SkiaRect::from_xywh(
+        rect.left + inset,
+        rect.top + inset,
+        (rect.width() - inset * 2.0).max(0.0),
+        (rect.height() - inset * 2.0).max(0.0),
+    )
+}
+
+fn rect_size(rect: SkiaRect) -> (f32, f32) {
+    (rect.width(), rect.height())
 }
 
 fn draw_virtual_scrollbar(
@@ -2982,6 +3428,11 @@ fn draw_divider(canvas: &Canvas, orientation: Orientation, size: (f32, f32), the
 
 fn draw_image(canvas: &Canvas, data: &[u8], size: (f32, f32), radius: f32) {
     use skia_safe::Matrix;
+    if is_svg_image(data) {
+        draw_svg_image(canvas, data, size, radius);
+        return;
+    }
+
     let Ok(decoded) = decode_rutter_image(data) else {
         return;
     };
@@ -3012,6 +3463,47 @@ fn draw_image(canvas: &Canvas, data: &[u8], size: (f32, f32), radius: f32) {
     if radius > 0.0 {
         canvas.restore();
     }
+}
+
+fn draw_svg_image(canvas: &Canvas, data: &[u8], size: (f32, f32), radius: f32) {
+    use skia_safe::{FontMgr, Size, svg::Dom};
+    if size.0 <= 0.0 || size.1 <= 0.0 {
+        return;
+    }
+    let Ok(mut dom) = Dom::from_bytes(data, FontMgr::empty()) else {
+        return;
+    };
+
+    clip_image_radius(canvas, size, radius);
+    dom.set_container_size(Size::new(size.0, size.1));
+    dom.render(canvas);
+    if radius > 0.0 {
+        canvas.restore();
+    }
+}
+
+fn clip_image_radius(canvas: &Canvas, size: (f32, f32), radius: f32) {
+    if radius <= 0.0 {
+        return;
+    }
+    canvas.save();
+    canvas.clip_rrect(
+        RRect::new_rect_xy(
+            SkiaRect::from_xywh(0.0, 0.0, size.0, size.1),
+            radius,
+            radius,
+        ),
+        None,
+        true,
+    );
+}
+
+fn is_svg_image(data: &[u8]) -> bool {
+    let Ok(source) = std::str::from_utf8(data) else {
+        return false;
+    };
+    let trimmed = source.trim_start();
+    trimmed.starts_with("<svg") || trimmed.starts_with("<?xml") && trimmed.contains("<svg")
 }
 
 fn draw_select(
@@ -3223,13 +3715,32 @@ mod tests {
 
     use skia_safe::{Color, Point, Surface, surfaces};
 
-    use super::{draw_virtual_grid, virtual_grid_scrollbar_metrics};
+    use super::{draw_image, draw_virtual_grid, is_svg_image, virtual_grid_scrollbar_metrics};
     use crate::engine::widget_state::VirtualGridState;
     use crate::layout::SCROLLBAR_W;
     use crate::theme::Theme;
 
     fn grid_item(index: usize) -> Option<String> {
         Some(format!("Item {index}"))
+    }
+
+    #[test]
+    fn image_detection_accepts_svg_sources() {
+        assert!(is_svg_image(
+            br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#
+        ));
+        assert!(is_svg_image(
+            br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>"#
+        ));
+        assert!(!is_svg_image(&[0x89, b'P', b'N', b'G']));
+    }
+
+    #[test]
+    fn draw_image_renders_svg_data() {
+        let mut surface = surfaces::raster_n32_premul((12, 12)).unwrap();
+        draw_image(surface.canvas(), red_svg(), (12.0, 12.0), 0.0);
+
+        assert_ne!(pixel_at(&mut surface, 6, 6), Color::TRANSPARENT);
     }
 
     #[test]
@@ -3285,6 +3796,12 @@ mod tests {
 
     fn scrollbar_x() -> i32 {
         (120.0 - SCROLLBAR_W - 2.0 + SCROLLBAR_W / 2.0) as i32
+    }
+
+    fn red_svg() -> &'static [u8] {
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">
+<rect width="12" height="12" fill="#ff0000"/>
+</svg>"##
     }
 
     fn pixel_at(surface: &mut Surface, x: i32, y: i32) -> Color {

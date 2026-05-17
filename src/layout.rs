@@ -353,7 +353,11 @@ impl LayoutBlueprint {
             | Widget::SearchBar { style, .. }
             | Widget::Slider { style, .. }
             | Widget::VirtualList { style, .. }
+            | Widget::VirtualListContent { style, .. }
             | Widget::VirtualGrid { style, .. } => {
+                Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
+            }
+            Widget::VirtualGridContent { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
             Widget::Toast { .. } => Self::leaf(

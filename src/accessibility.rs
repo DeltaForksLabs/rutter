@@ -413,8 +413,8 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         Widget::ProgressBar { .. } | Widget::Spinner { .. } => Role::ProgressIndicator,
         Widget::TabBar { .. } => Role::TabList,
         Widget::Toast { visible: true, .. } => Role::Status,
-        Widget::VirtualList { .. } => Role::ListBox,
-        Widget::VirtualGrid { .. } => Role::Grid,
+        Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => Role::ListBox,
+        Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => Role::Grid,
         _ => return None,
     })
 }
@@ -532,8 +532,15 @@ fn apply_input_props<Msg>(
 
 fn apply_collection_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
     match widget {
-        Widget::VirtualList { item_count, .. } => node.set_size_of_set(*item_count),
+        Widget::VirtualList { item_count, .. } | Widget::VirtualListContent { item_count, .. } => {
+            node.set_size_of_set(*item_count)
+        }
         Widget::VirtualGrid {
+            item_count,
+            columns,
+            ..
+        }
+        | Widget::VirtualGridContent {
             item_count,
             columns,
             ..
@@ -575,8 +582,12 @@ fn set_widget_label<Msg>(
         Widget::ProgressBar { .. } => node.set_label("Progress"),
         Widget::Spinner { .. } => node.set_label("Loading"),
         Widget::Toast { message, .. } => node.set_label(*message),
-        Widget::VirtualList { .. } => node.set_label("Virtual list"),
-        Widget::VirtualGrid { .. } => node.set_label("Virtual grid"),
+        Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => {
+            node.set_label("Virtual list")
+        }
+        Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => {
+            node.set_label("Virtual grid")
+        }
         _ => set_input_value(node, widget, input_states, path),
     }
 }
