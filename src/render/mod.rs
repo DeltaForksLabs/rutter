@@ -3698,13 +3698,46 @@ fn rasterize_svg_image(data: &[u8], size: (f32, f32), scale: f32) -> Option<skia
         return None;
     };
     let image_size = scaled_image_size(size, scale);
+    let svg_size = svg_intrinsic_size(data).unwrap_or(size);
+    let fit_scale = svg_fit_scale(svg_size, size);
+    let offset = centered_svg_offset(svg_size, size, fit_scale);
     let mut surface = skia_safe::surfaces::raster_n32_premul(image_size)?;
     surface.canvas().clear(Color::TRANSPARENT);
     surface.canvas().scale((scale.max(1.0), scale.max(1.0)));
+    surface.canvas().translate(offset);
+    surface.canvas().scale((fit_scale, fit_scale));
 
-    dom.set_container_size(Size::new(size.0, size.1));
+    dom.set_container_size(Size::new(svg_size.0, svg_size.1));
     dom.render(surface.canvas());
     Some(surface.image_snapshot())
+}
+
+fn svg_intrinsic_size(data: &[u8]) -> Option<(f32, f32)> {
+    let source = std::str::from_utf8(data).ok()?;
+    let tag = source.split('>').next()?;
+    let width = svg_number_attr(tag, "width")?;
+    let height = svg_number_attr(tag, "height")?;
+    Some((width, height))
+}
+
+fn svg_number_attr(tag: &str, name: &str) -> Option<f32> {
+    let start = tag.find(&format!("{name}=\""))? + name.len() + 2;
+    let rest = tag.get(start..)?;
+    let value = rest.split('"').next()?;
+    value.parse::<f32>().ok().filter(|size| *size > 0.0)
+}
+
+fn svg_fit_scale(svg_size: (f32, f32), target_size: (f32, f32)) -> f32 {
+    let sx = target_size.0 / svg_size.0.max(1.0);
+    let sy = target_size.1 / svg_size.1.max(1.0);
+    sx.min(sy)
+}
+
+fn centered_svg_offset(svg_size: (f32, f32), target_size: (f32, f32), scale: f32) -> (f32, f32) {
+    (
+        (target_size.0 - svg_size.0 * scale) * 0.5,
+        (target_size.1 - svg_size.1 * scale) * 0.5,
+    )
 }
 
 fn draw_cached_svg_image(canvas: &Canvas, image: &skia_safe::Image, size: (f32, f32)) {
@@ -4017,6 +4050,22 @@ mod tests {
     }
 
     #[test]
+    fn draw_image_scales_intrinsic_svg_size_without_clipping() {
+        let mut surface = surfaces::raster_n32_premul((24, 24)).unwrap();
+        let mut image_cache = ImageRenderCache::default();
+        draw_image(
+            surface.canvas(),
+            large_red_svg(),
+            (24.0, 24.0),
+            0.0,
+            1.0,
+            &mut image_cache,
+        );
+
+        assert_ne!(pixel_at(&mut surface, 20, 20), Color::TRANSPARENT);
+    }
+
+    #[test]
     fn virtual_grid_scrollbar_metrics_use_grid_state_methods() {
         let state = grid_state();
         let metrics = virtual_grid_scrollbar_metrics(Some(&state), 0.0, 20.0, 60, 3, 20, 80.0);
@@ -4074,6 +4123,12 @@ mod tests {
     fn red_svg() -> &'static [u8] {
         br##"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">
 <rect width="12" height="12" fill="#ff0000"/>
+</svg>"##
+    }
+
+    fn large_red_svg() -> &'static [u8] {
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48">
+<rect width="48" height="48" fill="#ff0000"/>
 </svg>"##
     }
 
