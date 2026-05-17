@@ -21,8 +21,8 @@ use taffy::prelude::{NodeId, TaffyTree};
 
 use self::text::{TextBufferCache, TextShapeRequest, draw_text, get_cached_font};
 use crate::engine::widget_state::{
-    WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left, virtual_grid_cell_width,
-    virtual_grid_row_count,
+    VirtualGridState, WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left,
+    virtual_grid_cell_width, virtual_grid_row_count,
 };
 use crate::input_state::{InputWidgetState, TextSelection, cursor_x_in_run};
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP};
@@ -1325,6 +1325,7 @@ fn draw_widgets_impl<'w, Msg>(
                 item_height,
                 item_count,
                 items,
+                gstate,
                 scroll_y,
                 selected,
                 hovered,
@@ -2303,34 +2304,8 @@ fn draw_virtual_list(
 
     let total_h = ih * count as f32;
     if total_h > size.1 {
-        let max_s = (total_h - size.1).max(1.0);
-        let ratio = (size.1 / total_h).clamp(0.0, 1.0);
-        let thumb_h = (size.1 * ratio).max(20.0);
-        let thumb_y = (scroll_y / max_s) * (size.1 - thumb_h);
-        let sb_x = size.0 - SCROLLBAR_W - 2.0;
-
-        let mut st = Paint::default();
-        st.set_color(Theme::alpha(theme.on_surface, 20));
-        st.set_anti_alias(true);
-        canvas.draw_rrect(
-            RRect::new_rect_xy(
-                SkiaRect::from_xywh(sb_x, 0.0, SCROLLBAR_W, size.1),
-                4.0,
-                4.0,
-            ),
-            &st,
-        );
-        let mut sm = Paint::default();
-        sm.set_color(Theme::alpha(theme.on_surface, 70));
-        sm.set_anti_alias(true);
-        canvas.draw_rrect(
-            RRect::new_rect_xy(
-                SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h),
-                4.0,
-                4.0,
-            ),
-            &sm,
-        );
+        let (ratio, thumb_y) = fallback_scrollbar_metrics(scroll_y, total_h, size.1);
+        draw_virtual_scrollbar(canvas, size, ratio, thumb_y, theme);
     }
 }
 
@@ -2341,6 +2316,7 @@ fn draw_virtual_grid(
     item_height: &f32,
     item_count: &usize,
     items: &dyn Fn(usize) -> Option<String>,
+    state: Option<&VirtualGridState>,
     scroll_y: f32,
     selected: Option<usize>,
     hovered: Option<usize>,
@@ -2457,37 +2433,87 @@ fn draw_virtual_grid(
         );
     }
 
-    let total_h = row_h * row_count as f32;
-    if total_h > size.1 {
-        let max_s = (total_h - size.1).max(1.0);
-        let ratio = (size.1 / total_h).clamp(0.0, 1.0);
-        let thumb_h = (size.1 * ratio).max(20.0);
-        let thumb_y = (scroll_y / max_s) * (size.1 - thumb_h);
-        let sb_x = size.0 - SCROLLBAR_W - 2.0;
-
-        let mut st = Paint::default();
-        st.set_color(Theme::alpha(theme.on_surface, 20));
-        st.set_anti_alias(true);
-        canvas.draw_rrect(
-            RRect::new_rect_xy(
-                SkiaRect::from_xywh(sb_x, 0.0, SCROLLBAR_W, size.1),
-                4.0,
-                4.0,
-            ),
-            &st,
-        );
-        let mut sm = Paint::default();
-        sm.set_color(Theme::alpha(theme.on_surface, 70));
-        sm.set_anti_alias(true);
-        canvas.draw_rrect(
-            RRect::new_rect_xy(
-                SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h),
-                4.0,
-                4.0,
-            ),
-            &sm,
-        );
+    if let Some((ratio, thumb_y)) =
+        virtual_grid_scrollbar_metrics(state, scroll_y, row_h, count, columns, row_count, size.1)
+    {
+        draw_virtual_scrollbar(canvas, size, ratio, thumb_y, theme);
     }
+}
+
+fn virtual_grid_scrollbar_metrics(
+    state: Option<&VirtualGridState>,
+    scroll_y: f32,
+    item_height: f32,
+    item_count: usize,
+    columns: usize,
+    row_count: usize,
+    viewport_h: f32,
+) -> Option<(f32, f32)> {
+    let total_h = item_height * row_count as f32;
+    if total_h <= viewport_h {
+        return None;
+    }
+    Some(match state.filter(|s| s.viewport_h > 0.0) {
+        Some(s) => (
+            s.thumb_ratio(item_height, item_count, columns),
+            s.thumb_y(item_height, item_count, columns),
+        ),
+        None => fallback_scrollbar_metrics(scroll_y, total_h, viewport_h),
+    })
+}
+
+fn fallback_scrollbar_metrics(scroll_y: f32, total_h: f32, viewport_h: f32) -> (f32, f32) {
+    let max_scroll = (total_h - viewport_h).max(1.0);
+    let ratio = (viewport_h / total_h).clamp(0.0, 1.0);
+    let thumb_h = (viewport_h * ratio).max(20.0);
+    (ratio, (scroll_y / max_scroll) * (viewport_h - thumb_h))
+}
+
+fn draw_virtual_scrollbar(
+    canvas: &Canvas,
+    size: (f32, f32),
+    thumb_ratio: f32,
+    thumb_y: f32,
+    theme: &Theme,
+) {
+    let thumb_h = (size.1 * thumb_ratio).max(20.0);
+    let sb_x = size.0 - SCROLLBAR_W - 2.0;
+    draw_virtual_scrollbar_track(canvas, sb_x, size.1, theme);
+    draw_virtual_scrollbar_thumb(canvas, sb_x, thumb_y, thumb_h, theme);
+}
+
+fn draw_virtual_scrollbar_track(canvas: &Canvas, sb_x: f32, height: f32, theme: &Theme) {
+    let mut track = Paint::default();
+    track.set_color(Theme::alpha(theme.on_surface, 20));
+    track.set_anti_alias(true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(
+            SkiaRect::from_xywh(sb_x, 0.0, SCROLLBAR_W, height),
+            4.0,
+            4.0,
+        ),
+        &track,
+    );
+}
+
+fn draw_virtual_scrollbar_thumb(
+    canvas: &Canvas,
+    sb_x: f32,
+    thumb_y: f32,
+    thumb_h: f32,
+    theme: &Theme,
+) {
+    let mut thumb = Paint::default();
+    thumb.set_color(Theme::alpha(theme.on_surface, 70));
+    thumb.set_anti_alias(true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(
+            SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h),
+            4.0,
+            4.0,
+        ),
+        &thumb,
+    );
 }
 
 fn draw_text_button(
@@ -3189,4 +3215,79 @@ fn draw_scrollbar(
 
 fn rrect(size: (f32, f32), r: f32) -> RRect {
     RRect::new_rect_xy(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), r, r)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use skia_safe::{Color, Point, Surface, surfaces};
+
+    use super::{draw_virtual_grid, virtual_grid_scrollbar_metrics};
+    use crate::engine::widget_state::VirtualGridState;
+    use crate::layout::SCROLLBAR_W;
+    use crate::theme::Theme;
+
+    fn grid_item(index: usize) -> Option<String> {
+        Some(format!("Item {index}"))
+    }
+
+    #[test]
+    fn virtual_grid_scrollbar_metrics_use_grid_state_methods() {
+        let state = grid_state();
+        let metrics = virtual_grid_scrollbar_metrics(Some(&state), 0.0, 20.0, 60, 3, 20, 80.0);
+
+        assert_eq!(
+            metrics,
+            Some((state.thumb_ratio(20.0, 60, 3), state.thumb_y(20.0, 60, 3)))
+        );
+    }
+
+    #[test]
+    fn draw_virtual_grid_renders_scrollbar_thumb() {
+        let theme = Theme::dark();
+        let state = grid_state();
+        let mut surface = surfaces::raster_n32_premul((120, 80)).unwrap();
+        let mut font_cache = HashMap::new();
+
+        draw_virtual_grid(
+            surface.canvas(),
+            &3,
+            &20.0,
+            &60,
+            &grid_item,
+            Some(&state),
+            state.scroll_y,
+            None,
+            None,
+            (120.0, 80.0),
+            Point::new(-1.0, -1.0),
+            false,
+            &mut font_cache,
+            &theme,
+        );
+
+        assert_ne!(
+            pixel_at(&mut surface, scrollbar_x(), 18),
+            pixel_at(&mut surface, scrollbar_x(), 70)
+        );
+    }
+
+    fn grid_state() -> VirtualGridState {
+        VirtualGridState {
+            scroll_y: 40.0,
+            viewport_w: 120.0,
+            viewport_h: 80.0,
+            selected_item: None,
+            hovered_item: None,
+        }
+    }
+
+    fn scrollbar_x() -> i32 {
+        (120.0 - SCROLLBAR_W - 2.0 + SCROLLBAR_W / 2.0) as i32
+    }
+
+    fn pixel_at(surface: &mut Surface, x: i32, y: i32) -> Color {
+        surface.peek_pixels().unwrap().get_color((x, y))
+    }
 }
