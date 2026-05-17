@@ -26,7 +26,7 @@ impl Default for ImageDecodeLimits {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct RutterDecodedImage {
     pub image: Image,
     pub width: i32,

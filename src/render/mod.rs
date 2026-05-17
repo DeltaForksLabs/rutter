@@ -10,7 +10,13 @@ pub mod image;
 pub mod pipeline;
 pub mod text;
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    rc::Rc,
+    time::Instant,
+};
 
 use cosmic_text::{Cursor, Edit, FontSystem, LayoutRun, SwashCache, Wrap};
 use skia_safe::{
@@ -39,6 +45,86 @@ use crate::widget::{
 use winit::dpi::PhysicalSize;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
+const IMAGE_CACHE_MAX_ENTRIES: usize = 512;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct SvgImageCacheKey {
+    data_hash: u64,
+    width: u32,
+    height: u32,
+    scale_bits: u32,
+}
+
+pub struct ImageRenderCache {
+    raster_images: HashMap<u64, crate::render::image::RutterDecodedImage>,
+    svg_images: HashMap<SvgImageCacheKey, skia_safe::Image>,
+    layout_font_system: Rc<RefCell<FontSystem>>,
+}
+
+impl Default for ImageRenderCache {
+    fn default() -> Self {
+        Self {
+            raster_images: HashMap::new(),
+            svg_images: HashMap::new(),
+            layout_font_system: Rc::new(RefCell::new(FontSystem::new())),
+        }
+    }
+}
+
+impl ImageRenderCache {
+    /// Clears decoded image and rasterized SVG entries retained by the renderer.
+    ///
+    /// Example:
+    ///
+    /// ```rust
+    /// let mut cache = rutter::render::ImageRenderCache::default();
+    /// cache.clear();
+    /// ```
+    pub fn clear(&mut self) {
+        self.raster_images.clear();
+        self.svg_images.clear();
+    }
+
+    fn raster_image(&mut self, data: &[u8]) -> Option<crate::render::image::RutterDecodedImage> {
+        let key = stable_bytes_hash(data);
+        if let Some(decoded) = self.raster_images.get(&key) {
+            return Some(decoded.clone());
+        }
+        let decoded = decode_rutter_image(data).ok()?;
+        self.insert_raster_image(key, decoded.clone());
+        Some(decoded)
+    }
+
+    fn insert_raster_image(&mut self, key: u64, decoded: crate::render::image::RutterDecodedImage) {
+        clear_if_full(&mut self.raster_images);
+        self.raster_images.insert(key, decoded);
+    }
+
+    fn svg_image(&mut self, key: SvgImageCacheKey) -> Option<skia_safe::Image> {
+        self.svg_images.get(&key).cloned()
+    }
+
+    fn insert_svg_image(&mut self, key: SvgImageCacheKey, image: skia_safe::Image) {
+        clear_if_full(&mut self.svg_images);
+        self.svg_images.insert(key, image);
+    }
+
+    fn layout_font_system(&self) -> Rc<RefCell<FontSystem>> {
+        self.layout_font_system.clone()
+    }
+}
+
+fn clear_if_full<K, V>(cache: &mut HashMap<K, V>) {
+    if cache.len() >= IMAGE_CACHE_MAX_ENTRIES {
+        cache.clear();
+    }
+}
+
+fn stable_bytes_hash(data: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
+}
 
 #[derive(Clone, Copy)]
 struct ToastOverlay<'a> {
@@ -131,7 +217,48 @@ pub fn draw_widgets<'w, Msg>(
     theme: &Theme,
     scale: f32,
 ) {
+    let mut image_cache = ImageRenderCache::default();
+    draw_widgets_with_cache(
+        canvas,
+        taffy,
+        node,
+        widget,
+        fs,
+        swash,
+        mouse_pos,
+        focused_id,
+        input_states,
+        widget_states,
+        font_cache,
+        text_cache,
+        &mut image_cache,
+        cursor_visible,
+        theme,
+        scale,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_widgets_with_cache<'w, Msg>(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    node: NodeId,
+    widget: &Widget<'w, Msg>,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    mouse_pos: Point,
+    focused_id: Option<u64>,
+    input_states: &HashMap<u64, InputWidgetState>,
+    widget_states: &HashMap<u64, WidgetState>,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
+    image_cache: &mut ImageRenderCache,
+    cursor_visible: bool,
+    theme: &Theme,
+    scale: f32,
+) {
     let mut path = Vec::new();
+    let layout_fs = image_cache.layout_font_system();
     draw_widgets_impl(
         canvas,
         taffy,
@@ -145,6 +272,8 @@ pub fn draw_widgets<'w, Msg>(
         widget_states,
         font_cache,
         text_cache,
+        image_cache,
+        layout_fs.clone(),
         cursor_visible,
         theme,
         scale,
@@ -164,6 +293,8 @@ pub fn draw_widgets<'w, Msg>(
         widget_states,
         font_cache,
         text_cache,
+        image_cache,
+        layout_fs.clone(),
         cursor_visible,
         theme,
         scale,
@@ -265,6 +396,8 @@ fn draw_popover_overlays<'w, Msg>(
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
+    image_cache: &mut ImageRenderCache,
+    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -299,6 +432,8 @@ fn draw_popover_overlays<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -367,6 +502,8 @@ fn draw_popover_overlays<'w, Msg>(
                 widget_states,
                 font_cache,
                 text_cache,
+                image_cache,
+                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -385,6 +522,8 @@ fn draw_popover_overlays<'w, Msg>(
                 widget_states,
                 font_cache,
                 text_cache,
+                image_cache,
+                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -414,6 +553,8 @@ fn draw_popover_overlays<'w, Msg>(
                         widget_states,
                         font_cache,
                         text_cache,
+                        image_cache,
+                        layout_fs.clone(),
                         cursor_visible,
                         theme,
                         scale,
@@ -447,6 +588,8 @@ fn draw_popover_overlays<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -481,6 +624,8 @@ fn draw_popover_overlays<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -513,6 +658,8 @@ fn draw_popover_overlays<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -735,6 +882,8 @@ fn draw_widgets_impl<'w, Msg>(
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
+    image_cache: &mut ImageRenderCache,
+    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -768,6 +917,8 @@ fn draw_widgets_impl<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -803,6 +954,8 @@ fn draw_widgets_impl<'w, Msg>(
                 widget_states,
                 font_cache,
                 text_cache,
+                image_cache,
+                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -833,6 +986,8 @@ fn draw_widgets_impl<'w, Msg>(
                 widget_states,
                 font_cache,
                 text_cache,
+                image_cache,
+                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -860,6 +1015,8 @@ fn draw_widgets_impl<'w, Msg>(
                 widget_states,
                 font_cache,
                 text_cache,
+                image_cache,
+                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -888,6 +1045,8 @@ fn draw_widgets_impl<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -913,6 +1072,8 @@ fn draw_widgets_impl<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -968,6 +1129,8 @@ fn draw_widgets_impl<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -1113,7 +1276,9 @@ fn draw_widgets_impl<'w, Msg>(
                 .unwrap_or(0.0);
             draw_spinner(canvas, angle, size, theme);
         }
-        Widget::Image { data, radius, .. } => draw_image(canvas, data, size, *radius),
+        Widget::Image { data, radius, .. } => {
+            draw_image(canvas, data, size, *radius, scale, image_cache)
+        }
         Widget::Divider { orientation, .. } => draw_divider(canvas, *orientation, size, theme),
         Widget::Spacer { .. } => {}
         Widget::Text {
@@ -1211,6 +1376,8 @@ fn draw_widgets_impl<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -1244,6 +1411,8 @@ fn draw_widgets_impl<'w, Msg>(
                 widget_states,
                 font_cache,
                 text_cache,
+                image_cache,
+                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -1339,6 +1508,8 @@ fn draw_widgets_impl<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs: layout_fs.clone(),
                     cursor_visible,
                     scale,
                 },
@@ -1407,6 +1578,8 @@ fn draw_widgets_impl<'w, Msg>(
                     widget_states,
                     font_cache,
                     text_cache,
+                    image_cache,
+                    layout_fs: layout_fs.clone(),
                     cursor_visible,
                     scale,
                 },
@@ -1919,6 +2092,8 @@ fn draw_modal<Msg>(
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
+    image_cache: &mut ImageRenderCache,
+    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -1980,6 +2155,8 @@ fn draw_modal<Msg>(
         widget_states,
         font_cache,
         text_cache,
+        image_cache,
+        layout_fs.clone(),
         cursor_visible,
         theme,
         scale,
@@ -2393,6 +2570,8 @@ struct VirtualItemDrawContext<'a> {
     widget_states: &'a HashMap<u64, WidgetState>,
     font_cache: &'a mut HashMap<(String, u32), Font>,
     text_cache: &'a mut TextBufferCache,
+    image_cache: &'a mut ImageRenderCache,
+    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     scale: f32,
 }
@@ -2769,7 +2948,7 @@ fn draw_virtual_item_widget<'w, Msg>(
     path: &mut Vec<usize>,
 ) {
     let mut taffy = TaffyTree::new();
-    let fs_rc = Rc::new(RefCell::new(FontSystem::new()));
+    let fs_rc = ctx.layout_fs.clone();
     let root = build_taffy_tree(&mut taffy, item, fs_rc.clone(), ctx.widget_states);
     compute_layout(&mut taffy, root, physical_size(size), fs_rc);
     canvas.save();
@@ -2788,6 +2967,8 @@ fn draw_virtual_item_widget<'w, Msg>(
         ctx.widget_states,
         ctx.font_cache,
         ctx.text_cache,
+        ctx.image_cache,
+        ctx.layout_fs.clone(),
         ctx.cursor_visible,
         theme,
         ctx.scale,
@@ -3426,14 +3607,21 @@ fn draw_divider(canvas: &Canvas, orientation: Orientation, size: (f32, f32), the
     };
 }
 
-fn draw_image(canvas: &Canvas, data: &[u8], size: (f32, f32), radius: f32) {
+fn draw_image(
+    canvas: &Canvas,
+    data: &[u8],
+    size: (f32, f32),
+    radius: f32,
+    scale: f32,
+    cache: &mut ImageRenderCache,
+) {
     use skia_safe::Matrix;
     if is_svg_image(data) {
-        draw_svg_image(canvas, data, size, radius);
+        draw_svg_image(canvas, data, size, radius, scale, cache);
         return;
     }
 
-    let Ok(decoded) = decode_rutter_image(data) else {
+    let Some(decoded) = cache.raster_image(data) else {
         return;
     };
 
@@ -3465,20 +3653,83 @@ fn draw_image(canvas: &Canvas, data: &[u8], size: (f32, f32), radius: f32) {
     }
 }
 
-fn draw_svg_image(canvas: &Canvas, data: &[u8], size: (f32, f32), radius: f32) {
-    use skia_safe::{FontMgr, Size, svg::Dom};
+fn draw_svg_image(
+    canvas: &Canvas,
+    data: &[u8],
+    size: (f32, f32),
+    radius: f32,
+    scale: f32,
+    cache: &mut ImageRenderCache,
+) {
     if size.0 <= 0.0 || size.1 <= 0.0 {
         return;
     }
-    let Ok(mut dom) = Dom::from_bytes(data, FontMgr::empty()) else {
+    let key = svg_cache_key(data, size, scale);
+    let Some(image) = cached_svg_image(data, size, scale, key, cache) else {
         return;
     };
 
     clip_image_radius(canvas, size, radius);
-    dom.set_container_size(Size::new(size.0, size.1));
-    dom.render(canvas);
+    draw_cached_svg_image(canvas, &image, size);
     if radius > 0.0 {
         canvas.restore();
+    }
+}
+
+fn cached_svg_image(
+    data: &[u8],
+    size: (f32, f32),
+    scale: f32,
+    key: SvgImageCacheKey,
+    cache: &mut ImageRenderCache,
+) -> Option<skia_safe::Image> {
+    if let Some(image) = cache.svg_image(key) {
+        return Some(image);
+    }
+    let image = rasterize_svg_image(data, size, scale)?;
+    cache.insert_svg_image(key, image.clone());
+    Some(image)
+}
+
+fn rasterize_svg_image(data: &[u8], size: (f32, f32), scale: f32) -> Option<skia_safe::Image> {
+    use skia_safe::{Color, FontMgr, Size, svg::Dom};
+
+    let Ok(mut dom) = Dom::from_bytes(data, FontMgr::empty()) else {
+        return None;
+    };
+    let image_size = scaled_image_size(size, scale);
+    let mut surface = skia_safe::surfaces::raster_n32_premul(image_size)?;
+    surface.canvas().clear(Color::TRANSPARENT);
+    surface.canvas().scale((scale.max(1.0), scale.max(1.0)));
+
+    dom.set_container_size(Size::new(size.0, size.1));
+    dom.render(surface.canvas());
+    Some(surface.image_snapshot())
+}
+
+fn draw_cached_svg_image(canvas: &Canvas, image: &skia_safe::Image, size: (f32, f32)) {
+    let sx = size.0 / image.width().max(1) as f32;
+    let sy = size.1 / image.height().max(1) as f32;
+    canvas.save();
+    canvas.scale((sx, sy));
+    canvas.draw_image(image, (0.0_f32, 0.0_f32), Some(&Paint::default()));
+    canvas.restore();
+}
+
+fn scaled_image_size(size: (f32, f32), scale: f32) -> (i32, i32) {
+    let scale = scale.max(1.0);
+    (
+        (size.0 * scale).ceil().max(1.0) as i32,
+        (size.1 * scale).ceil().max(1.0) as i32,
+    )
+}
+
+fn svg_cache_key(data: &[u8], size: (f32, f32), scale: f32) -> SvgImageCacheKey {
+    SvgImageCacheKey {
+        data_hash: stable_bytes_hash(data),
+        width: size.0.ceil().max(1.0) as u32,
+        height: size.1.ceil().max(1.0) as u32,
+        scale_bits: scale.max(1.0).to_bits(),
     }
 }
 
@@ -3715,7 +3966,10 @@ mod tests {
 
     use skia_safe::{Color, Point, Surface, surfaces};
 
-    use super::{draw_image, draw_virtual_grid, is_svg_image, virtual_grid_scrollbar_metrics};
+    use super::{
+        ImageRenderCache, draw_image, draw_virtual_grid, is_svg_image,
+        virtual_grid_scrollbar_metrics,
+    };
     use crate::engine::widget_state::VirtualGridState;
     use crate::layout::SCROLLBAR_W;
     use crate::theme::Theme;
@@ -3738,9 +3992,28 @@ mod tests {
     #[test]
     fn draw_image_renders_svg_data() {
         let mut surface = surfaces::raster_n32_premul((12, 12)).unwrap();
-        draw_image(surface.canvas(), red_svg(), (12.0, 12.0), 0.0);
+        let mut image_cache = ImageRenderCache::default();
+        draw_image(
+            surface.canvas(),
+            red_svg(),
+            (12.0, 12.0),
+            0.0,
+            1.0,
+            &mut image_cache,
+        );
 
         assert_ne!(pixel_at(&mut surface, 6, 6), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn draw_image_reuses_svg_cache_entry() {
+        let mut surface = surfaces::raster_n32_premul((12, 12)).unwrap();
+        let mut image_cache = ImageRenderCache::default();
+
+        draw_test_svg(&mut surface, &mut image_cache);
+        draw_test_svg(&mut surface, &mut image_cache);
+
+        assert_eq!(image_cache.svg_images.len(), 1);
     }
 
     #[test]
@@ -3802,6 +4075,17 @@ mod tests {
         br##"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">
 <rect width="12" height="12" fill="#ff0000"/>
 </svg>"##
+    }
+
+    fn draw_test_svg(surface: &mut Surface, image_cache: &mut ImageRenderCache) {
+        draw_image(
+            surface.canvas(),
+            red_svg(),
+            (12.0, 12.0),
+            0.0,
+            1.0,
+            image_cache,
+        );
     }
 
     fn pixel_at(surface: &mut Surface, x: i32, y: i32) -> Color {

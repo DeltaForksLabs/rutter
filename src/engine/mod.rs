@@ -38,9 +38,9 @@ use crate::app::AppLogic;
 use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
 };
-use crate::render::draw_widgets;
 use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
 use crate::render::text::TextBufferCache;
+use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::widget::{DialogAction, Widget};
 
 #[derive(Debug, Clone, Copy)]
@@ -448,6 +448,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub swash_cache: SwashCache,
     pub font_cache: HashMap<(String, u32), Font>,
     pub text_cache: TextBufferCache,
+    pub image_cache: ImageRenderCache,
     pub taffy: TaffyTree<RutterContext>,
     layout_tree: SyncedLayoutTree,
     runtime_caches: WidgetRuntimeCaches<A::Message>,
@@ -483,6 +484,7 @@ impl<A: AppLogic> RutterEngine<A> {
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
             text_cache: TextBufferCache::default(),
+            image_cache: ImageRenderCache::default(),
             layout_tree: SyncedLayoutTree::placeholder(root),
             runtime_caches: WidgetRuntimeCaches::default(),
             taffy,
@@ -1364,7 +1366,7 @@ impl<A: AppLogic> RutterEngine<A> {
             canvas.reset_matrix();
             canvas.scale((self.scale_factor, self.scale_factor));
 
-            draw_widgets(
+            draw_widgets_with_cache(
                 canvas,
                 &self.taffy,
                 self.last_root_node,
@@ -1377,6 +1379,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 &self.widget_states,
                 &mut self.font_cache,
                 &mut self.text_cache,
+                &mut self.image_cache,
                 self.cursor_blink.is_visible(),
                 &A::theme(),
                 self.scale_factor,
