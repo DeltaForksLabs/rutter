@@ -604,6 +604,16 @@ fn set_input_value<Msg>(
     input_states: &HashMap<u64, InputWidgetState>,
     path: &[usize],
 ) {
+    if matches!(
+        widget,
+        Widget::TextInput {
+            is_password: true,
+            ..
+        }
+    ) {
+        return;
+    }
+
     let Some(id) = widget.resolved_id(path) else {
         return;
     };
@@ -672,9 +682,11 @@ mod tests {
         }
     }
 
-    fn build_update(widget: &Widget<'_, ()>) -> TreeUpdate {
+    fn build_update_with_inputs(
+        widget: &Widget<'_, ()>,
+        inputs: &HashMap<u64, InputWidgetState>,
+    ) -> TreeUpdate {
         let states = HashMap::new();
-        let inputs = HashMap::new();
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, widget, fs(), &states);
         compute_layout(&mut taffy, root, PhysicalSize::new(300, 120), fs());
@@ -683,10 +695,14 @@ mod tests {
             widget,
             root,
             AccessibilityInputs {
-                input_states: &inputs,
+                input_states: inputs,
                 focused_widget_id: None,
             },
         )
+    }
+
+    fn build_update(widget: &Widget<'_, ()>) -> TreeUpdate {
+        build_update_with_inputs(widget, &HashMap::new())
     }
 
     fn node_for(update: &TreeUpdate, role: Role) -> &Node {
@@ -767,5 +783,37 @@ mod tests {
         );
 
         assert_eq!(update.focus, access_node_id(focus_id));
+    }
+
+    #[test]
+    fn accessibility_update_omits_password_value() {
+        const INPUT_ID: u64 = 42;
+        const PASSWORD: &str = "correct horse battery staple";
+        let widget = Widget::TextInput {
+            on_change: |_| (),
+            on_submit: None,
+            style: base_style(180.0, 40.0),
+            id: INPUT_ID,
+            label: "Password",
+            placeholder: "Enter password",
+            state: crate::widget::InputState::Idle,
+            error_msg: None,
+            is_password: true,
+        };
+        let mut font_system = FontSystem::new();
+        let mut input = InputWidgetState::new(&mut font_system);
+        input.set_sensitive(true);
+        input.set_text(&mut font_system, PASSWORD);
+
+        let update = build_update_with_inputs(&widget, &HashMap::from([(INPUT_ID, input)]));
+        let password_input = node_for(&update, Role::PasswordInput);
+
+        assert_eq!(password_input.role(), Role::PasswordInput);
+        assert_eq!(password_input.value(), None);
+        assert!(update.nodes.iter().all(|(_, node)| {
+            node.value()
+                .map(|value| !value.contains(PASSWORD))
+                .unwrap_or(true)
+        }));
     }
 }
