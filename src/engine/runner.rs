@@ -18,14 +18,17 @@ use winit::{
 };
 use zeroize::Zeroize;
 
-use super::RutterEngine;
+use super::run_error::RutterRunError;
+use super::{InputRuntime, RutterEngine, validate_runtime_reconstruction};
 use crate::app::AppLogic;
 use crate::engine::widget_state::WidgetState;
+use crate::input_state::InputWidgetState;
 use crate::render::hit_test::{
     ContextMenuOverlayHit, HitResult, PopoverOverlayHit, find_context_menu_target,
     find_scroll_focus, find_scrollbar_drag_hit, hit_test, hit_test_context_menu_overlay,
     hit_test_popover_overlay,
 };
+use crate::widget_id::WidgetIdError;
 
 fn is_bidi_override_char(ch: char) -> bool {
     matches!(
@@ -155,6 +158,14 @@ fn collect_toast_runtime_state(widget_states: &HashMap<u64, WidgetState>) -> (Ve
     (expired_toasts, has_active_timed_toasts)
 }
 
+fn input_copy_is_blocked<Msg: Clone>(
+    runtime: Option<&InputRuntime<Msg>>,
+    state: Option<&InputWidgetState>,
+) -> bool {
+    runtime.is_some_and(|input| input.is_password)
+        || state.is_some_and(InputWidgetState::is_sensitive)
+}
+
 pub fn snap_to_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
     if step <= 0.0 {
         return value.clamp(min, max);
@@ -182,11 +193,28 @@ pub struct RutterRunner<A: AppLogic> {
     last_click_time: std::time::Instant,
     last_click_pos: Point,
     focused_input_rect: Option<SkiaRect>,
+    fatal_widget_id_error: Option<WidgetIdError>,
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    /// Runs the application and reports startup failures to standard error.
+    ///
+    /// Use [`Self::try_run`] when the caller needs to inspect failures.
     pub fn run() {
-        let el = EventLoop::new().unwrap();
+        Self::try_run().unwrap_or_else(|error| panic!("Rutter application failed: {error}"));
+    }
+
+    /// Runs the application and returns controlled event-loop or widget-ID failures.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use rutter::{AppLogic, RutterRunner};
+    /// # fn launch<A: AppLogic + 'static>() {
+    /// RutterRunner::<A>::try_run().expect("Rutter application failed");
+    /// # }
+    /// ```
+    pub fn try_run() -> Result<(), RutterRunError> {
+        let el = EventLoop::new().map_err(RutterRunError::from)?;
         el.set_control_flow(ControlFlow::Wait);
         let mut r = Self {
             engine: RutterEngine::new(),
@@ -196,8 +224,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             last_click_time: std::time::Instant::now(),
             last_click_pos: Point::new(0.0, 0.0),
             focused_input_rect: None,
+            fatal_widget_id_error: None,
         };
-        el.run_app(&mut r).unwrap();
+        let event_result = el.run_app(&mut r);
+        if let Some(error) = r.fatal_widget_id_error {
+            return Err(RutterRunError::WidgetId(error));
+        }
+        event_result.map_err(RutterRunError::from)
     }
 }
 
@@ -207,6 +240,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
     }
 
     fn new_events(&mut self, el: &ActiveEventLoop, _: StartCause) {
+        if self.fatal_widget_id_error.is_some() {
+            el.exit();
+            return;
+        }
         self.engine.maybe_snapshot();
 
         let (expired_toasts, has_active_timed_toasts) =
@@ -258,6 +295,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        if self.fatal_widget_id_error.is_some() {
+            el.exit();
+            return;
+        }
         self.engine.process_accessibility_event(&event);
         match event {
             WindowEvent::CloseRequested => el.exit(),
@@ -351,7 +392,14 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 self.last_click_pos = self.cursor_pos;
 
                 let size = self.engine.window.as_ref().unwrap().inner_size();
-                self.engine.ensure_layout(size);
+                if let Err(error) = self.engine.try_ensure_widget_states() {
+                    self.terminate_for_widget_id_error(el, error);
+                    return;
+                }
+                if let Err(error) = self.engine.try_ensure_layout(size) {
+                    self.terminate_for_widget_id_error(el, error);
+                    return;
+                }
 
                 let cursor = Point::new(
                     self.cursor_pos.x / self.engine.scale_factor,
@@ -371,6 +419,14 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     mut hit,
                 ) = {
                     let wt = A::view(&mut self.engine.app_state);
+                    if let Err(error) = validate_runtime_reconstruction(
+                        self.engine.widget_id_snapshot.as_ref(),
+                        &wt,
+                    ) {
+                        drop(wt);
+                        self.terminate_for_widget_id_error(el, error);
+                        return;
+                    }
                     let context_menu_overlay_hit = if button == MouseButton::Left {
                         hit_test_context_menu_overlay(
                             &wt,
@@ -805,13 +861,28 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.handle_key(&event.logical_key);
                 }
             }
-            WindowEvent::RedrawRequested => self.engine.redraw(self.cursor_pos),
+            WindowEvent::RedrawRequested => {
+                if let Err(error) = self.engine.try_redraw(self.cursor_pos) {
+                    self.terminate_for_widget_id_error(el, error);
+                }
+            }
             _ => {}
         }
     }
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    fn terminate_for_widget_id_error(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        error: WidgetIdError,
+    ) {
+        if self.fatal_widget_id_error.is_none() {
+            self.fatal_widget_id_error = Some(error);
+        }
+        event_loop.exit();
+    }
+
     fn handle_text_commit(&mut self, event: &KeyEvent) -> bool {
         if self.engine.focused_input_id().is_none() || self.engine.modifiers.state().control_key() {
             return false;
@@ -1692,17 +1763,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
     fn do_copy(&mut self) {
         if let Some(fid) = self.engine.focused_input_id() {
-            if self
-                .engine
-                .runtime_caches
-                .inputs
-                .get(&fid)
-                .is_some_and(|input| input.is_password)
-            {
+            let runtime = self.engine.runtime_caches.inputs.get(&fid);
+            let state = self.engine.input_states.get(&fid);
+            if input_copy_is_blocked(runtime, state) {
                 self.redraw();
                 return;
             }
-            if let Some(s) = self.engine.input_states.get(&fid) {
+            if let Some(s) = state {
                 let text_to_copy = s
                     .selection
                     .filter(|sel| !sel.is_empty())
@@ -1902,8 +1969,11 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::{collect_toast_runtime_state, sanitize_clipboard_text};
+    use cosmic_text::FontSystem;
+
+    use super::{collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text};
     use crate::engine::widget_state::{ToastState, WidgetState};
+    use crate::input_state::InputWidgetState;
 
     #[test]
     fn sanitize_clipboard_text_strips_controls_and_ansi_sequences() {
@@ -1922,6 +1992,15 @@ mod tests {
         let raw = "a\r\nb\nc\td";
         assert_eq!(sanitize_clipboard_text(raw, true), "a\nb\nc d");
         assert_eq!(sanitize_clipboard_text(raw, false), "a b c d");
+    }
+
+    #[test]
+    fn sensitive_state_blocks_copy_without_password_runtime_metadata() {
+        let mut font_system = FontSystem::new();
+        let mut state = InputWidgetState::new(&mut font_system);
+        state.set_sensitive(true);
+
+        assert!(input_copy_is_blocked::<()>(None, Some(&state)));
     }
 
     #[test]

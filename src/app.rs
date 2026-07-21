@@ -59,7 +59,10 @@ pub trait AppLogic {
     fn new(font_system: &mut FontSystem) -> Self::State;
 
     /// Produz a árvore de widgets a partir do estado atual.
-    /// Chamado a cada frame quando `layout_dirty = true`.
+    ///
+    /// O runtime pode chamar este método várias vezes no mesmo ciclo para estado,
+    /// layout, interação e desenho. A implementação deve ser determinística e não
+    /// deve produzir efeitos colaterais.
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message>;
 
     /// Processa uma mensagem e muta o estado.

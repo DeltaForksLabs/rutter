@@ -1,6 +1,6 @@
 [package]
 name    = "rutter"
-version = "0.13.3"
+version = "0.13.4"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "High-performance Rust UI framework featuring Skia rendering (Vulkan/OpenGL), Taffy flexbox layouts, and advanced typography."
@@ -48,7 +48,7 @@ opt-level = 1
 debug     = true
 
 [profile.release]
-opt-level     = "s"       # Otimiza para tamanho binário
+opt-level     = 3
 lto           = true      # Link-Time Optimization (elimina código morto entre crates)
 codegen-units = 1         # Uma única unidade: permite otimizações globais
 panic         = "abort"   # Sem overhead de unwinding — adequado para binário de sistema

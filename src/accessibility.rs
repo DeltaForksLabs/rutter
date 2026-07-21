@@ -13,10 +13,9 @@ use taffy::prelude::{NodeId as TaffyNodeId, TaffyTree};
 use crate::input_state::InputWidgetState;
 use crate::layout::RutterContext;
 use crate::widget::{DialogAction, Widget};
+use crate::widget_id::resolve_accessibility_path_id;
 
-const ROOT_ACCESSIBILITY_ID: u64 = 1;
-const PATH_HASH_OFFSET: u64 = 0x6a09e667f3bcc909;
-const PATH_HASH_PRIME: u64 = 0x100000001b3;
+const ROOT_ACCESSIBILITY_ID: u64 = 0;
 
 #[derive(Debug, Default)]
 pub(crate) struct LazyActivationHandler;
@@ -361,7 +360,7 @@ impl LayoutFrame {
 }
 
 fn access_node_id(raw_id: u64) -> NodeId {
-    NodeId(raw_id.wrapping_mul(2).wrapping_add(2))
+    NodeId(raw_id)
 }
 
 fn rect_from_layout(origin: Point, width: f32, height: f32) -> Rect {
@@ -423,17 +422,8 @@ fn leaf_access_id<Msg>(widget: &Widget<Msg>, path: &[usize]) -> Option<NodeId> {
     let raw_id = widget
         .keyboard_focus_id(path)
         .or_else(|| widget.resolved_id(path))
-        .unwrap_or_else(|| path_access_id(path, 31));
+        .unwrap_or_else(|| resolve_accessibility_path_id(path));
     Some(access_node_id(raw_id))
-}
-
-fn path_access_id(path: &[usize], tag: u64) -> u64 {
-    let mut hash = PATH_HASH_OFFSET ^ tag;
-    for &segment in path {
-        hash = hash.wrapping_mul(PATH_HASH_PRIME);
-        hash ^= (segment as u64).wrapping_add(1);
-    }
-    hash
 }
 
 fn apply_leaf_props<Msg>(
@@ -815,5 +805,14 @@ mod tests {
                 .map(|value| !value.contains(PASSWORD))
                 .unwrap_or(true)
         }));
+    }
+
+    #[test]
+    fn accessibility_ids_preserve_manual_and_automatic_namespaces() {
+        let manual_id = 42;
+        let automatic_id = crate::widget_id::AUTOMATIC_ID_NAMESPACE_BIT | manual_id;
+
+        assert_ne!(access_node_id(manual_id), access_node_id(automatic_id));
+        assert_ne!(access_node_id(manual_id), NodeId(ROOT_ACCESSIBILITY_ID));
     }
 }

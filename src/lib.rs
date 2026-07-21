@@ -16,13 +16,18 @@ pub mod layout;
 pub mod render;
 pub mod theme;
 pub mod widget;
+mod widget_id;
+mod widget_id_error;
+mod widget_structure;
 
 // ── Re-exports ergonômicos ───────────────────────────────────
 pub use app::AppLogic;
+pub use engine::run_error::RutterRunError;
 pub use engine::runner::RutterRunner;
 pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};
 pub use theme::Theme;
 pub use widget::{AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget};
+pub use widget_id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
 
 // ── Re-exports de dependências públicas ──────────────────────
 pub use arboard;

@@ -1504,8 +1504,6 @@ fn draw_widgets_impl<'w, Msg>(
                 &mut VirtualItemDrawContext {
                     fs,
                     swash,
-                    input_states,
-                    widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -1574,8 +1572,6 @@ fn draw_widgets_impl<'w, Msg>(
                 &mut VirtualItemDrawContext {
                     fs,
                     swash,
-                    input_states,
-                    widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -2566,8 +2562,6 @@ fn draw_virtual_list(
 struct VirtualItemDrawContext<'a> {
     fs: &'a mut FontSystem,
     swash: &'a mut SwashCache,
-    input_states: &'a HashMap<u64, InputWidgetState>,
-    widget_states: &'a HashMap<u64, WidgetState>,
     font_cache: &'a mut HashMap<(String, u32), Font>,
     text_cache: &'a mut TextBufferCache,
     image_cache: &'a mut ImageRenderCache,
@@ -2949,7 +2943,10 @@ fn draw_virtual_item_widget<'w, Msg>(
 ) {
     let mut taffy = TaffyTree::new();
     let fs_rc = ctx.layout_fs.clone();
-    let root = build_taffy_tree(&mut taffy, item, fs_rc.clone(), ctx.widget_states);
+    // Virtual item widgets are visual-only, so global state must not alias IDs materialized on demand.
+    let isolated_input_states = HashMap::new();
+    let isolated_widget_states = HashMap::new();
+    let root = build_taffy_tree(&mut taffy, item, fs_rc.clone(), &isolated_widget_states);
     compute_layout(&mut taffy, root, physical_size(size), fs_rc);
     canvas.save();
     canvas.translate(origin);
@@ -2963,8 +2960,8 @@ fn draw_virtual_item_widget<'w, Msg>(
         ctx.swash,
         Point::new(mouse.x - origin.0, mouse.y - origin.1),
         None,
-        ctx.input_states,
-        ctx.widget_states,
+        &isolated_input_states,
+        &isolated_widget_states,
         ctx.font_cache,
         ctx.text_cache,
         ctx.image_cache,

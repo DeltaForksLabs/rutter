@@ -207,11 +207,16 @@ impl InputWidgetState {
     }
 
     pub(crate) fn set_sensitive(&mut self, sensitive: bool) {
-        if self.sensitive == sensitive {
+        // A live buffer must be removed before losing sensitivity so stale secrets never become copyable.
+        if self.sensitive || !sensitive {
             return;
         }
-        self.sensitive = sensitive;
-        self.undo.set_sensitive(sensitive);
+        self.sensitive = true;
+        self.undo.set_sensitive(true);
+    }
+
+    pub(crate) fn is_sensitive(&self) -> bool {
+        self.sensitive
     }
 
     pub fn text(&self) -> String {
@@ -613,6 +618,9 @@ mod tests {
 
         assert!(!state.undo.can_undo());
         assert_eq!(state.undo.current(), None);
+        assert!(state.is_sensitive());
+        state.set_sensitive(false);
+        assert!(state.is_sensitive());
     }
 
     #[test]

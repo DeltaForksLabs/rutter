@@ -7,6 +7,7 @@
 
 pub mod cursor;
 pub mod gpu;
+pub mod run_error;
 pub mod runner;
 pub mod widget_state;
 
@@ -42,6 +43,7 @@ use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
 use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::widget::{DialogAction, Widget};
+use crate::widget_id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 
 #[derive(Debug, Clone, Copy)]
 enum ToastRuntimeUpdate {
@@ -52,6 +54,17 @@ enum ToastRuntimeUpdate {
 fn collect_toast_runtime_updates<Msg>(widget: &Widget<Msg>, out: &mut Vec<ToastRuntimeUpdate>) {
     let mut path = Vec::new();
     collect_toast_runtime_updates_impl(widget, out, &mut path);
+}
+
+pub(crate) fn validate_runtime_reconstruction<Msg>(
+    expected: Option<&WidgetIdSnapshot>,
+    widget: &Widget<'_, Msg>,
+) -> Result<(), WidgetIdError> {
+    let rebuilt = validate_widget_id_snapshot(widget)?;
+    match expected {
+        Some(snapshot) => snapshot.validate_reconstruction(&rebuilt),
+        None => Ok(()),
+    }
 }
 
 fn collect_toast_runtime_updates_impl<Msg>(
@@ -399,6 +412,58 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
     }
 }
 
+fn insert_runtime_entry<V>(
+    entries: &mut HashMap<u64, V>,
+    id: u64,
+    value: V,
+    cache: &'static str,
+) -> Result<(), WidgetIdError> {
+    match entries.entry(id) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(value);
+            Ok(())
+        }
+        std::collections::hash_map::Entry::Occupied(_) => {
+            Err(WidgetIdError::RuntimeOverride { value: id, cache })
+        }
+    }
+}
+
+fn widget_state_matches_seed(state: &WidgetState, kind: &str) -> bool {
+    matches!(
+        (state, kind),
+        (WidgetState::Slider(_), "slider")
+            | (WidgetState::Scroll(_), "scroll")
+            | (WidgetState::Select(_), "select")
+            | (WidgetState::Anim(_), "anim")
+            | (WidgetState::Tab(_), "tab")
+            | (WidgetState::Modal(_), "modal")
+            | (WidgetState::Toast(_), "toast")
+            | (WidgetState::ContextMenu(_), "context_menu")
+            | (WidgetState::Popover(_), "popover")
+            | (WidgetState::VList(_), "vlist")
+            | (WidgetState::VGrid(_), "vgrid")
+    )
+}
+
+fn validate_existing_widget_states(
+    states: &HashMap<u64, WidgetState>,
+    seeds: &[(u64, &'static str)],
+) -> Result<(), WidgetIdError> {
+    for (id, kind) in seeds {
+        if states
+            .get(id)
+            .is_some_and(|state| !widget_state_matches_seed(state, kind))
+        {
+            return Err(WidgetIdError::RuntimeOverride {
+                value: *id,
+                cache: "widget states",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn sync_virtual_list_runtime<Msg: Clone>(
     caches: &mut WidgetRuntimeCaches<Msg>,
     states: &mut HashMap<u64, WidgetState>,
@@ -406,9 +471,9 @@ fn sync_virtual_list_runtime<Msg: Clone>(
     layout: Option<&taffy::tree::Layout>,
     path: &[usize],
     runtime: VListRuntime<Msg>,
-) {
+) -> Result<(), WidgetIdError> {
     let resolved_id = widget.resolved_id(path).unwrap();
-    caches.vlists.insert(resolved_id, runtime);
+    insert_runtime_entry(&mut caches.vlists, resolved_id, runtime, "virtual lists")?;
     if let Some(layout) = layout {
         if let Some(s) = states
             .get_mut(&resolved_id)
@@ -417,6 +482,7 @@ fn sync_virtual_list_runtime<Msg: Clone>(
             s.viewport_h = layout.size.height;
         }
     }
+    Ok(())
 }
 
 fn sync_virtual_grid_runtime<Msg: Clone>(
@@ -426,9 +492,9 @@ fn sync_virtual_grid_runtime<Msg: Clone>(
     layout: Option<&taffy::tree::Layout>,
     path: &[usize],
     runtime: VGridRuntime<Msg>,
-) {
+) -> Result<(), WidgetIdError> {
     let resolved_id = widget.resolved_id(path).unwrap();
-    caches.vgrids.insert(resolved_id, runtime);
+    insert_runtime_entry(&mut caches.vgrids, resolved_id, runtime, "virtual grids")?;
     if let Some(layout) = layout {
         if let Some(s) = states
             .get_mut(&resolved_id)
@@ -438,6 +504,7 @@ fn sync_virtual_grid_runtime<Msg: Clone>(
             s.viewport_h = layout.size.height;
         }
     }
+    Ok(())
 }
 
 pub struct RutterEngine<A: AppLogic> {
@@ -452,11 +519,13 @@ pub struct RutterEngine<A: AppLogic> {
     pub taffy: TaffyTree<RutterContext>,
     layout_tree: SyncedLayoutTree,
     runtime_caches: WidgetRuntimeCaches<A::Message>,
+    runtime_cache_scratch: WidgetRuntimeCaches<A::Message>,
     pub last_root_node: NodeId,
     pub layout_dirty: bool,
     pub app_state: A::State,
     pub input_states: HashMap<u64, crate::input_state::InputWidgetState>,
     pub widget_states: HashMap<u64, WidgetState>,
+    widget_id_snapshot: Option<WidgetIdSnapshot>,
     pub focused_widget_id: Option<u64>,
     pub active_scroll_id: Option<u64>,
     pub drag_slider_id: Option<u64>,
@@ -487,12 +556,14 @@ impl<A: AppLogic> RutterEngine<A> {
             image_cache: ImageRenderCache::default(),
             layout_tree: SyncedLayoutTree::placeholder(root),
             runtime_caches: WidgetRuntimeCaches::default(),
+            runtime_cache_scratch: WidgetRuntimeCaches::default(),
             taffy,
             last_root_node: root,
             layout_dirty: true,
             app_state: state,
             input_states: HashMap::new(),
             widget_states: HashMap::new(),
+            widget_id_snapshot: None,
             focused_widget_id: None,
             active_scroll_id: None,
             drag_slider_id: None,
@@ -600,16 +671,27 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn ensure_widget_states(&mut self) {
-        let (stateful, input_ids, toast_updates) = {
+        self.try_ensure_widget_states()
+            .unwrap_or_else(|error| panic!("widget ID validation failed: {error}"));
+    }
+
+    pub fn try_ensure_widget_states(&mut self) -> Result<(), WidgetIdError> {
+        let (stateful, input_ids, toast_updates, next_snapshot) = {
             let widget_tree = A::view(&mut self.app_state);
+            let next_snapshot = validate_widget_id_snapshot(&widget_tree)?;
             let mut stateful = Vec::new();
             let mut input_ids = Vec::new();
             let mut toast_updates = Vec::new();
             collect_stateful_ids(&widget_tree, &mut stateful);
             collect_input_ids(&widget_tree, &mut input_ids);
             collect_toast_runtime_updates(&widget_tree, &mut toast_updates);
-            (stateful, input_ids, toast_updates)
+            (stateful, input_ids, toast_updates, next_snapshot)
         };
+        if let Some(previous) = &self.widget_id_snapshot {
+            previous.validate_transition_to(&next_snapshot)?;
+        }
+        let widget_tree_changed = self.widget_id_snapshot.as_ref() != Some(&next_snapshot);
+        validate_existing_widget_states(&self.widget_states, &stateful)?;
 
         let live_widget_ids = stateful.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
         let live_input_ids = input_ids.into_iter().collect::<HashSet<_>>();
@@ -659,6 +741,9 @@ impl<A: AppLogic> RutterEngine<A> {
             }
         }
         self.has_animated = has_anim;
+        self.widget_id_snapshot = Some(next_snapshot);
+        self.layout_dirty |= widget_tree_changed;
+        Ok(())
     }
 
     fn apply_widget_runtime_state(&mut self, updates: &[ToastRuntimeUpdate]) {
@@ -693,8 +778,37 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn init_toast(&mut self, id: u64, duration_ms: u32) {
-        self.widget_states
-            .insert(id, WidgetState::Toast(ToastState::new(duration_ms)));
+        self.try_init_toast(id, duration_ms)
+            .unwrap_or_else(|error| panic!("toast ID validation failed: {error}"));
+    }
+
+    pub fn try_init_toast(&mut self, id: u64, duration_ms: u32) -> Result<(), WidgetIdError> {
+        let Some(snapshot) = self.widget_id_snapshot.as_ref() else {
+            return Err(WidgetIdError::UnexpectedOwner {
+                value: id,
+                actual_type: None,
+                expected_type: "Toast",
+            });
+        };
+        snapshot.validate_owner_type(id, "Toast")?;
+        let state = WidgetState::Toast(ToastState::new(duration_ms));
+        match self.widget_states.entry(id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(state);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry)
+                if entry.get().as_toast().is_some() =>
+            {
+                entry.insert(state);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(WidgetIdError::RuntimeOverride {
+                    value: id,
+                    cache: "widget states",
+                });
+            }
+        }
+        Ok(())
     }
 
     pub fn any_context_menu_open(&self) -> bool {
@@ -794,14 +908,20 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn ensure_layout(&mut self, size: PhysicalSize<u32>) {
+        self.try_ensure_layout(size)
+            .unwrap_or_else(|error| panic!("widget ID validation failed: {error}"));
+    }
+
+    pub fn try_ensure_layout(&mut self, size: PhysicalSize<u32>) -> Result<(), WidgetIdError> {
         if !self.layout_dirty {
-            return;
+            return Ok(());
         }
         let logical = PhysicalSize::new(
             (size.width as f32 / self.scale_factor) as u32,
             (size.height as f32 / self.scale_factor) as u32,
         );
         let widget_tree = A::view(&mut self.app_state);
+        validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget_tree)?;
         let root = sync_taffy_tree_with_direction(
             &mut self.taffy,
             &mut self.layout_tree,
@@ -811,16 +931,17 @@ impl<A: AppLogic> RutterEngine<A> {
         );
         self.last_root_node = root;
         compute_layout(&mut self.taffy, root, logical, self.font_system.clone());
-        self.runtime_caches.clear();
+        self.runtime_cache_scratch.clear();
         Self::sync_runtime_metadata(
-            &mut self.runtime_caches,
+            &mut self.runtime_cache_scratch,
             &mut self.widget_states,
             &self.taffy,
             &widget_tree,
             Some(root),
             A::theme().spacing,
-        );
-        collect_focus_order(&widget_tree, &mut self.runtime_caches.focus_order);
+        )?;
+        collect_focus_order(&widget_tree, &mut self.runtime_cache_scratch.focus_order);
+        std::mem::swap(&mut self.runtime_caches, &mut self.runtime_cache_scratch);
         drop(widget_tree);
         self.sync_input_buffers();
         if self
@@ -830,6 +951,7 @@ impl<A: AppLogic> RutterEngine<A> {
             self.focused_widget_id = None;
         }
         self.layout_dirty = false;
+        Ok(())
     }
 
     fn sync_runtime_metadata<Msg: Clone>(
@@ -839,7 +961,7 @@ impl<A: AppLogic> RutterEngine<A> {
         widget: &Widget<Msg>,
         node: Option<NodeId>,
         spacing: f32,
-    ) {
+    ) -> Result<(), WidgetIdError> {
         let mut path = Vec::new();
         Self::sync_runtime_metadata_impl(
             runtime_caches,
@@ -850,7 +972,7 @@ impl<A: AppLogic> RutterEngine<A> {
             Point::new(0.0, 0.0),
             spacing,
             &mut path,
-        );
+        )
     }
 
     fn sync_runtime_metadata_impl<Msg: Clone>(
@@ -862,16 +984,19 @@ impl<A: AppLogic> RutterEngine<A> {
         abs: Point,
         spacing: f32,
         path: &mut Vec<usize>,
-    ) {
+    ) -> Result<(), WidgetIdError> {
         let layout = node.and_then(|node| taffy.layout(node).ok());
         let abs_pos = layout
             .map(|layout| Point::new(abs.x + layout.location.x, abs.y + layout.location.y))
             .unwrap_or(abs);
         match widget {
             Widget::Button { on_press, .. } | Widget::ButtonContent { on_press, .. } => {
-                runtime_caches
-                    .buttons
-                    .insert(widget.keyboard_focus_id(path).unwrap(), on_press.clone());
+                insert_runtime_entry(
+                    &mut runtime_caches.buttons,
+                    widget.keyboard_focus_id(path).unwrap(),
+                    on_press.clone(),
+                    "buttons",
+                )?;
             }
             Widget::TextInput {
                 on_change,
@@ -881,7 +1006,8 @@ impl<A: AppLogic> RutterEngine<A> {
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 runtime_caches.input_order.push(resolved_id);
-                runtime_caches.inputs.insert(
+                insert_runtime_entry(
+                    &mut runtime_caches.inputs,
                     resolved_id,
                     InputRuntime {
                         on_change: *on_change,
@@ -891,7 +1017,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         visible_w: Self::visible_input_width(layout, spacing),
                         visible_h: Self::visible_input_height(layout, spacing),
                     },
-                );
+                    "inputs",
+                )?;
             }
             Widget::TextArea {
                 on_change,
@@ -900,7 +1027,8 @@ impl<A: AppLogic> RutterEngine<A> {
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 runtime_caches.input_order.push(resolved_id);
-                runtime_caches.inputs.insert(
+                insert_runtime_entry(
+                    &mut runtime_caches.inputs,
                     resolved_id,
                     InputRuntime {
                         on_change: *on_change,
@@ -910,7 +1038,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         visible_w: Self::visible_input_width(layout, spacing),
                         visible_h: Self::visible_input_height(layout, spacing),
                     },
-                );
+                    "inputs",
+                )?;
             }
             Widget::SearchBar {
                 on_change,
@@ -919,7 +1048,8 @@ impl<A: AppLogic> RutterEngine<A> {
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 runtime_caches.input_order.push(resolved_id);
-                runtime_caches.inputs.insert(
+                insert_runtime_entry(
+                    &mut runtime_caches.inputs,
                     resolved_id,
                     InputRuntime {
                         on_change: *on_change,
@@ -929,34 +1059,42 @@ impl<A: AppLogic> RutterEngine<A> {
                         visible_w: Self::visible_input_width(layout, spacing),
                         visible_h: Self::visible_input_height(layout, spacing),
                     },
-                );
+                    "inputs",
+                )?;
             }
             Widget::Checkbox {
                 checked, on_change, ..
             } => {
-                runtime_caches.checkboxes.insert(
+                insert_runtime_entry(
+                    &mut runtime_caches.checkboxes,
                     widget.keyboard_focus_id(path).unwrap(),
                     ToggleRuntime {
                         on_change: *on_change,
                         checked: *checked,
                     },
-                );
+                    "checkboxes",
+                )?;
             }
             Widget::Switch {
                 checked, on_change, ..
             } => {
-                runtime_caches.switches.insert(
+                insert_runtime_entry(
+                    &mut runtime_caches.switches,
                     widget.keyboard_focus_id(path).unwrap(),
                     ToggleRuntime {
                         on_change: *on_change,
                         checked: *checked,
                     },
-                );
+                    "switches",
+                )?;
             }
             Widget::Radio { on_select, .. } => {
-                runtime_caches
-                    .radios
-                    .insert(widget.keyboard_focus_id(path).unwrap(), *on_select);
+                insert_runtime_entry(
+                    &mut runtime_caches.radios,
+                    widget.keyboard_focus_id(path).unwrap(),
+                    *on_select,
+                    "radios",
+                )?;
             }
             Widget::Slider {
                 value,
@@ -967,7 +1105,8 @@ impl<A: AppLogic> RutterEngine<A> {
                 ..
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
-                runtime_caches.sliders.insert(
+                insert_runtime_entry(
+                    &mut runtime_caches.sliders,
                     resolved_id,
                     SliderRuntime {
                         on_change: *on_change,
@@ -976,7 +1115,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         max: *max,
                         step: *step,
                     },
-                );
+                    "sliders",
+                )?;
             }
             Widget::Select {
                 options,
@@ -984,21 +1124,26 @@ impl<A: AppLogic> RutterEngine<A> {
                 on_change,
                 ..
             } => {
-                runtime_caches.selects.insert(
+                insert_runtime_entry(
+                    &mut runtime_caches.selects,
                     widget.resolved_id(path).unwrap(),
                     SelectRuntime {
                         on_change: *on_change,
                         selected_index: *selected_index,
                         option_count: options.len(),
                     },
-                );
+                    "selects",
+                )?;
             }
             Widget::Accordion {
                 on_toggle, child, ..
             } => {
-                runtime_caches
-                    .accordions
-                    .insert(widget.keyboard_focus_id(path).unwrap(), on_toggle.clone());
+                insert_runtime_entry(
+                    &mut runtime_caches.accordions,
+                    widget.keyboard_focus_id(path).unwrap(),
+                    on_toggle.clone(),
+                    "accordions",
+                )?;
                 path.push(0);
                 Self::sync_runtime_metadata_impl(
                     runtime_caches,
@@ -1009,7 +1154,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     abs_pos,
                     spacing,
                     path,
-                );
+                )?;
                 path.pop();
             }
             Widget::TabBar {
@@ -1020,22 +1165,26 @@ impl<A: AppLogic> RutterEngine<A> {
                     .filter_map(|index| widget.tab_focus_id(path, index))
                     .collect::<Vec<_>>();
                 for (index, focus_id) in focus_ids.iter().copied().enumerate() {
-                    runtime_caches.tab_items.insert(
+                    insert_runtime_entry(
+                        &mut runtime_caches.tab_items,
                         focus_id,
                         TabFocusRuntime {
                             parent_id: resolved_id,
                             index,
                         },
-                    );
+                        "tab items",
+                    )?;
                 }
-                runtime_caches.tabs.insert(
+                insert_runtime_entry(
+                    &mut runtime_caches.tabs,
                     resolved_id,
                     TabRuntime {
                         on_change: *on_change,
                         tab_count: tabs.len(),
                         focus_ids,
                     },
-                );
+                    "tab bars",
+                )?;
             }
             Widget::Dialog {
                 on_confirm,
@@ -1044,13 +1193,21 @@ impl<A: AppLogic> RutterEngine<A> {
                 ..
             } => {
                 if let Some(cancel_id) = widget.dialog_action_focus_id(path, DialogAction::Cancel) {
-                    runtime_caches.buttons.insert(cancel_id, on_cancel.clone());
+                    insert_runtime_entry(
+                        &mut runtime_caches.buttons,
+                        cancel_id,
+                        on_cancel.clone(),
+                        "buttons",
+                    )?;
                 }
                 if let Some(confirm_id) = widget.dialog_action_focus_id(path, DialogAction::Confirm)
                 {
-                    runtime_caches
-                        .buttons
-                        .insert(confirm_id, on_confirm.clone());
+                    insert_runtime_entry(
+                        &mut runtime_caches.buttons,
+                        confirm_id,
+                        on_confirm.clone(),
+                        "buttons",
+                    )?;
                 }
                 path.push(0);
                 Self::sync_runtime_metadata_impl(
@@ -1062,16 +1219,19 @@ impl<A: AppLogic> RutterEngine<A> {
                     abs_pos,
                     spacing,
                     path,
-                );
+                )?;
                 path.pop();
             }
             Widget::Toast {
                 on_dismiss: Some(msg),
                 ..
             } => {
-                runtime_caches
-                    .toast_dismiss
-                    .insert(widget.resolved_id(path).unwrap(), msg.clone());
+                insert_runtime_entry(
+                    &mut runtime_caches.toast_dismiss,
+                    widget.resolved_id(path).unwrap(),
+                    msg.clone(),
+                    "toast dismiss callbacks",
+                )?;
             }
             Widget::ScrollView { child, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
@@ -1097,7 +1257,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     abs_pos,
                     spacing,
                     path,
-                );
+                )?;
                 path.pop();
             }
             Widget::VirtualList {
@@ -1111,18 +1271,20 @@ impl<A: AppLogic> RutterEngine<A> {
                 item_count,
                 on_select,
                 ..
-            } => sync_virtual_list_runtime(
-                runtime_caches,
-                widget_states,
-                widget,
-                layout,
-                path,
-                VListRuntime {
-                    on_select: *on_select,
-                    item_height: *item_height,
-                    item_count: *item_count,
-                },
-            ),
+            } => {
+                sync_virtual_list_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    layout,
+                    path,
+                    VListRuntime {
+                        on_select: *on_select,
+                        item_height: *item_height,
+                        item_count: *item_count,
+                    },
+                )?;
+            }
             Widget::VirtualGrid {
                 columns,
                 item_height,
@@ -1136,19 +1298,21 @@ impl<A: AppLogic> RutterEngine<A> {
                 item_count,
                 on_select,
                 ..
-            } => sync_virtual_grid_runtime(
-                runtime_caches,
-                widget_states,
-                widget,
-                layout,
-                path,
-                VGridRuntime {
-                    on_select: *on_select,
-                    columns: *columns,
-                    item_height: *item_height,
-                    item_count: *item_count,
-                },
-            ),
+            } => {
+                sync_virtual_grid_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    layout,
+                    path,
+                    VGridRuntime {
+                        on_select: *on_select,
+                        columns: *columns,
+                        item_height: *item_height,
+                        item_count: *item_count,
+                    },
+                )?;
+            }
             Widget::Popover {
                 anchor,
                 content,
@@ -1184,7 +1348,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         abs_pos,
                         spacing,
                         path,
-                    );
+                    )?;
                     path.pop();
                 }
 
@@ -1201,7 +1365,7 @@ impl<A: AppLogic> RutterEngine<A> {
                                 Point::new(0.0, 0.0),
                                 spacing,
                                 path,
-                            );
+                            )?;
                             path.pop();
                         }
                     }
@@ -1220,7 +1384,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         abs_pos,
                         spacing,
                         path,
-                    );
+                    )?;
                     path.pop();
                 }
             }
@@ -1238,11 +1402,12 @@ impl<A: AppLogic> RutterEngine<A> {
                     abs_pos,
                     spacing,
                     path,
-                );
+                )?;
                 path.pop();
             }
             _ => {}
         }
+        Ok(())
     }
 
     fn visible_input_width(layout: Option<&taffy::tree::Layout>, spacing: f32) -> f32 {
@@ -1314,24 +1479,31 @@ impl<A: AppLogic> RutterEngine<A> {
             widget,
             Some(root),
             spacing,
-        );
+        )
+        .expect("test runtime metadata requires unique widget IDs");
     }
 
     pub fn redraw(&mut self, cursor_pos: Point) {
+        self.try_redraw(cursor_pos)
+            .unwrap_or_else(|error| panic!("widget ID validation failed: {error}"));
+    }
+
+    pub fn try_redraw(&mut self, cursor_pos: Point) -> Result<(), WidgetIdError> {
         let window = match self.window.as_ref() {
             Some(w) => w.clone(),
-            None => return,
+            None => return Ok(()),
         };
         let phys = window.inner_size();
         if phys.width == 0 || phys.height == 0 {
-            return;
+            return Ok(());
         }
 
         self.maybe_snapshot();
-        self.ensure_widget_states();
-        self.ensure_layout(phys);
+        self.try_ensure_widget_states()?;
+        self.try_ensure_layout(phys)?;
 
         let mut widget_tree = A::view(&mut self.app_state);
+        validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget_tree)?;
         let lc = Point::new(
             cursor_pos.x / self.scale_factor,
             cursor_pos.y / self.scale_factor,
@@ -1391,6 +1563,7 @@ impl<A: AppLogic> RutterEngine<A> {
             .expect("graphics backend not initialized")
             .end_frame()
             .unwrap_or_else(|err| panic!("graphics end_frame failed: {err}"));
+        Ok(())
     }
 }
 

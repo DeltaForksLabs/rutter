@@ -8,9 +8,10 @@
 use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
 
+use crate::widget_id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
+
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
-/// árvore. Qualquer valor diferente de zero continua sendo tratado como ID
-/// manual estável.
+/// árvore. IDs manuais seguros devem ser criados com [`WidgetId::manual`].
 pub const AUTO_ID: u64 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -159,6 +160,7 @@ pub(crate) enum WidgetIdTag {
     VirtualGrid = 22,
     ContextMenu = 23,
     Popover = 24,
+    AccessibilityLeaf = 25,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,8 +176,6 @@ pub(crate) fn resolve_widget_id(raw_id: u64, tag: WidgetIdTag, path: &[usize]) -
 
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
-    const AUTO_MASK: u64 = 1 << 63;
-
     let mut hash = FNV_OFFSET;
     hash ^= tag as u64;
     hash = hash.wrapping_mul(FNV_PRIME);
@@ -185,9 +185,9 @@ pub(crate) fn resolve_widget_id(raw_id: u64, tag: WidgetIdTag, path: &[usize]) -
         hash = hash.wrapping_mul(FNV_PRIME);
     }
 
-    let resolved = hash | AUTO_MASK;
+    let resolved = hash | AUTOMATIC_ID_NAMESPACE_BIT;
     if resolved == AUTO_ID {
-        AUTO_MASK
+        AUTOMATIC_ID_NAMESPACE_BIT
     } else {
         resolved
     }
@@ -196,7 +196,6 @@ pub(crate) fn resolve_widget_id(raw_id: u64, tag: WidgetIdTag, path: &[usize]) -
 pub(crate) fn resolve_subwidget_id(base_id: u64, tag: WidgetIdTag, slot: usize) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
-    const AUTO_MASK: u64 = 1 << 63;
 
     let mut hash = FNV_OFFSET;
     hash ^= tag as u64;
@@ -206,9 +205,9 @@ pub(crate) fn resolve_subwidget_id(base_id: u64, tag: WidgetIdTag, slot: usize) 
     hash ^= (slot as u64).wrapping_add(1);
     hash = hash.wrapping_mul(FNV_PRIME);
 
-    let resolved = hash | AUTO_MASK;
+    let resolved = hash | AUTOMATIC_ID_NAMESPACE_BIT;
     if resolved == AUTO_ID {
-        AUTO_MASK
+        AUTOMATIC_ID_NAMESPACE_BIT
     } else {
         resolved
     }
@@ -790,6 +789,8 @@ impl<'a, Msg> Widget<'a, Msg> {
     }
 
     /// Creates a virtualized list whose visible rows are rendered from widgets.
+    /// Item widgets are visual-only and receive isolated runtime-state maps so
+    /// on-demand IDs cannot alias controls in the application tree.
     ///
     /// Example:
     ///
@@ -847,6 +848,8 @@ impl<'a, Msg> Widget<'a, Msg> {
     }
 
     /// Creates a virtualized grid whose visible cells are rendered from widgets.
+    /// Cell widgets are visual-only and receive isolated runtime-state maps so
+    /// on-demand IDs cannot alias controls in the application tree.
     ///
     /// Example:
     ///
@@ -887,7 +890,12 @@ impl<'a, Msg> Widget<'a, Msg> {
     }
 
     pub fn with_id(mut self, id: u64) -> Self {
-        match &mut self {
+        self.assign_raw_id(id);
+        self
+    }
+
+    fn assign_raw_id(&mut self, id: u64) -> bool {
+        match self {
             Self::TextInput { id: slot, .. }
             | Self::TextArea { id: slot, .. }
             | Self::SearchBar { id: slot, .. }
@@ -906,59 +914,89 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::VirtualList { id: slot, .. }
             | Self::VirtualListContent { id: slot, .. }
             | Self::VirtualGrid { id: slot, .. }
-            | Self::VirtualGridContent { id: slot, .. } => *slot = id,
-            _ => {}
+            | Self::VirtualGridContent { id: slot, .. } => {
+                *slot = id;
+                true
+            }
+            _ => false,
         }
-        self
+    }
+
+    /// Assigns an already validated manual ID while preserving legacy `u64` fields.
+    ///
+    /// # Example
+    /// ```
+    /// use rutter::{Widget, WidgetId};
+    /// use taffy::prelude::Style;
+    ///
+    /// let widget: Widget<'_, ()> = Widget::spinner(Style::default())
+    ///     .with_widget_id(WidgetId::manual(42).unwrap()).unwrap();
+    /// ```
+    pub fn with_widget_id(mut self, id: WidgetId) -> Result<Self, WidgetIdError> {
+        if self.assign_raw_id(id.get()) {
+            return Ok(self);
+        }
+        Err(WidgetIdError::UnsupportedWidget { value: id.get() })
+    }
+
+    /// Validates and assigns a manual ID, rejecting zero and the automatic namespace.
+    ///
+    /// # Example
+    /// ```
+    /// use rutter::Widget;
+    /// use taffy::prelude::Style;
+    ///
+    /// let widget: Widget<'_, ()> = Widget::spinner(Style::default()).try_with_id(42).unwrap();
+    /// ```
+    pub fn try_with_id(self, raw: u64) -> Result<Self, WidgetIdError> {
+        self.with_widget_id(WidgetId::manual(raw)?)
     }
 
     pub fn with_auto_id(self) -> Self {
         self.with_id(AUTO_ID)
     }
 
+    pub(crate) fn id_owner_metadata(&self) -> Option<(Option<u64>, WidgetIdTag, &'static str)> {
+        Some(match self {
+            Self::Button { .. } | Self::ButtonContent { .. } => {
+                (None, WidgetIdTag::Button, "Button")
+            }
+            Self::Checkbox { .. } => (None, WidgetIdTag::Checkbox, "Checkbox"),
+            Self::Switch { .. } => (None, WidgetIdTag::Switch, "Switch"),
+            Self::Radio { .. } => (None, WidgetIdTag::Radio, "Radio"),
+            Self::TextInput {
+                id,
+                is_password: true,
+                ..
+            } => (Some(*id), WidgetIdTag::TextInput, "PasswordTextInput"),
+            Self::TextInput { id, .. } => (Some(*id), WidgetIdTag::TextInput, "TextInput"),
+            Self::TextArea { id, .. } => (Some(*id), WidgetIdTag::TextArea, "TextArea"),
+            Self::SearchBar { id, .. } => (Some(*id), WidgetIdTag::SearchBar, "SearchBar"),
+            Self::Slider { id, .. } => (Some(*id), WidgetIdTag::Slider, "Slider"),
+            Self::Select { id, .. } => (Some(*id), WidgetIdTag::Select, "Select"),
+            Self::ProgressBar { id, .. } => (Some(*id), WidgetIdTag::ProgressBar, "ProgressBar"),
+            Self::Spinner { id, .. } => (Some(*id), WidgetIdTag::Spinner, "Spinner"),
+            Self::ScrollView { id, .. } => (Some(*id), WidgetIdTag::ScrollView, "ScrollView"),
+            Self::Accordion { id, .. } => (Some(*id), WidgetIdTag::Accordion, "Accordion"),
+            Self::TabBar { id, .. } => (Some(*id), WidgetIdTag::TabBar, "TabBar"),
+            Self::Modal { id, .. } => (Some(*id), WidgetIdTag::Modal, "Modal"),
+            Self::Dialog { id, .. } => (Some(*id), WidgetIdTag::Dialog, "Dialog"),
+            Self::Toast { id, .. } => (Some(*id), WidgetIdTag::Toast, "Toast"),
+            Self::ContextMenu { id, .. } => (Some(*id), WidgetIdTag::ContextMenu, "ContextMenu"),
+            Self::Popover { id, .. } => (Some(*id), WidgetIdTag::Popover, "Popover"),
+            Self::VirtualList { id, .. } | Self::VirtualListContent { id, .. } => {
+                (Some(*id), WidgetIdTag::VirtualList, "VirtualList")
+            }
+            Self::VirtualGrid { id, .. } | Self::VirtualGridContent { id, .. } => {
+                (Some(*id), WidgetIdTag::VirtualGrid, "VirtualGrid")
+            }
+            _ => return None,
+        })
+    }
+
     pub(crate) fn resolved_id(&self, path: &[usize]) -> Option<u64> {
-        match self {
-            Self::TextInput { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::TextInput, path))
-            }
-            Self::TextArea { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::TextArea, path)),
-            Self::SearchBar { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::SearchBar, path))
-            }
-            Self::Slider { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Slider, path)),
-            Self::Select { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Select, path)),
-            Self::ProgressBar { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::ProgressBar, path))
-            }
-            Self::Spinner { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Spinner, path)),
-            Self::ScrollView { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::ScrollView, path))
-            }
-            Self::Accordion { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::Accordion, path))
-            }
-            Self::TabBar { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::TabBar, path)),
-            Self::Modal { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Modal, path)),
-            Self::Dialog { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Dialog, path)),
-            Self::Toast { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Toast, path)),
-            Self::ContextMenu { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::ContextMenu, path))
-            }
-            Self::Popover { id, .. } => Some(resolve_widget_id(*id, WidgetIdTag::Popover, path)),
-            Self::VirtualList { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::VirtualList, path))
-            }
-            Self::VirtualListContent { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::VirtualList, path))
-            }
-            Self::VirtualGrid { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::VirtualGrid, path))
-            }
-            Self::VirtualGridContent { id, .. } => {
-                Some(resolve_widget_id(*id, WidgetIdTag::VirtualGrid, path))
-            }
-            _ => None,
-        }
+        let (raw_id, tag, _) = self.id_owner_metadata()?;
+        Some(resolve_widget_id(raw_id?, tag, path))
     }
 
     pub(crate) fn keyboard_focus_id(&self, path: &[usize]) -> Option<u64> {
