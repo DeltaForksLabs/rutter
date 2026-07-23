@@ -7,7 +7,10 @@
 
 pub mod hit_test;
 pub mod image;
+mod image_cache;
+mod image_headers;
 pub mod pipeline;
+mod svg;
 pub mod text;
 mod text_cache;
 
@@ -26,7 +29,13 @@ use skia_safe::{
 };
 use taffy::prelude::{NodeId, TaffyTree};
 
+pub use self::image_cache::ImageRenderCache;
 use self::text::{TextBufferCache, TextShapeRequest, draw_text, get_cached_font};
+use self::{
+    image::{MAX_ENCODED_IMAGE_BYTES, decode_rutter_image},
+    image_cache::SvgImageCacheKey,
+    svg::{checked_svg_raster_size, validate_svg_source},
+};
 use crate::engine::widget_state::{
     VirtualGridState, WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left,
     virtual_grid_cell_width, virtual_grid_row_count,
@@ -36,7 +45,6 @@ use crate::layout::{
     OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree, compute_layout,
 };
 use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
-use crate::render::image::decode_rutter_image;
 use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
@@ -46,80 +54,6 @@ use crate::widget::{
 use winit::dpi::PhysicalSize;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
-const IMAGE_CACHE_MAX_ENTRIES: usize = 512;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct SvgImageCacheKey {
-    data_hash: u64,
-    width: u32,
-    height: u32,
-    scale_bits: u32,
-}
-
-pub struct ImageRenderCache {
-    raster_images: HashMap<u64, crate::render::image::RutterDecodedImage>,
-    svg_images: HashMap<SvgImageCacheKey, skia_safe::Image>,
-    layout_font_system: Rc<RefCell<FontSystem>>,
-}
-
-impl Default for ImageRenderCache {
-    fn default() -> Self {
-        Self {
-            raster_images: HashMap::new(),
-            svg_images: HashMap::new(),
-            layout_font_system: Rc::new(RefCell::new(FontSystem::new())),
-        }
-    }
-}
-
-impl ImageRenderCache {
-    /// Clears decoded image and rasterized SVG entries retained by the renderer.
-    ///
-    /// Example:
-    ///
-    /// ```rust
-    /// let mut cache = rutter::render::ImageRenderCache::default();
-    /// cache.clear();
-    /// ```
-    pub fn clear(&mut self) {
-        self.raster_images.clear();
-        self.svg_images.clear();
-    }
-
-    fn raster_image(&mut self, data: &[u8]) -> Option<crate::render::image::RutterDecodedImage> {
-        let key = stable_bytes_hash(data);
-        if let Some(decoded) = self.raster_images.get(&key) {
-            return Some(decoded.clone());
-        }
-        let decoded = decode_rutter_image(data).ok()?;
-        self.insert_raster_image(key, decoded.clone());
-        Some(decoded)
-    }
-
-    fn insert_raster_image(&mut self, key: u64, decoded: crate::render::image::RutterDecodedImage) {
-        clear_if_full(&mut self.raster_images);
-        self.raster_images.insert(key, decoded);
-    }
-
-    fn svg_image(&mut self, key: SvgImageCacheKey) -> Option<skia_safe::Image> {
-        self.svg_images.get(&key).cloned()
-    }
-
-    fn insert_svg_image(&mut self, key: SvgImageCacheKey, image: skia_safe::Image) {
-        clear_if_full(&mut self.svg_images);
-        self.svg_images.insert(key, image);
-    }
-
-    fn layout_font_system(&self) -> Rc<RefCell<FontSystem>> {
-        self.layout_font_system.clone()
-    }
-}
-
-fn clear_if_full<K, V>(cache: &mut HashMap<K, V>) {
-    if cache.len() >= IMAGE_CACHE_MAX_ENTRIES {
-        cache.clear();
-    }
-}
 
 fn stable_bytes_hash(data: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -3616,12 +3550,15 @@ fn draw_image(
     cache: &mut ImageRenderCache,
 ) {
     use skia_safe::Matrix;
+    if data.len() > MAX_ENCODED_IMAGE_BYTES {
+        return;
+    }
     if is_svg_image(data) {
         draw_svg_image(canvas, data, size, radius, scale, cache);
         return;
     }
 
-    let Some(decoded) = cache.raster_image(data) else {
+    let Some(decoded) = cached_raster_image(data, cache) else {
         return;
     };
 
@@ -3653,6 +3590,19 @@ fn draw_image(
     }
 }
 
+fn cached_raster_image(
+    data: &[u8],
+    cache: &mut ImageRenderCache,
+) -> Option<crate::render::image::RutterDecodedImage> {
+    let key = stable_bytes_hash(data);
+    if let Some(decoded) = cache.raster_image(key) {
+        return Some(decoded);
+    }
+    let decoded = decode_rutter_image(data).ok()?;
+    cache.insert_raster_image(key, decoded.clone());
+    Some(decoded)
+}
+
 fn draw_svg_image(
     canvas: &Canvas,
     data: &[u8],
@@ -3661,7 +3611,7 @@ fn draw_svg_image(
     scale: f32,
     cache: &mut ImageRenderCache,
 ) {
-    if size.0 <= 0.0 || size.1 <= 0.0 {
+    if !validate_svg_source(data) || checked_svg_raster_size(size, scale).is_none() {
         return;
     }
     let key = svg_cache_key(data, size, scale);
@@ -3694,16 +3644,19 @@ fn cached_svg_image(
 fn rasterize_svg_image(data: &[u8], size: (f32, f32), scale: f32) -> Option<skia_safe::Image> {
     use skia_safe::{Color, FontMgr, Size, svg::Dom};
 
+    if !validate_svg_source(data) {
+        return None;
+    }
+    let image_size = checked_svg_raster_size(size, scale)?;
     let Ok(mut dom) = Dom::from_bytes(data, FontMgr::empty()) else {
         return None;
     };
-    let image_size = scaled_image_size(size, scale);
     let svg_size = svg_intrinsic_size(data).unwrap_or(size);
     let fit_scale = svg_fit_scale(svg_size, size);
     let offset = centered_svg_offset(svg_size, size, fit_scale);
     let mut surface = skia_safe::surfaces::raster_n32_premul(image_size)?;
     surface.canvas().clear(Color::TRANSPARENT);
-    surface.canvas().scale((scale.max(1.0), scale.max(1.0)));
+    surface.canvas().scale((scale, scale));
     surface.canvas().translate(offset);
     surface.canvas().scale((fit_scale, fit_scale));
 
@@ -3749,20 +3702,12 @@ fn draw_cached_svg_image(canvas: &Canvas, image: &skia_safe::Image, size: (f32, 
     canvas.restore();
 }
 
-fn scaled_image_size(size: (f32, f32), scale: f32) -> (i32, i32) {
-    let scale = scale.max(1.0);
-    (
-        (size.0 * scale).ceil().max(1.0) as i32,
-        (size.1 * scale).ceil().max(1.0) as i32,
-    )
-}
-
 fn svg_cache_key(data: &[u8], size: (f32, f32), scale: f32) -> SvgImageCacheKey {
     SvgImageCacheKey {
         data_hash: stable_bytes_hash(data),
-        width: size.0.ceil().max(1.0) as u32,
-        height: size.1.ceil().max(1.0) as u32,
-        scale_bits: scale.max(1.0).to_bits(),
+        width: size.0.ceil() as u32,
+        height: size.1.ceil() as u32,
+        scale_bits: scale.to_bits(),
     }
 }
 
@@ -4000,7 +3945,7 @@ mod tests {
     use skia_safe::{Color, Point, Surface, surfaces};
 
     use super::{
-        ImageRenderCache, draw_image, draw_virtual_grid, is_svg_image,
+        ImageRenderCache, draw_image, draw_virtual_grid, is_svg_image, svg_cache_key,
         virtual_grid_scrollbar_metrics,
     };
     use crate::engine::widget_state::VirtualGridState;
@@ -4046,7 +3991,11 @@ mod tests {
         draw_test_svg(&mut surface, &mut image_cache);
         draw_test_svg(&mut surface, &mut image_cache);
 
-        assert_eq!(image_cache.svg_images.len(), 1);
+        assert!(
+            image_cache
+                .svg_image(svg_cache_key(red_svg(), (12.0, 12.0), 1.0))
+                .is_some()
+        );
     }
 
     #[test]
@@ -4063,6 +4012,27 @@ mod tests {
         );
 
         assert_ne!(pixel_at(&mut surface, 20, 20), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn draw_image_rejects_svg_raster_output_above_pixel_budget() {
+        let mut surface = surfaces::raster_n32_premul((12, 12)).unwrap();
+        let mut image_cache = ImageRenderCache::default();
+
+        draw_image(
+            surface.canvas(),
+            red_svg(),
+            (4097.0, 4096.0),
+            0.0,
+            1.0,
+            &mut image_cache,
+        );
+
+        assert!(
+            image_cache
+                .svg_image(svg_cache_key(red_svg(), (4097.0, 4096.0), 1.0))
+                .is_none()
+        );
     }
 
     #[test]

@@ -5,12 +5,16 @@ use std::fmt;
 
 use skia_safe::Image;
 
+use super::image_headers::encoded_image_dimensions;
+
 pub(crate) const MAX_IMAGE_DECODE_WIDTH: u32 = 8192;
 pub(crate) const MAX_IMAGE_DECODE_HEIGHT: u32 = 8192;
 pub(crate) const MAX_IMAGE_DECODE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_ENCODED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ImageDecodeLimits {
+    pub max_encoded_bytes: usize,
     pub max_width: u32,
     pub max_height: u32,
     pub max_alloc_bytes: u64,
@@ -19,6 +23,7 @@ pub(crate) struct ImageDecodeLimits {
 impl Default for ImageDecodeLimits {
     fn default() -> Self {
         Self {
+            max_encoded_bytes: MAX_ENCODED_IMAGE_BYTES,
             max_width: MAX_IMAGE_DECODE_WIDTH,
             max_height: MAX_IMAGE_DECODE_HEIGHT,
             max_alloc_bytes: MAX_IMAGE_DECODE_ALLOC_BYTES,
@@ -35,6 +40,10 @@ pub(crate) struct RutterDecodedImage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ImageDecodeError {
+    EncodedBytesExceeded {
+        encoded_bytes: usize,
+        max_encoded_bytes: usize,
+    },
     InvalidData {
         expected: &'static str,
     },
@@ -55,6 +64,10 @@ pub(crate) enum ImageDecodeError {
 impl fmt::Display for ImageDecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EncodedBytesExceeded {
+                encoded_bytes,
+                max_encoded_bytes,
+            } => write_encoded_bytes_limit_error(f, *encoded_bytes, *max_encoded_bytes),
             Self::InvalidData { expected } => write_invalid_image_data(f, expected),
             Self::DimensionsExceeded {
                 width,
@@ -82,6 +95,8 @@ pub(crate) fn decode_rutter_image_with_limits(
     data: &[u8],
     limits: ImageDecodeLimits,
 ) -> Result<RutterDecodedImage, ImageDecodeError> {
+    validate_encoded_bytes(data, limits)?;
+    validate_known_encoded_dimensions(data, limits)?;
     decode_rutter_image_impl(data, limits)
 }
 
@@ -153,7 +168,7 @@ fn image_crate_dimension_limits(limits: ImageDecodeLimits) -> ::image::Limits {
     let mut image_limits = ::image::Limits::default();
     image_limits.max_image_width = Some(limits.max_width);
     image_limits.max_image_height = Some(limits.max_height);
-    image_limits.max_alloc = None;
+    image_limits.max_alloc = Some(limits.max_alloc_bytes);
     image_limits
 }
 
@@ -233,6 +248,27 @@ fn validate_decoded_dimensions(
     validate_allocation_budget(width, height, limits)
 }
 
+fn validate_encoded_bytes(data: &[u8], limits: ImageDecodeLimits) -> Result<(), ImageDecodeError> {
+    if data.len() > limits.max_encoded_bytes {
+        return Err(ImageDecodeError::EncodedBytesExceeded {
+            encoded_bytes: data.len(),
+            max_encoded_bytes: limits.max_encoded_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn validate_known_encoded_dimensions(
+    data: &[u8],
+    limits: ImageDecodeLimits,
+) -> Result<(), ImageDecodeError> {
+    let Some((width, height)) = encoded_image_dimensions(data) else {
+        return Ok(());
+    };
+    validate_dimension_bounds(width, height, limits)?;
+    validate_allocation_budget(width, height, limits)
+}
+
 fn validate_positive_dimensions(width: i32, height: i32) -> Result<(u32, u32), ImageDecodeError> {
     if width <= 0 || height <= 0 {
         return Err(ImageDecodeError::InvalidData {
@@ -281,6 +317,17 @@ fn write_invalid_image_data(f: &mut fmt::Formatter<'_>, expected: &str) -> fmt::
     write!(
         f,
         "invalid image data: offending value `encoded bytes`, expected {expected}"
+    )
+}
+
+fn write_encoded_bytes_limit_error(
+    f: &mut fmt::Formatter<'_>,
+    encoded_bytes: usize,
+    max_encoded_bytes: usize,
+) -> fmt::Result {
+    write!(
+        f,
+        "encoded image bytes exceed limit: offending value `{encoded_bytes}` bytes, expected <= {max_encoded_bytes} bytes"
     )
 }
 
@@ -352,6 +399,7 @@ mod tests {
         let result = decode_rutter_image_with_limits(
             &tiny_png(),
             ImageDecodeLimits {
+                max_encoded_bytes: 1024,
                 max_width: 16,
                 max_height: 16,
                 max_alloc_bytes: 1,
@@ -367,5 +415,41 @@ mod tests {
     fn decode_rutter_image_rejects_invalid_data() {
         let result = decode_rutter_image(b"not an image");
         assert!(matches!(result, Err(ImageDecodeError::InvalidData { .. })));
+    }
+
+    #[test]
+    fn decode_rutter_image_rejects_encoded_input_before_copying() {
+        let result = decode_rutter_image_with_limits(
+            &[0; 8],
+            ImageDecodeLimits {
+                max_encoded_bytes: 7,
+                max_width: 16,
+                max_height: 16,
+                max_alloc_bytes: 1024,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(ImageDecodeError::EncodedBytesExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn decode_rutter_image_rejects_png_dimensions_before_skia_decode() {
+        let result = decode_rutter_image_with_limits(
+            &tiny_png(),
+            ImageDecodeLimits {
+                max_encoded_bytes: 1024,
+                max_width: 0,
+                max_height: 16,
+                max_alloc_bytes: 1024,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(ImageDecodeError::DimensionsExceeded { .. })
+        ));
     }
 }
