@@ -5,116 +5,18 @@
 // Rutter Framework — engine/input_state.rs
 // ============================================================
 
-use std::collections::VecDeque;
-
+use crate::input_limits::InputLimits;
 use cosmic_text::{
     Action, Attrs, Buffer, Cursor, Edit, Editor, FontSystem, LayoutRun, Metrics, Motion, Shaping,
     Wrap,
 };
-use zeroize::Zeroize;
 
-pub struct UndoStack {
-    stack: VecDeque<String>,
-    position: usize,
-    max_size: usize,
-    sensitive: bool,
-}
+pub use crate::input_undo::UndoStack;
 
-impl UndoStack {
-    pub fn new(max_size: usize) -> Self {
-        Self {
-            stack: VecDeque::new(),
-            position: 0,
-            max_size,
-            sensitive: false,
-        }
-    }
-    pub(crate) fn set_sensitive(&mut self, sensitive: bool) {
-        if self.sensitive == sensitive {
-            return;
-        }
-        self.sensitive = sensitive;
-        self.clear_secure();
-    }
-    pub(crate) fn clear_secure(&mut self) {
-        for text in &mut self.stack {
-            text.zeroize();
-        }
-        self.stack.clear();
-        self.position = 0;
-    }
-    pub fn push(&mut self, mut text: String) {
-        if self.sensitive {
-            text.zeroize();
-            self.clear_secure();
-            return;
-        }
-        if self.stack.back().map(|s| s == &text).unwrap_or(false) {
-            return;
-        }
-        self.discard_redo_entries();
-        self.stack.push_back(text);
-        self.trim_to_max_size();
-        self.position = self.stack.len().saturating_sub(1);
-    }
-    fn discard_redo_entries(&mut self) {
-        while self.stack.len() > self.position + 1 {
-            self.pop_back_secure();
-        }
-    }
-    fn trim_to_max_size(&mut self) {
-        if self.stack.len() > self.max_size {
-            self.pop_front_secure();
-        }
-    }
-    fn pop_back_secure(&mut self) {
-        if let Some(mut dropped) = self.stack.pop_back() {
-            dropped.zeroize();
-        }
-    }
-    fn pop_front_secure(&mut self) {
-        if let Some(mut dropped) = self.stack.pop_front() {
-            dropped.zeroize();
-        }
-    }
-    pub fn undo(&mut self) -> Option<&str> {
-        if self.position > 0 {
-            self.position -= 1;
-            self.stack.get(self.position).map(String::as_str)
-        } else {
-            None
-        }
-    }
-    pub fn redo(&mut self) -> Option<&str> {
-        if self.position + 1 < self.stack.len() {
-            self.position += 1;
-            self.stack.get(self.position).map(String::as_str)
-        } else {
-            None
-        }
-    }
-    pub fn current(&self) -> Option<&str> {
-        self.stack.get(self.position).map(String::as_str)
-    }
-    pub fn can_undo(&self) -> bool {
-        self.position > 0
-    }
-    pub fn can_redo(&self) -> bool {
-        self.position + 1 < self.stack.len()
-    }
-}
-
-impl Drop for UndoStack {
-    fn drop(&mut self) {
-        self.clear_secure();
-    }
-}
-
-impl Default for UndoStack {
-    fn default() -> Self {
-        Self::new(100)
-    }
-}
+#[path = "input_state_edit.rs"]
+mod input_state_edit;
+#[path = "input_state_edit_helpers.rs"]
+mod input_state_edit_helpers;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TextSelection {
@@ -142,6 +44,7 @@ pub struct InputWidgetState {
     pub undo: UndoStack,
     pub selection: Option<TextSelection>,
     pub selection_anchor: Option<usize>,
+    limits: InputLimits,
     sensitive: bool,
 }
 
@@ -189,23 +92,6 @@ pub(crate) fn cursor_x_in_run(cursor: Cursor, run: &LayoutRun<'_>) -> Option<f32
 }
 
 impl InputWidgetState {
-    pub fn new(fs: &mut FontSystem) -> Self {
-        let buf = Buffer::new(fs, Metrics::new(14.0, 18.0));
-        let mut editor = Editor::new(buf);
-        let mut undo = UndoStack::default();
-        undo.push(String::new());
-        editor.set_auto_indent(false);
-        Self {
-            editor,
-            scroll_x: 0.0,
-            scroll_y: 0.0,
-            undo,
-            selection: None,
-            selection_anchor: None,
-            sensitive: false,
-        }
-    }
-
     pub(crate) fn set_sensitive(&mut self, sensitive: bool) {
         // A live buffer must be removed before losing sensitivity so stale secrets never become copyable.
         if self.sensitive || !sensitive {
@@ -237,19 +123,29 @@ impl InputWidgetState {
             .with_buffer(|b| b.lines.iter().all(|line| line.text().is_empty()))
     }
 
-    fn text_byte_len(&self) -> usize {
+    pub(crate) fn text_byte_len(&self) -> usize {
         self.editor.with_buffer(|b| {
-            b.lines.iter().enumerate().fold(0, |total, (index, line)| {
-                total + line.text().len() + usize::from(index > 0)
-            })
+            b.lines
+                .iter()
+                .enumerate()
+                .fold(0usize, |total, (index, line)| {
+                    total
+                        .saturating_add(line.text().len())
+                        .saturating_add(usize::from(index > 0))
+                })
         })
     }
 
     fn text_char_count(&self) -> usize {
         self.editor.with_buffer(|b| {
-            b.lines.iter().enumerate().fold(0, |total, (index, line)| {
-                total + line.text().chars().count() + usize::from(index > 0)
-            })
+            b.lines
+                .iter()
+                .enumerate()
+                .fold(0usize, |total, (index, line)| {
+                    total
+                        .saturating_add(line.text().chars().count())
+                        .saturating_add(usize::from(index > 0))
+                })
         })
     }
 
@@ -264,7 +160,7 @@ impl InputWidgetState {
             let Some(line) = b.lines.first() else {
                 return 0;
             };
-            let index = byte_index.min(line.text().len());
+            let index = floor_char_boundary(line.text(), byte_index);
             line.text()[..index].chars().count()
         })
     }
@@ -302,19 +198,6 @@ impl InputWidgetState {
         self.normalize_cursor();
     }
 
-    pub fn set_text(&mut self, fs: &mut FontSystem, text: &str) {
-        if self.sensitive {
-            self.zeroize_editor_text();
-        }
-        self.editor
-            .with_buffer_mut(|b| b.set_text(fs, text, &Attrs::new(), Shaping::Advanced, None));
-        self.editor.shape_as_needed(fs, false);
-        self.editor.action(fs, Action::Motion(Motion::End));
-        self.normalize_cursor();
-        self.selection = None;
-        self.selection_anchor = None;
-    }
-
     pub fn normalize_cursor(&mut self) {
         let cursor = self.editor.cursor();
         let normalized = self.editor.with_buffer(|buffer| {
@@ -323,7 +206,7 @@ impl InputWidgetState {
             let index = buffer
                 .lines
                 .get(line)
-                .map(|line| cursor.index.min(line.text().len()))
+                .map(|line| floor_char_boundary(line.text(), cursor.index))
                 .unwrap_or(0);
             Cursor::new_with_affinity(line, index, cursor.affinity)
         });
@@ -333,7 +216,8 @@ impl InputWidgetState {
     }
 
     pub fn cursor_byte_index(&self) -> usize {
-        self.editor.cursor().index
+        input_state_edit_helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())
+            .unwrap_or_else(|_| self.text_byte_len())
     }
 
     pub fn select_all(&mut self, fs: &mut FontSystem) {
@@ -355,66 +239,37 @@ impl InputWidgetState {
     }
 
     pub fn sync_selection(&mut self) {
-        if let Some((start, end)) = self.editor.selection_bounds() {
-            let cursor_idx = self.editor.cursor().index;
-            let anchor_idx = if cursor_idx == start.index {
-                end.index
-            } else {
-                start.index
-            };
-            if cursor_idx != anchor_idx {
-                self.selection = Some(TextSelection {
-                    start: anchor_idx,
-                    end: cursor_idx,
-                });
-                self.selection_anchor = Some(anchor_idx);
-                return;
-            }
-        }
-        self.selection = None;
-        self.selection_anchor = None;
-    }
-
-    pub fn delete_selection(&mut self, fs: &mut FontSystem) -> bool {
-        let Some(sel) = self.selection.take() else {
-            self.selection_anchor = None;
-            return false;
+        let Some((start, end)) = self.editor.selection_bounds() else {
+            self.clear_selection();
+            return;
         };
-        if sel.is_empty() {
-            self.selection_anchor = None;
-            return false;
-        }
-        let mut text = self.text();
-        let (a, b) = sel.normalized();
-        let b = b.min(text.len());
-        let mut new_text = format!("{}{}", &text[..a], &text[b..]);
-        self.set_text(fs, &new_text);
-        if self.sensitive {
-            text.zeroize();
-            new_text.zeroize();
-        }
-        true
-    }
-
-    pub fn snapshot(&mut self) {
-        if self.sensitive {
-            self.undo.clear_secure();
+        let cursor = self.editor.cursor();
+        let anchor = if cursor.line == start.line && cursor.index == start.index {
+            end
+        } else {
+            start
+        };
+        let Ok(cursor_offset) =
+            input_state_edit_helpers::cursor_flattened_offset(&self.editor, cursor)
+        else {
+            self.clear_selection();
+            return;
+        };
+        let Ok(anchor_offset) =
+            input_state_edit_helpers::cursor_flattened_offset(&self.editor, anchor)
+        else {
+            self.clear_selection();
+            return;
+        };
+        if cursor_offset == anchor_offset {
+            self.clear_selection();
             return;
         }
-        let t = self.text();
-        self.undo.push(t);
-    }
-
-    pub fn undo(&mut self, fs: &mut FontSystem) {
-        if let Some(text) = self.undo.undo().map(str::to_owned) {
-            self.set_text(fs, &text);
-        }
-    }
-
-    pub fn redo(&mut self, fs: &mut FontSystem) {
-        if let Some(text) = self.undo.redo().map(str::to_owned) {
-            self.set_text(fs, &text);
-        }
+        self.selection = Some(TextSelection {
+            start: anchor_offset,
+            end: cursor_offset,
+        });
+        self.selection_anchor = Some(anchor_offset);
     }
 
     pub fn display_text(&self, is_password: bool) -> String {
@@ -560,6 +415,18 @@ impl InputWidgetState {
             }
         });
     }
+}
+
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let index = index.min(text.len());
+    if text.is_char_boundary(index) {
+        return index;
+    }
+    text.char_indices()
+        .map(|(offset, _)| offset)
+        .take_while(|offset| *offset < index)
+        .last()
+        .unwrap_or(0)
 }
 
 impl Drop for InputWidgetState {

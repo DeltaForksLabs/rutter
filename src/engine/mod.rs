@@ -36,6 +36,7 @@ use crate::accessibility::{
     build_accessibility_update,
 };
 use crate::app::AppLogic;
+use crate::input_limits::{InputKind, InputLimits};
 use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
 };
@@ -299,6 +300,7 @@ struct InputRuntime<Msg: Clone> {
     is_multiline: bool,
     visible_w: f32,
     visible_h: f32,
+    limits: InputLimits,
 }
 
 #[derive(Debug, Clone)]
@@ -552,7 +554,7 @@ impl<A: AppLogic> RutterEngine<A> {
             font_system: Rc::new(RefCell::new(fs)),
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
-            text_cache: TextBufferCache::default(),
+            text_cache: TextBufferCache::with_limits(A::text_shape_cache_limits()),
             image_cache: ImageRenderCache::default(),
             layout_tree: SyncedLayoutTree::placeholder(root),
             runtime_caches: WidgetRuntimeCaches::default(),
@@ -653,20 +655,19 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn ensure_input_state(&mut self, id: u64) {
-        let sensitive = self
-            .runtime_caches
-            .inputs
-            .get(&id)
-            .map(|input| input.is_password)
-            .unwrap_or(false);
+        let Some(input) = self.runtime_caches.inputs.get(&id).cloned() else {
+            return;
+        };
         if !self.input_states.contains_key(&id) {
             let mut fs = self.font_system.borrow_mut();
-            let mut state = crate::input_state::InputWidgetState::new(&mut fs);
+            let mut state =
+                crate::input_state::InputWidgetState::new_with_limits(&mut fs, input.limits);
             state.set_metrics(&mut fs, A::theme().font_body);
             self.input_states.insert(id, state);
         }
         if let Some(state) = self.input_states.get_mut(&id) {
-            state.set_sensitive(sensitive);
+            state.set_limits(input.limits);
+            state.set_sensitive(input.is_password);
         }
     }
 
@@ -1016,6 +1017,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         is_multiline: false,
                         visible_w: Self::visible_input_width(layout, spacing),
                         visible_h: Self::visible_input_height(layout, spacing),
+                        limits: A::input_limits(resolved_id, InputKind::TextInput)
+                            .clamp_to_hard_caps(),
                     },
                     "inputs",
                 )?;
@@ -1037,6 +1040,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         is_multiline: true,
                         visible_w: Self::visible_input_width(layout, spacing),
                         visible_h: Self::visible_input_height(layout, spacing),
+                        limits: A::input_limits(resolved_id, InputKind::TextArea)
+                            .clamp_to_hard_caps(),
                     },
                     "inputs",
                 )?;
@@ -1058,6 +1063,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         is_multiline: false,
                         visible_w: Self::visible_input_width(layout, spacing),
                         visible_h: Self::visible_input_height(layout, spacing),
+                        limits: A::input_limits(resolved_id, InputKind::SearchBar)
+                            .clamp_to_hard_caps(),
                     },
                     "inputs",
                 )?;
@@ -1432,6 +1439,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 continue;
             };
 
+            state.set_limits(runtime.limits);
             state.set_sensitive(runtime.is_password);
             state.sync_layout(
                 &mut fs,

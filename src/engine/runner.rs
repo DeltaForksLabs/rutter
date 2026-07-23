@@ -22,6 +22,10 @@ use super::run_error::RutterRunError;
 use super::{InputRuntime, RutterEngine, validate_runtime_reconstruction};
 use crate::app::AppLogic;
 use crate::engine::widget_state::WidgetState;
+use crate::input_limits::{
+    InputLimitError, InputLimits, copy_text_with_reserve, validate_clipboard_source, validate_text,
+    validate_utf8_range,
+};
 use crate::input_state::InputWidgetState;
 use crate::render::hit_test::{
     ContextMenuOverlayHit, HitResult, PopoverOverlayHit, find_context_menu_target,
@@ -71,8 +75,30 @@ fn skip_ansi_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     }
 }
 
-fn sanitize_clipboard_text(text: &str, allow_newlines: bool) -> String {
-    let mut sanitized = String::with_capacity(text.len());
+fn sanitize_clipboard_text(
+    text: &str,
+    allow_newlines: bool,
+    limits: InputLimits,
+) -> Result<String, InputLimitError> {
+    validate_clipboard_source(text, limits)?;
+    let mut sanitized = reserve_clipboard_text(text.len())?;
+    append_sanitized_clipboard(text, allow_newlines, &mut sanitized);
+    validate_text(&sanitized, limits)?;
+    Ok(sanitized)
+}
+
+fn reserve_clipboard_text(bytes: usize) -> Result<String, InputLimitError> {
+    let mut sanitized = String::new();
+    sanitized
+        .try_reserve(bytes)
+        .map_err(|_| InputLimitError::AllocationFailed {
+            requested_bytes: bytes,
+            operation: "sanitized clipboard text",
+        })?;
+    Ok(sanitized)
+}
+
+fn append_sanitized_clipboard(text: &str, allow_newlines: bool, sanitized: &mut String) {
     let mut chars = text.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -85,31 +111,60 @@ fn sanitize_clipboard_text(text: &str, allow_newlines: bool) -> String {
             continue;
         }
 
-        match ch {
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                if allow_newlines {
-                    sanitized.push('\n');
-                } else {
-                    sanitized.push(' ');
-                }
-            }
-            '\n' => {
-                if allow_newlines {
-                    sanitized.push('\n');
-                } else {
-                    sanitized.push(' ');
-                }
-            }
-            '\t' => sanitized.push(' '),
-            _ if ch.is_control() => {}
-            _ => sanitized.push(ch),
+        if ch == '\r' && chars.peek() == Some(&'\n') {
+            chars.next();
         }
+        append_sanitized_character(ch, allow_newlines, sanitized);
+    }
+}
+
+fn append_sanitized_character(ch: char, allow_newlines: bool, sanitized: &mut String) {
+    match ch {
+        '\r' => {
+            if allow_newlines {
+                sanitized.push('\n');
+            } else {
+                sanitized.push(' ');
+            }
+        }
+        '\n' => {
+            if allow_newlines {
+                sanitized.push('\n');
+            } else {
+                sanitized.push(' ');
+            }
+        }
+        '\t' => sanitized.push(' '),
+        _ if ch.is_control() => {}
+        _ => sanitized.push(ch),
+    }
+}
+
+fn copy_input_text(
+    state: &InputWidgetState,
+    limits: InputLimits,
+) -> Result<String, InputLimitError> {
+    let text_bytes = state.text_byte_len();
+    if text_bytes > limits.max_bytes {
+        return Err(InputLimitError::BytesExceeded {
+            actual: text_bytes,
+            max: limits.max_bytes,
+        });
     }
 
-    sanitized
+    let text = state.text();
+    let Some(selection) = state.selection.filter(|selection| !selection.is_empty()) else {
+        return Ok(text);
+    };
+    let (start, end) = selection.normalized();
+    validate_utf8_range(&text, start, end)?;
+    copy_text_with_reserve(&text[start..end], "clipboard copy")
+}
+
+fn zeroize_sensitive_text(is_sensitive: bool, text: &mut String) {
+    if is_sensitive {
+        text.zeroize();
+    }
 }
 
 fn map_key(key: &Key, ctrl: bool) -> Option<Action> {
@@ -915,28 +970,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let is_multiline = input.is_multiline;
         let on_change = input.on_change;
 
-        let mut full = None;
-
-        if let Some(ist) = self.engine.input_states.get_mut(&fid) {
-            let mut fs = self.engine.font_system.borrow_mut();
-            ist.sync_layout(&mut fs, visible_w, A::theme().font_body, is_multiline);
-            if !ist.delete_selection(&mut fs) {
-                ist.clear_selection();
-            }
-            ist.editor.insert_string(text, None);
-            ist.normalize_cursor();
-            ist.update_scroll(
-                &mut fs,
-                visible_w,
-                visible_h,
-                A::theme().font_body,
-                is_password,
-                is_multiline,
-            );
-            full = Some(ist.text());
-        }
-
-        let Some(full) = full else {
+        let Some(full) = self.try_insert_committed_text(
+            fid,
+            text,
+            visible_w,
+            visible_h,
+            is_password,
+            is_multiline,
+        ) else {
             return;
         };
 
@@ -949,6 +990,38 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         );
         self.engine.layout_dirty = true;
         self.redraw();
+    }
+
+    fn try_insert_committed_text(
+        &mut self,
+        input_id: u64,
+        text: &str,
+        visible_width: f32,
+        visible_height: f32,
+        is_password: bool,
+        is_multiline: bool,
+    ) -> Option<String> {
+        let state = self.engine.input_states.get_mut(&input_id)?;
+        let mut font_system = self.engine.font_system.borrow_mut();
+        state.sync_layout(
+            &mut font_system,
+            visible_width,
+            A::theme().font_body,
+            is_multiline,
+        );
+        let changed = state.try_insert_text(&mut font_system, text).ok()?;
+        if !changed {
+            return None;
+        }
+        state.update_scroll(
+            &mut font_system,
+            visible_width,
+            visible_height,
+            A::theme().font_body,
+            is_password,
+            is_multiline,
+        );
+        Some(state.text())
     }
 
     fn redraw(&self) {
@@ -1639,9 +1712,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let visible_w = input.visible_w;
         let visible_h = input.visible_h;
 
-        let mut dirty = false;
-        let mut full = String::new();
+        let mut content_changed = false;
+        let mut visual_changed = false;
+        let mut full = None;
         let mut deleted_selection = None;
+        let mut selection_rejected = false;
         let mut submit_msg = None;
 
         if let Some(ist) = self.engine.input_states.get_mut(&fid) {
@@ -1653,20 +1728,24 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             if is_del_key {
                 let mut fs = self.engine.font_system.borrow_mut();
                 ist.normalize_cursor();
-                if ist.delete_selection(&mut fs) {
-                    ist.update_scroll(
-                        &mut fs,
-                        visible_w,
-                        visible_h,
-                        A::theme().font_body,
-                        is_password,
-                        is_multiline,
-                    );
-                    deleted_selection = Some(ist.text());
+                match ist.try_delete_selection(&mut fs) {
+                    Ok(true) => {
+                        ist.update_scroll(
+                            &mut fs,
+                            visible_w,
+                            visible_h,
+                            A::theme().font_body,
+                            is_password,
+                            is_multiline,
+                        );
+                        deleted_selection = Some(ist.text());
+                    }
+                    Ok(false) => {}
+                    Err(_) => selection_rejected = true,
                 }
             }
 
-            if deleted_selection.is_none() {
+            if deleted_selection.is_none() && !selection_rejected {
                 if is_arrow && is_shift {
                     let before = ist.cursor_byte_index();
                     if ist.selection_anchor.is_none() {
@@ -1685,7 +1764,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         start: anchor,
                         end: after,
                     });
-                    dirty = true;
+                    visual_changed = true;
                 } else if is_arrow {
                     ist.clear_selection();
                     if let Some(action) = map_key(key, self.engine.modifiers.state().control_key())
@@ -1695,15 +1774,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         ist.editor.action(&mut fs, action);
                         ist.normalize_cursor();
                     }
-                    dirty = true;
+                    visual_changed = true;
                 } else {
                     ist.clear_selection();
                     if let Key::Named(NamedKey::Enter) = key {
                         if is_multiline {
                             let mut fs = self.engine.font_system.borrow_mut();
-                            ist.editor.action(&mut fs, Action::Enter);
-                            ist.normalize_cursor();
-                            dirty = true;
+                            content_changed = ist.try_insert_text(&mut fs, "\n").unwrap_or(false);
+                            visual_changed = content_changed;
                         } else {
                             submit_msg = on_submit.clone();
                         }
@@ -1711,14 +1789,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         map_key(key, self.engine.modifiers.state().control_key())
                     {
                         let mut fs = self.engine.font_system.borrow_mut();
+                        let before = ist.text_byte_len();
                         ist.normalize_cursor();
                         ist.editor.action(&mut fs, action);
                         ist.normalize_cursor();
-                        dirty = true;
+                        content_changed = ist.text_byte_len() != before;
+                        visual_changed = true;
                     }
                 }
 
-                if dirty {
+                if visual_changed {
                     let mut fs = self.engine.font_system.borrow_mut();
                     ist.update_scroll(
                         &mut fs,
@@ -1728,7 +1808,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         is_password,
                         is_multiline,
                     );
-                    full = ist.text();
+                }
+                if content_changed {
+                    full = Some(ist.text());
                 }
             }
         }
@@ -1751,12 +1833,18 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         }
 
-        if dirty {
+        if let Some(full) = full {
             self.engine.cursor_blink.reset();
             self.engine.schedule_snapshot();
             let msg = on_change(full);
             A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
             self.engine.layout_dirty = true;
+            self.redraw();
+            return;
+        }
+
+        if visual_changed {
+            self.engine.cursor_blink.reset();
             self.redraw();
         }
     }
@@ -1769,41 +1857,40 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 self.redraw();
                 return;
             }
-            if let Some(s) = state {
-                let text_to_copy = s
-                    .selection
-                    .filter(|sel| !sel.is_empty())
-                    .map(|sel| {
-                        let (a, b) = sel.normalized();
-                        let full = s.text();
-                        let b = b.min(full.len());
-                        full[a..b].to_string()
-                    })
-                    .unwrap_or_else(|| s.text());
-                let _ = self.engine.clipboard.set_text(text_to_copy);
+            if let (Some(input), Some(state)) = (runtime, state) {
+                if let Ok(text_to_copy) = copy_input_text(state, input.limits) {
+                    let _ = self.engine.clipboard.set_text(text_to_copy);
+                }
             }
         }
         self.redraw();
     }
 
     fn do_paste(&mut self) {
-        let Ok(mut clipboard_text) = self.engine.clipboard.get_text() else {
-            return;
-        };
         let Some(fid) = self.engine.focused_input_id() else {
-            clipboard_text.zeroize();
             return;
         };
 
         let Some(input) = self.engine.runtime_caches.inputs.get(&fid).cloned() else {
-            clipboard_text.zeroize();
             return;
         };
-        let mut txt = sanitize_clipboard_text(&clipboard_text, input.is_multiline);
-        if input.is_password {
-            clipboard_text.zeroize();
+        if !self.engine.input_states.contains_key(&fid) {
+            return;
         }
+        let Ok(mut clipboard_text) = self.engine.clipboard.get_text() else {
+            return;
+        };
+        let mut txt =
+            match sanitize_clipboard_text(&clipboard_text, input.is_multiline, input.limits) {
+                Ok(text) => text,
+                Err(_) => {
+                    zeroize_sensitive_text(input.is_password, &mut clipboard_text);
+                    return;
+                }
+            };
+        zeroize_sensitive_text(input.is_password, &mut clipboard_text);
         if txt.is_empty() {
+            zeroize_sensitive_text(input.is_password, &mut txt);
             return;
         }
 
@@ -1815,11 +1902,17 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 A::theme().font_body,
                 input.is_multiline,
             );
-            if !s.delete_selection(&mut fs) {
-                s.clear_selection();
+            let changed = match s.try_insert_text(&mut fs, &txt) {
+                Ok(changed) => changed,
+                Err(_) => {
+                    zeroize_sensitive_text(input.is_password, &mut txt);
+                    return;
+                }
+            };
+            if !changed {
+                zeroize_sensitive_text(input.is_password, &mut txt);
+                return;
             }
-            s.editor.insert_string(&txt, None);
-            s.normalize_cursor();
             s.snapshot();
             s.update_scroll(
                 &mut fs,
@@ -1831,12 +1924,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             );
             s.text()
         } else {
+            zeroize_sensitive_text(input.is_password, &mut txt);
             return;
         };
 
-        if input.is_password {
-            txt.zeroize();
-        }
+        zeroize_sensitive_text(input.is_password, &mut txt);
         A::update(
             &mut self.engine.app_state,
             (input.on_change)(full),
@@ -1885,35 +1977,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         };
 
-        let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
-            let mut fs = self.engine.font_system.borrow_mut();
-            s.sync_layout(
-                &mut fs,
-                input.visible_w,
-                A::theme().font_body,
-                input.is_multiline,
-            );
-            s.undo(&mut fs);
-            s.update_scroll(
-                &mut fs,
-                input.visible_w,
-                input.visible_h,
-                A::theme().font_body,
-                input.is_password,
-                input.is_multiline,
-            );
-            Some(s.text())
-        } else {
-            None
+        let Some(full) = self.restore_input_history(fid, &input, InputWidgetState::try_undo) else {
+            return;
         };
-
-        if let Some(full) = full {
-            A::update(
-                &mut self.engine.app_state,
-                (input.on_change)(full),
-                &mut self.engine.clipboard,
-            );
-        }
+        A::update(
+            &mut self.engine.app_state,
+            (input.on_change)(full),
+            &mut self.engine.clipboard,
+        );
         self.engine.cursor_blink.reset();
         self.engine.layout_dirty = true;
         self.redraw();
@@ -1927,38 +1998,48 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         };
 
-        let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
-            let mut fs = self.engine.font_system.borrow_mut();
-            s.sync_layout(
-                &mut fs,
-                input.visible_w,
-                A::theme().font_body,
-                input.is_multiline,
-            );
-            s.redo(&mut fs);
-            s.update_scroll(
-                &mut fs,
-                input.visible_w,
-                input.visible_h,
-                A::theme().font_body,
-                input.is_password,
-                input.is_multiline,
-            );
-            Some(s.text())
-        } else {
-            None
+        let Some(full) = self.restore_input_history(fid, &input, InputWidgetState::try_redo) else {
+            return;
         };
-
-        if let Some(full) = full {
-            A::update(
-                &mut self.engine.app_state,
-                (input.on_change)(full),
-                &mut self.engine.clipboard,
-            );
-        }
+        A::update(
+            &mut self.engine.app_state,
+            (input.on_change)(full),
+            &mut self.engine.clipboard,
+        );
         self.engine.cursor_blink.reset();
         self.engine.layout_dirty = true;
         self.redraw();
+    }
+
+    fn restore_input_history(
+        &mut self,
+        input_id: u64,
+        input: &InputRuntime<A::Message>,
+        restore: fn(
+            &mut InputWidgetState,
+            &mut cosmic_text::FontSystem,
+        ) -> Result<bool, InputLimitError>,
+    ) -> Option<String> {
+        let state = self.engine.input_states.get_mut(&input_id)?;
+        let mut font_system = self.engine.font_system.borrow_mut();
+        state.sync_layout(
+            &mut font_system,
+            input.visible_w,
+            A::theme().font_body,
+            input.is_multiline,
+        );
+        if !restore(state, &mut font_system).ok()? {
+            return None;
+        }
+        state.update_scroll(
+            &mut font_system,
+            input.visible_w,
+            input.visible_h,
+            A::theme().font_body,
+            input.is_password,
+            input.is_multiline,
+        );
+        Some(state.text())
     }
 }
 
@@ -1973,25 +2054,38 @@ mod tests {
 
     use super::{collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text};
     use crate::engine::widget_state::{ToastState, WidgetState};
+    use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
 
     #[test]
     fn sanitize_clipboard_text_strips_controls_and_ansi_sequences() {
         let raw = "hello\u{0000}\u{001B}[31mworld\u{001B}[0m\u{0008}!";
-        assert_eq!(sanitize_clipboard_text(raw, false), "helloworld!");
+        assert_eq!(
+            sanitize_clipboard_text(raw, false, InputLimits::default()).unwrap(),
+            "helloworld!"
+        );
     }
 
     #[test]
     fn sanitize_clipboard_text_strips_bidi_override_chars() {
         let raw = "safe \u{202E}spoof\u{202C} text\u{200F}";
-        assert_eq!(sanitize_clipboard_text(raw, false), "safe spoof text");
+        assert_eq!(
+            sanitize_clipboard_text(raw, false, InputLimits::default()).unwrap(),
+            "safe spoof text"
+        );
     }
 
     #[test]
     fn sanitize_clipboard_text_preserves_newlines_only_for_multiline() {
         let raw = "a\r\nb\nc\td";
-        assert_eq!(sanitize_clipboard_text(raw, true), "a\nb\nc d");
-        assert_eq!(sanitize_clipboard_text(raw, false), "a b c d");
+        assert_eq!(
+            sanitize_clipboard_text(raw, true, InputLimits::default()).unwrap(),
+            "a\nb\nc d"
+        );
+        assert_eq!(
+            sanitize_clipboard_text(raw, false, InputKind::TextInput.limits()).unwrap(),
+            "a b c d"
+        );
     }
 
     #[test]

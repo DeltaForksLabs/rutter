@@ -4,10 +4,21 @@
 // ============================================================
 
 use cosmic_text::FontSystem;
+use rutter::input_limits::{InputKind, InputLimitError, InputLimits};
 use rutter::input_state::{InputWidgetState, TextSelection, UndoStack};
 
 fn fs() -> FontSystem {
     FontSystem::new()
+}
+
+fn small_limits(max_bytes: usize) -> InputLimits {
+    InputLimits {
+        max_bytes,
+        max_graphemes: max_bytes,
+        max_lines: 1,
+        max_undo_bytes: 64,
+        max_undo_entries: 10,
+    }
 }
 
 // ── UndoStack — integração ───────────────────────────────────
@@ -233,4 +244,172 @@ fn multiple_inputs_independent_state() {
     assert_eq!(s1.text(), "user");
     assert_eq!(s2.text(), "pass");
     assert_ne!(s1.text(), s2.text());
+}
+
+#[test]
+fn text_input_defaults_reject_excess_bytes_graphemes_and_lines() {
+    let mut fonts = fs();
+    let limits = InputLimits::for_kind(InputKind::TextInput);
+    let mut state = InputWidgetState::new_with_limits(&mut fonts, limits);
+    let too_many_bytes = "a".repeat(limits.max_bytes + 1);
+    let too_many_graphemes = "a".repeat(limits.max_graphemes + 1);
+
+    assert!(matches!(
+        state.try_set_text(&mut fonts, &too_many_bytes),
+        Err(InputLimitError::BytesExceeded { .. })
+    ));
+    assert!(matches!(
+        state.try_set_text(&mut fonts, &too_many_graphemes),
+        Err(InputLimitError::GraphemesExceeded { .. })
+    ));
+    assert!(matches!(
+        state.try_set_text(&mut fonts, "first\nsecond"),
+        Err(InputLimitError::LinesExceeded { .. })
+    ));
+    assert_eq!(state.text(), "");
+}
+
+#[test]
+fn text_area_accepts_its_line_limit_and_rejects_one_more_line_atomically() {
+    let mut fonts = fs();
+    let limits = InputLimits::for_kind(InputKind::TextArea);
+    let mut state = InputWidgetState::new_with_limits(&mut fonts, limits);
+    let mut accepted = "x\n".repeat(limits.max_lines - 1);
+    accepted.push('x');
+    let mut rejected = accepted.clone();
+    rejected.push_str("\nx");
+
+    assert!(state.try_set_text(&mut fonts, &accepted).unwrap());
+    assert!(matches!(
+        state.try_set_text(&mut fonts, &rejected),
+        Err(InputLimitError::LinesExceeded { .. })
+    ));
+    assert_eq!(state.text(), accepted);
+}
+
+#[test]
+fn oversized_insert_with_selection_is_atomic() {
+    let mut fonts = fs();
+    let mut state = InputWidgetState::new_with_limits(&mut fonts, small_limits(4));
+    state.try_set_text(&mut fonts, "abcd").unwrap();
+    state.selection = Some(TextSelection { start: 1, end: 3 });
+    state.selection_anchor = Some(1);
+
+    assert!(matches!(
+        state.try_insert_text(&mut fonts, "xyz"),
+        Err(InputLimitError::BytesExceeded { .. })
+    ));
+    assert_eq!(state.text(), "abcd");
+    assert_eq!(state.selection, Some(TextSelection { start: 1, end: 3 }));
+    assert_eq!(state.selection_anchor, Some(1));
+}
+
+#[test]
+fn invalid_utf8_selection_range_returns_error_without_mutation() {
+    let mut fonts = fs();
+    let mut state = InputWidgetState::new_with_limits(&mut fonts, small_limits(8));
+    state.try_set_text(&mut fonts, "é").unwrap();
+    state.selection = Some(TextSelection { start: 1, end: 2 });
+    state.selection_anchor = Some(1);
+
+    assert!(matches!(
+        state.try_delete_selection(&mut fonts),
+        Err(InputLimitError::InvalidUtf8Range { .. })
+    ));
+    assert!(!state.delete_selection(&mut fonts));
+    assert_eq!(state.text(), "é");
+    assert_eq!(state.selection, Some(TextSelection { start: 1, end: 2 }));
+}
+
+#[test]
+fn undo_byte_budget_evicts_old_snapshots_and_rejects_large_snapshots() {
+    let mut undo = UndoStack::with_limits(10, 3);
+    undo.push("a".into());
+    undo.push("bb".into());
+    undo.push("cc".into());
+
+    assert_eq!(undo.current(), Some("cc"));
+    assert!(undo.undo().is_none());
+
+    undo.push("too large".into());
+
+    assert_eq!(undo.current(), None);
+    assert!(!undo.can_undo());
+}
+
+#[test]
+fn limit_rejected_undo_and_redo_keep_history_position_and_text() {
+    let mut fonts = fs();
+    let limits = small_limits(2);
+    let mut undo_state = InputWidgetState::new_with_limits(&mut fonts, limits);
+    undo_state.try_set_text(&mut fonts, "ok").unwrap();
+    undo_state.undo = UndoStack::with_limits(10, 64);
+    undo_state.undo.push("oversized".into());
+    undo_state.undo.push("ok".into());
+
+    assert!(matches!(
+        undo_state.try_undo(&mut fonts),
+        Err(InputLimitError::BytesExceeded { .. })
+    ));
+    assert_eq!(undo_state.undo.current(), Some("ok"));
+    assert!(undo_state.undo.can_undo());
+    assert_eq!(undo_state.text(), "ok");
+
+    let mut redo_state = InputWidgetState::new_with_limits(&mut fonts, limits);
+    redo_state.try_set_text(&mut fonts, "ok").unwrap();
+    redo_state.undo = UndoStack::with_limits(10, 64);
+    redo_state.undo.push("ok".into());
+    redo_state.undo.push("oversized".into());
+    assert_eq!(redo_state.undo.undo(), Some("ok"));
+
+    assert!(matches!(
+        redo_state.try_redo(&mut fonts),
+        Err(InputLimitError::BytesExceeded { .. })
+    ));
+    assert_eq!(redo_state.undo.current(), Some("ok"));
+    assert!(redo_state.undo.can_redo());
+    assert_eq!(redo_state.text(), "ok");
+}
+
+#[test]
+fn legacy_set_text_rejects_text_larger_than_its_default_limit() {
+    let mut fonts = fs();
+    let mut state = InputWidgetState::new(&mut fonts);
+    let limits = InputKind::TextArea.limits();
+    let oversized = "x".repeat(limits.max_bytes + 1);
+
+    state.set_text(&mut fonts, &oversized);
+
+    assert_eq!(state.text(), "");
+}
+
+#[test]
+fn application_limits_cannot_exceed_framework_hard_caps() {
+    let requested = InputLimits {
+        max_bytes: usize::MAX,
+        max_graphemes: usize::MAX,
+        max_lines: usize::MAX,
+        max_undo_bytes: usize::MAX,
+        max_undo_entries: usize::MAX,
+    };
+    let mut fonts = fs();
+    let state = InputWidgetState::new_with_limits(&mut fonts, requested);
+
+    assert_eq!(state.limits().max_bytes, 1024 * 1024);
+    assert_eq!(state.limits().max_graphemes, 262_144);
+    assert_eq!(state.limits().max_lines, 16_384);
+    assert_eq!(state.limits().max_undo_bytes, 8 * 1024 * 1024);
+    assert_eq!(state.limits().max_undo_entries, 100);
+}
+
+#[test]
+fn undo_stack_discards_excess_string_capacity() {
+    let mut undo = UndoStack::with_limits(2, 8);
+    let mut oversized_capacity = String::with_capacity(4096);
+    oversized_capacity.push('x');
+
+    undo.push(oversized_capacity);
+
+    assert_eq!(undo.current(), Some("x"));
+    assert!(undo.retained_bytes() <= 8);
 }

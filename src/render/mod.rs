@@ -9,6 +9,7 @@ pub mod hit_test;
 pub mod image;
 pub mod pipeline;
 pub mod text;
+mod text_cache;
 
 use std::{
     cell::RefCell,
@@ -311,6 +312,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         theme,
         scale,
     );
+    text_cache.clear_transient_buffer();
 }
 
 fn draw_toast_overlays<'w, Msg>(
@@ -1774,7 +1776,7 @@ fn draw_text_input(
 
     let display = s.display_text(is_password);
 
-    let buffer = text_cache.get_or_shape(
+    text_cache.with_shaped(
         fs,
         TextShapeRequest::new(&display, theme.font_body, line_height)
             .with_bounds(
@@ -1786,25 +1788,25 @@ fn draw_text_input(
             } else {
                 Wrap::None
             }),
-    );
-
-    let runs = buffer.layout_runs().collect::<Vec<_>>();
-
-    draw_text_input_runs(
-        canvas,
-        fs,
-        swash,
-        theme,
-        scale,
-        size,
-        pad_y,
-        line_height,
-        is_focused,
-        cursor_visible,
-        is_multiline,
-        mapped_cursor,
-        mapped_selection,
-        runs,
+        |buffer, font_system| {
+            let runs = buffer.layout_runs().collect::<Vec<_>>();
+            draw_text_input_runs(
+                canvas,
+                font_system,
+                swash,
+                theme,
+                scale,
+                size,
+                pad_y,
+                line_height,
+                is_focused,
+                cursor_visible,
+                is_multiline,
+                mapped_cursor,
+                mapped_selection,
+                runs,
+            );
+        },
     );
 
     canvas.restore();
@@ -2209,21 +2211,22 @@ fn draw_dialog(
     tp.set_anti_alias(true);
     canvas.draw_str(title, (card_x + 24.0, card_y + 40.0), &tf, &tp);
 
-    let buffer = text_cache.get_or_shape(
+    text_cache.with_shaped(
         fs,
         TextShapeRequest::new(message, 14.0, 20.0)
             .with_bounds(Some(card_w - 48.0), None)
             .with_wrap(Wrap::WordOrGlyph),
-    );
-
-    crate::render::pipeline::render_text_runs(
-        canvas,
-        buffer.layout_runs(),
-        Point::new(card_x + 24.0, card_y + 60.0),
-        Theme::alpha(theme.on_surface, 180),
-        fs,
-        swash,
-        scale,
+        |buffer, font_system| {
+            crate::render::pipeline::render_text_runs(
+                canvas,
+                buffer.layout_runs(),
+                Point::new(card_x + 24.0, card_y + 60.0),
+                Theme::alpha(theme.on_surface, 180),
+                font_system,
+                swash,
+                scale,
+            );
+        },
     );
 
     let mf = get_cached_font(font_cache, "sans-serif", 14.0);

@@ -12,6 +12,8 @@ use arboard::Clipboard;
 use cosmic_text::FontSystem;
 
 use crate::i18n::Locale;
+use crate::input_limits::{InputKind, InputLimits};
+use crate::render::text::TextShapeCacheLimits;
 use crate::widget::Widget;
 
 /// Contrato principal do padrão Elm usado pelo Rutter.
@@ -76,5 +78,28 @@ pub trait AppLogic {
     /// Retorna o locale usado para direção de layout e catálogos i18n.
     fn locale() -> Locale {
         Locale::default()
+    }
+
+    /// Returns limits for one resolved input without changing widget declarations.
+    ///
+    /// ```
+    /// use rutter::{InputKind, InputLimits};
+    ///
+    /// let limits = InputLimits::for_kind(InputKind::SearchBar);
+    /// assert_eq!(limits.max_lines, 1);
+    /// ```
+    fn input_limits(_id: u64, kind: InputKind) -> InputLimits {
+        InputLimits::for_kind(kind)
+    }
+
+    /// Returns the shaping-cache budget used by the runtime.
+    ///
+    /// ```
+    /// # use rutter::{AppLogic, TextShapeCacheLimits};
+    /// let limits = TextShapeCacheLimits::default();
+    /// assert!(limits.max_total_text_bytes > 0);
+    /// ```
+    fn text_shape_cache_limits() -> TextShapeCacheLimits {
+        TextShapeCacheLimits::default()
     }
 }
