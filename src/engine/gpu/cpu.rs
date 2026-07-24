@@ -10,6 +10,40 @@ use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{BackendFailure, BackendType, GraphicsBackend, GraphicsError};
 
+const MAX_FRAME_BYTES: u64 = 512 * 1024 * 1024;
+
+fn validate_frame_size(size: PhysicalSize<u32>) -> Result<(i32, i32), GraphicsError> {
+    let pixels = u64::from(size.width)
+        .checked_mul(u64::from(size.height))
+        .ok_or(GraphicsError::InvalidSurfaceSize {
+            width: size.width,
+            height: size.height,
+        })?;
+    let bytes = pixels
+        .checked_mul(4)
+        .ok_or(GraphicsError::InvalidSurfaceSize {
+            width: size.width,
+            height: size.height,
+        })?;
+    if bytes > MAX_FRAME_BYTES {
+        return Err(GraphicsError::SurfaceTooLarge {
+            width: size.width,
+            height: size.height,
+            bytes,
+            max_bytes: MAX_FRAME_BYTES,
+        });
+    }
+    let width = i32::try_from(size.width).map_err(|_| GraphicsError::InvalidSurfaceSize {
+        width: size.width,
+        height: size.height,
+    })?;
+    let height = i32::try_from(size.height).map_err(|_| GraphicsError::InvalidSurfaceSize {
+        width: size.width,
+        height: size.height,
+    })?;
+    Ok((width.max(1), height.max(1)))
+}
+
 pub struct CpuBackend {
     window: Rc<Window>,
     _context: Context<Rc<Window>>,
@@ -32,6 +66,7 @@ impl CpuBackend {
             ))
         })?;
         let size = window.inner_size();
+        let raster_size = validate_frame_size(size)?;
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
         {
@@ -42,11 +77,8 @@ impl CpuBackend {
                 ))
             })?;
         }
-        let skia_surface = skia_safe::surfaces::raster_n32_premul((
-            size.width.max(1) as i32,
-            size.height.max(1) as i32,
-        ))
-        .ok_or_else(|| {
+        let skia_surface = skia_safe::surfaces::raster_n32_premul((raster_size.0, raster_size.1))
+            .ok_or_else(|| {
             GraphicsError::BackendInit(BackendFailure::new(
                 BackendType::CpuSoftbuffer,
                 "failed to create raster surface",
@@ -107,6 +139,7 @@ impl GraphicsBackend for CpuBackend {
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError> {
+        let raster_size = validate_frame_size(size)?;
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
         {
@@ -118,19 +151,45 @@ impl GraphicsBackend for CpuBackend {
                 })?;
         }
 
-        self.skia_surface = skia_safe::surfaces::raster_n32_premul((
-            size.width.max(1) as i32,
-            size.height.max(1) as i32,
-        ))
-        .ok_or_else(|| GraphicsError::Resize {
-            backend: BackendType::CpuSoftbuffer,
-            reason: "failed to recreate raster surface".to_string(),
-        })?;
+        self.skia_surface = skia_safe::surfaces::raster_n32_premul((raster_size.0, raster_size.1))
+            .ok_or_else(|| GraphicsError::Resize {
+                backend: BackendType::CpuSoftbuffer,
+                reason: "failed to recreate raster surface".to_string(),
+            })?;
 
         Ok(())
     }
 
     fn window(&self) -> &Rc<Window> {
         &self.window
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GraphicsError, MAX_FRAME_BYTES, validate_frame_size};
+    use winit::dpi::PhysicalSize;
+
+    #[test]
+    fn validate_frame_size_rejects_unrepresentable_and_oversized_dimensions() {
+        assert_eq!(
+            validate_frame_size(PhysicalSize::new(0, 0)).unwrap(),
+            (1, 1)
+        );
+        assert!(matches!(
+            validate_frame_size(PhysicalSize::new(u32::MAX, 1)),
+            Err(GraphicsError::SurfaceTooLarge { .. })
+        ));
+        assert!(matches!(
+            validate_frame_size(PhysicalSize::new(u32::MAX, u32::MAX)),
+            Err(GraphicsError::InvalidSurfaceSize { .. })
+        ));
+        assert!(matches!(
+            validate_frame_size(PhysicalSize::new(16_385, 8_192)),
+            Err(GraphicsError::SurfaceTooLarge {
+                max_bytes: MAX_FRAME_BYTES,
+                ..
+            })
+        ));
     }
 }

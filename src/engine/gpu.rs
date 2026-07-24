@@ -66,6 +66,16 @@ pub enum GraphicsError {
     BackendUnavailable {
         operation: &'static str,
     },
+    InvalidSurfaceSize {
+        width: u32,
+        height: u32,
+    },
+    SurfaceTooLarge {
+        width: u32,
+        height: u32,
+        bytes: u64,
+        max_bytes: u64,
+    },
     NoBackendAvailable(Vec<BackendFailure>),
 }
 
@@ -91,6 +101,23 @@ impl fmt::Display for GraphicsError {
             }
             Self::BackendUnavailable { operation } => {
                 write!(f, "graphics backend unavailable during {operation}")
+            }
+            Self::InvalidSurfaceSize { width, height } => {
+                write!(
+                    f,
+                    "invalid surface size `{width}x{height}`, expected dimensions representable as positive i32 values"
+                )
+            }
+            Self::SurfaceTooLarge {
+                width,
+                height,
+                bytes,
+                max_bytes,
+            } => {
+                write!(
+                    f,
+                    "surface size `{width}x{height}` requires {bytes} bytes, expected <= {max_bytes} bytes"
+                )
             }
             Self::NoBackendAvailable(failures) => {
                 write!(f, "no graphics backend could be initialized")?;
