@@ -38,6 +38,90 @@ struct SwapchainBundle {
     image_layouts: Vec<avk::ImageLayout>,
 }
 
+struct PendingSwapchain<'a> {
+    loader: &'a khr::swapchain::Device,
+    handle: avk::SwapchainKHR,
+}
+
+impl<'a> PendingSwapchain<'a> {
+    fn commit(mut self) -> avk::SwapchainKHR {
+        let handle = self.handle;
+        self.handle = avk::SwapchainKHR::null();
+        handle
+    }
+}
+
+impl Drop for PendingSwapchain<'_> {
+    fn drop(&mut self) {
+        if self.handle.is_null() {
+            return;
+        }
+        unsafe {
+            self.loader.destroy_swapchain(self.handle, None);
+        }
+    }
+}
+
+struct VkInitGuard {
+    entry: Option<Entry>,
+    instance: Option<Instance>,
+    surface_loader: Option<khr::surface::Instance>,
+    surface: Option<avk::SurfaceKHR>,
+    device: Option<Device>,
+    command_pool: Option<avk::CommandPool>,
+    acquire_fence: Option<avk::Fence>,
+    skia_context: Option<DirectContext>,
+}
+
+impl VkInitGuard {
+    fn new(entry: Entry) -> Self {
+        Self {
+            entry: Some(entry),
+            instance: None,
+            surface_loader: None,
+            surface: None,
+            device: None,
+            command_pool: None,
+            acquire_fence: None,
+            skia_context: None,
+        }
+    }
+}
+
+impl Drop for VkInitGuard {
+    fn drop(&mut self) {
+        if let Some(device) = self.device.as_ref() {
+            unsafe {
+                let _ = device.device_wait_idle();
+            }
+        }
+        if let Some(mut context) = self.skia_context.take() {
+            context.release_resources_and_abandon();
+        }
+        if let Some(device) = self.device.as_ref() {
+            unsafe {
+                if let Some(fence) = self.acquire_fence.take() {
+                    device.destroy_fence(fence, None);
+                }
+                if let Some(pool) = self.command_pool.take() {
+                    device.destroy_command_pool(pool, None);
+                }
+                device.destroy_device(None);
+            }
+        }
+        if let (Some(loader), Some(surface)) = (self.surface_loader.as_ref(), self.surface.take()) {
+            unsafe {
+                loader.destroy_surface(surface, None);
+            }
+        }
+        if let Some(instance) = self.instance.take() {
+            unsafe {
+                instance.destroy_instance(None);
+            }
+        }
+    }
+}
+
 pub struct VkBackend {
     window: Rc<Window>,
     entry: Entry,
@@ -121,20 +205,32 @@ impl VkBackend {
             .application_info(&app_info)
             .enabled_extension_names(&instance_extension_names)
             .flags(instance_create_flags);
-        let instance = unsafe { entry.create_instance(&instance_create_info, None) }
-            .map_err(|err| Self::init_failure(format!("create Vulkan instance: {err:?}")))?;
+        let mut cleanup = VkInitGuard::new(entry);
+        let instance = unsafe {
+            cleanup
+                .entry
+                .as_ref()
+                .unwrap()
+                .create_instance(&instance_create_info, None)
+        }
+        .map_err(|err| Self::init_failure(format!("create Vulkan instance: {err:?}")))?;
+        cleanup.instance = Some(instance);
+        let instance = cleanup.instance.as_ref().unwrap();
 
-        let surface_loader = khr::surface::Instance::new(&entry, &instance);
+        let surface_loader = khr::surface::Instance::new(cleanup.entry.as_ref().unwrap(), instance);
+        cleanup.surface_loader = Some(surface_loader);
+        let surface_loader = cleanup.surface_loader.as_ref().unwrap();
         let surface = unsafe {
             ash_window::create_surface(
-                &entry,
-                &instance,
+                cleanup.entry.as_ref().unwrap(),
+                instance,
                 display_handle.as_raw(),
                 window_handle.as_raw(),
                 None,
             )
         }
         .map_err(|err| Self::init_failure(format!("create Vulkan surface: {err:?}")))?;
+        cleanup.surface = Some(surface);
 
         let (physical_device, queue_family_index) =
             pick_physical_device(&instance, &surface_loader, surface)
@@ -151,6 +247,8 @@ impl VkBackend {
             .enabled_extension_names(&device_extensions);
         let device = unsafe { instance.create_device(physical_device, &device_create_info, None) }
             .map_err(|err| Self::init_failure(format!("create Vulkan device: {err:?}")))?;
+        cleanup.device = Some(device);
+        let device = cleanup.device.as_ref().unwrap();
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
@@ -159,6 +257,7 @@ impl VkBackend {
             .queue_family_index(queue_family_index);
         let command_pool = unsafe { device.create_command_pool(&command_pool_info, None) }
             .map_err(|err| Self::init_failure(format!("create command pool: {err:?}")))?;
+        cleanup.command_pool = Some(command_pool);
         let command_buffer_info = avk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
             .level(avk::CommandBufferLevel::PRIMARY)
@@ -171,9 +270,10 @@ impl VkBackend {
                 .ok_or_else(|| Self::init_failure("allocate command buffer returned empty"))?;
         let acquire_fence = unsafe { device.create_fence(&avk::FenceCreateInfo::default(), None) }
             .map_err(|err| Self::init_failure(format!("create acquire fence: {err:?}")))?;
+        cleanup.acquire_fence = Some(acquire_fence);
 
-        let mut skia_context = create_skia_context(
-            &entry,
+        let skia_context = create_skia_context(
+            cleanup.entry.as_ref().unwrap(),
             &instance,
             physical_device,
             &device,
@@ -181,6 +281,8 @@ impl VkBackend {
             queue_family_index,
         )
         .map_err(Self::init_failure)?;
+        cleanup.skia_context = Some(skia_context);
+        let skia_context = cleanup.skia_context.as_mut().unwrap();
 
         let swapchain_bundle = Self::create_swapchain_bundle(
             &window,
@@ -188,12 +290,20 @@ impl VkBackend {
             surface,
             physical_device,
             &swapchain_loader,
-            &mut skia_context,
+            skia_context,
             queue_family_index,
             None,
         )
         .map_err(Self::init_failure)?;
 
+        let entry = cleanup.entry.take().unwrap();
+        let instance = cleanup.instance.take().unwrap();
+        let surface_loader = cleanup.surface_loader.take().unwrap();
+        let surface = cleanup.surface.take().unwrap();
+        let device = cleanup.device.take().unwrap();
+        let command_pool = cleanup.command_pool.take().unwrap();
+        let acquire_fence = cleanup.acquire_fence.take().unwrap();
+        let skia_context = cleanup.skia_context.take().unwrap();
         Ok(Box::new(Self {
             window,
             entry,
@@ -288,12 +398,13 @@ impl VkBackend {
             .old_swapchain(old_swapchain.unwrap_or_default());
         let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_info, None) }
             .map_err(|err| format!("create swapchain: {err:?}"))?;
-        let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }
+        let pending_swapchain = PendingSwapchain {
+            loader: swapchain_loader,
+            handle: swapchain,
+        };
+        let images = unsafe { swapchain_loader.get_swapchain_images(pending_swapchain.handle) }
             .map_err(|err| format!("get swapchain images: {err:?}"))?;
         if images.is_empty() {
-            unsafe {
-                swapchain_loader.destroy_swapchain(swapchain, None);
-            }
             return Err("swapchain returned no images".to_string());
         }
 
@@ -311,7 +422,7 @@ impl VkBackend {
         }
 
         Ok(SwapchainBundle {
-            swapchain,
+            swapchain: pending_swapchain.commit(),
             extent,
             format,
             color_type,
