@@ -30,7 +30,10 @@ pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};
 pub use input_limits::{InputKind, InputLimitError, InputLimits};
 pub use render::text::TextShapeCacheLimits;
 pub use theme::Theme;
-pub use widget::{AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget};
+pub use widget::{
+    AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget,
+    WidgetConfigError, validate_slider, validate_virtual_grid, validate_virtual_list,
+};
 pub use widget_id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
 
 // ── Re-exports de dependências públicas ──────────────────────

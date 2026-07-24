@@ -274,7 +274,10 @@ fn input_copy_is_blocked<Msg: Clone>(
 }
 
 pub fn snap_to_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
-    if step <= 0.0 {
+    if !value.is_finite() || !min.is_finite() || !max.is_finite() || min > max {
+        return min.is_finite().then_some(min).unwrap_or(0.0);
+    }
+    if !step.is_finite() || step <= 0.0 {
         return value.clamp(min, max);
     }
     let snapped = (((value - min) / step).round() * step + min).clamp(min, max);

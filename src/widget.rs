@@ -5,6 +5,8 @@
 // Rutter Framework — widget.rs
 // ============================================================
 
+use std::fmt;
+
 use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
 
@@ -13,6 +15,61 @@ use crate::widget_id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
 /// árvore. IDs manuais seguros devem ser criados com [`WidgetId::manual`].
 pub const AUTO_ID: u64 = 0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidgetConfigError {
+    InvalidSliderRange,
+    InvalidVirtualItemHeight,
+    InvalidVirtualGridColumns,
+    SelectedIndexOutOfBounds,
+}
+
+impl fmt::Display for WidgetConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::InvalidSliderRange => {
+                "invalid slider values, expected finite value/min/max/step with min <= max and step > 0"
+            }
+            Self::InvalidVirtualItemHeight => {
+                "invalid virtual item height, expected a finite value > 0"
+            }
+            Self::InvalidVirtualGridColumns => "invalid virtual grid columns, expected columns > 0",
+            Self::SelectedIndexOutOfBounds => {
+                "invalid selected index, expected an index within the options slice"
+            }
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for WidgetConfigError {}
+
+pub fn validate_slider(value: f32, min: f32, max: f32, step: f32) -> Result<(), WidgetConfigError> {
+    if value.is_finite()
+        && min.is_finite()
+        && max.is_finite()
+        && step.is_finite()
+        && min <= max
+        && step > 0.0
+    {
+        return Ok(());
+    }
+    Err(WidgetConfigError::InvalidSliderRange)
+}
+
+pub fn validate_virtual_list(item_height: f32) -> Result<(), WidgetConfigError> {
+    if item_height.is_finite() && item_height > 0.0 {
+        return Ok(());
+    }
+    Err(WidgetConfigError::InvalidVirtualItemHeight)
+}
+
+pub fn validate_virtual_grid(columns: usize, item_height: f32) -> Result<(), WidgetConfigError> {
+    if columns == 0 {
+        return Err(WidgetConfigError::InvalidVirtualGridColumns);
+    }
+    validate_virtual_list(item_height)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum InputState {
@@ -567,6 +624,19 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    pub fn try_slider(
+        value: f32,
+        min: f32,
+        max: f32,
+        step: f32,
+        on_change: fn(f32) -> Msg,
+        style: Style,
+        label: &'a str,
+    ) -> Result<Self, WidgetConfigError> {
+        validate_slider(value, min, max, step)?;
+        Ok(Self::slider(value, min, max, step, on_change, style, label))
+    }
+
     pub fn select(
         options: &'a [&'a str],
         selected_index: usize,
@@ -584,6 +654,27 @@ impl<'a, Msg> Widget<'a, Msg> {
             label,
             placeholder,
         }
+    }
+
+    pub fn try_select(
+        options: &'a [&'a str],
+        selected_index: usize,
+        on_change: fn(usize) -> Msg,
+        style: Style,
+        label: &'a str,
+        placeholder: &'a str,
+    ) -> Result<Self, WidgetConfigError> {
+        if options.is_empty() || selected_index >= options.len() {
+            return Err(WidgetConfigError::SelectedIndexOutOfBounds);
+        }
+        Ok(Self::select(
+            options,
+            selected_index,
+            on_change,
+            style,
+            label,
+            placeholder,
+        ))
     }
 
     pub fn progress_bar(value: f32, indeterminate: bool, style: Style) -> Self {
