@@ -7,7 +7,7 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use cosmic_text::{Action, Edit, Motion};
+use cosmic_text::{Action, Edit, FontSystem, Motion};
 use skia_safe::{Point, Rect as SkiaRect};
 use winit::{
     application::ApplicationHandler,
@@ -158,7 +158,45 @@ fn copy_input_text(
     };
     let (start, end) = selection.normalized();
     validate_utf8_range(&text, start, end)?;
-    copy_text_with_reserve(&text[start..end], "clipboard copy")
+    let selected = text
+        .get(start..end)
+        .ok_or(InputLimitError::InvalidUtf8Range {
+            start,
+            end,
+            text_bytes: text.len(),
+        })?;
+    copy_text_with_reserve(selected, "clipboard copy")
+}
+
+fn update_shift_selection(
+    state: &mut InputWidgetState,
+    key: &Key,
+    ctrl: bool,
+    font_system: &mut FontSystem,
+) {
+    let Ok(before) = state.try_cursor_byte_index() else {
+        state.clear_selection();
+        return;
+    };
+    let Some(action) = map_key(key, ctrl) else {
+        return;
+    };
+    state.selection_anchor.get_or_insert(before);
+    state.normalize_cursor();
+    state.editor.action(font_system, action);
+    state.normalize_cursor();
+    update_selection_after_motion(state);
+}
+
+fn update_selection_after_motion(state: &mut InputWidgetState) {
+    let Some(anchor) = state.selection_anchor else {
+        return;
+    };
+    let Ok(end) = state.try_cursor_byte_index() else {
+        state.clear_selection();
+        return;
+    };
+    state.selection = Some(crate::input_state::TextSelection { start: anchor, end });
 }
 
 fn zeroize_sensitive_text(is_sensitive: bool, text: &mut String) {
@@ -1747,23 +1785,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
             if deleted_selection.is_none() && !selection_rejected {
                 if is_arrow && is_shift {
-                    let before = ist.cursor_byte_index();
-                    if ist.selection_anchor.is_none() {
-                        ist.selection_anchor = Some(before);
-                    }
-                    if let Some(action) = map_key(key, self.engine.modifiers.state().control_key())
-                    {
-                        let mut fs = self.engine.font_system.borrow_mut();
-                        ist.normalize_cursor();
-                        ist.editor.action(&mut fs, action);
-                        ist.normalize_cursor();
-                    }
-                    let after = ist.cursor_byte_index();
-                    let anchor = ist.selection_anchor.unwrap();
-                    ist.selection = Some(crate::input_state::TextSelection {
-                        start: anchor,
-                        end: after,
-                    });
+                    let mut fs = self.engine.font_system.borrow_mut();
+                    update_shift_selection(
+                        ist,
+                        key,
+                        self.engine.modifiers.state().control_key(),
+                        &mut fs,
+                    );
                     visual_changed = true;
                 } else if is_arrow {
                     ist.clear_selection();

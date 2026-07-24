@@ -40,7 +40,7 @@ use crate::engine::widget_state::{
     VirtualGridState, WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left,
     virtual_grid_cell_width, virtual_grid_row_count,
 };
-use crate::input_state::{InputWidgetState, TextSelection, cursor_x_in_run};
+use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{
     OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree, compute_layout,
 };
@@ -1699,14 +1699,13 @@ fn draw_text_input(
 
     let cursor = s.editor.cursor();
     let mapped_cursor = if is_password {
-        Cursor::new(cursor.line, s.password_display_index(cursor.index))
+        Cursor::new(
+            cursor.line,
+            s.password_display_index_for_line(cursor.line, cursor.index),
+        )
     } else {
         cursor
     };
-    let mapped_selection = s
-        .selection
-        .filter(|selection| !selection.is_empty())
-        .map(|selection| map_selection_for_display(selection, s, is_password));
 
     let display = s.display_text(is_password);
 
@@ -1737,7 +1736,8 @@ fn draw_text_input(
                 cursor_visible,
                 is_multiline,
                 mapped_cursor,
-                mapped_selection,
+                s,
+                is_password,
                 runs,
             );
         },
@@ -1794,22 +1794,6 @@ fn draw_search_bar(
     canvas.draw_str("⌕", (10.0, size.1 / 2.0 + theme.font_body / 3.0), &f, &p);
 }
 
-fn map_selection_for_display(
-    selection: TextSelection,
-    state: &InputWidgetState,
-    is_password: bool,
-) -> TextSelection {
-    if !is_password {
-        return selection;
-    }
-
-    let (start, end) = selection.normalized();
-    TextSelection {
-        start: state.password_display_index(start),
-        end: state.password_display_index(end),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn draw_text_input_runs<'a>(
     canvas: &Canvas,
@@ -1824,7 +1808,8 @@ fn draw_text_input_runs<'a>(
     cursor_visible: bool,
     is_multiline: bool,
     cursor: Cursor,
-    selection: Option<TextSelection>,
+    selection_state: &InputWidgetState,
+    is_password: bool,
     runs: Vec<LayoutRun<'a>>,
 ) {
     let inner_height = (size.1 - pad_y * 2.0).max(0.0);
@@ -1851,9 +1836,17 @@ fn draw_text_input_runs<'a>(
         }
     }
 
-    if let Some(selection) = selection {
-        let (a, b) = selection.normalized();
+    if let Some(selection) = selection_state
+        .selection
+        .filter(|selection| !selection.is_empty())
+    {
         for run in runs.iter() {
+            let Some(selection) =
+                selection_state.selection_in_display_line(selection, run.line_i, is_password)
+            else {
+                continue;
+            };
+            let (a, b) = selection.normalized();
             let mut x_start = None;
             let mut x_end = None;
             for glyph in run.glyphs.iter() {

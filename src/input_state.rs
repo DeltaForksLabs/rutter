@@ -149,15 +149,33 @@ impl InputWidgetState {
         })
     }
 
-    pub(crate) fn password_display_index(&self, byte_index: usize) -> usize {
+    pub(crate) fn password_display_index_for_line(
+        &self,
+        line_index: usize,
+        byte_index: usize,
+    ) -> usize {
         const BULLET_UTF8_LEN: usize = "•".len();
-        let chars = self.chars_before_byte_index(byte_index);
+        let chars = self.chars_before_line_byte_index(line_index, byte_index);
         chars * BULLET_UTF8_LEN
     }
 
-    fn chars_before_byte_index(&self, byte_index: usize) -> usize {
+    pub(crate) fn selection_in_display_line(
+        &self,
+        selection: TextSelection,
+        line_index: usize,
+        is_password: bool,
+    ) -> Option<TextSelection> {
+        self.editor.with_buffer(|buffer| {
+            let line = buffer.lines.get(line_index)?;
+            let line_start = flattened_line_start(buffer, line_index)?;
+            let line_end = line_start.checked_add(line.text().len())?;
+            line_local_selection(selection, line_start, line_end, line.text(), is_password)
+        })
+    }
+
+    fn chars_before_line_byte_index(&self, line_index: usize, byte_index: usize) -> usize {
         self.editor.with_buffer(|b| {
-            let Some(line) = b.lines.first() else {
+            let Some(line) = b.lines.get(line_index) else {
                 return 0;
             };
             let index = floor_char_boundary(line.text(), byte_index);
@@ -216,8 +234,14 @@ impl InputWidgetState {
     }
 
     pub fn cursor_byte_index(&self) -> usize {
-        input_state_edit_helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())
+        self.try_cursor_byte_index()
             .unwrap_or_else(|_| self.text_byte_len())
+    }
+
+    pub(crate) fn try_cursor_byte_index(
+        &self,
+    ) -> Result<usize, crate::input_limits::InputLimitError> {
+        input_state_edit_helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())
     }
 
     pub fn select_all(&mut self, fs: &mut FontSystem) {
@@ -312,7 +336,10 @@ impl InputWidgetState {
 
         let cursor = self.editor.cursor();
         let mapped_cursor = if is_password {
-            Cursor::new(cursor.line, self.password_display_index(cursor.index))
+            Cursor::new(
+                cursor.line,
+                self.password_display_index_for_line(cursor.line, cursor.index),
+            )
         } else {
             cursor
         };
@@ -365,7 +392,10 @@ impl InputWidgetState {
 
         let cursor = self.editor.cursor();
         let mapped_cursor = if is_password {
-            Cursor::new(cursor.line, self.password_display_index(cursor.index))
+            Cursor::new(
+                cursor.line,
+                self.password_display_index_for_line(cursor.line, cursor.index),
+            )
         } else {
             cursor
         };
@@ -427,6 +457,56 @@ fn floor_char_boundary(text: &str, index: usize) -> usize {
         .take_while(|offset| *offset < index)
         .last()
         .unwrap_or(0)
+}
+
+fn flattened_line_start(buffer: &Buffer, line_index: usize) -> Option<usize> {
+    buffer
+        .lines
+        .iter()
+        .take(line_index)
+        .try_fold(0usize, |offset, line| {
+            offset.checked_add(line.text().len())?.checked_add(1)
+        })
+}
+
+fn line_local_selection(
+    selection: TextSelection,
+    line_start: usize,
+    line_end: usize,
+    line_text: &str,
+    is_password: bool,
+) -> Option<TextSelection> {
+    let (start, end) = selection.normalized();
+    let start = start.max(line_start);
+    let end = end.min(line_end);
+    if start >= end
+        || !line_text.is_char_boundary(start - line_start)
+        || !line_text.is_char_boundary(end - line_start)
+    {
+        return None;
+    }
+    let start = start - line_start;
+    let end = end - line_start;
+    Some(display_selection(line_text, start, end, is_password))
+}
+
+fn display_selection(
+    line_text: &str,
+    start: usize,
+    end: usize,
+    is_password: bool,
+) -> TextSelection {
+    if !is_password {
+        return TextSelection { start, end };
+    }
+    TextSelection {
+        start: bullet_byte_offset(line_text, start),
+        end: bullet_byte_offset(line_text, end),
+    }
+}
+
+fn bullet_byte_offset(line_text: &str, byte_index: usize) -> usize {
+    line_text[..byte_index].chars().count() * "•".len()
 }
 
 impl Drop for InputWidgetState {
@@ -499,6 +579,26 @@ mod tests {
 
         assert_eq!(state.display_text(true), "••••••");
         assert!(!state.text_is_empty());
-        assert_eq!(state.password_display_index(3), "•••".len());
+        assert_eq!(state.password_display_index_for_line(0, 3), "•••".len());
+    }
+
+    #[test]
+    fn selection_in_display_line_uses_flattened_offsets_for_each_line() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_text(&mut fs, "éx\nbeta");
+        let selection = TextSelection { start: 2, end: 6 };
+
+        assert_eq!(
+            state.selection_in_display_line(selection, 0, false),
+            Some(TextSelection { start: 2, end: 3 })
+        );
+        assert_eq!(
+            state.selection_in_display_line(selection, 1, true),
+            Some(TextSelection {
+                start: 0,
+                end: "••".len()
+            })
+        );
     }
 }

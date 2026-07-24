@@ -322,6 +322,20 @@ fn invalid_utf8_selection_range_returns_error_without_mutation() {
 }
 
 #[test]
+fn multiline_selection_deletes_the_flattened_document_range() {
+    let mut fonts = fs();
+    let mut limits = small_limits(16);
+    limits.max_lines = 2;
+    let mut state = InputWidgetState::new_with_limits(&mut fonts, limits);
+    state.try_set_text(&mut fonts, "éx\nbeta").unwrap();
+    state.selection = Some(TextSelection { start: 2, end: 6 });
+
+    assert!(state.try_delete_selection(&mut fonts).unwrap());
+    assert_eq!(state.text(), "éta");
+    assert_eq!(state.cursor_byte_index(), 2);
+}
+
+#[test]
 fn undo_byte_budget_evicts_old_snapshots_and_rejects_large_snapshots() {
     let mut undo = UndoStack::with_limits(10, 3);
     undo.push("a".into());
