@@ -11,7 +11,7 @@ use cosmic_text::{Action, Edit, FontSystem, Motion};
 use skia_safe::{Point, Rect as SkiaRect};
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
+    event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::WindowId,
@@ -74,7 +74,7 @@ fn skip_ansi_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     }
 }
 
-fn sanitize_clipboard_text(
+fn sanitize_input_text(
     text: &str,
     allow_newlines: bool,
     limits: InputLimits,
@@ -87,6 +87,14 @@ fn sanitize_clipboard_text(
         return Err(error);
     }
     Ok(sanitized)
+}
+
+fn sanitize_clipboard_text(
+    text: &str,
+    allow_newlines: bool,
+    limits: InputLimits,
+) -> Result<String, InputLimitError> {
+    sanitize_input_text(text, allow_newlines, limits)
 }
 
 fn reserve_clipboard_text(bytes: usize) -> Result<String, InputLimitError> {
@@ -429,6 +437,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 self.redraw();
             }
             WindowEvent::ModifiersChanged(m) => self.engine.modifiers = m,
+            WindowEvent::Ime(Ime::Commit(text)) => self.insert_text_commit(&text),
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = Point::new(position.x as f32, position.y as f32);
                 self.engine.last_mouse_pos = Point::new(
@@ -1027,14 +1036,22 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let is_multiline = input.is_multiline;
         let on_change = input.on_change;
 
-        let Some(full) = self.try_insert_committed_text(
+        let mut sanitized = match sanitize_input_text(text, is_multiline, input.limits) {
+            Ok(value) if !value.is_empty() => value,
+            Ok(_) | Err(_) => return,
+        };
+        let full = self.try_insert_committed_text(
             fid,
-            text,
+            &sanitized,
             visible_w,
             visible_h,
             is_password,
             is_multiline,
-        ) else {
+        );
+        if is_password {
+            sanitized.zeroize();
+        }
+        let Some(full) = full else {
             return;
         };
 
@@ -2103,7 +2120,10 @@ mod tests {
 
     use cosmic_text::FontSystem;
 
-    use super::{collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text};
+    use super::{
+        collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text,
+        sanitize_input_text,
+    };
     use crate::engine::widget_state::{ToastState, WidgetState};
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
@@ -2136,6 +2156,20 @@ mod tests {
         assert_eq!(
             sanitize_clipboard_text(raw, false, InputKind::TextInput.limits()).unwrap(),
             "a b c d"
+        );
+    }
+
+    #[test]
+    fn sanitize_input_text_applies_clipboard_policy_to_key_and_ime_commits() {
+        let raw = "safe\u{202E}\u{001b}[31m\nvalue\u{0007}";
+
+        assert_eq!(
+            sanitize_input_text(raw, false, InputLimits::default()).unwrap(),
+            "safe value"
+        );
+        assert_eq!(
+            sanitize_input_text(raw, true, InputLimits::default()).unwrap(),
+            "safe\nvalue"
         );
     }
 
