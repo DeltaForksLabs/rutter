@@ -82,7 +82,10 @@ fn sanitize_clipboard_text(
     validate_clipboard_source(text, limits)?;
     let mut sanitized = reserve_clipboard_text(text.len())?;
     append_sanitized_clipboard(text, allow_newlines, &mut sanitized);
-    validate_text(&sanitized, limits)?;
+    if let Err(error) = validate_text(&sanitized, limits) {
+        sanitized.zeroize();
+        return Err(error);
+    }
     Ok(sanitized)
 }
 
@@ -196,6 +199,18 @@ fn update_selection_after_motion(state: &mut InputWidgetState) {
         return;
     };
     state.selection = Some(crate::input_state::TextSelection { start: anchor, end });
+}
+
+fn sensitive_delete_action(
+    state: &mut InputWidgetState,
+    key: &Key,
+    font_system: &mut FontSystem,
+) -> Result<bool, InputLimitError> {
+    match key {
+        Key::Named(NamedKey::Backspace) => state.try_delete_before_cursor(font_system),
+        Key::Named(NamedKey::Delete) => state.try_delete_after_cursor(font_system),
+        _ => Ok(false),
+    }
 }
 
 fn zeroize_sensitive_text(is_sensitive: bool, text: &mut String) {
@@ -1819,10 +1834,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     {
                         let mut fs = self.engine.font_system.borrow_mut();
                         let before = ist.text_byte_len();
-                        ist.normalize_cursor();
-                        ist.editor.action(&mut fs, action);
-                        ist.normalize_cursor();
-                        content_changed = ist.text_byte_len() != before;
+                        content_changed = if ist.is_sensitive() {
+                            sensitive_delete_action(ist, key, &mut fs).unwrap_or(false)
+                        } else {
+                            ist.normalize_cursor();
+                            ist.editor.action(&mut fs, action);
+                            ist.normalize_cursor();
+                            ist.text_byte_len() != before
+                        };
                         visual_changed = true;
                     }
                 }

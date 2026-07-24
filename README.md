@@ -202,6 +202,10 @@ Applications implement `AppLogic`. The framework owns the native event loop and 
 - `update` to process messages.
 - `theme` to provide colors, spacing, typography, and shape values.
 
+### Password input security
+
+`Widget::TextInput` password mode masks rendering, blocks clipboard copy, omits values from accessibility, and zeroizes framework-managed temporary buffers where possible. It is not a secret-storage boundary: password callbacks still transfer a `String` to application code. Applications must avoid logging, cloning, or retaining those messages, use a dedicated zeroizing secret type after receipt, and disable core dumps where their deployment requires stronger memory-disclosure protection.
+
 ### Layout System
 
 Rutter uses Taffy as its layout engine. Widget trees are converted into a synchronized layout blueprint so keyed nodes can be reused where possible. This reduces avoidable layout-tree churn and keeps layout state tied to widget identity.

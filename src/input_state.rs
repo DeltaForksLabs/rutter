@@ -601,4 +601,16 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn sensitive_edits_replace_buffer_without_undo_snapshots() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_sensitive(true);
+        state.try_insert_text(&mut fs, "éx").unwrap();
+
+        assert!(state.try_delete_before_cursor(&mut fs).unwrap());
+        assert_eq!(state.text(), "é");
+        assert!(!state.undo.can_undo());
+    }
 }

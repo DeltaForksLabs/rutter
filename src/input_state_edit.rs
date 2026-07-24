@@ -168,6 +168,16 @@ impl InputWidgetState {
                 text,
             );
         }
+        if self.sensitive {
+            return self.try_replace_selection(
+                font_system,
+                TextSelection {
+                    start: cursor_offset,
+                    end: cursor_offset,
+                },
+                text,
+            );
+        }
         self.insert_validated_text(font_system, text);
         Ok(true)
     }
@@ -201,6 +211,36 @@ impl InputWidgetState {
             return Ok(false);
         };
         self.try_replace_selection(font_system, selection, "")
+    }
+
+    pub(crate) fn try_delete_before_cursor(
+        &mut self,
+        font_system: &mut FontSystem,
+    ) -> Result<bool, InputLimitError> {
+        let end = helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())?;
+        let mut text = self.text();
+        let start = text[..end]
+            .char_indices()
+            .last()
+            .map_or(0, |(index, _)| index);
+        let result = self.try_replace_selection(font_system, TextSelection { start, end }, "");
+        self.zeroize_temporary(&mut text);
+        result
+    }
+
+    pub(crate) fn try_delete_after_cursor(
+        &mut self,
+        font_system: &mut FontSystem,
+    ) -> Result<bool, InputLimitError> {
+        let start = helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())?;
+        let mut text = self.text();
+        let end = text[start..]
+            .char_indices()
+            .nth(1)
+            .map_or(text.len(), |(index, _)| start + index);
+        let result = self.try_replace_selection(font_system, TextSelection { start, end }, "");
+        self.zeroize_temporary(&mut text);
+        result
     }
 
     /// Deletes the current selection without panicking on an invalid range.
