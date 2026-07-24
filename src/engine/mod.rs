@@ -26,7 +26,8 @@ use winit::{
 };
 
 use self::cursor::CursorBlink;
-use self::gpu::{BackendType, GraphicsBackend, create_best_backend};
+use self::gpu::{BackendType, GraphicsBackend, GraphicsError, create_best_backend};
+use self::run_error::RutterRunError;
 use self::widget_state::{
     AnimState, ContextMenuState, ModalState, PopoverState, ScrollState, SelectState, SliderState,
     TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
@@ -542,12 +543,12 @@ pub struct RutterEngine<A: AppLogic> {
 }
 
 impl<A: AppLogic> RutterEngine<A> {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, RutterRunError> {
         let mut fs = FontSystem::new();
         let state = A::new(&mut fs);
         let mut taffy = TaffyTree::new();
         let root = taffy.new_leaf(Style::default()).unwrap();
-        Self {
+        Ok(Self {
             window: None,
             accessibility_adapter: None,
             graphics_backend: None,
@@ -569,7 +570,7 @@ impl<A: AppLogic> RutterEngine<A> {
             focused_widget_id: None,
             active_scroll_id: None,
             drag_slider_id: None,
-            clipboard: Clipboard::new().expect("clipboard init falhou"),
+            clipboard: Clipboard::new()?,
             modifiers: Modifiers::default(),
             cursor_blink: CursorBlink::new(),
             last_snapshot: std::time::Instant::now(),
@@ -577,15 +578,17 @@ impl<A: AppLogic> RutterEngine<A> {
             scale_factor: 1.0,
             last_mouse_pos: Point::new(0.0, 0.0),
             has_animated: false,
-        }
+        })
     }
 
-    pub fn handle_resumed(&mut self, el: &winit::event_loop::ActiveEventLoop) {
+    pub fn handle_resumed(
+        &mut self,
+        el: &winit::event_loop::ActiveEventLoop,
+    ) -> Result<(), GraphicsError> {
         let attrs = Window::default_attributes()
             .with_title("Rutter")
             .with_visible(false);
-        let backend = create_best_backend(el, attrs)
-            .unwrap_or_else(|err| panic!("graphics backend init failed: {err}"));
+        let backend = create_best_backend(el, attrs)?;
         if cfg!(debug_assertions) {
             eprintln!("rutter: initialized {} backend", backend.backend_type());
         }
@@ -599,19 +602,19 @@ impl<A: AppLogic> RutterEngine<A> {
         ));
         self.scale_factor = window.scale_factor() as f32;
         window.set_visible(true);
-        self.window = Some(window);
+        self.window = Some(window.clone());
         self.graphics_backend = Some(backend);
-        self.handle_resize(self.window.as_ref().unwrap().inner_size());
+        self.handle_resize(window.inner_size())?;
         self.layout_dirty = true;
+        Ok(())
     }
 
-    pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
+    pub fn handle_resize(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError> {
         if let Some(backend) = self.graphics_backend.as_mut() {
-            backend
-                .resize(size)
-                .unwrap_or_else(|err| panic!("graphics backend resize failed: {err}"));
+            backend.resize(size)?;
         }
         self.layout_dirty = true;
+        Ok(())
     }
 
     pub fn process_accessibility_event(&mut self, event: &WindowEvent) {
@@ -1491,12 +1494,11 @@ impl<A: AppLogic> RutterEngine<A> {
         .expect("test runtime metadata requires unique widget IDs");
     }
 
-    pub fn redraw(&mut self, cursor_pos: Point) {
+    pub fn redraw(&mut self, cursor_pos: Point) -> Result<(), RutterRunError> {
         self.try_redraw(cursor_pos)
-            .unwrap_or_else(|error| panic!("widget ID validation failed: {error}"));
     }
 
-    pub fn try_redraw(&mut self, cursor_pos: Point) -> Result<(), WidgetIdError> {
+    pub fn try_redraw(&mut self, cursor_pos: Point) -> Result<(), RutterRunError> {
         let window = match self.window.as_ref() {
             Some(w) => w.clone(),
             None => return Ok(()),
@@ -1534,13 +1536,13 @@ impl<A: AppLogic> RutterEngine<A> {
         }
 
         {
-            let backend = self
-                .graphics_backend
-                .as_mut()
-                .expect("graphics backend not initialized");
-            let canvas = backend
-                .begin_frame()
-                .unwrap_or_else(|err| panic!("graphics begin_frame failed: {err}"));
+            let backend =
+                self.graphics_backend
+                    .as_mut()
+                    .ok_or(GraphicsError::BackendUnavailable {
+                        operation: "begin frame",
+                    })?;
+            let canvas = backend.begin_frame()?;
             canvas.restore_to_count(1);
             canvas.clear(SkiaColor::WHITE);
             canvas.reset_matrix();
@@ -1566,11 +1568,13 @@ impl<A: AppLogic> RutterEngine<A> {
             );
         }
 
-        self.graphics_backend
+        let backend = self
+            .graphics_backend
             .as_mut()
-            .expect("graphics backend not initialized")
-            .end_frame()
-            .unwrap_or_else(|err| panic!("graphics end_frame failed: {err}"));
+            .ok_or(GraphicsError::BackendUnavailable {
+                operation: "end frame",
+            })?;
+        backend.end_frame()?;
         Ok(())
     }
 }

@@ -63,6 +63,9 @@ pub enum GraphicsError {
         backend: BackendType,
         reason: String,
     },
+    BackendUnavailable {
+        operation: &'static str,
+    },
     NoBackendAvailable(Vec<BackendFailure>),
 }
 
@@ -85,6 +88,9 @@ impl fmt::Display for GraphicsError {
                     "failed to present frame on {} backend: {}",
                     backend, reason
                 )
+            }
+            Self::BackendUnavailable { operation } => {
+                write!(f, "graphics backend unavailable during {operation}")
             }
             Self::NoBackendAvailable(failures) => {
                 write!(f, "no graphics backend could be initialized")?;

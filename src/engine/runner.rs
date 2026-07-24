@@ -32,7 +32,6 @@ use crate::render::hit_test::{
     find_scroll_focus, find_scrollbar_drag_hit, hit_test, hit_test_context_menu_overlay,
     hit_test_popover_overlay,
 };
-use crate::widget_id::WidgetIdError;
 
 fn is_bidi_override_char(ch: char) -> bool {
     matches!(
@@ -286,7 +285,7 @@ pub struct RutterRunner<A: AppLogic> {
     last_click_time: std::time::Instant,
     last_click_pos: Point,
     focused_input_rect: Option<SkiaRect>,
-    fatal_widget_id_error: Option<WidgetIdError>,
+    fatal_error: Option<RutterRunError>,
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
@@ -294,7 +293,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     ///
     /// Use [`Self::try_run`] when the caller needs to inspect failures.
     pub fn run() {
-        Self::try_run().unwrap_or_else(|error| panic!("Rutter application failed: {error}"));
+        if let Err(error) = Self::try_run() {
+            eprintln!("Rutter application failed: {error}");
+        }
     }
 
     /// Runs the application and returns controlled event-loop or widget-ID failures.
@@ -310,18 +311,18 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let el = EventLoop::new().map_err(RutterRunError::from)?;
         el.set_control_flow(ControlFlow::Wait);
         let mut r = Self {
-            engine: RutterEngine::new(),
+            engine: RutterEngine::new()?,
             cursor_pos: Point::new(0.0, 0.0),
             scroll_drag: None,
             mouse_down: false,
             last_click_time: std::time::Instant::now(),
             last_click_pos: Point::new(0.0, 0.0),
             focused_input_rect: None,
-            fatal_widget_id_error: None,
+            fatal_error: None,
         };
         let event_result = el.run_app(&mut r);
-        if let Some(error) = r.fatal_widget_id_error {
-            return Err(RutterRunError::WidgetId(error));
+        if let Some(error) = r.fatal_error {
+            return Err(error);
         }
         event_result.map_err(RutterRunError::from)
     }
@@ -329,11 +330,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
 impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
     fn resumed(&mut self, el: &ActiveEventLoop) {
-        self.engine.handle_resumed(el);
+        if let Err(error) = self.engine.handle_resumed(el) {
+            self.terminate_for_error(el, error.into());
+        }
     }
 
     fn new_events(&mut self, el: &ActiveEventLoop, _: StartCause) {
-        if self.fatal_widget_id_error.is_some() {
+        if self.fatal_error.is_some() {
             el.exit();
             return;
         }
@@ -388,7 +391,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        if self.fatal_widget_id_error.is_some() {
+        if self.fatal_error.is_some() {
             el.exit();
             return;
         }
@@ -397,7 +400,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
-                    self.engine.handle_resize(size);
+                    if let Err(error) = self.engine.handle_resize(size) {
+                        self.terminate_for_error(el, error.into());
+                    }
                     self.redraw();
                 }
             }
@@ -486,11 +491,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 
                 let size = self.engine.window.as_ref().unwrap().inner_size();
                 if let Err(error) = self.engine.try_ensure_widget_states() {
-                    self.terminate_for_widget_id_error(el, error);
+                    self.terminate_for_error(el, error.into());
                     return;
                 }
                 if let Err(error) = self.engine.try_ensure_layout(size) {
-                    self.terminate_for_widget_id_error(el, error);
+                    self.terminate_for_error(el, error.into());
                     return;
                 }
 
@@ -517,7 +522,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         &wt,
                     ) {
                         drop(wt);
-                        self.terminate_for_widget_id_error(el, error);
+                        self.terminate_for_error(el, error.into());
                         return;
                     }
                     let context_menu_overlay_hit = if button == MouseButton::Left {
@@ -956,7 +961,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.engine.try_redraw(self.cursor_pos) {
-                    self.terminate_for_widget_id_error(el, error);
+                    self.terminate_for_error(el, error.into());
                 }
             }
             _ => {}
@@ -965,13 +970,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
-    fn terminate_for_widget_id_error(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        error: WidgetIdError,
-    ) {
-        if self.fatal_widget_id_error.is_none() {
-            self.fatal_widget_id_error = Some(error);
+    fn terminate_for_error(&mut self, event_loop: &ActiveEventLoop, error: RutterRunError) {
+        if self.fatal_error.is_none() {
+            self.fatal_error = Some(error);
         }
         event_loop.exit();
     }

@@ -2339,7 +2339,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rutter"
-version = "0.13.8"
+version = "0.14.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
