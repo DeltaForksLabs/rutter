@@ -303,8 +303,27 @@ struct ScrollDrag {
     content_h: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowEventDestination {
+    ActiveWindow,
+    Discard,
+}
+
+fn classify_window_event<Identifier: Eq>(
+    active_window_id: Option<&Identifier>,
+    received_window_id: &Identifier,
+) -> WindowEventDestination {
+    match active_window_id {
+        Some(active_window_id) if active_window_id == received_window_id => {
+            WindowEventDestination::ActiveWindow
+        }
+        Some(_) | None => WindowEventDestination::Discard,
+    }
+}
+
 pub struct RutterRunner<A: AppLogic> {
     engine: RutterEngine<A>,
+    active_window_id: Option<WindowId>,
     cursor_pos: Point,
     scroll_drag: Option<ScrollDrag>,
     mouse_down: bool,
@@ -338,6 +357,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         el.set_control_flow(ControlFlow::Wait);
         let mut r = Self {
             engine: RutterEngine::new()?,
+            active_window_id: None,
             cursor_pos: Point::new(0.0, 0.0),
             scroll_drag: None,
             mouse_down: false,
@@ -356,8 +376,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
 impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
     fn resumed(&mut self, el: &ActiveEventLoop) {
-        if let Err(error) = self.engine.handle_resumed(el) {
-            self.terminate_for_error(el, error.into());
+        self.active_window_id = None;
+        match self.engine.handle_resumed(el) {
+            Ok(()) => {
+                self.active_window_id = self.engine.window.as_ref().map(|window| window.id());
+            }
+            Err(error) => self.terminate_for_error(el, error.into()),
         }
     }
 
@@ -416,9 +440,15 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, el: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
         if self.fatal_error.is_some() {
             el.exit();
+            return;
+        }
+        if classify_window_event(self.active_window_id.as_ref(), &window_id)
+            == WindowEventDestination::Discard
+        {
+            // Failed backend probes can leave queued events for a provisional window.
             return;
         }
         self.engine.process_accessibility_event(&event);
@@ -2121,12 +2151,31 @@ mod tests {
     use cosmic_text::FontSystem;
 
     use super::{
-        collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text,
-        sanitize_input_text,
+        WindowEventDestination, classify_window_event, collect_toast_runtime_state,
+        input_copy_is_blocked, sanitize_clipboard_text, sanitize_input_text,
     };
     use crate::engine::widget_state::{ToastState, WidgetState};
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
+
+    #[test]
+    fn foreign_window_events_are_discarded_after_active_window_registration() {
+        let provisional_window_id = 41_u64;
+        let active_window_id = 73_u64;
+
+        assert_eq!(
+            classify_window_event(Some(&active_window_id), &active_window_id),
+            WindowEventDestination::ActiveWindow
+        );
+        assert_eq!(
+            classify_window_event(Some(&active_window_id), &provisional_window_id),
+            WindowEventDestination::Discard
+        );
+        assert_eq!(
+            classify_window_event(None, &provisional_window_id),
+            WindowEventDestination::Discard
+        );
+    }
 
     #[test]
     fn sanitize_clipboard_text_strips_controls_and_ansi_sequences() {
