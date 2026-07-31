@@ -144,6 +144,7 @@ pub struct VkBackend {
     swapchain_images: Vec<SwapchainImage>,
     image_layouts: Vec<avk::ImageLayout>,
     current_image_index: Option<u32>,
+    transparent: bool,
 }
 
 impl VkBackend {
@@ -151,6 +152,7 @@ impl VkBackend {
         event_loop: &ActiveEventLoop,
         attrs: WindowAttributes,
     ) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
+        let transparent = attrs.transparent();
         let window = Rc::new(
             event_loop
                 .create_window(attrs)
@@ -233,7 +235,7 @@ impl VkBackend {
         cleanup.surface = Some(surface);
 
         let (physical_device, queue_family_index) =
-            pick_physical_device(&instance, &surface_loader, surface)
+            pick_physical_device(&instance, &surface_loader, surface, transparent)
                 .map_err(Self::init_failure)?;
 
         let device_extensions =
@@ -292,6 +294,7 @@ impl VkBackend {
             &swapchain_loader,
             skia_context,
             queue_family_index,
+            transparent,
             None,
         )
         .map_err(Self::init_failure)?;
@@ -326,6 +329,7 @@ impl VkBackend {
             swapchain_images: swapchain_bundle.images,
             image_layouts: swapchain_bundle.image_layouts,
             current_image_index: None,
+            transparent,
         }))
     }
 
@@ -355,6 +359,7 @@ impl VkBackend {
         swapchain_loader: &khr::swapchain::Device,
         skia_context: &mut DirectContext,
         queue_family_index: u32,
+        transparent: bool,
         old_swapchain: Option<avk::SwapchainKHR>,
     ) -> Result<SwapchainBundle, String> {
         let capabilities = unsafe {
@@ -379,7 +384,8 @@ impl VkBackend {
         let (format, color_space, color_type) = pick_surface_format(&formats)?;
         let extent = choose_extent(window.inner_size(), capabilities);
         let min_image_count = choose_image_count(capabilities);
-        let composite_alpha = pick_composite_alpha(capabilities.supported_composite_alpha)?;
+        let composite_alpha =
+            pick_composite_alpha(capabilities.supported_composite_alpha, transparent)?;
         let present_mode = pick_present_mode(&present_modes);
 
         let swapchain_info = avk::SwapchainCreateInfoKHR::default()
@@ -457,6 +463,7 @@ impl VkBackend {
             &self.swapchain_loader,
             &mut self.skia_context,
             self.queue_family_index,
+            self.transparent,
             Some(old_swapchain),
         ) {
             Ok(bundle) => bundle,
@@ -751,6 +758,7 @@ fn pick_physical_device(
     instance: &Instance,
     surface_loader: &khr::surface::Instance,
     surface: avk::SurfaceKHR,
+    transparent: bool,
 ) -> Result<(avk::PhysicalDevice, u32), String> {
     let physical_devices = unsafe {
         instance
@@ -763,6 +771,11 @@ fn pick_physical_device(
 
     for physical_device in physical_devices {
         if !device_supports_swapchain(instance, physical_device)? {
+            continue;
+        }
+        if transparent
+            && !device_supports_transparent_surface(surface_loader, physical_device, surface)?
+        {
             continue;
         }
 
@@ -784,7 +797,22 @@ fn pick_physical_device(
         }
     }
 
-    Err("no Vulkan queue family supports both graphics and presentation".to_string())
+    Err("no Vulkan device satisfies graphics, presentation, and surface alpha requirements".into())
+}
+
+fn device_supports_transparent_surface(
+    surface_loader: &khr::surface::Instance,
+    physical_device: avk::PhysicalDevice,
+    surface: avk::SurfaceKHR,
+) -> Result<bool, String> {
+    let capabilities = unsafe {
+        surface_loader
+            .get_physical_device_surface_capabilities(physical_device, surface)
+            .map_err(|err| format!("query transparent surface capabilities: {err:?}"))?
+    };
+    Ok(capabilities
+        .supported_composite_alpha
+        .contains(avk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED))
 }
 
 fn device_extension_names(
@@ -900,7 +928,16 @@ fn choose_image_count(capabilities: avk::SurfaceCapabilitiesKHR) -> u32 {
 
 fn pick_composite_alpha(
     supported: avk::CompositeAlphaFlagsKHR,
+    transparent: bool,
 ) -> Result<avk::CompositeAlphaFlagsKHR, String> {
+    if transparent {
+        if supported.contains(avk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED) {
+            return Ok(avk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED);
+        }
+        return Err(format!(
+            "surface supports composite alpha flags {supported:?}; expected PRE_MULTIPLIED for a transparent top-level surface"
+        ));
+    }
     for alpha in [
         avk::CompositeAlphaFlagsKHR::OPAQUE,
         avk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
@@ -1059,5 +1096,33 @@ fn layout_barrier_destination(
             avk::PipelineStageFlags::ALL_COMMANDS,
             avk::AccessFlags::MEMORY_READ | avk::AccessFlags::MEMORY_WRITE,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{avk, pick_composite_alpha};
+
+    #[test]
+    fn transparent_swapchain_requires_premultiplied_composite_alpha() {
+        let supported =
+            avk::CompositeAlphaFlagsKHR::OPAQUE | avk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED;
+
+        assert_eq!(
+            pick_composite_alpha(supported, true).unwrap(),
+            avk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED
+        );
+        assert!(pick_composite_alpha(avk::CompositeAlphaFlagsKHR::OPAQUE, true).is_err());
+    }
+
+    #[test]
+    fn opaque_swapchain_preserves_opaque_preference() {
+        let supported =
+            avk::CompositeAlphaFlagsKHR::OPAQUE | avk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED;
+
+        assert_eq!(
+            pick_composite_alpha(supported, false).unwrap(),
+            avk::CompositeAlphaFlagsKHR::OPAQUE
+        );
     }
 }

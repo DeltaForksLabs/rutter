@@ -23,7 +23,7 @@ mod widget_id_error;
 mod widget_structure;
 
 // ── Re-exports ergonômicos ───────────────────────────────────
-pub use app::AppLogic;
+pub use app::{AppLogic, SurfaceConfig};
 pub use engine::run_error::RutterRunError;
 pub use engine::runner::RutterRunner;
 pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};

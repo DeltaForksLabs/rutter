@@ -12,6 +12,16 @@ use super::{BackendFailure, BackendType, GraphicsBackend, GraphicsError};
 
 const MAX_FRAME_BYTES: u64 = 512 * 1024 * 1024;
 
+pub(super) fn validate_cpu_surface_transparency(transparent: bool) -> Result<(), BackendFailure> {
+    if !transparent {
+        return Ok(());
+    }
+    Err(BackendFailure::new(
+        BackendType::CpuSoftbuffer,
+        "transparent surfaces require alpha presentation; softbuffer currently presents RGB only",
+    ))
+}
+
 fn validate_frame_size(size: PhysicalSize<u32>) -> Result<(i32, i32), GraphicsError> {
     let pixels = u64::from(size.width)
         .checked_mul(u64::from(size.height))
@@ -167,7 +177,9 @@ impl GraphicsBackend for CpuBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphicsError, MAX_FRAME_BYTES, validate_frame_size};
+    use super::{
+        GraphicsError, MAX_FRAME_BYTES, validate_cpu_surface_transparency, validate_frame_size,
+    };
     use winit::dpi::PhysicalSize;
 
     #[test]
@@ -191,5 +203,12 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn transparent_surface_is_rejected_by_cpu_backend() {
+        assert!(validate_cpu_surface_transparency(false).is_ok());
+        let failure = validate_cpu_surface_transparency(true).unwrap_err();
+        assert_eq!(failure.backend, super::BackendType::CpuSoftbuffer);
     }
 }

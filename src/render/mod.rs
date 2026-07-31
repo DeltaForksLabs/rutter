@@ -875,6 +875,7 @@ fn draw_widgets_impl<'w, Msg>(
                 p.set_anti_alias(true);
                 canvas.draw_rrect(rrect(size, *radius), &p);
             }
+            let clips_child = begin_rounded_container_clip(canvas, size, *radius);
             let ids = taffy.children(node).unwrap();
             path.push(0);
             draw_widgets_impl(
@@ -898,6 +899,9 @@ fn draw_widgets_impl<'w, Msg>(
                 path,
             );
             path.pop();
+            if clips_child {
+                canvas.restore();
+            }
         }
         Widget::ScrollView { child, .. } => {
             let resolved_id = resolved_id.unwrap();
@@ -1521,6 +1525,15 @@ fn draw_widgets_impl<'w, Msg>(
     }
 
     canvas.restore();
+}
+
+fn begin_rounded_container_clip(canvas: &Canvas, size: (f32, f32), radius: f32) -> bool {
+    if !radius.is_finite() || radius <= 0.0 {
+        return false;
+    }
+    canvas.save();
+    canvas.clip_rrect(rrect(size, radius), None, true);
+    true
 }
 
 fn draw_tabbar(
@@ -3933,17 +3946,22 @@ fn rrect(size: (f32, f32), r: f32) -> RRect {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-    use skia_safe::{Color, Point, Surface, surfaces};
+    use cosmic_text::{FontSystem, SwashCache};
+    use skia_safe::{Canvas, Color, Font, Point, Surface, surfaces};
+    use taffy::prelude::{Dimension, NodeId, Size, Style, TaffyTree};
+    use winit::dpi::PhysicalSize;
 
     use super::{
-        ImageRenderCache, draw_image, draw_virtual_grid, is_svg_image, svg_cache_key,
+        ImageRenderCache, draw_image, draw_virtual_grid, draw_widgets, is_svg_image, svg_cache_key,
         virtual_grid_scrollbar_metrics,
     };
     use crate::engine::widget_state::VirtualGridState;
-    use crate::layout::SCROLLBAR_W;
+    use crate::layout::{SCROLLBAR_W, build_taffy_tree, compute_layout};
+    use crate::render::text::TextBufferCache;
     use crate::theme::Theme;
+    use crate::widget::Widget;
 
     fn grid_item(index: usize) -> Option<String> {
         Some(format!("Item {index}"))
@@ -3958,6 +3976,78 @@ mod tests {
             br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>"#
         ));
         assert!(!is_svg_image(&[0x89, b'P', b'N', b'G']));
+    }
+
+    #[test]
+    fn rounded_container_clip_keeps_child_out_of_corner_pixels() {
+        let widget = rounded_container_widget();
+        let widget_states = HashMap::new();
+        let layout_fonts = Rc::new(RefCell::new(FontSystem::new()));
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &widget, layout_fonts.clone(), &widget_states);
+        compute_layout(&mut taffy, root, PhysicalSize::new(20, 20), layout_fonts);
+        let mut surface = surfaces::raster_n32_premul((20, 20)).unwrap();
+        surface.canvas().clear(Color::TRANSPARENT);
+        draw_container_test_tree(surface.canvas(), &taffy, root, &widget, &widget_states);
+
+        assert_eq!(pixel_at(&mut surface, 0, 0), Color::TRANSPARENT);
+        assert_eq!(pixel_at(&mut surface, 10, 10), Color::BLUE);
+    }
+
+    fn rounded_container_widget() -> Widget<'static, ()> {
+        Widget::Container {
+            child: Box::new(Widget::Container {
+                child: Box::new(Widget::Spacer {
+                    style: fixed_style(),
+                }),
+                style: fixed_style(),
+                color: Some(Color::BLUE),
+                radius: 0.0,
+            }),
+            style: fixed_style(),
+            color: Some(Color::RED),
+            radius: 8.0,
+        }
+    }
+
+    fn fixed_style() -> Style {
+        Style {
+            size: Size {
+                width: Dimension::length(20.0),
+                height: Dimension::length(20.0),
+            },
+            ..Style::default()
+        }
+    }
+
+    fn draw_container_test_tree(
+        canvas: &Canvas,
+        taffy: &TaffyTree<crate::layout::RutterContext>,
+        root: NodeId,
+        widget: &Widget<'_, ()>,
+        widget_states: &HashMap<u64, crate::engine::widget_state::WidgetState>,
+    ) {
+        let mut fonts = FontSystem::new();
+        let mut swash = SwashCache::new();
+        let mut font_cache = HashMap::<(String, u32), Font>::new();
+        let mut text_cache = TextBufferCache::default();
+        draw_widgets(
+            canvas,
+            taffy,
+            root,
+            widget,
+            &mut fonts,
+            &mut swash,
+            Point::new(-1.0, -1.0),
+            None,
+            &HashMap::new(),
+            widget_states,
+            &mut font_cache,
+            &mut text_cache,
+            true,
+            &Theme::default(),
+            1.0,
+        );
     }
 
     #[test]

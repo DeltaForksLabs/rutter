@@ -16,6 +16,37 @@ use crate::input_limits::{InputKind, InputLimits};
 use crate::render::text::TextShapeCacheLimits;
 use crate::widget::Widget;
 
+/// Configures the compositor-facing top-level drawing surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SurfaceConfig {
+    transparent: bool,
+}
+
+impl SurfaceConfig {
+    /// Requests a top-level surface whose alpha channel is presented by the compositor.
+    ///
+    /// ```rust
+    /// use rutter::SurfaceConfig;
+    ///
+    /// let config = SurfaceConfig::transparent();
+    /// assert!(config.is_transparent());
+    /// ```
+    pub const fn transparent() -> Self {
+        Self { transparent: true }
+    }
+
+    /// Reports whether compositor transparency was requested.
+    ///
+    /// ```rust
+    /// use rutter::SurfaceConfig;
+    ///
+    /// assert!(SurfaceConfig::transparent().is_transparent());
+    /// ```
+    pub const fn is_transparent(self) -> bool {
+        self.transparent
+    }
+}
+
 /// Contrato principal do padrão Elm usado pelo Rutter.
 ///
 /// # Exemplo mínimo
@@ -101,5 +132,17 @@ pub trait AppLogic {
     /// ```
     fn text_shape_cache_limits() -> TextShapeCacheLimits {
         TextShapeCacheLimits::default()
+    }
+
+    /// Returns startup-only options for the top-level presentation surface.
+    ///
+    /// ```rust
+    /// use rutter::SurfaceConfig;
+    ///
+    /// let config = SurfaceConfig::default();
+    /// assert!(!config.is_transparent());
+    /// ```
+    fn surface_config() -> SurfaceConfig {
+        SurfaceConfig::default()
     }
 }

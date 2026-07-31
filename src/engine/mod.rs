@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use arboard::Clipboard;
 use cosmic_text::{FontSystem, SwashCache};
-use skia_safe::{Color as SkiaColor, Font, Point};
+use skia_safe::{Canvas, Color as SkiaColor, Font, Point};
 use taffy::prelude::{NodeId, Style, TaffyTree};
 use winit::{
     dpi::PhysicalSize,
@@ -36,7 +36,7 @@ use crate::accessibility::{
     AccessibilityInputs, IgnoredActionHandler, IgnoredDeactivationHandler, LazyActivationHandler,
     build_accessibility_update,
 };
-use crate::app::AppLogic;
+use crate::app::{AppLogic, SurfaceConfig};
 use crate::input_limits::{InputKind, InputLimits};
 use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
@@ -540,12 +540,33 @@ pub struct RutterEngine<A: AppLogic> {
     pub scale_factor: f32,
     pub last_mouse_pos: Point,
     pub has_animated: bool,
+    surface_config: SurfaceConfig,
+}
+
+fn initial_window_attributes(surface_config: SurfaceConfig) -> winit::window::WindowAttributes {
+    Window::default_attributes()
+        .with_title("Rutter")
+        .with_visible(false)
+        .with_transparent(surface_config.is_transparent())
+}
+
+fn prepare_top_level_canvas(canvas: &Canvas, surface_config: SurfaceConfig, scale_factor: f32) {
+    let clear_color = if surface_config.is_transparent() {
+        SkiaColor::TRANSPARENT
+    } else {
+        SkiaColor::WHITE
+    };
+    canvas.restore_to_count(1);
+    canvas.clear(clear_color);
+    canvas.reset_matrix();
+    canvas.scale((scale_factor, scale_factor));
 }
 
 impl<A: AppLogic> RutterEngine<A> {
     pub fn new() -> Result<Self, RutterRunError> {
         let mut fs = FontSystem::new();
         let state = A::new(&mut fs);
+        let surface_config = A::surface_config();
         let mut taffy = TaffyTree::new();
         let root = taffy.new_leaf(Style::default()).unwrap();
         Ok(Self {
@@ -578,6 +599,7 @@ impl<A: AppLogic> RutterEngine<A> {
             scale_factor: 1.0,
             last_mouse_pos: Point::new(0.0, 0.0),
             has_animated: false,
+            surface_config,
         })
     }
 
@@ -585,14 +607,19 @@ impl<A: AppLogic> RutterEngine<A> {
         &mut self,
         el: &winit::event_loop::ActiveEventLoop,
     ) -> Result<(), GraphicsError> {
-        let attrs = Window::default_attributes()
-            .with_title("Rutter")
-            .with_visible(false);
-        let backend = create_best_backend(el, attrs)?;
+        let attrs = initial_window_attributes(self.surface_config);
+        let mut backend = create_best_backend(el, attrs)?;
         if cfg!(debug_assertions) {
             eprintln!("rutter: initialized {} backend", backend.backend_type());
         }
         let window = backend.window().clone();
+        self.scale_factor = window.scale_factor() as f32;
+        backend.resize(window.inner_size())?;
+        {
+            let canvas = backend.begin_frame()?;
+            prepare_top_level_canvas(canvas, self.surface_config, self.scale_factor);
+        }
+        backend.end_frame()?;
         self.accessibility_adapter = Some(accesskit_winit::Adapter::with_direct_handlers(
             el,
             &window,
@@ -600,12 +627,11 @@ impl<A: AppLogic> RutterEngine<A> {
             IgnoredActionHandler,
             IgnoredDeactivationHandler,
         ));
-        self.scale_factor = window.scale_factor() as f32;
-        window.set_visible(true);
         self.window = Some(window.clone());
         self.graphics_backend = Some(backend);
-        self.handle_resize(window.inner_size())?;
         self.layout_dirty = true;
+        window.set_visible(true);
+        window.request_redraw();
         Ok(())
     }
 
@@ -1543,10 +1569,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         operation: "begin frame",
                     })?;
             let canvas = backend.begin_frame()?;
-            canvas.restore_to_count(1);
-            canvas.clear(SkiaColor::WHITE);
-            canvas.reset_matrix();
-            canvas.scale((self.scale_factor, self.scale_factor));
+            prepare_top_level_canvas(canvas, self.surface_config, self.scale_factor);
 
             draw_widgets_with_cache(
                 canvas,
@@ -1585,12 +1608,31 @@ mod tests {
     use std::cell::RefCell;
 
     use cosmic_text::FontSystem;
+    use skia_safe::{Color, surfaces};
 
     use crate::layout::build_taffy_tree;
     use crate::widget::{DialogAction, DialogPosition, InputState};
 
     fn fs() -> Rc<RefCell<FontSystem>> {
         Rc::new(RefCell::new(FontSystem::new()))
+    }
+
+    #[test]
+    fn surface_config_controls_window_transparency_and_frame_clear() {
+        let opaque = SurfaceConfig::default();
+        let transparent = SurfaceConfig::transparent();
+        assert!(!initial_window_attributes(opaque).transparent());
+        assert!(initial_window_attributes(transparent).transparent());
+
+        assert_eq!(prepared_surface_pixel(opaque), Color::WHITE);
+        assert_eq!(prepared_surface_pixel(transparent), Color::TRANSPARENT);
+    }
+
+    fn prepared_surface_pixel(surface_config: SurfaceConfig) -> Color {
+        let mut surface = surfaces::raster_n32_premul((2, 2)).unwrap();
+        surface.canvas().clear(Color::RED);
+        prepare_top_level_canvas(surface.canvas(), surface_config, 1.0);
+        surface.peek_pixels().unwrap().get_color((0, 0))
     }
 
     fn base_style(width: f32, height: f32) -> Style {

@@ -47,19 +47,22 @@ impl GlBackend {
         event_loop: &ActiveEventLoop,
         attrs: WindowAttributes,
     ) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
-        let template = ConfigTemplateBuilder::new()
-            .with_alpha_size(8)
-            .with_transparency(true);
+        let transparent = attrs.transparent();
+        // A broad template lets the picker return a typed failure when no alpha-capable
+        // config exists instead of letting glutin's infallible picker receive an empty set.
+        let template = ConfigTemplateBuilder::new();
         let display_builder = DisplayBuilder::new().with_window_attributes(Some(attrs));
         let (window, gl_config) = display_builder
             .build(event_loop, template, |configs| {
                 configs
                     .reduce(|accum, config| {
-                        let transparency = config.supports_transparency().unwrap_or(false);
-                        let accum_transparency = accum.supports_transparency().unwrap_or(false);
-                        if transparency && !accum_transparency {
-                            config
-                        } else if config.num_samples() < accum.num_samples() {
+                        if prefer_gl_surface_config(
+                            transparent,
+                            config.supports_transparency(),
+                            config.num_samples(),
+                            accum.supports_transparency(),
+                            accum.num_samples(),
+                        ) {
                             config
                         } else {
                             accum
@@ -68,6 +71,12 @@ impl GlBackend {
                     .expect("glutin returned no GL configs")
             })
             .map_err(|err| BackendFailure::new(BackendType::OpenGl, err.to_string()))?;
+        validate_gl_surface_transparency(
+            transparent,
+            gl_config.supports_transparency(),
+            gl_config.alpha_size(),
+        )
+        .map_err(|reason| BackendFailure::new(BackendType::OpenGl, reason))?;
 
         let window = Rc::new(window.ok_or_else(|| {
             BackendFailure::new(
@@ -153,6 +162,34 @@ impl GlBackend {
             stencil_size,
         }))
     }
+}
+
+fn prefer_gl_surface_config(
+    transparent: bool,
+    candidate_transparency: Option<bool>,
+    candidate_samples: u8,
+    current_transparency: Option<bool>,
+    current_samples: u8,
+) -> bool {
+    let candidate_alpha = candidate_transparency == Some(true);
+    let current_alpha = current_transparency == Some(true);
+    if transparent && candidate_alpha != current_alpha {
+        return candidate_alpha;
+    }
+    candidate_samples < current_samples
+}
+
+fn validate_gl_surface_transparency(
+    transparent: bool,
+    reported_support: Option<bool>,
+    alpha_size: u8,
+) -> Result<(), String> {
+    if !transparent || reported_support == Some(true) && alpha_size > 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "OpenGL transparency support is {reported_support:?} with {alpha_size} alpha bits; expected confirmed transparency and alpha_size > 0"
+    ))
 }
 
 fn current_framebuffer_info() -> FramebufferInfo {
@@ -252,5 +289,44 @@ impl GraphicsBackend for GlBackend {
 
     fn skia_context(&mut self) -> Option<&mut DirectContext> {
         Some(&mut self.skia_context)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{prefer_gl_surface_config, validate_gl_surface_transparency};
+
+    #[test]
+    fn transparent_gl_surface_requires_confirmed_alpha_support() {
+        assert!(validate_gl_surface_transparency(true, Some(true), 8).is_ok());
+        assert!(validate_gl_surface_transparency(true, Some(false), 8).is_err());
+        assert!(validate_gl_surface_transparency(true, None, 8).is_err());
+        assert!(validate_gl_surface_transparency(true, Some(true), 0).is_err());
+        assert!(validate_gl_surface_transparency(false, None, 0).is_ok());
+    }
+
+    #[test]
+    fn transparent_gl_config_outranks_lower_sample_opaque_config() {
+        assert!(!prefer_gl_surface_config(
+            true,
+            Some(false),
+            0,
+            Some(true),
+            8
+        ));
+        assert!(prefer_gl_surface_config(
+            true,
+            Some(true),
+            8,
+            Some(false),
+            0
+        ));
+        assert!(prefer_gl_surface_config(
+            false,
+            Some(false),
+            0,
+            Some(true),
+            8
+        ));
     }
 }

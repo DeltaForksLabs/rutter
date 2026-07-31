@@ -948,7 +948,10 @@ fn hit_test_impl<Msg: Clone>(
             }
             None
         }
-        Widget::Container { child, .. } => {
+        Widget::Container { child, radius, .. } => {
+            if !rounded_rect_contains(rect, *radius, mouse) {
+                return None;
+            }
             let ids = taffy.children(node_id).unwrap();
             path.push(0);
             let result = hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
@@ -957,6 +960,34 @@ fn hit_test_impl<Msg: Clone>(
         }
         _ => None,
     }
+}
+
+fn rounded_rect_contains(rect: SkiaRect, radius: f32, point: Point) -> bool {
+    if !rect.contains(point) {
+        return false;
+    }
+    if !radius.is_finite() || radius <= 0.0 {
+        return true;
+    }
+    let radius = radius.min(rect.width().min(rect.height()) * 0.5);
+    let x = point.x - rect.left;
+    let y = point.y - rect.top;
+    if (radius..=rect.width() - radius).contains(&x)
+        || (radius..=rect.height() - radius).contains(&y)
+    {
+        return true;
+    }
+    let center_x = if x < radius {
+        radius
+    } else {
+        rect.width() - radius
+    };
+    let center_y = if y < radius {
+        radius
+    } else {
+        rect.height() - radius
+    };
+    (x - center_x).powi(2) + (y - center_y).powi(2) <= radius.powi(2)
 }
 
 pub fn collect_input_ids<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>) {
@@ -1911,11 +1942,14 @@ fn find_scrollbar_drag_hit_impl<Msg>(
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use skia_safe::Point;
+    use skia_safe::{Point, Rect as SkiaRect};
     use taffy::prelude::{Dimension, Size, Style, TaffyTree};
     use winit::dpi::PhysicalSize;
 
-    use super::{HitResult, collect_input_ids, collect_stateful_ids, dialog_card_rect, hit_test};
+    use super::{
+        HitResult, collect_input_ids, collect_stateful_ids, dialog_card_rect, hit_test,
+        rounded_rect_contains,
+    };
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::{AUTO_ID, ButtonVariant, DialogPosition, InputState, Widget};
 
@@ -1928,6 +1962,14 @@ mod tests {
 
     fn text_msg(value: String) -> Msg {
         Msg::Str(value)
+    }
+
+    #[test]
+    fn rounded_container_hit_region_excludes_clipped_corners() {
+        let rect = SkiaRect::from_xywh(0.0, 0.0, 20.0, 20.0);
+
+        assert!(!rounded_rect_contains(rect, 8.0, Point::new(0.0, 0.0)));
+        assert!(rounded_rect_contains(rect, 8.0, Point::new(10.0, 10.0)));
     }
 
     fn usize_msg(value: usize) -> Msg {

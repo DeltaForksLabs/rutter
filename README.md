@@ -206,6 +206,10 @@ Applications implement `AppLogic`. The framework owns the native event loop and 
 
 `Widget::TextInput` password mode masks rendering, blocks clipboard copy, omits values from accessibility, and zeroizes framework-managed temporary buffers where possible. It is not a secret-storage boundary: password callbacks still transfer a `String` to application code. Applications must avoid logging, cloning, or retaining those messages, use a dedicated zeroizing secret type after receipt, and disable core dumps where their deployment requires stronger memory-disclosure protection.
 
+### Transparent top-level surfaces
+
+Applications can opt into compositor transparency by returning `SurfaceConfig::transparent()` from `AppLogic::surface_config`. Opaque white presentation remains the default. Transparent mode requires premultiplied-alpha support from Vulkan or confirmed alpha support from OpenGL; the CPU/Softbuffer backend is rejected rather than silently presenting an opaque surface. Rounded `Widget::Container` values clip their normal child subtree, allowing a full-window rounded panel to retain transparent corner pixels. Window input regions remain rectangular.
+
 ### Layout System
 
 Rutter uses Taffy as its layout engine. Widget trees are converted into a synchronized layout blueprint so keyed nodes can be reused where possible. This reduces avoidable layout-tree churn and keeps layout state tied to widget identity.

@@ -15,7 +15,7 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-use self::cpu::CpuBackend;
+use self::cpu::{CpuBackend, validate_cpu_surface_transparency};
 use self::gl::GlBackend;
 use self::vk::VkBackend;
 
@@ -148,6 +148,7 @@ pub fn create_best_backend(
     attrs: WindowAttributes,
 ) -> Result<Box<dyn GraphicsBackend>, GraphicsError> {
     let mut failures = Vec::new();
+    let transparent = attrs.transparent();
 
     match VkBackend::try_new(event_loop, attrs.clone()) {
         Ok(backend) => return Ok(backend),
@@ -159,6 +160,10 @@ pub fn create_best_backend(
         Err(err) => failures.push(err),
     }
 
+    if let Err(failure) = validate_cpu_surface_transparency(transparent) {
+        failures.push(failure);
+        return Err(GraphicsError::NoBackendAvailable(failures));
+    }
     let window = Rc::new(event_loop.create_window(attrs).map_err(|err| {
         GraphicsError::BackendInit(BackendFailure::new(
             BackendType::CpuSoftbuffer,
