@@ -330,6 +330,12 @@ impl LayoutBlueprint {
                 style,
                 size,
                 ..
+            }
+            | Widget::StrongText {
+                content,
+                style,
+                size,
+                ..
             } => Self::leaf_with_context(
                 None,
                 style.clone(),

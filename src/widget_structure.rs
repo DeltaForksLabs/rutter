@@ -96,7 +96,7 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::Container { .. } => Kind::Container,
         Widget::Spacer { .. } => Kind::Spacer,
         Widget::Divider { .. } => Kind::Divider,
-        Widget::Text { .. } => Kind::Text,
+        Widget::Text { .. } | Widget::StrongText { .. } => Kind::Text,
         Widget::Image { .. } => Kind::Image,
         Widget::Button { .. } => Kind::Button,
         Widget::ButtonContent { .. } => Kind::ButtonContent,

@@ -193,8 +193,12 @@ impl<'a> AccessibilityBuilder<'a> {
         path: &mut Vec<usize>,
     ) -> Vec<NodeId> {
         let node_children = children_for(self.taffy, node);
+        path.push(0);
+        let anchor_id = leaf_access_id(anchor, path);
+        path.pop();
         let mut ids =
             collect_indexed_child(self, anchor, node_children.first().copied(), abs, path, 0);
+        self.set_expanded_state(anchor_id, open);
         if open {
             ids.extend(collect_indexed_child(
                 self,
@@ -206,6 +210,13 @@ impl<'a> AccessibilityBuilder<'a> {
             ));
         }
         ids
+    }
+
+    fn set_expanded_state(&mut self, id: Option<NodeId>, expanded: bool) {
+        let Some(id) = id else { return };
+        if let Some((_, node)) = self.nodes.iter_mut().find(|(node_id, _)| *node_id == id) {
+            node.set_expanded(expanded);
+        }
     }
 
     fn collect_accordion<Msg>(
@@ -397,7 +408,7 @@ fn collect_indexed_child<Msg>(
 
 fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
     Some(match widget {
-        Widget::Text { .. } => Role::TextRun,
+        Widget::Text { .. } | Widget::StrongText { .. } => Role::TextRun,
         Widget::Image { .. } => Role::Image,
         Widget::Button { .. } | Widget::ButtonContent { .. } => Role::Button,
         Widget::TextInput { is_password, .. } if *is_password => Role::PasswordInput,
@@ -562,7 +573,9 @@ fn set_widget_label<Msg>(
     input_states: &HashMap<u64, InputWidgetState>,
 ) {
     match widget {
-        Widget::Text { content, .. } => node.set_label(content.clone()),
+        Widget::Text { content, .. } | Widget::StrongText { content, .. } => {
+            node.set_label(content.clone())
+        }
         Widget::Button { text, .. } => node.set_label(*text),
         Widget::ButtonContent { label, .. } => node.set_label(*label),
         Widget::TextInput { label, .. } | Widget::TextArea { label, .. } => node.set_label(*label),
@@ -654,6 +667,7 @@ mod tests {
     use cosmic_text::FontSystem;
     use taffy::prelude::{Dimension, Size, Style};
 
+    use crate::calendar::{CalendarDate, CalendarMonth};
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::ButtonVariant;
     use winit::dpi::PhysicalSize;
@@ -725,6 +739,17 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_update_exposes_strong_text_label() {
+        let widget: Widget<'_, ()> =
+            Widget::strong_text("2026", base_style(80.0, 24.0), None, 16.0);
+
+        let update = build_update(&widget);
+        let text = node_for(&update, Role::TextRun);
+
+        assert_eq!(text.label(), Some("2026"));
+    }
+
+    #[test]
     fn accessibility_update_exposes_button_content_label() {
         let widget = Widget::button_content(
             "Upload image",
@@ -744,6 +769,33 @@ mod tests {
 
         assert_eq!(button.label(), Some("Upload image"));
         assert!(button.supports_action(Action::Click));
+    }
+
+    #[test]
+    fn accessibility_update_exposes_date_picker_label_and_expanded_state() {
+        let selected = CalendarDate::new(2026, 7, 31).unwrap();
+        let widget = Widget::date_picker(
+            true,
+            CalendarMonth::from(selected),
+            Some(selected),
+            (),
+            (),
+            |_| (),
+            |_| (),
+            "Date: 2026-07-31",
+            "YYYY-MM-DD",
+            base_style(180.0, 40.0),
+            base_style(280.0, 320.0),
+        );
+
+        let update = build_update(&widget);
+        let picker = update
+            .nodes
+            .iter()
+            .find_map(|(_, node)| (node.label() == Some("Date: 2026-07-31")).then_some(node))
+            .unwrap();
+
+        assert_eq!(picker.is_expanded(), Some(true));
     }
 
     #[test]

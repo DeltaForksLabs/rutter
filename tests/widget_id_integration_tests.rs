@@ -61,6 +61,26 @@ fn tab_bar(id: u64) -> TestWidget {
 }
 
 #[test]
+fn regular_and_strong_text_are_transition_compatible() {
+    let regular: TestWidget = Widget::Text {
+        content: "2025".into(),
+        style: Style::default(),
+        color: None,
+        size: 16.0,
+    };
+    let strong: TestWidget = Widget::strong_text("2026", Style::default(), None, 16.0);
+    let regular_snapshot = WidgetIdSnapshot::capture(&regular).unwrap();
+    let strong_snapshot = WidgetIdSnapshot::capture(&strong).unwrap();
+
+    regular_snapshot
+        .validate_transition_to(&strong_snapshot)
+        .unwrap();
+    regular_snapshot
+        .validate_reconstruction(&strong_snapshot)
+        .unwrap();
+}
+
+#[test]
 fn manual_id_accepts_only_the_manual_namespace() {
     assert_eq!(WidgetId::manual(42).unwrap().get(), 42);
     assert!(matches!(

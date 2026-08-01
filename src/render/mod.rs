@@ -30,7 +30,7 @@ use skia_safe::{
 use taffy::prelude::{NodeId, TaffyTree};
 
 pub use self::image_cache::ImageRenderCache;
-use self::text::{TextBufferCache, TextShapeRequest, draw_text, get_cached_font};
+use self::text::{TextBufferCache, TextShapeRequest, draw_strong_text, draw_text, get_cached_font};
 use self::{
     image::{MAX_ENCODED_IMAGE_BYTES, decode_rutter_image},
     image_cache::SvgImageCacheKey,
@@ -1239,6 +1239,20 @@ fn draw_widgets_impl<'w, Msg>(
                 false,
             );
         }
+        Widget::StrongText {
+            content,
+            color,
+            size: font_size,
+            ..
+        } => draw_strong_text(
+            canvas,
+            content,
+            size,
+            color.unwrap_or(theme.on_surface),
+            *font_size,
+            font_cache,
+            false,
+        ),
         Widget::Select {
             options,
             selected_index,

@@ -9,6 +9,7 @@
 //   cargo run -- slider
 // ============================================================
 
+pub mod calendar_demo;
 pub mod controls_demo;
 pub mod form_demo;
 pub mod modal_toast_demo;

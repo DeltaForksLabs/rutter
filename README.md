@@ -60,11 +60,11 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 ### Widgets
 
-- Text, image, spacer, divider, container, row, and column primitives.
+- Text, strong text, image, spacer, divider, container, row, and column primitives.
 - Text and rich-content button variants, checkbox, switch, radio, slider, select, progress bar, and spinner.
 - Text input, search bar, and multiline text area.
 - Scroll view, virtual list, and virtual grid for large item sets.
-- Accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
+- Calendar, date picker, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
 
 ### Overlays
 
@@ -128,6 +128,7 @@ cargo run -- modal_toast
 cargo run -- vlist
 cargo run -- vgrid
 cargo run -- popover
+cargo run -- calendar
 cargo run -- advanced
 ```
 
@@ -258,6 +259,7 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 ### Display Widgets
 
 - `Text`
+- `StrongText`
 - `Image`
 - `ProgressBar`
 - `Spinner`
@@ -271,12 +273,38 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `Toast`
 - `ContextMenu`
 - `Popover`
+- `Calendar`
+- `DatePicker`
 - `VirtualList`
 - `VirtualListContent`
 - `VirtualGrid`
 - `VirtualGridContent`
 
 `VirtualListContent` and `VirtualGridContent` keep row and cell virtualization while allowing each visible item to render arbitrary widget content, including images, icons, and composed layouts.
+
+### Calendar and Date Picker
+
+`Widget::calendar` provides a six-week monthly grid with single-date selection and separate month/year navigation. `Widget::date_picker` reuses the same calendar inside an anchored `Popover`. Both are controlled widgets: the application stores the selected `CalendarDate`, visible `CalendarMonth`, and date-picker open state.
+
+Dates use Rutter's validated proleptic Gregorian types and do not require a time-zone or third-party date dependency. English labels are used by default; `CalendarConfig`, `CalendarLabels`, and `WeekStart` provide explicit localization and first-weekday configuration. Adjacent-month cells remain selectable, so applications should update the visible month from `date.calendar_month()` after selection.
+
+Choose a popup size that fits the application's minimum supported viewport. Popover placement is clamped to the window, but oversized popup content is clipped rather than reflowed.
+
+The date picker's `accessibility_label` should include its controlled value, as demonstrated by the example; its anchor also exposes expanded/collapsed state. The composed calendar exposes its month heading, navigation controls, and individual day buttons to AccessKit. Grid-specific arrow navigation and a semantic selected-state announcement remain future accessibility work; keyboard users traverse the controls through the existing focus order.
+
+```rust
+let config = CalendarConfig::new(CalendarLabels::PORTUGUESE, WeekStart::Monday);
+let calendar = Widget::calendar_with_config(
+    state.visible_month,
+    state.selected_date,
+    Msg::SelectDate,
+    Msg::NavigateMonth,
+    config,
+    calendar_style,
+);
+```
+
+See `examples/widgets/calendar_demo.rs` or run `cargo run -- calendar` for standalone and popover usage.
 
 ## Rendering Backends
 
@@ -304,6 +332,7 @@ Further performance work is expected as the framework matures.
 
 ```text
 src/
+  calendar/               Gregorian date types and composed calendar widgets
   app.rs                  AppLogic trait and application contract
   engine/                 Runtime engine, runner, GPU backends, widget state
   input_state.rs          Editable text state and cursor/selection helpers

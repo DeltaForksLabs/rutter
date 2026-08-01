@@ -273,6 +273,24 @@ fn collect_toast_runtime_state(widget_states: &HashMap<u64, WidgetState>) -> (Ve
     (expired_toasts, has_active_timed_toasts)
 }
 
+fn collect_open_popover_dismissals<Msg: Clone>(
+    widget_states: &HashMap<u64, WidgetState>,
+    dismiss_callbacks: &HashMap<u64, Msg>,
+) -> Vec<Msg> {
+    let mut dismissals = widget_states
+        .iter()
+        .filter(|(_, state)| state.as_popover().is_some_and(|popover| popover.is_open))
+        .filter_map(|(id, _)| {
+            dismiss_callbacks
+                .get(id)
+                .cloned()
+                .map(|message| (*id, message))
+        })
+        .collect::<Vec<_>>();
+    dismissals.sort_by_key(|(id, _)| *id);
+    dismissals.into_iter().map(|(_, message)| message).collect()
+}
+
 fn input_copy_is_blocked<Msg: Clone>(
     runtime: Option<&InputRuntime<Msg>>,
     state: Option<&InputWidgetState>,
@@ -1192,6 +1210,22 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.engine.layout_dirty = true;
     }
 
+    fn dismiss_open_popovers(&mut self) {
+        let messages = collect_open_popover_dismissals(
+            &self.engine.widget_states,
+            &self.engine.runtime_caches.popover_dismiss,
+        );
+        self.engine.close_all_popovers();
+        for message in messages {
+            A::update(
+                &mut self.engine.app_state,
+                message,
+                &mut self.engine.clipboard,
+            );
+            self.engine.layout_dirty = true;
+        }
+    }
+
     fn update_slider_drag(&mut self, sid: u64, cursor_x: f32) {
         let Some(slider) = self.engine.runtime_caches.sliders.get(&sid).cloned() else {
             return;
@@ -1727,7 +1761,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Key::Named(NamedKey::Escape) = key {
             self.close_all_selects();
             self.engine.close_all_context_menus();
-            self.engine.close_all_popovers();
+            self.dismiss_open_popovers();
             self.engine.active_scroll_id = None;
             self.redraw();
             return;
@@ -2151,10 +2185,11 @@ mod tests {
     use cosmic_text::FontSystem;
 
     use super::{
-        WindowEventDestination, classify_window_event, collect_toast_runtime_state,
-        input_copy_is_blocked, sanitize_clipboard_text, sanitize_input_text,
+        WindowEventDestination, classify_window_event, collect_open_popover_dismissals,
+        collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text,
+        sanitize_input_text,
     };
-    use crate::engine::widget_state::{ToastState, WidgetState};
+    use crate::engine::widget_state::{PopoverState, ToastState, WidgetState};
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
 
@@ -2253,5 +2288,32 @@ mod tests {
 
         assert_eq!(expired, vec![9]);
         assert!(!has_active_timed);
+    }
+
+    #[test]
+    fn escape_dismissals_include_only_open_popovers_with_callbacks() {
+        let mut open = PopoverState::default();
+        open.set_open(true);
+        let states = HashMap::from([
+            (
+                5,
+                WidgetState::Popover(PopoverState {
+                    is_open: true,
+                    ..PopoverState::default()
+                }),
+            ),
+            (7, WidgetState::Popover(open)),
+            (9, WidgetState::Popover(PopoverState::default())),
+        ]);
+        let callbacks = HashMap::from([
+            (5, "close first"),
+            (7, "close active"),
+            (9, "close inactive"),
+        ]);
+
+        assert_eq!(
+            collect_open_popover_dismissals(&states, &callbacks),
+            vec!["close first", "close active"]
+        );
     }
 }

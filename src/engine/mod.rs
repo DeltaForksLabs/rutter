@@ -371,6 +371,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     vlists: HashMap<u64, VListRuntime<Msg>>,
     vgrids: HashMap<u64, VGridRuntime<Msg>>,
     toast_dismiss: HashMap<u64, Msg>,
+    popover_dismiss: HashMap<u64, Msg>,
 }
 
 impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
@@ -391,6 +392,7 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             vlists: HashMap::new(),
             vgrids: HashMap::new(),
             toast_dismiss: HashMap::new(),
+            popover_dismiss: HashMap::new(),
         }
     }
 }
@@ -412,6 +414,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.vlists.clear();
         self.vgrids.clear();
         self.toast_dismiss.clear();
+        self.popover_dismiss.clear();
     }
 }
 
@@ -1353,9 +1356,18 @@ impl<A: AppLogic> RutterEngine<A> {
                 anchor,
                 content,
                 open,
+                on_dismiss,
                 ..
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
+                if let Some(message) = on_dismiss {
+                    insert_runtime_entry(
+                        &mut runtime_caches.popover_dismiss,
+                        resolved_id,
+                        message.clone(),
+                        "popover dismiss callbacks",
+                    )?;
+                }
                 let node_children = Self::children_for(node, taffy);
                 if let Some(ws) = widget_states.get_mut(&resolved_id) {
                     if let Some(popover) = ws.as_popover_mut() {
@@ -1738,6 +1750,23 @@ mod tests {
                     duration_ms: 1000,
                     on_dismiss: Some(Msg::Dismiss),
                 },
+                Widget::Popover {
+                    id: 8,
+                    open: false,
+                    anchor: Box::new(Widget::Button {
+                        text: "Open",
+                        on_press: Msg::Dismiss,
+                        style: base_style(80.0, 32.0),
+                        color: None,
+                        variant: crate::widget::ButtonVariant::Ghost,
+                    }),
+                    content: Box::new(Widget::Spacer {
+                        style: base_style(120.0, 80.0),
+                    }),
+                    on_dismiss: Some(Msg::Dismiss),
+                    style: base_style(80.0, 32.0),
+                    popup_style: base_style(120.0, 80.0),
+                },
             ],
             style: Style::default(),
         };
@@ -1815,6 +1844,7 @@ mod tests {
         );
 
         assert_eq!(runtime_caches.toast_dismiss.get(&6), Some(&Msg::Dismiss));
+        assert_eq!(runtime_caches.popover_dismiss.get(&8), Some(&Msg::Dismiss));
     }
 
     #[test]

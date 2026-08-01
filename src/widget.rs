@@ -298,6 +298,12 @@ pub enum Widget<'a, Msg> {
         color: Option<SkiaColor>,
         size: f32,
     },
+    StrongText {
+        content: String,
+        style: Style,
+        color: Option<SkiaColor>,
+        size: f32,
+    },
     Image {
         data: &'a [u8],
         style: Style,
@@ -501,6 +507,29 @@ pub enum Widget<'a, Msg> {
 }
 
 impl<'a, Msg> Widget<'a, Msg> {
+    /// Creates text rendered with an explicitly emboldened font.
+    ///
+    /// ```rust
+    /// use rutter::Widget;
+    /// use taffy::prelude::Style;
+    ///
+    /// let text: Widget<'_, ()> = Widget::strong_text("2026", Style::default(), None, 16.0);
+    /// assert!(matches!(text, Widget::StrongText { .. }));
+    /// ```
+    pub fn strong_text(
+        content: impl Into<String>,
+        style: Style,
+        color: Option<SkiaColor>,
+        size: f32,
+    ) -> Self {
+        Self::StrongText {
+            content: content.into(),
+            style,
+            color,
+            size,
+        }
+    }
+
     /// Creates a button whose visual content is another widget.
     ///
     /// Example:

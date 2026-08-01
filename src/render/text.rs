@@ -61,11 +61,43 @@ pub fn draw_text(
     font_cache: &mut HashMap<(String, u32), Font>,
     center: bool,
 ) {
+    draw_weighted_text(
+        canvas, text, size, color, font_size, font_cache, center, false,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_strong_text(
+    canvas: &Canvas,
+    text: &str,
+    size: (f32, f32),
+    color: SkiaColor,
+    font_size: f32,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    center: bool,
+) {
+    draw_weighted_text(
+        canvas, text, size, color, font_size, font_cache, center, true,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_weighted_text(
+    canvas: &Canvas,
+    text: &str,
+    size: (f32, f32),
+    color: SkiaColor,
+    font_size: f32,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    center: bool,
+    embolden: bool,
+) {
     if text.is_empty() {
         return;
     }
 
-    let font = get_cached_font(font_cache, "sans-serif", font_size);
+    let mut font = get_cached_font(font_cache, "sans-serif", font_size);
+    font.set_embolden(embolden);
     let mut paint = Paint::default();
     paint.set_color(color);
     paint.set_anti_alias(true);
@@ -73,11 +105,36 @@ pub fn draw_text(
     // Baseline vertical: centro da caixa + ajuste ótico do cap-height
     let y = (size.1 / 2.0) + (font_size / 3.0);
 
-    if center {
-        let text_width = font.measure_str(text, Some(&paint)).0;
-        let x = (size.0 - text_width) / 2.0;
-        canvas.draw_str(text, (x, y), &font, &paint);
+    let x = if center {
+        (size.0 - font.measure_str(text, Some(&paint)).0) / 2.0
     } else {
-        canvas.draw_str(text, (0.0, y), &font, &paint);
+        0.0
+    };
+    canvas.draw_str(text, (x, y), &font, &paint);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use skia_safe::{Color, surfaces};
+
+    use super::{draw_strong_text, get_cached_font};
+
+    #[test]
+    fn strong_text_emboldens_only_the_draw_font_clone() {
+        let mut cache = HashMap::new();
+        let mut surface = surfaces::raster_n32_premul((80, 30)).unwrap();
+        draw_strong_text(
+            surface.canvas(),
+            "2026",
+            (80.0, 30.0),
+            Color::BLACK,
+            16.0,
+            &mut cache,
+            true,
+        );
+
+        assert!(!get_cached_font(&mut cache, "sans-serif", 16.0).is_embolden());
     }
 }
