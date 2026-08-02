@@ -63,7 +63,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Text, strong text, image, spacer, divider, container, row, and column primitives.
 - Text and rich-content button variants, checkbox, switch, radio, slider, select, progress bar, and spinner.
 - Text input, search bar, and multiline text area.
-- Scroll view, virtual list, and virtual grid for large item sets.
+- Scroll view, virtual list, virtual grid, and horizontally virtualized carousel for large item sets.
 - Calendar, date picker, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
 
 ### Overlays
@@ -129,6 +129,7 @@ cargo run -- vlist
 cargo run -- vgrid
 cargo run -- popover
 cargo run -- calendar
+cargo run -- carousel
 cargo run -- advanced
 ```
 
@@ -275,12 +276,36 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `Popover`
 - `Calendar`
 - `DatePicker`
+- `CarouselView`
 - `VirtualList`
 - `VirtualListContent`
 - `VirtualGrid`
 - `VirtualGridContent`
 
 `VirtualListContent` and `VirtualGridContent` keep row and cell virtualization while allowing each visible item to render arbitrary widget content, including images, icons, and composed layouts.
+
+### CarouselView
+
+`Widget::carousel_view` presents a finite, horizontally scrollable collection whose item builder runs only for the visible range plus one overscan item. `CarouselConfig::uncontained` gives every item a fixed extent, clamped to the viewport width for oversized cards. `CarouselConfig::weighted` accepts positive relative weights such as `[1, 6, 1]`; while scrolling, adjacent items interpolate between those extents so each item can occupy the largest slot.
+
+Wheel input is routed to a main-tree scrollable under the cursor, including native horizontal trackpad deltas and carousels inside vertically scrolled content. Clicking an item focuses and selects it; Left/Right follow the locale's layout direction, while Home and End select the collection boundaries. Optional item snapping advances by one logical item boundary per scroll input.
+
+```rust
+let config = CarouselConfig::weighted([1, 6, 1])?
+    .with_item_snapping(true)
+    .with_accessibility_label("Featured projects");
+let carousel = Widget::carousel_view(
+    2_000,
+    |index| Some(project_card(index)),
+    Msg::SelectProject,
+    config,
+    carousel_style,
+);
+```
+
+Carousel item widgets follow the same security contract as `VirtualListContent`: they are visual-only and receive isolated runtime-state maps. Nested buttons and inputs are therefore rendered but do not handle interaction; selection belongs to the carousel. The current release is horizontal and finite, and intentionally defers touch dragging, infinite looping, vertical layouts, public controllers, overlay-aware wheel routing, parent-scroll bubbling, and custom scroll physics.
+
+AccessKit exposes the carousel as a labeled horizontal collection with its total item count and orientation. Accessibility actions and virtual item descendants are not routed yet; keyboard and pointer interaction remain available through Rutter's normal input path. See `examples/widgets/carousel_demo.rs` or run `cargo run -- carousel` for weighted and uncontained layouts.
 
 ### Calendar and Date Picker
 
@@ -324,6 +349,7 @@ Rutter includes several optimizations intended for responsive desktop UIs:
 - Runtime callback caches for common input paths.
 - Text shaping cache for repeated text rendering.
 - Virtualized list and grid widgets for large item counts.
+- Fixed and weighted carousel layouts that materialize the visible range plus one overscan item.
 - GPU-first rendering with CPU fallback.
 
 Further performance work is expected as the framework matures.
@@ -333,6 +359,7 @@ Further performance work is expected as the framework matures.
 ```text
 src/
   calendar/               Gregorian date types and composed calendar widgets
+  carousel/               Carousel configuration, geometry, and runtime state
   app.rs                  AppLogic trait and application contract
   engine/                 Runtime engine, runner, GPU backends, widget state
   input_state.rs          Editable text state and cursor/selection helpers

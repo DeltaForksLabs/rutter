@@ -27,6 +27,7 @@ use skia_safe::{
     Color as SkiaColor, Contains, Font, Paint, Point, RRect, Rect as SkiaRect, canvas::Canvas,
     paint,
 };
+use taffy::Direction;
 use taffy::prelude::{NodeId, TaffyTree};
 
 pub use self::image_cache::ImageRenderCache;
@@ -36,10 +37,12 @@ use self::{
     image_cache::SvgImageCacheKey,
     svg::{checked_svg_raster_size, validate_svg_source},
 };
+use crate::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
 use crate::engine::widget_state::{
     VirtualGridState, WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left,
     virtual_grid_cell_width, virtual_grid_row_count,
 };
+use crate::i18n::LayoutDirection;
 use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{
     OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree, compute_layout,
@@ -1408,6 +1411,37 @@ fn draw_widgets_impl<'w, Msg>(
             );
         }
         Widget::Toast { .. } => {}
+        Widget::CarouselView {
+            item_count,
+            items,
+            config,
+            ..
+        } => {
+            let state = widget_states
+                .get(&resolved_id.unwrap())
+                .and_then(WidgetState::as_carousel);
+            let direction = carousel_layout_direction(taffy, node);
+            let position = state.map(|state| state.position).unwrap_or_default();
+            let selected = state.and_then(|state| state.selected_item);
+            let frames = carousel_item_frames(config, position, size.0, *item_count, direction);
+            draw_carousel_view(
+                canvas,
+                items.as_ref(),
+                &frames,
+                CarouselViewPaintState(selected, size, local_mouse, is_focused, theme),
+                &mut VirtualItemDrawContext {
+                    fs,
+                    swash,
+                    font_cache,
+                    text_cache,
+                    image_cache,
+                    layout_fs: layout_fs.clone(),
+                    cursor_visible,
+                    scale,
+                },
+                path,
+            );
+        }
         Widget::VirtualList {
             item_height,
             item_count,
@@ -2525,6 +2559,149 @@ struct VirtualItemDrawContext<'a> {
     layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     scale: f32,
+}
+
+struct CarouselViewPaintState<'a>(Option<usize>, (f32, f32), Point, bool, &'a Theme);
+
+fn draw_carousel_view<'w, Msg>(
+    canvas: &Canvas,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    frames: &[CarouselItemFrame],
+    paint_state: CarouselViewPaintState<'_>,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    let CarouselViewPaintState(selected, size, mouse, is_focused, theme) = paint_state;
+    let visible_selection = visible_carousel_selection(selected, frames, size);
+    draw_virtual_background(canvas, size, theme);
+    canvas.save();
+    canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
+    draw_carousel_items(
+        canvas, items, frames, selected, mouse, is_focused, size.1, theme, ctx, path,
+    );
+    canvas.restore();
+    draw_unselected_carousel_focus(canvas, visible_selection, is_focused, size, theme);
+}
+
+fn visible_carousel_selection(
+    selected: Option<usize>,
+    frames: &[CarouselItemFrame],
+    viewport_size: (f32, f32),
+) -> Option<usize> {
+    selected.filter(|selected| {
+        frames
+            .iter()
+            .find(|frame| frame.index == *selected)
+            .is_some_and(|frame| carousel_focus_intersects_viewport(*frame, viewport_size))
+    })
+}
+
+fn carousel_focus_intersects_viewport(frame: CarouselItemFrame, viewport_size: (f32, f32)) -> bool {
+    let focus = inset_rect(carousel_card_rect(frame, viewport_size.1), 1.0);
+    focus.left < viewport_size.0
+        && focus.right > 0.0
+        && focus.top < viewport_size.1
+        && focus.bottom > 0.0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_carousel_items<'w, Msg>(
+    canvas: &Canvas,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    frames: &[CarouselItemFrame],
+    selected: Option<usize>,
+    mouse: Point,
+    is_focused: bool,
+    height: f32,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    for frame in frames.iter().copied() {
+        draw_carousel_item(
+            canvas, items, frame, selected, mouse, is_focused, height, theme, ctx, path,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_carousel_item<'w, Msg>(
+    canvas: &Canvas,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    frame: CarouselItemFrame,
+    selected: Option<usize>,
+    mouse: Point,
+    is_focused: bool,
+    viewport_height: f32,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    let rect = carousel_card_rect(frame, viewport_height);
+    let is_selected = selected == Some(frame.index);
+    draw_virtual_grid_cell_frame(canvas, rect, is_selected, rect.contains(mouse), theme);
+    draw_carousel_item_focus(canvas, rect, is_selected && is_focused, theme);
+    draw_carousel_item_content(canvas, items, frame.index, rect, mouse, theme, ctx, path);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_carousel_item_content<'w, Msg>(
+    canvas: &Canvas,
+    items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    index: usize,
+    rect: SkiaRect,
+    mouse: Point,
+    theme: &Theme,
+    ctx: &mut VirtualItemDrawContext<'_>,
+    path: &mut Vec<usize>,
+) {
+    if let Some(item) = items(index) {
+        let origin = (rect.left, rect.top);
+        let item_size = rect_size(rect);
+        path.push(index);
+        draw_virtual_item_widget(canvas, &item, origin, item_size, mouse, theme, ctx, path);
+        path.pop();
+    }
+}
+
+fn carousel_layout_direction(taffy: &TaffyTree<RutterContext>, node: NodeId) -> LayoutDirection {
+    match taffy.style(node).map(|style| style.direction) {
+        Ok(Direction::Rtl) => LayoutDirection::Rtl,
+        _ => LayoutDirection::Ltr,
+    }
+}
+
+fn carousel_card_rect(frame: CarouselItemFrame, viewport_height: f32) -> SkiaRect {
+    const GAP: f32 = 8.0;
+    let horizontal = (GAP * 0.5).min(frame.width * 0.2);
+    let vertical = (GAP * 0.5).min(viewport_height * 0.2);
+    SkiaRect::from_xywh(
+        frame.x + horizontal,
+        vertical,
+        (frame.width - horizontal * 2.0).max(1.0),
+        (viewport_height - vertical * 2.0).max(1.0),
+    )
+}
+
+fn draw_carousel_item_focus(canvas: &Canvas, rect: SkiaRect, focused: bool, theme: &Theme) {
+    if !focused {
+        return;
+    }
+    draw_focus_outline(canvas, inset_rect(rect, 1.0), theme.radius_sm, theme);
+}
+
+fn draw_unselected_carousel_focus(
+    canvas: &Canvas,
+    selected: Option<usize>,
+    focused: bool,
+    size: (f32, f32),
+    theme: &Theme,
+) {
+    if !focused || selected.is_some() {
+        return;
+    }
+    let rect = SkiaRect::from_xywh(2.0, 2.0, (size.0 - 4.0).max(0.0), (size.1 - 4.0).max(0.0));
+    draw_focus_outline(canvas, rect, theme.radius_sm, theme);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3969,8 +4146,9 @@ mod tests {
 
     use super::{
         ImageRenderCache, draw_image, draw_virtual_grid, draw_widgets, is_svg_image, svg_cache_key,
-        virtual_grid_scrollbar_metrics,
+        virtual_grid_scrollbar_metrics, visible_carousel_selection,
     };
+    use crate::carousel::geometry::CarouselItemFrame;
     use crate::engine::widget_state::VirtualGridState;
     use crate::layout::{SCROLLBAR_W, build_taffy_tree, compute_layout};
     use crate::render::text::TextBufferCache;
@@ -3979,6 +4157,59 @@ mod tests {
 
     fn grid_item(index: usize) -> Option<String> {
         Some(format!("Item {index}"))
+    }
+
+    #[test]
+    fn offscreen_carousel_selection_uses_collection_focus_fallback() {
+        let frames = [CarouselItemFrame {
+            index: 4,
+            x: 0.0,
+            width: 200.0,
+        }];
+        assert_eq!(
+            visible_carousel_selection(Some(4), &frames, (200.0, 100.0)),
+            Some(4)
+        );
+        assert_eq!(
+            visible_carousel_selection(Some(2), &frames, (200.0, 100.0)),
+            None
+        );
+        let overscan = [CarouselItemFrame {
+            index: 5,
+            x: 200.0,
+            width: 200.0,
+        }];
+        assert_eq!(
+            visible_carousel_selection(Some(5), &overscan, (200.0, 100.0)),
+            None
+        );
+        let leading_overscan = [CarouselItemFrame {
+            index: 3,
+            x: -200.0,
+            width: 200.0,
+        }];
+        assert_eq!(
+            visible_carousel_selection(Some(3), &leading_overscan, (200.0, 100.0)),
+            None
+        );
+        let trailing_sliver = [CarouselItemFrame {
+            index: 6,
+            x: 199.0,
+            width: 200.0,
+        }];
+        assert_eq!(
+            visible_carousel_selection(Some(6), &trailing_sliver, (200.0, 100.0)),
+            None
+        );
+        let leading_sliver = [CarouselItemFrame {
+            index: 2,
+            x: -199.0,
+            width: 200.0,
+        }];
+        assert_eq!(
+            visible_carousel_selection(Some(2), &leading_sliver, (200.0, 100.0)),
+            None
+        );
     }
 
     #[test]

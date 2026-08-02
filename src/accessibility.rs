@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use accesskit::{
     Action, ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, Node, NodeId,
-    Rect, Role, Toggled, Tree, TreeId, TreeUpdate,
+    Orientation as AccessOrientation, Rect, Role, Toggled, Tree, TreeId, TreeUpdate,
 };
 use skia_safe::Point;
 use taffy::prelude::{NodeId as TaffyNodeId, TaffyTree};
@@ -423,6 +423,7 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         Widget::ProgressBar { .. } | Widget::Spinner { .. } => Role::ProgressIndicator,
         Widget::TabBar { .. } => Role::TabList,
         Widget::Toast { visible: true, .. } => Role::Status,
+        Widget::CarouselView { .. } => Role::ListBox,
         Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => Role::ListBox,
         Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => Role::Grid,
         _ => return None,
@@ -533,6 +534,10 @@ fn apply_input_props<Msg>(
 
 fn apply_collection_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
     match widget {
+        Widget::CarouselView { item_count, .. } => {
+            node.set_size_of_set(*item_count);
+            node.set_orientation(AccessOrientation::Horizontal);
+        }
         Widget::VirtualList { item_count, .. } | Widget::VirtualListContent { item_count, .. } => {
             node.set_size_of_set(*item_count)
         }
@@ -585,6 +590,7 @@ fn set_widget_label<Msg>(
         Widget::ProgressBar { .. } => node.set_label("Progress"),
         Widget::Spinner { .. } => node.set_label("Loading"),
         Widget::Toast { message, .. } => node.set_label(*message),
+        Widget::CarouselView { config, .. } => node.set_label(config.accessibility_label.clone()),
         Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => {
             node.set_label("Virtual list")
         }
@@ -769,6 +775,31 @@ mod tests {
 
         assert_eq!(button.label(), Some("Upload image"));
         assert!(button.supports_action(Action::Click));
+    }
+
+    #[test]
+    fn accessibility_update_exposes_horizontal_carousel_metadata() {
+        let cards = |index| {
+            Some(Widget::Text {
+                content: format!("Card {index}"),
+                style: Style::default(),
+                color: None,
+                size: 14.0,
+            })
+        };
+        let config = crate::CarouselConfig::weighted([1, 6, 1])
+            .unwrap()
+            .with_accessibility_label("Featured cards");
+        let widget = Widget::carousel_view(24, cards, |_| (), config, base_style(300.0, 120.0));
+
+        let update = build_update(&widget);
+        let carousel = node_for(&update, Role::ListBox);
+
+        assert_eq!(carousel.label(), Some("Featured cards"));
+        assert_eq!(carousel.size_of_set(), Some(24));
+        assert_eq!(carousel.orientation(), Some(AccessOrientation::Horizontal));
+        assert!(!carousel.supports_action(Action::ScrollLeft));
+        assert!(!carousel.supports_action(Action::ScrollRight));
     }
 
     #[test]

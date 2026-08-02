@@ -22,6 +22,7 @@ use super::run_error::RutterRunError;
 use super::{InputRuntime, RutterEngine, validate_runtime_reconstruction};
 use crate::app::AppLogic;
 use crate::engine::widget_state::WidgetState;
+use crate::i18n::LayoutDirection;
 use crate::input_limits::{
     InputLimitError, InputLimits, copy_text_with_reserve, validate_clipboard_source, validate_text,
     validate_utf8_range,
@@ -310,6 +311,57 @@ pub fn snap_to_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
     let decimals = (-step.log10().floor()).max(0.0) as i32;
     let factor = 10_f32.powi(decimals);
     (snapped * factor).round() / factor
+}
+
+fn wheel_deltas(delta: MouseScrollDelta) -> (f32, f32) {
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) => (-x * 40.0, -y * 40.0),
+        MouseScrollDelta::PixelDelta(point) => (-point.x as f32, -point.y as f32),
+    }
+}
+
+fn carousel_key_index(
+    key: &Key,
+    current: usize,
+    item_count: usize,
+    direction: LayoutDirection,
+) -> Option<usize> {
+    if item_count == 0 {
+        return None;
+    }
+    if is_activation_key(key) {
+        return Some(current.min(item_count - 1));
+    }
+    carousel_navigation_index(key, current, item_count, direction).filter(|next| *next != current)
+}
+
+fn carousel_navigation_index(
+    key: &Key,
+    current: usize,
+    item_count: usize,
+    direction: LayoutDirection,
+) -> Option<usize> {
+    let backward = current.saturating_sub(1);
+    let forward = current.saturating_add(1).min(item_count - 1);
+    match (key, direction) {
+        (Key::Named(NamedKey::ArrowLeft), LayoutDirection::Ltr) => Some(backward),
+        (Key::Named(NamedKey::ArrowRight), LayoutDirection::Ltr) => Some(forward),
+        (Key::Named(NamedKey::ArrowLeft), LayoutDirection::Rtl) => Some(forward),
+        (Key::Named(NamedKey::ArrowRight), LayoutDirection::Rtl) => Some(backward),
+        (Key::Named(NamedKey::Home), _) => Some(0),
+        (Key::Named(NamedKey::End), _) => Some(item_count - 1),
+        _ => None,
+    }
+}
+
+fn carousel_wheel_delta(delta_x: f32, delta_y: f32, direction: LayoutDirection) -> f32 {
+    if delta_x.abs() <= delta_y.abs() {
+        return delta_y;
+    }
+    match direction {
+        LayoutDirection::Ltr => delta_x,
+        LayoutDirection::Rtl => -delta_x,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -652,6 +704,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         self.engine.last_root_node,
                         cursor,
                         Point::new(0.0, 0.0),
+                        &self.engine.widget_states,
                     );
                     let hit = hit_test(
                         &wt,
@@ -922,6 +975,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 self.engine.layout_dirty = true;
                             }
                         }
+                        HitResult::CarouselSelect { id, index } => {
+                            if button == winit::event::MouseButton::Left {
+                                self.activate_carousel_item(id, index);
+                            }
+                        }
                     }
                     self.redraw();
                 } else {
@@ -949,83 +1007,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
-                    MouseScrollDelta::PixelDelta(p) => -p.y as f32,
-                };
-                let mut dirty = false;
-
-                if let Some(sid) = self.engine.active_scroll_id {
-                    let vlist_props = self
-                        .engine
-                        .runtime_caches
-                        .vlists
-                        .get(&sid)
-                        .map(|v| (v.item_height, v.item_count));
-                    let vgrid_props = self
-                        .engine
-                        .runtime_caches
-                        .vgrids
-                        .get(&sid)
-                        .map(|v| (v.item_height, v.item_count, v.columns));
-
-                    if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                        if let Some(s) = ws.as_scroll_mut() {
-                            s.scroll_by(dy);
-                            dirty = true;
-                        } else if let Some(s) = ws.as_vlist_mut() {
-                            if let Some((ih, ic)) = vlist_props {
-                                s.scroll_by(dy, ih, ic);
-                                dirty = true;
-                            }
-                        } else if let Some(s) = ws.as_vgrid_mut() {
-                            if let Some((ih, ic, cols)) = vgrid_props {
-                                s.scroll_by(dy, ih, ic, cols);
-                                dirty = true;
-                            }
-                        }
-                    }
-                } else {
-                    let mut virtual_to_scroll = None;
-                    for (id, ws) in self.engine.widget_states.iter() {
-                        if ws.as_vlist().is_some() {
-                            if let Some(props) = self
-                                .engine
-                                .runtime_caches
-                                .vlists
-                                .get(id)
-                                .map(|v| (*id, v.item_height, v.item_count, None))
-                            {
-                                virtual_to_scroll = Some(props);
-                                break;
-                            }
-                        } else if ws.as_vgrid().is_some() {
-                            if let Some(props) = self
-                                .engine
-                                .runtime_caches
-                                .vgrids
-                                .get(id)
-                                .map(|v| (*id, v.item_height, v.item_count, Some(v.columns)))
-                            {
-                                virtual_to_scroll = Some(props);
-                                break;
-                            }
-                        }
-                    }
-                    if let Some((id, ih, ic, cols)) = virtual_to_scroll {
-                        if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                            if let Some(vl) = ws.as_vlist_mut() {
-                                vl.scroll_by(dy, ih, ic);
-                                dirty = true;
-                            } else if let Some(grid) = ws.as_vgrid_mut() {
-                                grid.scroll_by(dy, ih, ic, cols.unwrap_or(1));
-                                dirty = true;
-                            }
-                        }
-                    }
+                if let Err(error) = self.refresh_scroll_target_at_cursor() {
+                    self.terminate_for_error(el, error);
+                    return;
                 }
-
-                if dirty {
+                let (delta_x, delta_y) = wheel_deltas(delta);
+                if self.scroll_active_target(delta_x, delta_y) {
                     self.redraw();
                 }
             }
@@ -1199,6 +1186,77 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             }
             self.engine.layout_dirty = true;
         }
+    }
+
+    fn activate_carousel_item(&mut self, id: u64, index: usize) {
+        let Some(runtime) = self.engine.runtime_caches.carousels.get(&id).cloned() else {
+            return;
+        };
+        self.focus_widget(Some(id));
+        self.dispatch_carousel_selection(id, index, &runtime);
+    }
+
+    fn refresh_scroll_target_at_cursor(&mut self) -> Result<(), RutterRunError> {
+        let size = self.engine.window.as_ref().unwrap().inner_size();
+        self.engine.try_ensure_widget_states()?;
+        self.engine.try_ensure_layout(size)?;
+        let widget = A::view(&mut self.engine.app_state);
+        validate_runtime_reconstruction(self.engine.widget_id_snapshot.as_ref(), &widget)?;
+        self.engine.active_scroll_id = find_scroll_focus(
+            &widget,
+            &self.engine.taffy,
+            self.engine.last_root_node,
+            self.engine.last_mouse_pos,
+            Point::new(0.0, 0.0),
+            &self.engine.widget_states,
+        );
+        Ok(())
+    }
+
+    fn scroll_active_target(&mut self, delta_x: f32, delta_y: f32) -> bool {
+        let Some(id) = self.engine.active_scroll_id else {
+            return false;
+        };
+        if let Some(runtime) = self.engine.runtime_caches.carousels.get(&id).cloned() {
+            return self.scroll_carousel(id, delta_x, delta_y, &runtime);
+        }
+        self.scroll_vertical_target(id, delta_y)
+    }
+
+    fn scroll_carousel(
+        &mut self,
+        id: u64,
+        delta_x: f32,
+        delta_y: f32,
+        runtime: &super::CarouselRuntime<A::Message>,
+    ) -> bool {
+        let delta = carousel_wheel_delta(delta_x, delta_y, A::locale().direction());
+        self.engine
+            .widget_states
+            .get_mut(&id)
+            .and_then(WidgetState::as_carousel_mut)
+            .is_some_and(|state| state.scroll_by_pixels(delta, &runtime.config, runtime.item_count))
+    }
+
+    fn scroll_vertical_target(&mut self, id: u64, delta_y: f32) -> bool {
+        let list = self.engine.runtime_caches.vlists.get(&id).cloned();
+        let grid = self.engine.runtime_caches.vgrids.get(&id).cloned();
+        let Some(state) = self.engine.widget_states.get_mut(&id) else {
+            return false;
+        };
+        if let Some(scroll) = state.as_scroll_mut() {
+            scroll.scroll_by(delta_y);
+            return true;
+        }
+        if let (Some(list), Some(vlist)) = (list, state.as_vlist_mut()) {
+            vlist.scroll_by(delta_y, list.item_height, list.item_count);
+            return true;
+        }
+        if let (Some(grid), Some(vgrid)) = (grid, state.as_vgrid_mut()) {
+            vgrid.scroll_by(delta_y, grid.item_height, grid.item_count, grid.columns);
+            return true;
+        }
+        false
     }
 
     fn close_all_selects(&mut self) {
@@ -1509,6 +1567,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             }
         }
 
+        if self.handle_carousel_key(fid, key) {
+            return true;
+        }
+
         if let Some(vlist) = self.engine.runtime_caches.vlists.get(&fid).cloned() {
             match key {
                 Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
@@ -1610,6 +1672,47 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
 
         false
+    }
+
+    fn handle_carousel_key(&mut self, id: u64, key: &Key) -> bool {
+        let Some(runtime) = self.engine.runtime_caches.carousels.get(&id).cloned() else {
+            return false;
+        };
+        let current = self.carousel_current_index(id, runtime.item_count);
+        let Some(next) =
+            carousel_key_index(key, current, runtime.item_count, A::locale().direction())
+        else {
+            return false;
+        };
+        self.dispatch_carousel_selection(id, next, &runtime);
+        true
+    }
+
+    fn carousel_current_index(&self, id: u64, item_count: usize) -> usize {
+        self.engine
+            .widget_states
+            .get(&id)
+            .and_then(WidgetState::as_carousel)
+            .and_then(|state| state.current_index(item_count))
+            .unwrap_or(0)
+    }
+
+    fn dispatch_carousel_selection(
+        &mut self,
+        id: u64,
+        index: usize,
+        runtime: &super::CarouselRuntime<A::Message>,
+    ) {
+        if let Some(WidgetState::Carousel(state)) = self.engine.widget_states.get_mut(&id) {
+            state.select(index, &runtime.config, runtime.item_count);
+        }
+        A::update(
+            &mut self.engine.app_state,
+            (runtime.on_select)(index),
+            &mut self.engine.clipboard,
+        );
+        self.engine.layout_dirty = true;
+        self.redraw();
     }
 
     fn handle_key(&mut self, key: &Key) {
@@ -2183,15 +2286,72 @@ mod tests {
     };
 
     use cosmic_text::FontSystem;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::MouseScrollDelta;
+    use winit::keyboard::{Key, NamedKey};
 
     use super::{
-        WindowEventDestination, classify_window_event, collect_open_popover_dismissals,
-        collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text,
-        sanitize_input_text,
+        WindowEventDestination, carousel_key_index, carousel_wheel_delta, classify_window_event,
+        collect_open_popover_dismissals, collect_toast_runtime_state, input_copy_is_blocked,
+        sanitize_clipboard_text, sanitize_input_text, wheel_deltas,
     };
+    use crate::LayoutDirection;
     use crate::engine::widget_state::{PopoverState, ToastState, WidgetState};
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
+
+    #[test]
+    fn wheel_deltas_preserve_horizontal_trackpad_input() {
+        assert_eq!(
+            wheel_deltas(MouseScrollDelta::LineDelta(2.0, -1.0)),
+            (-80.0, 40.0)
+        );
+        assert_eq!(
+            wheel_deltas(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+                12.0, -8.0
+            ))),
+            (-12.0, 8.0)
+        );
+    }
+
+    #[test]
+    fn carousel_arrow_navigation_follows_layout_direction() {
+        let right = Key::Named(NamedKey::ArrowRight);
+        let left = Key::Named(NamedKey::ArrowLeft);
+        assert_eq!(
+            carousel_key_index(&right, 2, 5, LayoutDirection::Ltr),
+            Some(3)
+        );
+        assert_eq!(
+            carousel_key_index(&left, 2, 5, LayoutDirection::Rtl),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn carousel_wheel_uses_dominant_axis_and_mirrors_rtl_horizontal_input() {
+        assert_eq!(carousel_wheel_delta(1.0, 40.0, LayoutDirection::Ltr), 40.0);
+        assert_eq!(carousel_wheel_delta(40.0, 1.0, LayoutDirection::Ltr), 40.0);
+        assert_eq!(carousel_wheel_delta(40.0, 1.0, LayoutDirection::Rtl), -40.0);
+    }
+
+    #[test]
+    fn carousel_boundary_navigation_does_not_repeat_selection() {
+        let left = Key::Named(NamedKey::ArrowLeft);
+        let right = Key::Named(NamedKey::ArrowRight);
+        let home = Key::Named(NamedKey::Home);
+        let end = Key::Named(NamedKey::End);
+        assert_eq!(carousel_key_index(&left, 0, 5, LayoutDirection::Ltr), None);
+        assert_eq!(carousel_key_index(&right, 4, 5, LayoutDirection::Ltr), None);
+        assert_eq!(carousel_key_index(&home, 0, 5, LayoutDirection::Ltr), None);
+        assert_eq!(carousel_key_index(&end, 4, 5, LayoutDirection::Ltr), None);
+    }
+
+    #[test]
+    fn empty_carousel_keyboard_navigation_emits_no_index() {
+        let end = Key::Named(NamedKey::End);
+        assert_eq!(carousel_key_index(&end, 0, 0, LayoutDirection::Ltr), None);
+    }
 
     #[test]
     fn foreign_window_events_are_discarded_after_active_window_registration() {

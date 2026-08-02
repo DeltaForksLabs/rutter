@@ -18,6 +18,7 @@
 //   cargo run -- vgrid
 //   cargo run -- popover
 //   cargo run -- calendar
+//   cargo run -- carousel
 //   cargo run -- button_content
 //   cargo run -- image_viewer
 //   cargo run -- advanced
@@ -41,6 +42,7 @@ fn main() {
         "modal_toast" => widget_examples::modal_toast_demo::run(),
         "popover" => widget_examples::popover_demo::run(),
         "calendar" => widget_examples::calendar_demo::run(),
+        "carousel" => widget_examples::carousel_demo::run(),
         "button_content" => widget_examples::button_content_demo::run(),
         "image_viewer" => widget_examples::image_viewer_demo::run(),
         "vlist" => widget_examples::vlist_demo::run(),

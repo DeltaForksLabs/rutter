@@ -10,6 +10,7 @@
 pub(crate) mod accessibility;
 pub mod app;
 pub mod calendar;
+pub mod carousel;
 pub mod engine;
 pub mod i18n;
 pub mod input_limits;
@@ -28,6 +29,7 @@ pub use app::{AppLogic, SurfaceConfig};
 pub use calendar::{
     CalendarConfig, CalendarDate, CalendarError, CalendarLabels, CalendarMonth, WeekStart,
 };
+pub use carousel::{CarouselConfig, CarouselConfigError};
 pub use engine::run_error::RutterRunError;
 pub use engine::runner::RutterRunner;
 pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};

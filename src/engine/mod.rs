@@ -37,6 +37,7 @@ use crate::accessibility::{
     build_accessibility_update,
 };
 use crate::app::{AppLogic, SurfaceConfig};
+use crate::carousel::{CarouselConfig, CarouselState};
 use crate::input_limits::{InputKind, InputLimits};
 use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
@@ -231,6 +232,7 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::SearchBar { .. }
         | Widget::Slider { .. }
         | Widget::Select { .. }
+        | Widget::CarouselView { .. }
         | Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
         | Widget::VirtualGrid { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
@@ -354,6 +356,13 @@ struct VGridRuntime<Msg> {
     item_count: usize,
 }
 
+#[derive(Debug, Clone)]
+struct CarouselRuntime<Msg> {
+    on_select: fn(usize) -> Msg,
+    item_count: usize,
+    config: CarouselConfig,
+}
+
 #[derive(Debug)]
 struct WidgetRuntimeCaches<Msg: Clone> {
     input_order: Vec<u64>,
@@ -368,6 +377,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     selects: HashMap<u64, SelectRuntime<Msg>>,
     tabs: HashMap<u64, TabRuntime<Msg>>,
     tab_items: HashMap<u64, TabFocusRuntime>,
+    carousels: HashMap<u64, CarouselRuntime<Msg>>,
     vlists: HashMap<u64, VListRuntime<Msg>>,
     vgrids: HashMap<u64, VGridRuntime<Msg>>,
     toast_dismiss: HashMap<u64, Msg>,
@@ -389,6 +399,7 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             selects: HashMap::new(),
             tabs: HashMap::new(),
             tab_items: HashMap::new(),
+            carousels: HashMap::new(),
             vlists: HashMap::new(),
             vgrids: HashMap::new(),
             toast_dismiss: HashMap::new(),
@@ -411,6 +422,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.selects.clear();
         self.tabs.clear();
         self.tab_items.clear();
+        self.carousels.clear();
         self.vlists.clear();
         self.vgrids.clear();
         self.toast_dismiss.clear();
@@ -447,6 +459,7 @@ fn widget_state_matches_seed(state: &WidgetState, kind: &str) -> bool {
             | (WidgetState::Toast(_), "toast")
             | (WidgetState::ContextMenu(_), "context_menu")
             | (WidgetState::Popover(_), "popover")
+            | (WidgetState::Carousel(_), "carousel")
             | (WidgetState::VList(_), "vlist")
             | (WidgetState::VGrid(_), "vgrid")
     )
@@ -489,6 +502,26 @@ fn sync_virtual_list_runtime<Msg: Clone>(
         }
     }
     Ok(())
+}
+
+fn sync_carousel_runtime<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+    widget: &Widget<Msg>,
+    layout: Option<&taffy::tree::Layout>,
+    path: &[usize],
+    runtime: CarouselRuntime<Msg>,
+) -> Result<(), WidgetIdError> {
+    let resolved_id = widget.resolved_id(path).unwrap();
+    if let Some(width) = layout.map(|layout| layout.size.width) {
+        if let Some(state) = states
+            .get_mut(&resolved_id)
+            .and_then(WidgetState::as_carousel_mut)
+        {
+            state.sync_viewport(width, &runtime.config, runtime.item_count);
+        }
+    }
+    insert_runtime_entry(&mut caches.carousels, resolved_id, runtime, "carousels")
 }
 
 fn sync_virtual_grid_runtime<Msg: Clone>(
@@ -765,6 +798,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     "toast" => WidgetState::Toast(ToastState::new(3000)),
                     "context_menu" => WidgetState::ContextMenu(ContextMenuState::default()),
                     "popover" => WidgetState::Popover(PopoverState::default()),
+                    "carousel" => WidgetState::Carousel(CarouselState::default()),
                     "vlist" => WidgetState::VList(VirtualListState::default()),
                     "vgrid" => WidgetState::VGrid(VirtualGridState::default()),
                     _ => WidgetState::Anim(AnimState::default()),
@@ -1324,6 +1358,25 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                 )?;
             }
+            Widget::CarouselView {
+                item_count,
+                on_select,
+                config,
+                ..
+            } => {
+                sync_carousel_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    layout,
+                    path,
+                    CarouselRuntime {
+                        on_select: *on_select,
+                        item_count: *item_count,
+                        config: config.clone(),
+                    },
+                )?;
+            }
             Widget::VirtualGrid {
                 columns,
                 item_height,
@@ -1741,6 +1794,14 @@ mod tests {
                     on_select: Msg::Usize,
                     style: base_style(240.0, 192.0),
                 },
+                Widget::CarouselView {
+                    id: 9,
+                    item_count: 100,
+                    items: Box::new(|_| None),
+                    on_select: Msg::Usize,
+                    config: crate::CarouselConfig::weighted([1, 6, 1]).unwrap(),
+                    style: base_style(240.0, 120.0),
+                },
                 Widget::Toast {
                     id: 6,
                     visible: true,
@@ -1774,6 +1835,7 @@ mod tests {
         let mut widget_states = HashMap::from([
             (5, WidgetState::VList(VirtualListState::default())),
             (7, WidgetState::VGrid(VirtualGridState::default())),
+            (9, WidgetState::Carousel(CarouselState::default())),
         ]);
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, &widget, fs(), &widget_states);
@@ -1841,6 +1903,17 @@ mod tests {
                 .and_then(|s| s.as_vgrid())
                 .map(|s| (s.viewport_w, s.viewport_h)),
             Some((240.0, 192.0))
+        );
+
+        let carousel = runtime_caches.carousels.get(&9).unwrap();
+        assert_eq!(carousel.item_count, 100);
+        assert_eq!((carousel.on_select)(11), Msg::Usize(11));
+        assert_eq!(
+            widget_states
+                .get(&9)
+                .and_then(WidgetState::as_carousel)
+                .map(|state| state.viewport_width),
+            Some(240.0)
         );
 
         assert_eq!(runtime_caches.toast_dismiss.get(&6), Some(&Msg::Dismiss));
@@ -1913,6 +1986,22 @@ mod tests {
 
         assert_eq!(focus_order, expected);
         assert_ne!(focus_order[0], tabbar.resolved_id(&[]).unwrap());
+    }
+
+    #[test]
+    fn focus_order_registers_carousel_as_one_keyboard_stop() {
+        let carousel = Widget::CarouselView {
+            id: 24,
+            item_count: 20,
+            items: Box::new(|_| None),
+            on_select: Msg::Usize,
+            config: crate::CarouselConfig::uncontained(200.0).unwrap(),
+            style: base_style(600.0, 180.0),
+        };
+        let mut focus_order = Vec::new();
+        collect_focus_order(&carousel, &mut focus_order);
+
+        assert_eq!(focus_order, vec![24]);
     }
 
     #[test]

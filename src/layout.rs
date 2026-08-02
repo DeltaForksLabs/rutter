@@ -358,6 +358,7 @@ impl LayoutBlueprint {
             | Widget::TextInput { style, .. }
             | Widget::SearchBar { style, .. }
             | Widget::Slider { style, .. }
+            | Widget::CarouselView { style, .. }
             | Widget::VirtualList { style, .. }
             | Widget::VirtualListContent { style, .. }
             | Widget::VirtualGrid { style, .. } => {

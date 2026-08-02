@@ -10,6 +10,7 @@ use std::fmt;
 use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
 
+use crate::carousel::CarouselConfig;
 use crate::widget_id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
@@ -218,6 +219,7 @@ pub(crate) enum WidgetIdTag {
     ContextMenu = 23,
     Popover = 24,
     AccessibilityLeaf = 25,
+    CarouselView = 26,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,6 +471,14 @@ pub enum Widget<'a, Msg> {
         on_dismiss: Option<Msg>,
         style: Style,
         popup_style: Style,
+    },
+    CarouselView {
+        id: u64,
+        item_count: usize,
+        items: Box<dyn Fn(usize) -> Option<Widget<'a, Msg>> + 'a>,
+        on_select: fn(usize) -> Msg,
+        config: CarouselConfig,
+        style: Style,
     },
     VirtualList {
         id: u64,
@@ -891,6 +901,47 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a horizontally virtualized carousel from visual item widgets.
+    ///
+    /// Item widgets are materialized only for the visible range plus one
+    /// overscan item and receive isolated runtime state, matching
+    /// [`Widget::virtual_list_content`].
+    ///
+    /// ```rust
+    /// use rutter::{CarouselConfig, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// #[derive(Clone)]
+    /// enum Msg { Select(usize) }
+    /// let cards = |index| Some(Widget::Text {
+    ///     content: format!("Card {}", index + 1),
+    ///     style: Style::default(),
+    ///     color: None,
+    ///     size: 14.0,
+    /// });
+    /// let config = CarouselConfig::weighted([1, 6, 1]).unwrap();
+    /// let carousel = Widget::carousel_view(20, cards, Msg::Select, config, Style::default());
+    /// ```
+    pub fn carousel_view<ItemBuilder>(
+        item_count: usize,
+        items: ItemBuilder,
+        on_select: fn(usize) -> Msg,
+        config: CarouselConfig,
+        style: Style,
+    ) -> Self
+    where
+        ItemBuilder: Fn(usize) -> Option<Widget<'a, Msg>> + 'a,
+    {
+        Self::CarouselView {
+            id: AUTO_ID,
+            item_count,
+            items: Box::new(items),
+            on_select,
+            config,
+            style,
+        }
+    }
+
     pub fn virtual_list(
         item_height: f32,
         item_count: usize,
@@ -1031,6 +1082,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Toast { id: slot, .. }
             | Self::ContextMenu { id: slot, .. }
             | Self::Popover { id: slot, .. }
+            | Self::CarouselView { id: slot, .. }
             | Self::VirtualList { id: slot, .. }
             | Self::VirtualListContent { id: slot, .. }
             | Self::VirtualGrid { id: slot, .. }
@@ -1104,6 +1156,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::Toast { id, .. } => (Some(*id), WidgetIdTag::Toast, "Toast"),
             Self::ContextMenu { id, .. } => (Some(*id), WidgetIdTag::ContextMenu, "ContextMenu"),
             Self::Popover { id, .. } => (Some(*id), WidgetIdTag::Popover, "Popover"),
+            Self::CarouselView { id, .. } => (Some(*id), WidgetIdTag::CarouselView, "CarouselView"),
             Self::VirtualList { id, .. } | Self::VirtualListContent { id, .. } => {
                 (Some(*id), WidgetIdTag::VirtualList, "VirtualList")
             }
@@ -1134,6 +1187,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Select { .. }
             | Self::Accordion { .. }
             | Self::TabBar { .. }
+            | Self::CarouselView { .. }
             | Self::VirtualList { .. }
             | Self::VirtualListContent { .. }
             | Self::VirtualGrid { .. }

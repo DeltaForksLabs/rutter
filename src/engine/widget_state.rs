@@ -16,6 +16,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::carousel::CarouselState;
 use crate::layout::{SCROLLBAR_W, VIRTUAL_GRID_GAP, VIRTUAL_GRID_PADDING};
 
 // ── (mantidos da Fase 3) ──────────────────────────────────────
@@ -470,6 +471,7 @@ pub enum WidgetState {
     ContextMenu(ContextMenuState),
     Popover(PopoverState),
     Tab(TabState),
+    Carousel(CarouselState),
     VList(VirtualListState),
     VGrid(VirtualGridState),
 }
@@ -597,6 +599,20 @@ impl WidgetState {
     pub fn as_tab_mut(&mut self) -> Option<&mut TabState> {
         if let Self::Tab(s) = self {
             Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_carousel(&self) -> Option<&CarouselState> {
+        if let Self::Carousel(state) = self {
+            Some(state)
+        } else {
+            None
+        }
+    }
+    pub fn as_carousel_mut(&mut self) -> Option<&mut CarouselState> {
+        if let Self::Carousel(state) = self {
+            Some(state)
         } else {
             None
         }
@@ -988,6 +1004,14 @@ mod tests {
     fn widget_state_tab_accessor() {
         let ws = WidgetState::Tab(TabState::default());
         assert!(ws.as_tab().is_some());
+        assert!(ws.as_vlist().is_none());
+    }
+
+    #[test]
+    fn widget_state_carousel_accessors_preserve_selection() {
+        let mut ws = WidgetState::Carousel(CarouselState::default());
+        ws.as_carousel_mut().unwrap().selected_item = Some(3);
+        assert_eq!(ws.as_carousel().unwrap().selected_item, Some(3));
         assert!(ws.as_vlist().is_none());
     }
 

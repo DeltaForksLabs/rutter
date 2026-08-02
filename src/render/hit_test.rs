@@ -7,9 +7,11 @@
 
 use skia_safe::{Contains, Point, Rect as SkiaRect};
 use std::collections::HashMap;
+use taffy::Direction;
 use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::engine::widget_state::{WidgetState, virtual_grid_row_count};
+use crate::i18n::LayoutDirection;
 use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
 use crate::widget::{
     CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
@@ -62,6 +64,10 @@ pub enum HitResult<Msg> {
         index: usize,
     },
     VGridSelect {
+        id: u64,
+        index: usize,
+    },
+    CarouselSelect {
         id: u64,
         index: usize,
     },
@@ -873,6 +879,24 @@ fn hit_test_impl<Msg: Clone>(
                 Some(HitResult::ModalDismiss(widget.resolved_id(path).unwrap()))
             }
         }
+        Widget::CarouselView {
+            item_count, config, ..
+        } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let direction = carousel_node_direction(taffy, node_id);
+            let mut fallback = crate::carousel::CarouselState::default();
+            fallback.sync_viewport(layout.size.width, config, *item_count);
+            let state = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_carousel)
+                .unwrap_or(&fallback);
+            state
+                .index_at(mouse.x - abs_pos.x, config, *item_count, direction)
+                .map(|index| HitResult::CarouselSelect {
+                    id: resolved_id,
+                    index,
+                })
+        }
         Widget::VirtualList {
             item_height,
             item_count,
@@ -959,6 +983,13 @@ fn hit_test_impl<Msg: Clone>(
             result
         }
         _ => None,
+    }
+}
+
+fn carousel_node_direction(taffy: &TaffyTree<RutterContext>, node_id: NodeId) -> LayoutDirection {
+    match taffy.style(node_id).map(|style| style.direction) {
+        Ok(Direction::Rtl) => LayoutDirection::Rtl,
+        _ => LayoutDirection::Ltr,
     }
 }
 
@@ -1088,6 +1119,7 @@ fn collect_stateful_ids_impl<Msg>(
         Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "vlist"))
         }
+        Widget::CarouselView { .. } => out.push((widget.resolved_id(path).unwrap(), "carousel")),
         Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "vgrid"))
         }
@@ -1566,9 +1598,10 @@ pub fn find_scroll_focus<Msg>(
     node_id: NodeId,
     mouse: Point,
     abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
 ) -> Option<u64> {
     let mut path = Vec::new();
-    find_scroll_focus_impl(widget, taffy, node_id, mouse, abs, &mut path)
+    find_scroll_focus_impl(widget, taffy, node_id, mouse, abs, widget_states, &mut path)
 }
 
 pub fn find_context_menu_target<Msg>(
@@ -1688,6 +1721,7 @@ fn find_scroll_focus_impl<Msg>(
     node_id: NodeId,
     mouse: Point,
     abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
     path: &mut Vec<usize>,
 ) -> Option<u64> {
     let layout = taffy.layout(node_id).ok()?;
@@ -1700,20 +1734,37 @@ fn find_scroll_focus_impl<Msg>(
     match widget {
         Widget::ScrollView { child, .. } => {
             let ids = taffy.children(node_id).ok()?;
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let offset_y = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_scroll)
+                .map(|state| state.offset_y)
+                .unwrap_or(0.0);
             path.push(0);
-            let result = find_scroll_focus_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            let child_abs = Point::new(abs_pos.x, abs_pos.y - offset_y);
+            let result =
+                find_scroll_focus_impl(child, taffy, ids[0], mouse, child_abs, widget_states, path);
             path.pop();
-            result.or(Some(widget.resolved_id(path).unwrap()))
+            result.or(Some(resolved_id))
         }
         Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
         | Widget::VirtualGrid { .. }
-        | Widget::VirtualGridContent { .. } => Some(widget.resolved_id(path).unwrap()),
+        | Widget::VirtualGridContent { .. }
+        | Widget::CarouselView { .. } => Some(widget.resolved_id(path).unwrap()),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
             for (i, child) in children.iter().enumerate().rev() {
                 path.push(i);
-                let result = find_scroll_focus_impl(child, taffy, ids[i], mouse, abs_pos, path);
+                let result = find_scroll_focus_impl(
+                    child,
+                    taffy,
+                    ids[i],
+                    mouse,
+                    abs_pos,
+                    widget_states,
+                    path,
+                );
                 path.pop();
                 if let Some(id) = result {
                     return Some(id);
@@ -1732,7 +1783,8 @@ fn find_scroll_focus_impl<Msg>(
                 return None;
             }
             path.push(0);
-            let result = find_scroll_focus_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            let result =
+                find_scroll_focus_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
             path.pop();
             result
         }
@@ -1740,7 +1792,15 @@ fn find_scroll_focus_impl<Msg>(
             let ids = taffy.children(node_id).ok()?;
             let anchor_node = ids.first().copied()?;
             path.push(0);
-            let result = find_scroll_focus_impl(anchor, taffy, anchor_node, mouse, abs_pos, path);
+            let result = find_scroll_focus_impl(
+                anchor,
+                taffy,
+                anchor_node,
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
             path.pop();
             result
         }
@@ -1947,9 +2007,11 @@ mod tests {
     use winit::dpi::PhysicalSize;
 
     use super::{
-        HitResult, collect_input_ids, collect_stateful_ids, dialog_card_rect, hit_test,
-        rounded_rect_contains,
+        HitResult, collect_input_ids, collect_stateful_ids, dialog_card_rect, find_scroll_focus,
+        hit_test, rounded_rect_contains,
     };
+    use crate::carousel::CarouselState;
+    use crate::engine::widget_state::{ScrollState, WidgetState};
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::{AUTO_ID, ButtonVariant, DialogPosition, InputState, Widget};
 
@@ -2103,6 +2165,75 @@ mod tests {
         assert_ne!(slider_ids[0].0, select_ids[0].0);
         assert_eq!(slider_ids[0].1, "slider");
         assert_eq!(select_ids[0].1, "select");
+    }
+
+    #[test]
+    fn scroll_focus_applies_parent_scroll_offset_to_nested_carousel() {
+        let carousel = Widget::carousel_view(
+            20,
+            |_| None,
+            usize_msg,
+            crate::CarouselConfig::uncontained(100.0).unwrap(),
+            fixed_size_style(300.0, 100.0),
+        )
+        .with_id(62);
+        let content = Widget::Column {
+            children: vec![
+                Widget::Spacer {
+                    style: fixed_size_style(300.0, 200.0),
+                },
+                carousel,
+            ],
+            style: Style {
+                flex_shrink: 0.0,
+                ..fixed_size_style(300.0, 300.0)
+            },
+        };
+        let widget = Widget::scroll_view(content, fixed_size_style(300.0, 100.0)).with_id(61);
+        let states = HashMap::from([
+            (
+                61,
+                WidgetState::Scroll(ScrollState {
+                    offset_y: 200.0,
+                    content_height: 300.0,
+                    viewport_h: 100.0,
+                }),
+            ),
+            (62, WidgetState::Carousel(CarouselState::default())),
+        ]);
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(300, 100));
+
+        let focus = find_scroll_focus(
+            &widget,
+            &taffy,
+            root,
+            Point::new(50.0, 50.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+        assert_eq!(focus, Some(62));
+    }
+
+    fn fixed_size_style(width: f32, height: f32) -> Style {
+        Style {
+            size: Size {
+                width: Dimension::length(width),
+                height: Dimension::length(height),
+            },
+            ..Style::default()
+        }
+    }
+
+    fn test_layout<Msg>(
+        widget: &Widget<'_, Msg>,
+        states: &HashMap<u64, WidgetState>,
+        size: PhysicalSize<u32>,
+    ) -> (TaffyTree<crate::layout::RutterContext>, taffy::NodeId) {
+        let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, widget, fonts.clone(), states);
+        compute_layout(&mut taffy, root, size, fonts);
+        (taffy, root)
     }
 
     #[test]
