@@ -7,6 +7,7 @@
 
 pub mod cursor;
 pub mod gpu;
+pub mod multi_runner;
 pub mod run_error;
 pub mod runner;
 pub mod widget_state;
@@ -602,14 +603,21 @@ impl<A: AppLogic> RutterEngine<A> {
     pub fn new() -> Result<Self, RutterRunError> {
         let mut fs = FontSystem::new();
         let state = A::new(&mut fs);
-        let surface_config = A::surface_config();
+        Self::with_shared_font_system(state, Rc::new(RefCell::new(fs)), A::surface_config())
+    }
+
+    pub(crate) fn with_shared_font_system(
+        app_state: A::State,
+        font_system: Rc<RefCell<FontSystem>>,
+        surface_config: SurfaceConfig,
+    ) -> Result<Self, RutterRunError> {
         let mut taffy = TaffyTree::new();
         let root = taffy.new_leaf(Style::default()).unwrap();
         Ok(Self {
             window: None,
             accessibility_adapter: None,
             graphics_backend: None,
-            font_system: Rc::new(RefCell::new(fs)),
+            font_system,
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
             text_cache: TextBufferCache::with_limits(A::text_shape_cache_limits()),
@@ -620,7 +628,7 @@ impl<A: AppLogic> RutterEngine<A> {
             taffy,
             last_root_node: root,
             layout_dirty: true,
-            app_state: state,
+            app_state,
             input_states: HashMap::new(),
             widget_states: HashMap::new(),
             widget_id_snapshot: None,
@@ -644,6 +652,14 @@ impl<A: AppLogic> RutterEngine<A> {
         el: &winit::event_loop::ActiveEventLoop,
     ) -> Result<(), GraphicsError> {
         let attrs = initial_window_attributes(self.surface_config);
+        self.handle_resumed_with_attributes(el, attrs)
+    }
+
+    pub(crate) fn handle_resumed_with_attributes(
+        &mut self,
+        el: &winit::event_loop::ActiveEventLoop,
+        attrs: winit::window::WindowAttributes,
+    ) -> Result<(), GraphicsError> {
         let mut backend = create_best_backend(el, attrs)?;
         if cfg!(debug_assertions) {
             eprintln!("rutter: initialized {} backend", backend.backend_type());
@@ -669,6 +685,13 @@ impl<A: AppLogic> RutterEngine<A> {
         window.set_visible(true);
         window.request_redraw();
         Ok(())
+    }
+
+    pub(crate) fn release_surface(&mut self) {
+        self.accessibility_adapter = None;
+        self.graphics_backend = None;
+        self.window = None;
+        self.layout_dirty = true;
     }
 
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError> {

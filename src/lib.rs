@@ -17,6 +17,7 @@ pub mod input_limits;
 pub mod input_state;
 mod input_undo;
 pub mod layout;
+pub mod multi_window;
 pub mod render;
 pub mod theme;
 pub mod widget;
@@ -30,10 +31,15 @@ pub use calendar::{
     CalendarConfig, CalendarDate, CalendarError, CalendarLabels, CalendarMonth, WeekStart,
 };
 pub use carousel::{CarouselConfig, CarouselConfigError};
+pub use engine::multi_runner::MultiWindowRunner;
 pub use engine::run_error::RutterRunError;
 pub use engine::runner::RutterRunner;
 pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};
 pub use input_limits::{InputKind, InputLimitError, InputLimits};
+pub use multi_window::{
+    CloseBehavior, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand, SurfaceId,
+    SurfaceRequest, WindowConfig, WindowConfigError, WindowSize,
+};
 pub use render::text::TextShapeCacheLimits;
 pub use theme::Theme;
 pub use widget::{

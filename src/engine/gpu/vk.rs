@@ -287,7 +287,7 @@ impl VkBackend {
         let skia_context = cleanup.skia_context.as_mut().unwrap();
 
         let swapchain_bundle = Self::create_swapchain_bundle(
-            &window,
+            window.inner_size(),
             &surface_loader,
             surface,
             physical_device,
@@ -352,7 +352,7 @@ impl VkBackend {
     }
 
     fn create_swapchain_bundle(
-        window: &Window,
+        requested_size: PhysicalSize<u32>,
         surface_loader: &khr::surface::Instance,
         surface: avk::SurfaceKHR,
         physical_device: avk::PhysicalDevice,
@@ -382,7 +382,7 @@ impl VkBackend {
         };
 
         let (format, color_space, color_type) = pick_surface_format(&formats)?;
-        let extent = choose_extent(window.inner_size(), capabilities);
+        let extent = choose_extent(requested_size, capabilities);
         let min_image_count = choose_image_count(capabilities);
         let composite_alpha =
             pick_composite_alpha(capabilities.supported_composite_alpha, transparent)?;
@@ -456,7 +456,7 @@ impl VkBackend {
         let old_extent = self.extent;
 
         let bundle = match Self::create_swapchain_bundle(
-            &self.window,
+            size,
             &self.surface_loader,
             self.surface,
             self.physical_device,

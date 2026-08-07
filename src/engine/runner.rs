@@ -5,7 +5,10 @@
 // Rutter Framework — engine/runner.rs
 // ============================================================
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use cosmic_text::{Action, Edit, FontSystem, Motion};
 use skia_safe::{Point, Rect as SkiaRect};
@@ -14,7 +17,7 @@ use winit::{
     event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
-    window::WindowId,
+    window::{WindowAttributes, WindowId},
 };
 use zeroize::Zeroize;
 
@@ -404,6 +407,20 @@ pub struct RutterRunner<A: AppLogic> {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    pub(crate) fn with_engine(engine: RutterEngine<A>) -> Self {
+        Self {
+            engine,
+            active_window_id: None,
+            cursor_pos: Point::new(0.0, 0.0),
+            scroll_drag: None,
+            mouse_down: false,
+            last_click_time: Instant::now(),
+            last_click_pos: Point::new(0.0, 0.0),
+            focused_input_rect: None,
+            fatal_error: None,
+        }
+    }
+
     /// Runs the application and reports startup failures to standard error.
     ///
     /// Use [`Self::try_run`] when the caller needs to inspect failures.
@@ -425,17 +442,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     pub fn try_run() -> Result<(), RutterRunError> {
         let el = EventLoop::new().map_err(RutterRunError::from)?;
         el.set_control_flow(ControlFlow::Wait);
-        let mut r = Self {
-            engine: RutterEngine::new()?,
-            active_window_id: None,
-            cursor_pos: Point::new(0.0, 0.0),
-            scroll_drag: None,
-            mouse_down: false,
-            last_click_time: std::time::Instant::now(),
-            last_click_pos: Point::new(0.0, 0.0),
-            focused_input_rect: None,
-            fatal_error: None,
-        };
+        let mut r = Self::with_engine(RutterEngine::new()?);
         let event_result = el.run_app(&mut r);
         if let Some(error) = r.fatal_error {
             return Err(error);
@@ -446,13 +453,17 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
 impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
     fn resumed(&mut self, el: &ActiveEventLoop) {
-        self.active_window_id = None;
-        match self.engine.handle_resumed(el) {
-            Ok(()) => {
-                self.active_window_id = self.engine.window.as_ref().map(|window| window.id());
-            }
+        if self.active_window_id.is_some() {
+            return;
+        }
+        match self.resume_surface(el, None) {
+            Ok(_) => {}
             Err(error) => self.terminate_for_error(el, error.into()),
         }
+    }
+
+    fn suspended(&mut self, _: &ActiveEventLoop) {
+        self.release_surface();
     }
 
     fn new_events(&mut self, el: &ActiveEventLoop, _: StartCause) {
@@ -460,53 +471,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             el.exit();
             return;
         }
-        self.engine.maybe_snapshot();
-
-        let (expired_toasts, has_active_timed_toasts) =
-            collect_toast_runtime_state(&self.engine.widget_states);
-        if !expired_toasts.is_empty() {
-            for id in &expired_toasts {
-                if let Some(ws) = self.engine.widget_states.get_mut(id) {
-                    if let Some(t) = ws.as_toast_mut() {
-                        t.visible = false;
-                    }
-                }
-                if let Some(msg) = self.engine.runtime_caches.toast_dismiss.get(id).cloned() {
-                    A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
-                }
-            }
-            self.engine.layout_dirty = true;
-            self.redraw();
-        }
-
-        let mut needs_frame_tick = false;
-        if self.engine.has_animated && self.engine.tick_animations() {
-            self.redraw();
-            needs_frame_tick = true;
-        } else if self.engine.has_animated {
-            needs_frame_tick = true;
-        }
-        if has_active_timed_toasts {
-            self.redraw();
-            needs_frame_tick = true;
-        }
-
-        if needs_frame_tick {
-            el.set_control_flow(ControlFlow::WaitUntil(
-                std::time::Instant::now() + Duration::from_millis(16),
-            ));
-            return;
-        }
-
-        if self.engine.focused_input_id().is_some() {
-            if self.engine.cursor_blink.tick() {
-                self.redraw();
-            }
-            el.set_control_flow(ControlFlow::WaitUntil(
-                self.engine.cursor_blink.next_tick_at(),
-            ));
-        } else {
-            el.set_control_flow(ControlFlow::Wait);
+        match self.process_scheduled_work() {
+            Some(deadline) => el.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => el.set_control_flow(ControlFlow::Wait),
         }
     }
 
@@ -1032,6 +999,112 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    pub(crate) fn resume_surface(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        attributes: Option<WindowAttributes>,
+    ) -> Result<WindowId, crate::engine::gpu::GraphicsError> {
+        match attributes {
+            Some(attributes) => self
+                .engine
+                .handle_resumed_with_attributes(event_loop, attributes)?,
+            None => self.engine.handle_resumed(event_loop)?,
+        }
+        self.register_resumed_window()
+    }
+
+    fn register_resumed_window(&mut self) -> Result<WindowId, crate::engine::gpu::GraphicsError> {
+        let window_id = self
+            .engine
+            .window
+            .as_ref()
+            .map(|window| window.id())
+            .ok_or(crate::engine::gpu::GraphicsError::BackendUnavailable {
+                operation: "registering a resumed native window",
+            })?;
+        self.active_window_id = Some(window_id);
+        Ok(window_id)
+    }
+
+    pub(crate) fn release_surface(&mut self) {
+        self.active_window_id = None;
+        self.scroll_drag = None;
+        self.mouse_down = false;
+        self.focused_input_rect = None;
+        self.engine.release_surface();
+    }
+
+    pub(crate) fn app_state_mut(&mut self) -> &mut A::State {
+        &mut self.engine.app_state
+    }
+
+    pub(crate) fn invalidate_and_redraw(&mut self) {
+        self.engine.layout_dirty = true;
+        self.redraw();
+    }
+
+    pub(crate) fn take_fatal_error(&mut self) -> Option<RutterRunError> {
+        self.fatal_error.take()
+    }
+
+    pub(crate) fn process_scheduled_work(&mut self) -> Option<Instant> {
+        self.engine.maybe_snapshot();
+        let timed_toasts = self.expire_timed_toasts();
+        if self.tick_surface_animations() || timed_toasts {
+            self.redraw();
+            return Some(Instant::now() + Duration::from_millis(16));
+        }
+        self.focused_input_deadline()
+    }
+
+    fn expire_timed_toasts(&mut self) -> bool {
+        let (expired, has_active) = collect_toast_runtime_state(&self.engine.widget_states);
+        for id in expired.iter().copied() {
+            self.dismiss_expired_toast(id);
+        }
+        if !expired.is_empty() {
+            self.engine.layout_dirty = true;
+            self.redraw();
+        }
+        has_active
+    }
+
+    fn dismiss_expired_toast(&mut self, id: u64) {
+        if let Some(toast) = self
+            .engine
+            .widget_states
+            .get_mut(&id)
+            .and_then(|state| state.as_toast_mut())
+        {
+            toast.visible = false;
+        }
+        if let Some(message) = self.engine.runtime_caches.toast_dismiss.get(&id).cloned() {
+            A::update(
+                &mut self.engine.app_state,
+                message,
+                &mut self.engine.clipboard,
+            );
+        }
+    }
+
+    fn tick_surface_animations(&mut self) -> bool {
+        if !self.engine.has_animated {
+            return false;
+        }
+        if self.engine.tick_animations() {
+            self.redraw();
+        }
+        true
+    }
+
+    fn focused_input_deadline(&mut self) -> Option<Instant> {
+        self.engine.focused_input_id()?;
+        if self.engine.cursor_blink.tick() {
+            self.redraw();
+        }
+        Some(self.engine.cursor_blink.next_tick_at())
+    }
+
     fn terminate_for_error(&mut self, event_loop: &ActiveEventLoop, error: RutterRunError) {
         if self.fatal_error.is_none() {
             self.fatal_error = Some(error);

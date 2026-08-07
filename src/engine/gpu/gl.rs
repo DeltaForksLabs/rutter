@@ -1,14 +1,16 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
 
-use std::ffi::CString;
+use std::ffi::{CString, c_void};
 use std::num::NonZeroU32;
+use std::panic::{AssertUnwindSafe, catch_unwind, panic_any, resume_unwind};
 use std::ptr;
 use std::rc::Rc;
 
-use gl::types::GLint;
-use glutin::config::{ConfigTemplateBuilder, GlConfig};
-use glutin::context::{ContextApi, ContextAttributesBuilder, PossiblyCurrentContext, Version};
+use glutin::config::{Config, ConfigTemplateBuilder, GlConfig};
+use glutin::context::{
+    ContextApi, ContextAttributesBuilder, PossiblyCurrentContext, PossiblyCurrentGlContext, Version,
+};
 use glutin::display::{GetGlDisplay, GlDisplay};
 use glutin::prelude::{GlSurface, NotCurrentGlContext};
 use glutin::surface::{
@@ -31,15 +33,107 @@ use winit::{
 
 use super::{BackendFailure, BackendType, GraphicsBackend, GraphicsError};
 
+const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
+type GlGetInteger = unsafe extern "system" fn(u32, *mut i32);
+
+#[derive(Debug)]
+struct EmptyGlConfigSet;
+
 pub struct GlBackend {
-    window: Rc<Window>,
-    gl_context: PossiblyCurrentContext,
-    gl_surface: GlutinSurface<WindowSurface>,
-    skia_context: DirectContext,
     skia_surface: SkiaSurface,
+    skia_context: DirectContext,
+    gl_surface: GlutinSurface<WindowSurface>,
+    gl_context: PossiblyCurrentContext,
+    window: Rc<Window>,
     fb_info: FramebufferInfo,
     sample_count: usize,
     stencil_size: usize,
+    get_integer: GlGetInteger,
+}
+
+trait ContextActivation {
+    fn context_is_current(&self) -> bool;
+    fn is_current(&self) -> bool;
+    fn activate(&self) -> Result<(), String>;
+    fn deactivate(&self) -> Result<(), String>;
+}
+
+struct GlutinContextActivation<'a> {
+    context: &'a PossiblyCurrentContext,
+    surface: &'a GlutinSurface<WindowSurface>,
+}
+
+impl ContextActivation for GlutinContextActivation<'_> {
+    fn context_is_current(&self) -> bool {
+        self.context.is_current()
+    }
+
+    fn is_current(&self) -> bool {
+        self.context_is_current() && self.surface.is_current(self.context)
+    }
+
+    fn activate(&self) -> Result<(), String> {
+        self.context
+            .make_current(self.surface)
+            .map_err(|err| err.to_string())
+    }
+
+    fn deactivate(&self) -> Result<(), String> {
+        self.context
+            .make_not_current_in_place()
+            .map_err(|err| err.to_string())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GlOperationFailure {
+    Frame,
+    Resize,
+}
+
+impl GlOperationFailure {
+    fn graphics_error(self, reason: String) -> GraphicsError {
+        match self {
+            Self::Frame => GraphicsError::Frame {
+                backend: BackendType::OpenGl,
+                reason,
+            },
+            Self::Resize => GraphicsError::Resize {
+                backend: BackendType::OpenGl,
+                reason,
+            },
+        }
+    }
+}
+
+fn ensure_backend_context_current(
+    activation: &impl ContextActivation,
+    operation: &'static str,
+    failure: GlOperationFailure,
+) -> Result<(), GraphicsError> {
+    if activation.is_current() {
+        return Ok(());
+    }
+    activation.activate().map_err(|reason| {
+        failure.graphics_error(format!(
+            "{operation}: failed to make the backend OpenGL context and window surface current: {reason}; expected the backend OpenGL context and window surface to be current"
+        ))
+    })
+}
+
+fn ensure_backend_context_not_current(
+    activation: &impl ContextActivation,
+    operation: &'static str,
+    failure: GlOperationFailure,
+) -> Result<(), GraphicsError> {
+    if !activation.context_is_current() {
+        return Ok(());
+    }
+    activation.deactivate().map_err(|reason| {
+        failure.graphics_error(format!(
+            "{operation}: failed to release the backend OpenGL context: {reason}; expected the context to be not current"
+        ))
+    })
 }
 
 impl GlBackend {
@@ -48,29 +142,7 @@ impl GlBackend {
         attrs: WindowAttributes,
     ) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
         let transparent = attrs.transparent();
-        // A broad template lets the picker return a typed failure when no alpha-capable
-        // config exists instead of letting glutin's infallible picker receive an empty set.
-        let template = ConfigTemplateBuilder::new();
-        let display_builder = DisplayBuilder::new().with_window_attributes(Some(attrs));
-        let (window, gl_config) = display_builder
-            .build(event_loop, template, |configs| {
-                configs
-                    .reduce(|accum, config| {
-                        if prefer_gl_surface_config(
-                            transparent,
-                            config.supports_transparency(),
-                            config.num_samples(),
-                            accum.supports_transparency(),
-                            accum.num_samples(),
-                        ) {
-                            config
-                        } else {
-                            accum
-                        }
-                    })
-                    .expect("glutin returned no GL configs")
-            })
-            .map_err(|err| BackendFailure::new(BackendType::OpenGl, err.to_string()))?;
+        let (window, gl_config) = build_gl_window(event_loop, attrs, transparent)?;
         validate_gl_surface_transparency(
             transparent,
             gl_config.supports_transparency(),
@@ -96,12 +168,20 @@ impl GlBackend {
             .build(Some(raw_window_handle));
 
         let display = gl_config.display();
-        let not_current = unsafe {
-            display
-                .create_context(&gl_config, &context_attributes)
-                .or_else(|_| display.create_context(&gl_config, &fallback_context_attributes))
-        }
-        .map_err(|err| BackendFailure::new(BackendType::OpenGl, err.to_string()))?;
+        let not_current = match unsafe { display.create_context(&gl_config, &context_attributes) } {
+            Ok(context) => context,
+            Err(desktop_error) => unsafe {
+                display.create_context(&gl_config, &fallback_context_attributes)
+            }
+            .map_err(|gles_error| {
+                BackendFailure::new(
+                    BackendType::OpenGl,
+                    format!(
+                        "desktop OpenGL context failed: {desktop_error}; GLES 3.0 context failed: {gles_error}"
+                    ),
+                )
+            })?,
+        };
 
         let size = window.inner_size();
         let surface_attributes = SurfaceAttributesBuilder::<WindowSurface>::new().build(
@@ -117,10 +197,6 @@ impl GlBackend {
 
         let _ = gl_surface
             .set_swap_interval(&gl_context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
-
-        gl::load_with(|symbol| {
-            display.get_proc_address(CString::new(symbol).unwrap().as_c_str()) as *const _
-        });
 
         let interface = gpu::gl::Interface::new_load_with(|name| {
             if name == "eglGetCurrentDisplay" {
@@ -139,29 +215,115 @@ impl GlBackend {
             )
         })?;
 
-        let fb_info = current_framebuffer_info();
+        let get_integer = load_gl_get_integer(&display)?;
+        let fb_info = current_framebuffer_info(get_integer);
         let sample_count = gl_config.num_samples() as usize;
         let stencil_size = gl_config.stencil_size() as usize;
-        let skia_surface = create_skia_surface(
-            &window,
-            &mut skia_context,
-            fb_info,
-            sample_count,
-            stencil_size,
-        )
-        .map_err(|reason| BackendFailure::new(BackendType::OpenGl, reason))?;
+        let skia_surface =
+            create_skia_surface(size, &mut skia_context, fb_info, sample_count, stencil_size)
+                .map_err(|reason| BackendFailure::new(BackendType::OpenGl, reason))?;
 
         Ok(Box::new(Self {
-            window,
+            skia_surface,
+            skia_context,
             gl_context,
             gl_surface,
-            skia_context,
-            skia_surface,
+            window,
             fb_info,
             sample_count,
             stencil_size,
+            get_integer,
         }))
     }
+
+    fn ensure_current(
+        &self,
+        operation: &'static str,
+        failure: GlOperationFailure,
+    ) -> Result<(), GraphicsError> {
+        let activation = GlutinContextActivation {
+            context: &self.gl_context,
+            surface: &self.gl_surface,
+        };
+        ensure_backend_context_current(&activation, operation, failure)
+    }
+
+    fn ensure_not_current(
+        &self,
+        operation: &'static str,
+        failure: GlOperationFailure,
+    ) -> Result<(), GraphicsError> {
+        let activation = GlutinContextActivation {
+            context: &self.gl_context,
+            surface: &self.gl_surface,
+        };
+        ensure_backend_context_not_current(&activation, operation, failure)
+    }
+}
+
+fn build_gl_window(
+    event_loop: &ActiveEventLoop,
+    attrs: WindowAttributes,
+    transparent: bool,
+) -> Result<(Option<Window>, Config), BackendFailure> {
+    let builder = DisplayBuilder::new().with_window_attributes(Some(attrs));
+    // glutin-winit 0.5 makes the picker infallible, so a private sentinel is
+    // recovered here to preserve backend fallback when EGL reports zero configs.
+    let attempt = catch_unwind(AssertUnwindSafe(|| {
+        builder.build(event_loop, ConfigTemplateBuilder::new(), |configs| {
+            select_gl_config(transparent, configs).unwrap_or_else(|| panic_any(EmptyGlConfigSet))
+        })
+    }));
+    match attempt {
+        Ok(result) => {
+            result.map_err(|error| BackendFailure::new(BackendType::OpenGl, error.to_string()))
+        }
+        Err(payload) if payload.is::<EmptyGlConfigSet>() => Err(BackendFailure::new(
+            BackendType::OpenGl,
+            "glutin returned zero GL configs; expected at least one compatible configuration",
+        )),
+        Err(payload) => resume_unwind(payload),
+    }
+}
+
+fn select_gl_config(
+    transparent: bool,
+    configs: Box<dyn Iterator<Item = Config> + '_>,
+) -> Option<Config> {
+    select_preferred_candidate(configs, |candidate, current| {
+        prefer_gl_surface_config(
+            transparent,
+            candidate.supports_transparency(),
+            candidate.num_samples(),
+            current.supports_transparency(),
+            current.num_samples(),
+        )
+    })
+}
+
+fn select_preferred_candidate<Candidate>(
+    mut candidates: impl Iterator<Item = Candidate>,
+    prefer: impl Fn(&Candidate, &Candidate) -> bool,
+) -> Option<Candidate> {
+    let mut selected = candidates.next()?;
+    for candidate in candidates {
+        if prefer(&candidate, &selected) {
+            selected = candidate;
+        }
+    }
+    Some(selected)
+}
+
+fn load_gl_get_integer(display: &impl GlDisplay) -> Result<GlGetInteger, BackendFailure> {
+    let symbol = CString::new("glGetIntegerv").unwrap();
+    let address = display.get_proc_address(symbol.as_c_str());
+    if address.is_null() {
+        return Err(BackendFailure::new(
+            BackendType::OpenGl,
+            "OpenGL symbol `glGetIntegerv` is null; expected a callable context-local symbol",
+        ));
+    }
+    Ok(unsafe { std::mem::transmute::<*const c_void, GlGetInteger>(address) })
 }
 
 fn prefer_gl_surface_config(
@@ -192,10 +354,10 @@ fn validate_gl_surface_transparency(
     ))
 }
 
-fn current_framebuffer_info() -> FramebufferInfo {
-    let mut framebuffer_id: GLint = 0;
+fn current_framebuffer_info(get_integer: GlGetInteger) -> FramebufferInfo {
+    let mut framebuffer_id = 0_i32;
     unsafe {
-        gl::GetIntegerv(gl::FRAMEBUFFER_BINDING, &mut framebuffer_id);
+        get_integer(GL_FRAMEBUFFER_BINDING, &mut framebuffer_id);
     }
 
     FramebufferInfo {
@@ -206,27 +368,15 @@ fn current_framebuffer_info() -> FramebufferInfo {
 }
 
 fn create_skia_surface(
-    window: &Window,
+    size: PhysicalSize<u32>,
     skia_context: &mut DirectContext,
     fb_info: FramebufferInfo,
     sample_count: usize,
     stencil_size: usize,
 ) -> Result<SkiaSurface, String> {
-    let size = window.inner_size();
-    let render_target = backend_render_targets::make_gl(
-        (
-            size.width
-                .try_into()
-                .map_err(|_| "width overflow".to_string())?,
-            size.height
-                .try_into()
-                .map_err(|_| "height overflow".to_string())?,
-        ),
-        sample_count,
-        stencil_size,
-        fb_info,
-    );
-
+    let dimensions = validated_gl_surface_dimensions(size)?;
+    let render_target =
+        backend_render_targets::make_gl(dimensions, sample_count, stencil_size, fb_info);
     gpu::surfaces::wrap_backend_render_target(
         skia_context,
         &render_target,
@@ -238,23 +388,43 @@ fn create_skia_surface(
     .ok_or_else(|| "failed to wrap OpenGL framebuffer with Skia surface".to_string())
 }
 
+fn validated_gl_surface_dimensions(size: PhysicalSize<u32>) -> Result<(i32, i32), String> {
+    let width = size.width.try_into().map_err(|_| {
+        format!(
+            "OpenGL surface width `{}` is invalid; expected a value representable as i32",
+            size.width
+        )
+    })?;
+    let height = size.height.try_into().map_err(|_| {
+        format!(
+            "OpenGL surface height `{}` is invalid; expected a value representable as i32",
+            size.height
+        )
+    })?;
+    Ok((width, height))
+}
+
 impl GraphicsBackend for GlBackend {
     fn backend_type(&self) -> BackendType {
         BackendType::OpenGl
     }
 
     fn begin_frame(&mut self) -> Result<&Canvas, GraphicsError> {
+        self.ensure_current("begin frame", GlOperationFailure::Frame)?;
         Ok(self.skia_surface.canvas())
     }
 
     fn end_frame(&mut self) -> Result<(), GraphicsError> {
+        self.ensure_current("end frame", GlOperationFailure::Frame)?;
+        self.ensure_current("flush and submit frame", GlOperationFailure::Frame)?;
         self.skia_context
             .flush_and_submit_surface(&mut self.skia_surface, None);
+        self.ensure_current("swap frame buffers", GlOperationFailure::Frame)?;
         self.gl_surface
             .swap_buffers(&self.gl_context)
             .map_err(|err| GraphicsError::Frame {
                 backend: BackendType::OpenGl,
-                reason: err.to_string(),
+                reason: format!("swap frame buffers: {err}"),
             })
     }
 
@@ -263,14 +433,22 @@ impl GraphicsBackend for GlBackend {
             return Ok(());
         }
 
+        // glutin 0.32 requires resize before make_current on Wayland because
+        // activation can latch the old back buffer until the next swap.
+        self.ensure_not_current("prepare backend resize", GlOperationFailure::Resize)?;
         self.gl_surface.resize(
             &self.gl_context,
             NonZeroU32::new(size.width.max(1)).unwrap(),
             NonZeroU32::new(size.height.max(1)).unwrap(),
         );
-        self.fb_info = current_framebuffer_info();
+        self.ensure_current("activate resized backend", GlOperationFailure::Resize)?;
+        self.ensure_current(
+            "query framebuffer during resize",
+            GlOperationFailure::Resize,
+        )?;
+        self.fb_info = current_framebuffer_info(self.get_integer);
         self.skia_surface = create_skia_surface(
-            &self.window,
+            size,
             &mut self.skia_context,
             self.fb_info,
             self.sample_count,
@@ -286,47 +464,25 @@ impl GraphicsBackend for GlBackend {
     fn window(&self) -> &Rc<Window> {
         &self.window
     }
+}
 
-    fn skia_context(&mut self) -> Option<&mut DirectContext> {
-        Some(&mut self.skia_context)
+impl Drop for GlBackend {
+    fn drop(&mut self) {
+        // Skia must release driver resources under this backend's context, while
+        // glutin must receive a non-current context before native teardown.
+        let activated = self
+            .ensure_current("release backend resources", GlOperationFailure::Frame)
+            .is_ok();
+        if !activated {
+            self.skia_context.abandon();
+        } else {
+            self.skia_context.flush_and_submit();
+            self.skia_context.release_resources_and_abandon();
+        }
+        let _ = self.ensure_not_current("release backend context", GlOperationFailure::Frame);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{prefer_gl_surface_config, validate_gl_surface_transparency};
-
-    #[test]
-    fn transparent_gl_surface_requires_confirmed_alpha_support() {
-        assert!(validate_gl_surface_transparency(true, Some(true), 8).is_ok());
-        assert!(validate_gl_surface_transparency(true, Some(false), 8).is_err());
-        assert!(validate_gl_surface_transparency(true, None, 8).is_err());
-        assert!(validate_gl_surface_transparency(true, Some(true), 0).is_err());
-        assert!(validate_gl_surface_transparency(false, None, 0).is_ok());
-    }
-
-    #[test]
-    fn transparent_gl_config_outranks_lower_sample_opaque_config() {
-        assert!(!prefer_gl_surface_config(
-            true,
-            Some(false),
-            0,
-            Some(true),
-            8
-        ));
-        assert!(prefer_gl_surface_config(
-            true,
-            Some(true),
-            8,
-            Some(false),
-            0
-        ));
-        assert!(prefer_gl_surface_config(
-            false,
-            Some(false),
-            0,
-            Some(true),
-            8
-        ));
-    }
-}
+#[path = "../../../tests/unit/gl_backend_unit_tests.rs"]
+mod tests;

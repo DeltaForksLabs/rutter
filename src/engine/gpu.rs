@@ -138,6 +138,9 @@ pub trait GraphicsBackend {
     fn end_frame(&mut self) -> Result<(), GraphicsError>;
     fn resize(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError>;
     fn window(&self) -> &Rc<Window>;
+    #[deprecated(
+        note = "borrowed Skia contexts cannot preserve backend activation across multiple surfaces"
+    )]
     fn skia_context(&mut self) -> Option<&mut DirectContext> {
         None
     }
@@ -150,34 +153,95 @@ pub fn create_best_backend(
     let mut failures = Vec::new();
     let transparent = attrs.transparent();
 
-    match VkBackend::try_new(event_loop, attrs.clone()) {
-        Ok(backend) => return Ok(backend),
-        Err(err) => failures.push(err),
+    if let Some(backend) =
+        accept_backend_candidate(&mut failures, VkBackend::try_new(event_loop, attrs.clone()))
+    {
+        return Ok(backend);
     }
 
-    match GlBackend::try_new(event_loop, attrs.clone()) {
-        Ok(backend) => return Ok(backend),
-        Err(err) => failures.push(err),
+    if let Some(backend) =
+        accept_backend_candidate(&mut failures, GlBackend::try_new(event_loop, attrs.clone()))
+    {
+        return Ok(backend);
     }
 
     if let Err(failure) = validate_cpu_surface_transparency(transparent) {
         failures.push(failure);
         return Err(GraphicsError::NoBackendAvailable(failures));
     }
-    let window = Rc::new(event_loop.create_window(attrs).map_err(|err| {
-        GraphicsError::BackendInit(BackendFailure::new(
-            BackendType::CpuSoftbuffer,
-            err.to_string(),
-        ))
-    })?);
+    let window = match event_loop.create_window(attrs) {
+        Ok(window) => Rc::new(window),
+        Err(error) => {
+            failures.push(BackendFailure::new(
+                BackendType::CpuSoftbuffer,
+                error.to_string(),
+            ));
+            return Err(GraphicsError::NoBackendAvailable(failures));
+        }
+    };
 
     match CpuBackend::new(window) {
         Ok(backend) => Ok(Box::new(backend)),
-        Err(err) => {
-            if let GraphicsError::BackendInit(failure) = err {
-                failures.push(failure);
-            }
+        Err(error) => {
+            failures.push(cpu_backend_failure(error));
             Err(GraphicsError::NoBackendAvailable(failures))
         }
+    }
+}
+
+fn cpu_backend_failure(error: GraphicsError) -> BackendFailure {
+    match error {
+        GraphicsError::BackendInit(failure) => failure,
+        error => BackendFailure::new(BackendType::CpuSoftbuffer, error.to_string()),
+    }
+}
+
+fn accept_backend_candidate<Backend>(
+    failures: &mut Vec<BackendFailure>,
+    candidate: Result<Backend, BackendFailure>,
+) -> Option<Backend> {
+    match candidate {
+        Ok(backend) => Some(backend),
+        Err(failure) => {
+            failures.push(failure);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BackendFailure, BackendType, GraphicsError, accept_backend_candidate, cpu_backend_failure,
+    };
+
+    #[test]
+    fn vulkan_probe_failure_allows_opengl_candidate() {
+        let mut failures = Vec::new();
+        let vulkan = Err(BackendFailure::new(BackendType::Vulkan, "probe failed"));
+        let opengl = Ok("OpenGL surface");
+
+        assert_eq!(
+            accept_backend_candidate(&mut failures, vulkan),
+            None::<&str>
+        );
+        assert_eq!(
+            accept_backend_candidate(&mut failures, opengl),
+            Some("OpenGL surface")
+        );
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].backend, BackendType::Vulkan);
+    }
+
+    #[test]
+    fn cpu_surface_failure_is_preserved_in_fallback_diagnostics() {
+        let failure = cpu_backend_failure(GraphicsError::InvalidSurfaceSize {
+            width: u32::MAX,
+            height: 480,
+        });
+
+        assert_eq!(failure.backend, BackendType::CpuSoftbuffer);
+        assert!(failure.reason.contains(&u32::MAX.to_string()));
+        assert!(failure.reason.contains("expected dimensions representable"));
     }
 }

@@ -1181,15 +1181,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gl"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a94edab108827d67608095e269cf862e60d920f144a5026d3dbcfd8b877fb404"
-dependencies = [
- "gl_generator",
-]
-
-[[package]]
 name = "gl_generator"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2339,7 +2330,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rutter"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2348,7 +2339,6 @@ dependencies = [
  "ash-window",
  "cosmic-text",
  "fluent",
- "gl",
  "glutin",
  "glutin-winit",
  "image",

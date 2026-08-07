@@ -47,6 +47,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Theme support through a central `Theme` type.
 - Locale and Project Fluent catalog helpers for i18n and RTL layout direction.
 - Keyboard focus traversal for interactive widgets.
+- Audited multi-window runtime with stable surface IDs and per-window event routing.
 - Clipboard paste sanitization for text inputs.
 - Safe image decoding limits to reduce malicious allocation risk.
 
@@ -55,7 +56,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - AccessKit-backed accessibility tree integrated with `winit`.
 - Semantic roles for buttons, text inputs, toggles, sliders, progress indicators, lists, grids, dialogs, and status messages.
 - Accessible labels, values, toggle state, numeric ranges, and focus propagation from the Rutter widget tree.
-- Window events are forwarded to the AccessKit adapter so platform assistive technologies can observe the active UI.
+- Window events are forwarded only to the matching window's AccessKit adapter so platform assistive technologies observe the correct UI.
 - The window is kept hidden until the accessibility adapter is initialized, avoiding an initial inaccessible window snapshot.
 
 ### Widgets
@@ -77,6 +78,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 - Vulkan backend attempted first.
 - OpenGL backend used as GPU fallback.
+- OpenGL contexts are rebound before every frame and resize operation, allowing independent surfaces to render alternately.
 - CPU softbuffer backend used as final fallback.
 - Skia canvas abstraction shared across rendering backends.
 - Image decoding uses Skia by default through Rutter-owned decode limits.
@@ -130,6 +132,7 @@ cargo run -- vgrid
 cargo run -- popover
 cargo run -- calendar
 cargo run -- carousel
+cargo run -- multi_window
 cargo run -- advanced
 ```
 
@@ -147,7 +150,7 @@ use cosmic_text::FontSystem;
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 use taffy::prelude::Style;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct State {
     count: usize,
 }
@@ -192,6 +195,54 @@ fn main() {
     RutterRunner::<App>::run();
 }
 ```
+
+### Multi-window applications
+
+`MultiWindowRunner` owns every native window, backend, AccessKit adapter, and input runtime. Applications use stable `SurfaceId` values and emit `SurfaceCommand` operations instead of creating Winit windows directly. Unknown events from failed backend probes are discarded before accessibility or rendering side effects.
+
+```rust
+use rutter::{
+    CloseBehavior, MultiWindowAppLogic, MultiWindowRunner, SurfaceCommand,
+    SurfaceId, SurfaceRequest, Widget, WindowConfig,
+};
+
+const PANEL: SurfaceId = SurfaceId::new(1);
+
+// State is cloned into isolated per-window UI sessions after each update.
+// Rc-backed fields can keep large shared models inexpensive to synchronize.
+impl MultiWindowAppLogic for App {
+    type State = State;
+    type Message = Msg;
+
+    fn new(_: &mut cosmic_text::FontSystem) -> State { State::default() }
+
+    fn initial_surfaces() -> Vec<SurfaceRequest> {
+        let panel = WindowConfig::default()
+            .with_title("Panel")
+            .with_close_behavior(CloseBehavior::ExitApplication);
+        vec![SurfaceRequest::new(PANEL, panel)]
+    }
+
+    fn view<'a>(state: &'a mut State, surface: SurfaceId) -> Widget<'a, Msg> {
+        let _ = (state, surface);
+        Widget::Spacer { style: Default::default() }
+    }
+
+    fn update(
+        state: &mut State,
+        source: SurfaceId,
+        msg: Msg,
+        _clipboard: &mut arboard::Clipboard,
+    ) -> Vec<SurfaceCommand> {
+        let _ = (state, source, msg);
+        Vec::new()
+    }
+}
+
+MultiWindowRunner::<App>::run();
+```
+
+Each committed surface has independent title, size, decorations, resizability, transparency, close behavior, widget state, layout, graphics presentation, and accessibility routing. Closing a normal secondary surface removes only that surface; the event loop exits when no surfaces remain or when an `ExitApplication` close policy/`SurfaceCommand::Exit` requests it. See `cargo run -- multi_window` for a panel/settings/popup example.
 
 ## Architecture
 

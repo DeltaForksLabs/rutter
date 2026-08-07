@@ -14,6 +14,7 @@ pub mod carousel_demo;
 pub mod controls_demo;
 pub mod form_demo;
 pub mod modal_toast_demo;
+pub mod multi_window_demo;
 pub mod popover_demo;
 pub mod progress_demo;
 pub mod scroll_demo;
