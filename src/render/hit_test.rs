@@ -2232,7 +2232,13 @@ mod tests {
         let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, widget, fonts.clone(), states);
-        compute_layout(&mut taffy, root, size, fonts);
+        compute_layout(
+            &mut taffy,
+            root,
+            size,
+            fonts,
+            &crate::render::RichTextRenderer::default(),
+        );
         (taffy, root)
     }
 
@@ -2258,6 +2264,7 @@ mod tests {
             root,
             PhysicalSize::new(400, 300),
             std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new())),
+            &crate::render::RichTextRenderer::default(),
         );
 
         let hit = hit_test(
@@ -2294,6 +2301,7 @@ mod tests {
             root,
             PhysicalSize::new(120, 60),
             std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new())),
+            &crate::render::RichTextRenderer::default(),
         );
 
         let hit = hit_test(

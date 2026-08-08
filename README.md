@@ -61,7 +61,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 ### Widgets
 
-- Text, strong text, image, spacer, divider, container, row, and column primitives.
+- Text, rich text spans, image, spacer, divider, container, row, and column primitives.
 - Text and rich-content button variants, checkbox, switch, radio, slider, select, progress bar, and spinner.
 - Text input, search bar, and multiline text area.
 - Scroll view, virtual list, virtual grid, and horizontally virtualized carousel for large item sets.
@@ -133,6 +133,7 @@ cargo run -- popover
 cargo run -- calendar
 cargo run -- carousel
 cargo run -- multi_window
+cargo run -- rich_text
 cargo run -- advanced
 ```
 
@@ -311,10 +312,21 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 ### Display Widgets
 
 - `Text`
-- `StrongText`
+- `RichText`
 - `Image`
 - `ProgressBar`
 - `Spinner`
+
+`RichText` replaces `StrongText` with one accessible text leaf containing inherited span styles for weight, italic slant, underline, size, and color. Skia Paragraph provides matching shaping, wrapping, RTL layout, measurement, and painting.
+See [`docs/RICH_TEXT_MIGRATION.md`](docs/RICH_TEXT_MIGRATION.md) for the 0.19 migration from `StrongText` and exhaustive `Widget`/`RutterContext` matches.
+
+```rust
+let content = RichText::from_spans([
+    RichTextSpan::new("Rutter ").bold(),
+    RichTextSpan::new("rich text").italic().underline(),
+]);
+let widget: Widget<'_, ()> = Widget::rich_text(content, Style::default());
+```
 
 ### Composite Widgets
 

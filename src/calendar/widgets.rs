@@ -13,6 +13,7 @@ use super::{
     CalendarConfig, CalendarDate, CalendarGridCell, CalendarMonth, calendar_grid, day_number_label,
     weekday_label,
 };
+use crate::rich_text::{RichText, RichTextSpan};
 use crate::widget::{ButtonVariant, Widget};
 
 impl<'a, Msg> Widget<'a, Msg> {
@@ -312,7 +313,10 @@ fn calendar_heading_text<'a, Msg>(month_name: &str, year: i32) -> Vec<Widget<'a,
             color: None,
             size: 16.0,
         },
-        Widget::strong_text(year, year_style, None, 16.0),
+        Widget::rich_text(
+            RichText::from_span(RichTextSpan::owned(year).bold()),
+            year_style,
+        ),
     ]
 }
 

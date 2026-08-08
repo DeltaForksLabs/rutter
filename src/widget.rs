@@ -11,6 +11,7 @@ use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
 
 use crate::carousel::CarouselConfig;
+use crate::rich_text::RichText;
 use crate::widget_id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
@@ -300,11 +301,9 @@ pub enum Widget<'a, Msg> {
         color: Option<SkiaColor>,
         size: f32,
     },
-    StrongText {
-        content: String,
+    RichText {
+        content: RichText<'a>,
         style: Style,
-        color: Option<SkiaColor>,
-        size: f32,
     },
     Image {
         data: &'a [u8],
@@ -517,27 +516,18 @@ pub enum Widget<'a, Msg> {
 }
 
 impl<'a, Msg> Widget<'a, Msg> {
-    /// Creates text rendered with an explicitly emboldened font.
+    /// Creates one non-interactive text leaf from styled spans.
     ///
     /// ```rust
-    /// use rutter::Widget;
+    /// use rutter::{RichText, RichTextSpan, Widget};
     /// use taffy::prelude::Style;
     ///
-    /// let text: Widget<'_, ()> = Widget::strong_text("2026", Style::default(), None, 16.0);
-    /// assert!(matches!(text, Widget::StrongText { .. }));
+    /// let content = RichText::from_span(RichTextSpan::new("2026").bold());
+    /// let text: Widget<'_, ()> = Widget::rich_text(content, Style::default());
+    /// assert!(matches!(text, Widget::RichText { .. }));
     /// ```
-    pub fn strong_text(
-        content: impl Into<String>,
-        style: Style,
-        color: Option<SkiaColor>,
-        size: f32,
-    ) -> Self {
-        Self::StrongText {
-            content: content.into(),
-            style,
-            color,
-            size,
-        }
+    pub fn rich_text(content: RichText<'a>, style: Style) -> Self {
+        Self::RichText { content, style }
     }
 
     /// Creates a button whose visual content is another widget.

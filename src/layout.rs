@@ -10,11 +10,15 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+use taffy::Direction;
 use taffy::prelude::*;
 use winit::dpi::PhysicalSize;
 
 use crate::engine::widget_state::WidgetState;
 use crate::i18n::LayoutDirection;
+use crate::render::RichTextRenderer;
+use crate::render::rich_text::{RichTextDirection, RichTextMetrics, RichTextWidth};
+use crate::rich_text::OwnedRichTextSpec;
 use crate::widget::Widget;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -60,6 +64,7 @@ pub enum RutterContext {
     #[default]
     None,
     Text(TextContext),
+    RichText(OwnedRichTextSpec),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -330,12 +335,6 @@ impl LayoutBlueprint {
                 style,
                 size,
                 ..
-            }
-            | Widget::StrongText {
-                content,
-                style,
-                size,
-                ..
             } => Self::leaf_with_context(
                 None,
                 style.clone(),
@@ -343,6 +342,11 @@ impl LayoutBlueprint {
                     content: content.clone(),
                     font_size: *size,
                 }),
+            ),
+            Widget::RichText { content, style } => Self::leaf_with_context(
+                None,
+                style.clone(),
+                RutterContext::RichText(content.to_owned_spec()),
             ),
             Widget::Button { style, .. }
             | Widget::Checkbox { style, .. }
@@ -592,37 +596,131 @@ fn clone_context(context: &RutterContext) -> Option<RutterContext> {
     }
 }
 
+/// Computes the current Taffy tree while reusing rich-text font resources.
+///
+/// Example:
+///
+/// ```rust
+/// use std::{cell::RefCell, rc::Rc};
+/// use cosmic_text::FontSystem;
+/// use rutter::layout::{RutterContext, compute_layout};
+/// use rutter::render::RichTextRenderer;
+/// use taffy::{Style, TaffyTree};
+/// use winit::dpi::PhysicalSize;
+///
+/// let mut taffy = TaffyTree::<RutterContext>::new();
+/// let root = taffy.new_leaf(Style::default())?;
+/// let fonts = Rc::new(RefCell::new(FontSystem::new()));
+/// let rich_text_renderer = RichTextRenderer::default();
+/// compute_layout(&mut taffy, root, PhysicalSize::new(320, 200), fonts, &rich_text_renderer);
+/// # Ok::<(), taffy::TaffyError>(())
+/// ```
 pub fn compute_layout(
     taffy: &mut TaffyTree<RutterContext>,
     root: NodeId,
     size: PhysicalSize<u32>,
     fs_rc: Rc<RefCell<FontSystem>>,
+    rich_text_renderer: &RichTextRenderer,
 ) {
     let available = Size {
         width: AvailableSpace::Definite(size.width as f32),
         height: AvailableSpace::Definite(size.height as f32),
     };
     taffy
-        .compute_layout_with_measure(root, available, |known, available, _, ctx, _| {
-            let Some(RutterContext::Text(t)) = ctx else {
-                return Size::ZERO;
-            };
-            let mut fs = fs_rc.borrow_mut();
-            let mut buf = Buffer::new(&mut fs, Metrics::new(t.font_size, t.font_size * 1.2));
-            match available.width {
-                AvailableSpace::Definite(px) => buf.set_size(&mut fs, Some(px), None),
-                AvailableSpace::MaxContent => buf.set_size(&mut fs, None, None),
-                AvailableSpace::MinContent => buf.set_size(&mut fs, Some(0.0), None),
-            }
-            buf.set_text(&mut fs, &t.content, &Attrs::new(), Shaping::Advanced, None);
-            buf.shape_until_scroll(&mut fs, true);
-            let (w, h) = buf.size();
-            Size {
-                width: known.width.unwrap_or(w.unwrap_or(0.0)),
-                height: known.height.unwrap_or(h.unwrap_or(0.0)),
-            }
-        })
+        .compute_layout_with_measure(
+            root,
+            available,
+            |known, available, _, ctx, style| match ctx {
+                Some(RutterContext::Text(text)) => {
+                    measure_plain_text(text, known, available, &fs_rc)
+                }
+                Some(RutterContext::RichText(content)) => measure_rich_text(
+                    content,
+                    known,
+                    available,
+                    style.direction,
+                    rich_text_renderer,
+                ),
+                Some(RutterContext::None) | None => Size::ZERO,
+            },
+        )
         .unwrap();
+}
+
+fn measure_plain_text(
+    text: &TextContext,
+    known: Size<Option<f32>>,
+    available: Size<AvailableSpace>,
+    font_system: &Rc<RefCell<FontSystem>>,
+) -> Size<f32> {
+    let mut font_system = font_system.borrow_mut();
+    let mut buffer = Buffer::new(
+        &mut font_system,
+        Metrics::new(text.font_size, text.font_size * 1.2),
+    );
+    configure_plain_text_width(&mut buffer, &mut font_system, available.width);
+    buffer.set_text(
+        &mut font_system,
+        &text.content,
+        &Attrs::new(),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut font_system, true);
+    let (width, height) = buffer.size();
+    Size {
+        width: known.width.unwrap_or(width.unwrap_or(0.0)),
+        height: known.height.unwrap_or(height.unwrap_or(0.0)),
+    }
+}
+
+fn configure_plain_text_width(
+    buffer: &mut Buffer,
+    font_system: &mut FontSystem,
+    available: AvailableSpace,
+) {
+    match available {
+        AvailableSpace::Definite(width) => buffer.set_size(font_system, Some(width), None),
+        AvailableSpace::MaxContent => buffer.set_size(font_system, None, None),
+        AvailableSpace::MinContent => buffer.set_size(font_system, Some(0.0), None),
+    }
+}
+
+fn measure_rich_text(
+    content: &OwnedRichTextSpec,
+    known: Size<Option<f32>>,
+    available: Size<AvailableSpace>,
+    direction: Direction,
+    renderer: &RichTextRenderer,
+) -> Size<f32> {
+    let metrics = renderer.measure(
+        content,
+        rich_text_width(available.width),
+        rich_text_direction(direction),
+    );
+    apply_known_rich_text_size(known, metrics)
+}
+
+fn rich_text_width(available: AvailableSpace) -> RichTextWidth {
+    match available {
+        AvailableSpace::Definite(width) => RichTextWidth::Definite(width),
+        AvailableSpace::MinContent => RichTextWidth::MinContent,
+        AvailableSpace::MaxContent => RichTextWidth::MaxContent,
+    }
+}
+
+fn rich_text_direction(direction: Direction) -> RichTextDirection {
+    match direction {
+        Direction::Rtl => RichTextDirection::RightToLeft,
+        Direction::Ltr => RichTextDirection::LeftToRight,
+    }
+}
+
+fn apply_known_rich_text_size(known: Size<Option<f32>>, measured: RichTextMetrics) -> Size<f32> {
+    Size {
+        width: known.width.unwrap_or(measured.width),
+        height: known.height.unwrap_or(measured.height),
+    }
 }
 
 fn extract_height(style: &Style) -> f32 {
@@ -823,7 +921,13 @@ mod tests {
     fn button_content_creates_child_layout_node() {
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, &button_content(120.0), fs(), &empty_states());
-        compute_layout(&mut taffy, root, PhysicalSize::new(200, 100), fs());
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(200, 100),
+            fs(),
+            &RichTextRenderer::default(),
+        );
         let children = taffy.children(root).unwrap();
 
         assert_eq!(children.len(), 1);
@@ -862,7 +966,13 @@ mod tests {
         };
 
         let root = build_taffy_tree(&mut taffy, &widget, fs(), &empty_states());
-        compute_layout(&mut taffy, root, PhysicalSize::new(400, 300), fs());
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(400, 300),
+            fs(),
+            &RichTextRenderer::default(),
+        );
         let children = taffy.children(root).unwrap();
         let modal = children
             .iter()
@@ -917,7 +1027,13 @@ mod tests {
         };
 
         let root = build_taffy_tree(&mut taffy, &widget, fs(), &empty_states());
-        compute_layout(&mut taffy, root, PhysicalSize::new(400, 300), fs());
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(400, 300),
+            fs(),
+            &RichTextRenderer::default(),
+        );
         let children = taffy.children(root).unwrap();
         let dialog = children
             .iter()

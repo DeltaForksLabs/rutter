@@ -17,6 +17,7 @@ pub mod modal_toast_demo;
 pub mod multi_window_demo;
 pub mod popover_demo;
 pub mod progress_demo;
+pub mod rich_text_demo;
 pub mod scroll_demo;
 pub mod slider_demo;
 pub mod tab_demo;

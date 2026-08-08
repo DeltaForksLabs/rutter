@@ -408,7 +408,7 @@ fn collect_indexed_child<Msg>(
 
 fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
     Some(match widget {
-        Widget::Text { .. } | Widget::StrongText { .. } => Role::TextRun,
+        Widget::Text { .. } | Widget::RichText { .. } => Role::TextRun,
         Widget::Image { .. } => Role::Image,
         Widget::Button { .. } | Widget::ButtonContent { .. } => Role::Button,
         Widget::TextInput { is_password, .. } if *is_password => Role::PasswordInput,
@@ -578,9 +578,8 @@ fn set_widget_label<Msg>(
     input_states: &HashMap<u64, InputWidgetState>,
 ) {
     match widget {
-        Widget::Text { content, .. } | Widget::StrongText { content, .. } => {
-            node.set_label(content.clone())
-        }
+        Widget::Text { content, .. } => node.set_label(content.clone()),
+        Widget::RichText { content, .. } => node.set_label(content.plain_text()),
         Widget::Button { text, .. } => node.set_label(*text),
         Widget::ButtonContent { label, .. } => node.set_label(*label),
         Widget::TextInput { label, .. } | Widget::TextArea { label, .. } => node.set_label(*label),
@@ -699,7 +698,13 @@ mod tests {
         let states = HashMap::new();
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, widget, fs(), &states);
-        compute_layout(&mut taffy, root, PhysicalSize::new(300, 120), fs());
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(300, 120),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
         build_accessibility_update(
             &taffy,
             widget,
@@ -745,9 +750,12 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_update_exposes_strong_text_label() {
-        let widget: Widget<'_, ()> =
-            Widget::strong_text("2026", base_style(80.0, 24.0), None, 16.0);
+    fn accessibility_update_exposes_flattened_rich_text_label() {
+        let content = crate::RichText::from_spans([
+            crate::RichTextSpan::new("20").bold(),
+            crate::RichTextSpan::new("26").italic(),
+        ]);
+        let widget: Widget<'_, ()> = Widget::rich_text(content, base_style(80.0, 24.0));
 
         let update = build_update(&widget);
         let text = node_for(&update, Role::TextRun);
@@ -843,7 +851,13 @@ mod tests {
         let inputs = HashMap::new();
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, &widget, fs(), &states);
-        compute_layout(&mut taffy, root, PhysicalSize::new(300, 120), fs());
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(300, 120),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
 
         let update = build_accessibility_update(
             &taffy,

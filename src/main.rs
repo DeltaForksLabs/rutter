@@ -20,6 +20,7 @@
 //   cargo run -- calendar
 //   cargo run -- carousel
 //   cargo run -- multi_window
+//   cargo run -- rich_text
 //   cargo run -- button_content
 //   cargo run -- image_viewer
 //   cargo run -- advanced
@@ -45,6 +46,7 @@ fn main() {
         "calendar" => widget_examples::calendar_demo::run(),
         "carousel" => widget_examples::carousel_demo::run(),
         "multi_window" => widget_examples::multi_window_demo::run(),
+        "rich_text" => widget_examples::rich_text_demo::run(),
         "button_content" => widget_examples::button_content_demo::run(),
         "image_viewer" => widget_examples::image_viewer_demo::run(),
         "vlist" => widget_examples::vlist_demo::run(),

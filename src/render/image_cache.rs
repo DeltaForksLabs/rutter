@@ -12,6 +12,7 @@ use cosmic_text::FontSystem;
 use skia_safe::Image;
 
 use super::image::RutterDecodedImage;
+use super::rich_text::RichTextRenderer;
 
 const MAX_RASTER_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SVG_CACHE_BYTES: usize = 64 * 1024 * 1024;
@@ -28,6 +29,7 @@ pub struct ImageRenderCache {
     raster_images: MemoryBoundedLru<u64, RutterDecodedImage>,
     svg_images: MemoryBoundedLru<SvgImageCacheKey, Image>,
     layout_font_system: Rc<RefCell<FontSystem>>,
+    rich_text_renderer: RichTextRenderer,
 }
 
 impl Default for ImageRenderCache {
@@ -36,6 +38,7 @@ impl Default for ImageRenderCache {
             raster_images: MemoryBoundedLru::new(MAX_RASTER_CACHE_BYTES),
             svg_images: MemoryBoundedLru::new(MAX_SVG_CACHE_BYTES),
             layout_font_system: Rc::new(RefCell::new(FontSystem::new())),
+            rich_text_renderer: RichTextRenderer::new(),
         }
     }
 }
@@ -52,6 +55,7 @@ impl ImageRenderCache {
     pub fn clear(&mut self) {
         self.raster_images.clear();
         self.svg_images.clear();
+        self.rich_text_renderer.clear();
     }
 
     pub(crate) fn raster_image(&mut self, key: u64) -> Option<RutterDecodedImage> {
@@ -74,6 +78,10 @@ impl ImageRenderCache {
 
     pub(crate) fn layout_font_system(&self) -> Rc<RefCell<FontSystem>> {
         self.layout_font_system.clone()
+    }
+
+    pub(crate) fn rich_text_renderer(&self) -> &RichTextRenderer {
+        &self.rich_text_renderer
     }
 }
 

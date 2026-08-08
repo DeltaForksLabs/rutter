@@ -46,7 +46,13 @@ fn open_date_picker_routes_popup_day_clicks_to_typed_messages() {
     let states = HashMap::from([(920, WidgetState::Popover(popover))]);
     let mut taffy = TaffyTree::new();
     let root = build_taffy_tree(&mut taffy, &picker, font_system(), &states);
-    compute_layout(&mut taffy, root, PhysicalSize::new(800, 600), font_system());
+    compute_layout(
+        &mut taffy,
+        root,
+        PhysicalSize::new(800, 600),
+        font_system(),
+        &rutter::render::RichTextRenderer::default(),
+    );
 
     let hit = hit_test_popover_overlay(
         &picker,
@@ -87,7 +93,13 @@ fn calendar_month_and_year_layout_boxes_do_not_overlap() {
     let fonts = font_system();
     let mut taffy = TaffyTree::new();
     let root = build_taffy_tree(&mut taffy, &widget, fonts.clone(), &states);
-    compute_layout(&mut taffy, root, PhysicalSize::new(340, 330), fonts);
+    compute_layout(
+        &mut taffy,
+        root,
+        PhysicalSize::new(340, 330),
+        fonts,
+        &rutter::render::RichTextRenderer::default(),
+    );
     let [month_node, year_node] = calendar_heading_text_nodes(&taffy, root);
     let month = taffy.layout(month_node).unwrap();
     let year = taffy.layout(year_node).unwrap();
@@ -168,7 +180,13 @@ fn rendered_pixel_count(widget: &Widget<'_, Msg>) -> usize {
     let fonts = font_system();
     let mut taffy = TaffyTree::new();
     let root = build_taffy_tree(&mut taffy, widget, fonts.clone(), &states);
-    compute_layout(&mut taffy, root, PhysicalSize::new(340, 330), fonts);
+    compute_layout(
+        &mut taffy,
+        root,
+        PhysicalSize::new(340, 330),
+        fonts,
+        &rutter::render::RichTextRenderer::default(),
+    );
     let mut surface = surfaces::raster_n32_premul((340, 330)).unwrap();
     surface.canvas().clear(Color::TRANSPARENT);
     draw_calendar_tree(surface.canvas(), &taffy, root, widget, &states);

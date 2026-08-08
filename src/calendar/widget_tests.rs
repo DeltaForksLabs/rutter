@@ -1,7 +1,7 @@
 use taffy::prelude::{JustifyContent, Style};
 
 use super::{CalendarConfig, CalendarDate, CalendarLabels, CalendarMonth, WeekStart};
-use crate::Widget;
+use crate::{RichTextWeight, Widget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Msg {
@@ -48,7 +48,7 @@ fn configured_calendar_uses_localized_heading() {
     );
 
     assert!(calendar_contains_text(&widget, "Julho"));
-    assert!(calendar_contains_strong_text(&widget, "2026"));
+    assert!(calendar_contains_bold_rich_text(&widget, "2026"));
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn date_picker_composes_anchor_and_calendar_popover() {
     assert_eq!(on_dismiss, Some(Msg::Close));
     assert!(matches!(*anchor, Widget::ButtonContent { .. }));
     assert!(calendar_contains_text(&content, "July"));
-    assert!(calendar_contains_strong_text(&content, "2026"));
+    assert!(calendar_contains_bold_rich_text(&content, "2026"));
     assert!(calendar_contains_text(&anchor, "2026-07-31"));
 }
 
@@ -130,7 +130,9 @@ fn calendar_centers_heading_and_weekday_content() {
     };
 
     assert_eq!(style.justify_content, Some(JustifyContent::Center));
-    assert!(matches!(&children[1], Widget::StrongText { content, .. } if content == "2026"));
+    assert!(
+        matches!(&children[1], Widget::RichText { content, .. } if content.plain_text() == "2026")
+    );
     assert!(
         matches!(&sections[1], Widget::Row { children, .. } if children.iter().all(|child| matches!(child, Widget::Container { .. })))
     );
@@ -150,7 +152,8 @@ fn calendar_sections<'widget, 'content, Msg>(
 
 fn calendar_contains_text<Msg>(widget: &Widget<'_, Msg>, expected: &str) -> bool {
     match widget {
-        Widget::Text { content, .. } | Widget::StrongText { content, .. } => content == expected,
+        Widget::Text { content, .. } => content == expected,
+        Widget::RichText { content, .. } => content.plain_text() == expected,
         Widget::Column { children, .. } | Widget::Row { children, .. } => children
             .iter()
             .any(|child| calendar_contains_text(child, expected)),
@@ -164,20 +167,26 @@ fn calendar_contains_text<Msg>(widget: &Widget<'_, Msg>, expected: &str) -> bool
     }
 }
 
-fn calendar_contains_strong_text<Msg>(widget: &Widget<'_, Msg>, expected: &str) -> bool {
+fn calendar_contains_bold_rich_text<Msg>(widget: &Widget<'_, Msg>, expected: &str) -> bool {
     match widget {
-        Widget::StrongText { content, .. } => content == expected,
+        Widget::RichText { content, .. } => {
+            content.plain_text() == expected
+                && content
+                    .spans()
+                    .iter()
+                    .any(|span| span.style().weight() == Some(RichTextWeight::BOLD))
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => children
             .iter()
-            .any(|child| calendar_contains_strong_text(child, expected)),
+            .any(|child| calendar_contains_bold_rich_text(child, expected)),
         Widget::Container { child, .. } | Widget::ButtonContent { child, .. } => {
-            calendar_contains_strong_text(child, expected)
+            calendar_contains_bold_rich_text(child, expected)
         }
         Widget::Popover {
             anchor, content, ..
         } => {
-            calendar_contains_strong_text(anchor, expected)
-                || calendar_contains_strong_text(content, expected)
+            calendar_contains_bold_rich_text(anchor, expected)
+                || calendar_contains_bold_rich_text(content, expected)
         }
         _ => false,
     }

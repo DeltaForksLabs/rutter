@@ -55,7 +55,13 @@ fn render_virtual_list(include_colliding_secret: bool) -> Vec<Color> {
     let layout_fonts = Rc::new(RefCell::new(FontSystem::new()));
     let mut taffy = rutter::taffy::TaffyTree::new();
     let root = build_taffy_tree(&mut taffy, &widget, layout_fonts.clone(), &widget_states);
-    compute_layout(&mut taffy, root, PhysicalSize::new(120, 60), layout_fonts);
+    compute_layout(
+        &mut taffy,
+        root,
+        PhysicalSize::new(120, 60),
+        layout_fonts,
+        &rutter::render::RichTextRenderer::default(),
+    );
 
     let mut font_system = FontSystem::new();
     let mut input_states = HashMap::new();

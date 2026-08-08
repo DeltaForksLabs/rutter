@@ -228,7 +228,13 @@ fn layout_carousel_with_direction(
         &HashMap::new(),
         direction,
     );
-    compute_layout(&mut taffy, root, PhysicalSize::new(800, 200), fonts);
+    compute_layout(
+        &mut taffy,
+        root,
+        PhysicalSize::new(800, 200),
+        fonts,
+        &rutter::render::RichTextRenderer::default(),
+    );
     (taffy, root)
 }
 

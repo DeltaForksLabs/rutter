@@ -1020,7 +1020,13 @@ impl<A: AppLogic> RutterEngine<A> {
             A::locale().direction(),
         );
         self.last_root_node = root;
-        compute_layout(&mut self.taffy, root, logical, self.font_system.clone());
+        compute_layout(
+            &mut self.taffy,
+            root,
+            logical,
+            self.font_system.clone(),
+            self.image_cache.rich_text_renderer(),
+        );
         self.runtime_cache_scratch.clear();
         Self::sync_runtime_metadata(
             &mut self.runtime_cache_scratch,
@@ -1862,7 +1868,13 @@ mod tests {
         ]);
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, &widget, fs(), &widget_states);
-        compute_layout(&mut taffy, root, PhysicalSize::new(400, 500), fs());
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(400, 500),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
 
         let mut runtime_caches = WidgetRuntimeCaches::<Msg>::default();
         RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
@@ -1966,7 +1978,13 @@ mod tests {
         let widget_states = HashMap::new();
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, &widget, fs(), &widget_states);
-        compute_layout(&mut taffy, root, PhysicalSize::new(400, 300), fs());
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(400, 300),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
 
         let mut runtime_caches = WidgetRuntimeCaches::<Msg>::default();
         let mut widget_states = HashMap::new();

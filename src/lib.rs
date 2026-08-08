@@ -19,6 +19,7 @@ mod input_undo;
 pub mod layout;
 pub mod multi_window;
 pub mod render;
+pub mod rich_text;
 pub mod theme;
 pub mod widget;
 mod widget_id;
@@ -41,6 +42,10 @@ pub use multi_window::{
     SurfaceRequest, WindowConfig, WindowConfigError, WindowSize,
 };
 pub use render::text::TextShapeCacheLimits;
+pub use rich_text::{
+    RichText, RichTextColor, RichTextError, RichTextSize, RichTextSlant, RichTextSpan,
+    RichTextSpanStyle, RichTextStyle, RichTextWeight,
+};
 pub use theme::Theme;
 pub use widget::{
     AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget,

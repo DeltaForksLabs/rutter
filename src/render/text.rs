@@ -61,13 +61,11 @@ pub fn draw_text(
     font_cache: &mut HashMap<(String, u32), Font>,
     center: bool,
 ) {
-    draw_weighted_text(
-        canvas, text, size, color, font_size, font_cache, center, false,
-    );
+    draw_simple_text(canvas, text, size, color, font_size, font_cache, center);
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_strong_text(
+fn draw_simple_text(
     canvas: &Canvas,
     text: &str,
     size: (f32, f32),
@@ -75,29 +73,12 @@ pub(crate) fn draw_strong_text(
     font_size: f32,
     font_cache: &mut HashMap<(String, u32), Font>,
     center: bool,
-) {
-    draw_weighted_text(
-        canvas, text, size, color, font_size, font_cache, center, true,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_weighted_text(
-    canvas: &Canvas,
-    text: &str,
-    size: (f32, f32),
-    color: SkiaColor,
-    font_size: f32,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    center: bool,
-    embolden: bool,
 ) {
     if text.is_empty() {
         return;
     }
 
-    let mut font = get_cached_font(font_cache, "sans-serif", font_size);
-    font.set_embolden(embolden);
+    let font = get_cached_font(font_cache, "sans-serif", font_size);
     let mut paint = Paint::default();
     paint.set_color(color);
     paint.set_anti_alias(true);
@@ -111,30 +92,4 @@ fn draw_weighted_text(
         0.0
     };
     canvas.draw_str(text, (x, y), &font, &paint);
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use skia_safe::{Color, surfaces};
-
-    use super::{draw_strong_text, get_cached_font};
-
-    #[test]
-    fn strong_text_emboldens_only_the_draw_font_clone() {
-        let mut cache = HashMap::new();
-        let mut surface = surfaces::raster_n32_premul((80, 30)).unwrap();
-        draw_strong_text(
-            surface.canvas(),
-            "2026",
-            (80.0, 30.0),
-            Color::BLACK,
-            16.0,
-            &mut cache,
-            true,
-        );
-
-        assert!(!get_cached_font(&mut cache, "sans-serif", 16.0).is_embolden());
-    }
 }

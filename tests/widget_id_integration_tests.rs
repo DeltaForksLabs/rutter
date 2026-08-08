@@ -1,7 +1,8 @@
 use std::error::Error;
 
 use rutter::{
-    AUTO_ID, InputState, RutterRunError, Widget, WidgetId, WidgetIdError, WidgetIdSnapshot,
+    AUTO_ID, InputState, RichText, RichTextSpan, RutterRunError, Widget, WidgetId, WidgetIdError,
+    WidgetIdSnapshot,
 };
 use taffy::prelude::Style;
 
@@ -61,22 +62,25 @@ fn tab_bar(id: u64) -> TestWidget {
 }
 
 #[test]
-fn regular_and_strong_text_are_transition_compatible() {
+fn regular_and_rich_text_are_transition_compatible() {
     let regular: TestWidget = Widget::Text {
         content: "2025".into(),
         style: Style::default(),
         color: None,
         size: 16.0,
     };
-    let strong: TestWidget = Widget::strong_text("2026", Style::default(), None, 16.0);
+    let rich: TestWidget = Widget::rich_text(
+        RichText::from_span(RichTextSpan::new("2026").bold()),
+        Style::default(),
+    );
     let regular_snapshot = WidgetIdSnapshot::capture(&regular).unwrap();
-    let strong_snapshot = WidgetIdSnapshot::capture(&strong).unwrap();
+    let rich_snapshot = WidgetIdSnapshot::capture(&rich).unwrap();
 
     regular_snapshot
-        .validate_transition_to(&strong_snapshot)
+        .validate_transition_to(&rich_snapshot)
         .unwrap();
     regular_snapshot
-        .validate_reconstruction(&strong_snapshot)
+        .validate_reconstruction(&rich_snapshot)
         .unwrap();
 }
 

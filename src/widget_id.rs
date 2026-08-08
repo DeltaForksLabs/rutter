@@ -245,7 +245,7 @@ impl WidgetIdVisitor {
 
     fn register_accessibility_leaf<Msg>(&mut self, widget: &Widget<'_, Msg>) -> WidgetIdResult {
         let widget_type = match widget {
-            Widget::Text { .. } | Widget::StrongText { .. } => "AccessibilityText",
+            Widget::Text { .. } | Widget::RichText { .. } => "AccessibilityText",
             Widget::Image { .. } => "AccessibilityImage",
             _ => return Ok(()),
         };

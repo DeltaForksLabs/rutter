@@ -10,6 +10,7 @@ pub mod image;
 mod image_cache;
 mod image_headers;
 pub mod pipeline;
+pub(crate) mod rich_text;
 mod svg;
 pub mod text;
 mod text_cache;
@@ -31,7 +32,9 @@ use taffy::Direction;
 use taffy::prelude::{NodeId, TaffyTree};
 
 pub use self::image_cache::ImageRenderCache;
-use self::text::{TextBufferCache, TextShapeRequest, draw_strong_text, draw_text, get_cached_font};
+use self::rich_text::RichTextDirection;
+pub use self::rich_text::RichTextRenderer;
+use self::text::{TextBufferCache, TextShapeRequest, draw_text, get_cached_font};
 use self::{
     image::{MAX_ENCODED_IMAGE_BYTES, decode_rutter_image},
     image_cache::SvgImageCacheKey,
@@ -45,9 +48,11 @@ use crate::engine::widget_state::{
 use crate::i18n::LayoutDirection;
 use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{
-    OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree, compute_layout,
+    OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction,
+    compute_layout,
 };
 use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
+use crate::rich_text::OwnedRichTextSpec;
 use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
@@ -1242,20 +1247,19 @@ fn draw_widgets_impl<'w, Msg>(
                 false,
             );
         }
-        Widget::StrongText {
-            content,
-            color,
-            size: font_size,
-            ..
-        } => draw_strong_text(
-            canvas,
-            content,
-            size,
-            color.unwrap_or(theme.on_surface),
-            *font_size,
-            font_cache,
-            false,
-        ),
+        Widget::RichText { .. } => {
+            if let Some(RutterContext::RichText(content)) = taffy.get_node_context(node) {
+                let direction = rich_text_node_direction(taffy, node);
+                draw_rich_text_content(
+                    canvas,
+                    layout,
+                    content,
+                    theme.on_surface,
+                    direction,
+                    image_cache.rich_text_renderer(),
+                );
+            }
+        }
         Widget::Select {
             options,
             selected_index,
@@ -1420,7 +1424,7 @@ fn draw_widgets_impl<'w, Msg>(
             let state = widget_states
                 .get(&resolved_id.unwrap())
                 .and_then(WidgetState::as_carousel);
-            let direction = carousel_layout_direction(taffy, node);
+            let direction = node_layout_direction(taffy, node);
             let position = state.map(|state| state.position).unwrap_or_default();
             let selected = state.and_then(|state| state.selected_item);
             let frames = carousel_item_frames(config, position, size.0, *item_count, direction);
@@ -1436,6 +1440,7 @@ fn draw_widgets_impl<'w, Msg>(
                     text_cache,
                     image_cache,
                     layout_fs: layout_fs.clone(),
+                    layout_direction: direction,
                     cursor_visible,
                     scale,
                 },
@@ -1496,6 +1501,7 @@ fn draw_widgets_impl<'w, Msg>(
                     text_cache,
                     image_cache,
                     layout_fs: layout_fs.clone(),
+                    layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
                     scale,
                 },
@@ -1564,6 +1570,7 @@ fn draw_widgets_impl<'w, Msg>(
                     text_cache,
                     image_cache,
                     layout_fs: layout_fs.clone(),
+                    layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
                     scale,
                 },
@@ -2557,6 +2564,7 @@ struct VirtualItemDrawContext<'a> {
     text_cache: &'a mut TextBufferCache,
     image_cache: &'a mut ImageRenderCache,
     layout_fs: Rc<RefCell<FontSystem>>,
+    layout_direction: LayoutDirection,
     cursor_visible: bool,
     scale: f32,
 }
@@ -2664,11 +2672,38 @@ fn draw_carousel_item_content<'w, Msg>(
     }
 }
 
-fn carousel_layout_direction(taffy: &TaffyTree<RutterContext>, node: NodeId) -> LayoutDirection {
+fn node_layout_direction(taffy: &TaffyTree<RutterContext>, node: NodeId) -> LayoutDirection {
     match taffy.style(node).map(|style| style.direction) {
         Ok(Direction::Rtl) => LayoutDirection::Rtl,
         _ => LayoutDirection::Ltr,
     }
+}
+
+fn rich_text_node_direction(taffy: &TaffyTree<RutterContext>, node: NodeId) -> RichTextDirection {
+    match taffy.style(node).map(|style| style.direction) {
+        Ok(Direction::Rtl) => RichTextDirection::RightToLeft,
+        Ok(Direction::Ltr) | Err(_) => RichTextDirection::LeftToRight,
+    }
+}
+
+fn draw_rich_text_content(
+    canvas: &Canvas,
+    layout: &taffy::Layout,
+    content: &OwnedRichTextSpec,
+    fallback_color: SkiaColor,
+    direction: RichTextDirection,
+    renderer: &RichTextRenderer,
+) {
+    let size = (layout.content_box_width(), layout.content_box_height());
+    let origin = (
+        layout.border.left + layout.padding.left,
+        layout.border.top + layout.padding.top,
+    );
+    canvas.save();
+    canvas.translate(origin);
+    canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
+    renderer.draw(canvas, content, size, fallback_color, direction);
+    canvas.restore();
 }
 
 fn carousel_card_rect(frame: CarouselItemFrame, viewport_height: f32) -> SkiaRect {
@@ -3080,8 +3115,20 @@ fn draw_virtual_item_widget<'w, Msg>(
     // Virtual item widgets are visual-only, so global state must not alias IDs materialized on demand.
     let isolated_input_states = HashMap::new();
     let isolated_widget_states = HashMap::new();
-    let root = build_taffy_tree(&mut taffy, item, fs_rc.clone(), &isolated_widget_states);
-    compute_layout(&mut taffy, root, physical_size(size), fs_rc);
+    let root = build_taffy_tree_with_direction(
+        &mut taffy,
+        item,
+        fs_rc.clone(),
+        &isolated_widget_states,
+        ctx.layout_direction,
+    );
+    compute_layout(
+        &mut taffy,
+        root,
+        physical_size(size),
+        fs_rc,
+        ctx.image_cache.rich_text_renderer(),
+    );
     canvas.save();
     canvas.translate(origin);
     canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
@@ -4145,8 +4192,8 @@ mod tests {
     use winit::dpi::PhysicalSize;
 
     use super::{
-        ImageRenderCache, draw_image, draw_virtual_grid, draw_widgets, is_svg_image, svg_cache_key,
-        virtual_grid_scrollbar_metrics, visible_carousel_selection,
+        ImageRenderCache, RichTextRenderer, draw_image, draw_virtual_grid, draw_widgets,
+        is_svg_image, svg_cache_key, virtual_grid_scrollbar_metrics, visible_carousel_selection,
     };
     use crate::carousel::geometry::CarouselItemFrame;
     use crate::engine::widget_state::VirtualGridState;
@@ -4230,7 +4277,13 @@ mod tests {
         let layout_fonts = Rc::new(RefCell::new(FontSystem::new()));
         let mut taffy = TaffyTree::new();
         let root = build_taffy_tree(&mut taffy, &widget, layout_fonts.clone(), &widget_states);
-        compute_layout(&mut taffy, root, PhysicalSize::new(20, 20), layout_fonts);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(20, 20),
+            layout_fonts,
+            &RichTextRenderer::default(),
+        );
         let mut surface = surfaces::raster_n32_premul((20, 20)).unwrap();
         surface.canvas().clear(Color::TRANSPARENT);
         draw_container_test_tree(surface.canvas(), &taffy, root, &widget, &widget_states);
