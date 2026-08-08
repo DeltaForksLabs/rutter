@@ -201,6 +201,8 @@ fn main() {
 
 `MultiWindowRunner` owns every native window, backend, AccessKit adapter, and input runtime. Applications use stable `SurfaceId` values and emit `SurfaceCommand` operations instead of creating Winit windows directly. Unknown events from failed backend probes are discarded before accessibility or rendering side effects.
 
+Run `cargo run -- multi_window` to open a centered **Open Second Window** button; the requested child window demonstrates a styled `RichText` phrase and independent close behavior.
+
 ```rust
 use rutter::{
     CloseBehavior, MultiWindowAppLogic, MultiWindowRunner, SurfaceCommand,
@@ -243,7 +245,7 @@ impl MultiWindowAppLogic for App {
 MultiWindowRunner::<App>::run();
 ```
 
-Each committed surface has independent title, size, decorations, resizability, transparency, close behavior, widget state, layout, graphics presentation, and accessibility routing. Closing a normal secondary surface removes only that surface; the event loop exits when no surfaces remain or when an `ExitApplication` close policy/`SurfaceCommand::Exit` requests it. See `cargo run -- multi_window` for a panel/settings/popup example.
+Each committed surface has independent title, size, decorations, resizability, transparency, close behavior, widget state, layout, graphics presentation, and accessibility routing. Closing a normal secondary surface removes only that surface; the event loop exits when no surfaces remain or when an `ExitApplication` close policy/`SurfaceCommand::Exit` requests it.
 
 ## Architecture
 

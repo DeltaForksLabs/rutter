@@ -6,28 +6,22 @@ use cosmic_text::FontSystem;
 use taffy::prelude::*;
 
 use rutter::{
-    ButtonVariant, CloseBehavior, MultiWindowAppLogic, MultiWindowRunner, SurfaceCommand,
-    SurfaceId, SurfaceRequest, Theme, Widget, WindowConfig,
+    ButtonVariant, CloseBehavior, MultiWindowAppLogic, MultiWindowRunner, RichText, RichTextColor,
+    RichTextSize, RichTextSpan, RichTextStyle, SurfaceCommand, SurfaceId, SurfaceRequest, Theme,
+    Widget, WindowConfig,
 };
 
-const PANEL: SurfaceId = SurfaceId::new(1);
-const SETTINGS: SurfaceId = SurfaceId::new(2);
-const POPUP: SurfaceId = SurfaceId::new(3);
+const SECOND_WINDOW: SurfaceId = SurfaceId::new(1);
 
 #[derive(Clone, Default)]
 struct MultiWindowState {
-    counter: usize,
-    settings_open: bool,
-    popup_open: bool,
+    second_window_open: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Message {
-    Increment,
-    OpenSettings,
-    OpenPopup,
-    CloseCurrent,
-    Exit,
+    OpenSecondWindow,
+    CloseCurrentWindow,
 }
 
 struct MultiWindowDemo;
@@ -41,24 +35,23 @@ impl MultiWindowAppLogic for MultiWindowDemo {
     }
 
     fn initial_surfaces() -> Vec<SurfaceRequest> {
-        vec![panel_request(), settings_request()]
+        vec![main_window_request()]
     }
 
-    fn view<'a>(state: &'a mut Self::State, surface: SurfaceId) -> Widget<'a, Self::Message> {
+    fn view<'a>(_: &'a mut Self::State, surface: SurfaceId) -> Widget<'a, Self::Message> {
         match surface {
-            PANEL => panel_view(state),
-            SETTINGS => settings_view(state),
-            POPUP => popup_view(state),
-            _ => unavailable_surface_view(surface),
+            SurfaceId::PRIMARY => main_window_view(),
+            SECOND_WINDOW => second_window_view(),
+            _ => unknown_window_view(surface),
         }
     }
 
     fn surface_created(state: &mut Self::State, surface: SurfaceId) {
-        set_surface_presence(state, surface, true);
+        set_second_window_presence(state, surface, true);
     }
 
     fn surface_closed(state: &mut Self::State, surface: SurfaceId) {
-        set_surface_presence(state, surface, false);
+        set_second_window_presence(state, surface, false);
     }
 
     fn update(
@@ -67,19 +60,7 @@ impl MultiWindowAppLogic for MultiWindowDemo {
         message: Self::Message,
         _: &mut Clipboard,
     ) -> Vec<SurfaceCommand> {
-        match message {
-            Message::Increment => state.counter += 1,
-            Message::OpenSettings if !state.settings_open => {
-                return vec![SurfaceCommand::Open(settings_request())];
-            }
-            Message::OpenPopup if !state.popup_open => {
-                return vec![SurfaceCommand::Open(popup_request())];
-            }
-            Message::CloseCurrent => return vec![SurfaceCommand::Close(surface)],
-            Message::Exit => return vec![SurfaceCommand::Exit],
-            Message::OpenSettings | Message::OpenPopup => {}
-        }
-        Vec::new()
+        multi_window_commands(state, surface, message)
     }
 
     fn theme() -> Theme {
@@ -87,125 +68,129 @@ impl MultiWindowAppLogic for MultiWindowDemo {
     }
 }
 
-fn panel_request() -> SurfaceRequest {
-    let window = WindowConfig::default()
-        .with_title("Rutter Panel")
-        .with_decorations(false)
-        .with_resizable(false)
-        .with_inner_size(900, 180)
-        .unwrap()
-        .with_close_behavior(CloseBehavior::ExitApplication);
-    SurfaceRequest::new(PANEL, window)
-}
-
-fn settings_request() -> SurfaceRequest {
-    let window = WindowConfig::default()
-        .with_title("Rutter Settings")
-        .with_inner_size(520, 360)
-        .unwrap();
-    SurfaceRequest::new(SETTINGS, window)
-}
-
-fn popup_request() -> SurfaceRequest {
-    let window = WindowConfig::default()
-        .with_title("Rutter Context Surface")
-        .with_decorations(false)
-        .with_resizable(false)
-        .with_inner_size(340, 180)
-        .unwrap();
-    SurfaceRequest::new(POPUP, window)
-}
-
-fn set_surface_presence(state: &mut MultiWindowState, surface: SurfaceId, present: bool) {
-    match surface {
-        SETTINGS => state.settings_open = present,
-        POPUP => state.popup_open = present,
-        _ => {}
+fn multi_window_commands(
+    state: &mut MultiWindowState,
+    surface: SurfaceId,
+    message: Message,
+) -> Vec<SurfaceCommand> {
+    match message {
+        Message::OpenSecondWindow if !state.second_window_open => {
+            state.second_window_open = true;
+            vec![SurfaceCommand::Open(second_window_request())]
+        }
+        Message::OpenSecondWindow => Vec::new(),
+        Message::CloseCurrentWindow => vec![SurfaceCommand::Close(surface)],
     }
 }
 
-fn panel_view<'a>(state: &'a MultiWindowState) -> Widget<'a, Message> {
-    let status = format!(
-        "counter={} | settings={} | popup={}",
-        state.counter, state.settings_open, state.popup_open
-    );
-    surface_column(vec![
-        text("Independent panel surface", 22.0),
-        text(status, 14.0),
-        button_row(vec![
-            button("Increment shared state", Message::Increment),
-            button("Open settings", Message::OpenSettings),
-            button("Open popup", Message::OpenPopup),
-            button("Exit", Message::Exit),
-        ]),
+fn main_window_request() -> SurfaceRequest {
+    let window = WindowConfig::default()
+        .with_title("Rutter Multi-Window Demo")
+        .with_resizable(false)
+        .with_inner_size(520, 320)
+        .expect("main window size 520x320 must contain positive dimensions")
+        .with_close_behavior(CloseBehavior::ExitApplication);
+    SurfaceRequest::new(SurfaceId::PRIMARY, window)
+}
+
+fn second_window_request() -> SurfaceRequest {
+    let window = WindowConfig::default()
+        .with_title("Second Window")
+        .with_resizable(false)
+        .with_inner_size(560, 260)
+        .expect("second window size 560x260 must contain positive dimensions");
+    SurfaceRequest::new(SECOND_WINDOW, window)
+}
+
+fn set_second_window_presence(state: &mut MultiWindowState, surface: SurfaceId, present: bool) {
+    if surface == SECOND_WINDOW {
+        state.second_window_open = present;
+    }
+}
+
+fn main_window_view<'a>() -> Widget<'a, Message> {
+    centered_surface_column(vec![Widget::Button {
+        text: "Open Second Window",
+        on_press: Message::OpenSecondWindow,
+        style: centered_button_style(),
+        color: None,
+        variant: ButtonVariant::Primary,
+    }])
+}
+
+fn second_window_view<'a>() -> Widget<'a, Message> {
+    centered_surface_column(vec![
+        second_window_rich_text(),
+        Widget::Button {
+            text: "Close Second Window",
+            on_press: Message::CloseCurrentWindow,
+            style: centered_button_style(),
+            color: None,
+            variant: ButtonVariant::Text,
+        },
     ])
 }
 
-fn settings_view<'a>(state: &'a MultiWindowState) -> Widget<'a, Message> {
-    surface_column(vec![
-        text("Settings surface", 24.0),
-        text(format!("Shared counter: {}", state.counter), 16.0),
-        button("Increment from settings", Message::Increment),
-        button("Close only settings", Message::CloseCurrent),
+fn second_window_rich_text<'a>() -> Widget<'a, Message> {
+    let font_size =
+        RichTextSize::new(22.0).expect("rich-text font size 22 must be finite and within 1..=512");
+    let content = RichText::from_spans([
+        RichTextSpan::new("Hello from the "),
+        RichTextSpan::new("second window")
+            .bold()
+            .with_color(RichTextColor::rgb(90, 180, 255)),
+        RichTextSpan::new(" — rendered with RichText!").italic(),
     ])
+    .with_default_style(RichTextStyle::default().with_size(font_size));
+    Widget::rich_text(content, rich_text_layout_style())
 }
 
-fn popup_view<'a>(state: &'a MultiWindowState) -> Widget<'a, Message> {
-    surface_column(vec![
-        text("Popup surface", 22.0),
-        text(format!("Shared counter: {}", state.counter), 14.0),
-        button("Close popup", Message::CloseCurrent),
-    ])
-}
-
-fn unavailable_surface_view<'a>(surface: SurfaceId) -> Widget<'a, Message> {
-    surface_column(vec![text(
-        format!("Unknown surface ID: {}", surface.get()),
-        18.0,
+fn unknown_window_view<'a>(surface: SurfaceId) -> Widget<'a, Message> {
+    let message = format!("Unknown window ID: {}", surface.get());
+    centered_surface_column(vec![Widget::rich_text(
+        RichText::plain(message),
+        rich_text_layout_style(),
     )])
 }
 
-fn surface_column<'a>(children: Vec<Widget<'a, Message>>) -> Widget<'a, Message> {
+fn centered_surface_column<'a>(children: Vec<Widget<'a, Message>>) -> Widget<'a, Message> {
     Widget::Column {
+        children,
         style: Style {
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
             size: Size::percent(1.0_f32),
             padding: Rect::length(28.0_f32),
-            gap: Size::length(12.0_f32),
-            ..Default::default()
+            gap: Size::length(20.0_f32),
+            ..Style::default()
         },
-        children,
     }
 }
 
-fn button_row<'a>(children: Vec<Widget<'a, Message>>) -> Widget<'a, Message> {
-    Widget::Row {
-        style: Style {
-            gap: Size::length(10.0_f32),
-            ..Default::default()
+fn centered_button_style() -> Style {
+    Style {
+        size: Size {
+            width: Dimension::length(220.0),
+            height: Dimension::length(52.0),
         },
-        children,
+        ..Style::default()
     }
 }
 
-fn text<'a>(content: impl Into<String>, size: f32) -> Widget<'a, Message> {
-    Widget::Text {
-        content: content.into(),
-        color: None,
-        size,
-        style: Style::default(),
-    }
-}
-
-fn button<'a>(label: &'a str, message: Message) -> Widget<'a, Message> {
-    Widget::Button {
-        text: label,
-        on_press: message,
-        style: Style::default(),
-        color: None,
-        variant: ButtonVariant::Primary,
+fn rich_text_layout_style() -> Style {
+    Style {
+        size: Size {
+            width: Dimension::auto(),
+            height: Dimension::length(72.0),
+        },
+        ..Style::default()
     }
 }
 
 pub fn run() {
     MultiWindowRunner::<MultiWindowDemo>::run();
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/multi_window_demo_unit_tests.rs"]
+mod tests;
