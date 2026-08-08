@@ -304,15 +304,12 @@ fn calendar_month_heading<'a, Msg>(
 }
 
 fn calendar_heading_text<'a, Msg>(month_name: &str, year: i32) -> Vec<Widget<'a, Msg>> {
+    let month_name = month_name.to_owned();
     let year = year.to_string();
+    let month_style = measured_calendar_text_style(&month_name, 16.0);
     let year_style = measured_calendar_text_style(&year, 16.0);
     vec![
-        Widget::Text {
-            content: month_name.into(),
-            style: measured_calendar_text_style(month_name, 16.0),
-            color: None,
-            size: 16.0,
-        },
+        Widget::rich_text(RichText::plain(month_name), month_style),
         Widget::rich_text(
             RichText::from_span(RichTextSpan::owned(year).bold()),
             year_style,

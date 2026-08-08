@@ -87,7 +87,7 @@ fn standalone_calendar_renders_selected_day_and_controls() {
 }
 
 #[test]
-fn calendar_month_and_year_layout_boxes_do_not_overlap() {
+fn calendar_month_and_year_share_rich_text_alignment() {
     let widget = standalone_calendar(CalendarMonth::new(2026, 7).unwrap());
     let states = HashMap::new();
     let fonts = font_system();
@@ -104,6 +104,12 @@ fn calendar_month_and_year_layout_boxes_do_not_overlap() {
     let month = taffy.layout(month_node).unwrap();
     let year = taffy.layout(year_node).unwrap();
 
+    assert!(matches!(
+        taffy.get_node_context(month_node),
+        Some(rutter::layout::RutterContext::RichText(_))
+    ));
+    assert_eq!(month.location.y, year.location.y);
+    assert_eq!(month.size.height, year.size.height);
     assert!(month.size.width > 0.0 && year.size.width > 0.0);
     assert!(
         month.location.x + month.size.width <= year.location.x,

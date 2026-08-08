@@ -1,6 +1,6 @@
 [package]
 name    = "rutter"
-version = "0.19.1"
+version = "0.19.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "High-performance Rust UI framework featuring Skia rendering (Vulkan/OpenGL), Taffy flexbox layouts, and advanced typography."
@@ -15,6 +15,7 @@ taffy       = "0.10.1"
 skia-safe   = { version = "0.93.1", features = ["gl", "svg", "vulkan", "textlayout"] }
 cosmic-text = "0.18.2"
 arboard     = "3.6.1"
+chrono      = { version = "0.4", default-features = false, features = ["clock"] }
 accesskit   = "0.24.0"
 accesskit_winit = "0.32.2"
 fluent      = "0.17.0"

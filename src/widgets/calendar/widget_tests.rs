@@ -131,6 +131,9 @@ fn calendar_centers_heading_and_weekday_content() {
 
     assert_eq!(style.justify_content, Some(JustifyContent::Center));
     assert!(
+        matches!(&children[0], Widget::RichText { content, .. } if content.plain_text() == "July")
+    );
+    assert!(
         matches!(&children[1], Widget::RichText { content, .. } if content.plain_text() == "2026")
     );
     assert!(

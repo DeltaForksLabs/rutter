@@ -4,6 +4,7 @@
 // ============================================================
 
 use arboard::Clipboard;
+use chrono::{Datelike, Local};
 use cosmic_text::FontSystem;
 use rutter::{
     AppLogic, CalendarConfig, CalendarDate, CalendarLabels, CalendarMonth, RutterRunner, Theme,
@@ -33,20 +34,32 @@ pub enum Msg {
 
 pub struct CalendarDemo;
 
+trait CalendarTodaySource {
+    fn today(&self) -> CalendarDate;
+}
+
+struct LocalCalendarTodaySource;
+
+impl CalendarTodaySource for LocalCalendarTodaySource {
+    fn today(&self) -> CalendarDate {
+        let local_date = Local::now().date_naive();
+        let year = local_date.year();
+        let month = local_date.month() as u8;
+        let day = local_date.day() as u8;
+        CalendarDate::new(year, month, day).unwrap_or_else(|error| {
+            panic!(
+                "local date {year:04}-{month:02}-{day:02} must be valid Gregorian input: {error}"
+            )
+        })
+    }
+}
+
 impl AppLogic for CalendarDemo {
     type State = CalendarDemoState;
     type Message = Msg;
 
     fn new(_: &mut FontSystem) -> Self::State {
-        CalendarDemoState {
-            calendar_month: CalendarMonth::new(2026, 7).unwrap(),
-            calendar_date: Some(CalendarDate::new(2026, 7, 31).unwrap()),
-            picker_month: CalendarMonth::new(2026, 8).unwrap(),
-            picker_date: None,
-            picker_open: false,
-            picker_accessibility_label: "Data do evento: nenhuma data selecionada".into(),
-            status: "Escolha uma data em qualquer calendário.".into(),
-        }
+        initial_calendar_demo_state(&LocalCalendarTodaySource)
     }
 
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message> {
@@ -73,6 +86,19 @@ impl AppLogic for CalendarDemo {
 
     fn theme() -> Theme {
         Theme::dark()
+    }
+}
+
+fn initial_calendar_demo_state(today_source: &impl CalendarTodaySource) -> CalendarDemoState {
+    let today = today_source.today();
+    CalendarDemoState {
+        calendar_month: today.calendar_month(),
+        calendar_date: Some(today),
+        picker_month: today.calendar_month(),
+        picker_date: Some(today),
+        picker_open: false,
+        picker_accessibility_label: format!("Data do evento: {today}"),
+        status: format!("Data atual selecionada: {today}."),
     }
 }
 
@@ -231,3 +257,7 @@ fn picker_popup_style() -> Style {
 pub fn run() {
     RutterRunner::<CalendarDemo>::run();
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/calendar_demo_unit_tests.rs"]
+mod tests;
