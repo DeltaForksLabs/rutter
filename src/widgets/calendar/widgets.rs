@@ -13,8 +13,8 @@ use super::{
     CalendarConfig, CalendarDate, CalendarGridCell, CalendarMonth, calendar_grid, day_number_label,
     weekday_label,
 };
-use crate::rich_text::{RichText, RichTextSpan};
 use crate::widget::{ButtonVariant, Widget};
+use crate::widgets::rich_text::{RichText, RichTextSpan};
 
 impl<'a, Msg> Widget<'a, Msg> {
     /// Creates a standalone single-date calendar with English labels.

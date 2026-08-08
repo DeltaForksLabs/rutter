@@ -18,8 +18,8 @@ use crate::engine::widget_state::WidgetState;
 use crate::i18n::LayoutDirection;
 use crate::render::RichTextRenderer;
 use crate::render::rich_text::{RichTextDirection, RichTextMetrics, RichTextWidth};
-use crate::rich_text::OwnedRichTextSpec;
 use crate::widget::Widget;
+use crate::widgets::rich_text::OwnedRichTextSpec;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
 

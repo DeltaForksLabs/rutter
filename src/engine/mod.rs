@@ -38,7 +38,6 @@ use crate::accessibility::{
     build_accessibility_update,
 };
 use crate::app::{AppLogic, SurfaceConfig};
-use crate::carousel::{CarouselConfig, CarouselState};
 use crate::input_limits::{InputKind, InputLimits};
 use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
@@ -48,6 +47,7 @@ use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::widget::{DialogAction, Widget};
 use crate::widget_id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
+use crate::widgets::carousel::{CarouselConfig, CarouselState};
 
 #[derive(Debug, Clone, Copy)]
 enum ToastRuntimeUpdate {

@@ -16,8 +16,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::carousel::CarouselState;
 use crate::layout::{SCROLLBAR_W, VIRTUAL_GRID_GAP, VIRTUAL_GRID_PADDING};
+use crate::widgets::carousel::CarouselState;
 
 // ── (mantidos da Fase 3) ──────────────────────────────────────
 

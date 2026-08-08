@@ -1,7 +1,7 @@
 use skia_safe::{Color, surfaces};
 
 use super::*;
-use crate::rich_text::{
+use crate::widgets::rich_text::{
     RichText, RichTextColor, RichTextSize, RichTextSpan, RichTextStyle, RichTextWeight,
 };
 

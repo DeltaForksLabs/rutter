@@ -57,7 +57,7 @@ pub(crate) const fn day_number_label(day: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{calendar_grid, weekday_label};
-    use crate::calendar::{CalendarDate, CalendarLabels, CalendarMonth, WeekStart};
+    use crate::widgets::calendar::{CalendarDate, CalendarLabels, CalendarMonth, WeekStart};
 
     #[test]
     fn calendar_grid_is_stable_and_includes_adjacent_month_dates() {

@@ -10,9 +10,9 @@ use std::fmt;
 use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
 
-use crate::carousel::CarouselConfig;
-use crate::rich_text::RichText;
 use crate::widget_id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
+use crate::widgets::carousel::CarouselConfig;
+use crate::widgets::rich_text::RichText;
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
 /// árvore. IDs manuais seguros devem ser criados com [`WidgetId::manual`].

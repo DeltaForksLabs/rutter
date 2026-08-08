@@ -884,7 +884,7 @@ fn hit_test_impl<Msg: Clone>(
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let direction = carousel_node_direction(taffy, node_id);
-            let mut fallback = crate::carousel::CarouselState::default();
+            let mut fallback = crate::widgets::carousel::CarouselState::default();
             fallback.sync_viewport(layout.size.width, config, *item_count);
             let state = widget_states
                 .get(&resolved_id)
@@ -2010,10 +2010,10 @@ mod tests {
         HitResult, collect_input_ids, collect_stateful_ids, dialog_card_rect, find_scroll_focus,
         hit_test, rounded_rect_contains,
     };
-    use crate::carousel::CarouselState;
     use crate::engine::widget_state::{ScrollState, WidgetState};
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::{AUTO_ID, ButtonVariant, DialogPosition, InputState, Widget};
+    use crate::widgets::carousel::CarouselState;
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {

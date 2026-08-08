@@ -672,9 +672,9 @@ mod tests {
     use cosmic_text::FontSystem;
     use taffy::prelude::{Dimension, Size, Style};
 
-    use crate::calendar::{CalendarDate, CalendarMonth};
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::ButtonVariant;
+    use crate::widgets::calendar::{CalendarDate, CalendarMonth};
     use winit::dpi::PhysicalSize;
 
     fn fs() -> Rc<RefCell<FontSystem>> {

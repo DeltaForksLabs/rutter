@@ -492,5 +492,5 @@ impl<'a> RichText<'a> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/rich_text_unit_tests.rs"]
+#[path = "../../../tests/unit/rich_text_unit_tests.rs"]
 mod tests;

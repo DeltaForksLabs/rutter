@@ -40,7 +40,6 @@ use self::{
     image_cache::SvgImageCacheKey,
     svg::{checked_svg_raster_size, validate_svg_source},
 };
-use crate::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
 use crate::engine::widget_state::{
     VirtualGridState, WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left,
     virtual_grid_cell_width, virtual_grid_row_count,
@@ -52,13 +51,14 @@ use crate::layout::{
     compute_layout,
 };
 use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
-use crate::rich_text::OwnedRichTextSpec;
 use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     ContextMenuEntry, DialogAction, DialogPosition, InputState, Orientation, ToastKind,
     ToastPosition, Widget,
 };
+use crate::widgets::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
+use crate::widgets::rich_text::OwnedRichTextSpec;
 use winit::dpi::PhysicalSize;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -4195,12 +4195,12 @@ mod tests {
         ImageRenderCache, RichTextRenderer, draw_image, draw_virtual_grid, draw_widgets,
         is_svg_image, svg_cache_key, virtual_grid_scrollbar_metrics, visible_carousel_selection,
     };
-    use crate::carousel::geometry::CarouselItemFrame;
     use crate::engine::widget_state::VirtualGridState;
     use crate::layout::{SCROLLBAR_W, build_taffy_tree, compute_layout};
     use crate::render::text::TextBufferCache;
     use crate::theme::Theme;
     use crate::widget::Widget;
+    use crate::widgets::carousel::geometry::CarouselItemFrame;
 
     fn grid_item(index: usize) -> Option<String> {
         Some(format!("Item {index}"))

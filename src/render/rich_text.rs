@@ -8,7 +8,7 @@ use skia_safe::textlayout::{
 };
 use skia_safe::{Canvas, Color, FontMgr, FontStyle};
 
-use crate::rich_text::{
+use crate::widgets::rich_text::{
     OwnedRichTextSpec, RichTextColor, RichTextSlant, RichTextSpanStyle, RichTextStyle,
 };
 

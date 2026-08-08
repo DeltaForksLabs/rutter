@@ -9,8 +9,6 @@
 
 pub(crate) mod accessibility;
 pub mod app;
-pub mod calendar;
-pub mod carousel;
 pub mod engine;
 pub mod i18n;
 pub mod input_limits;
@@ -19,12 +17,12 @@ mod input_undo;
 pub mod layout;
 pub mod multi_window;
 pub mod render;
-pub mod rich_text;
 pub mod theme;
 pub mod widget;
 mod widget_id;
 mod widget_id_error;
 mod widget_structure;
+mod widgets;
 
 // ── Re-exports ergonômicos ───────────────────────────────────
 pub use app::{AppLogic, SurfaceConfig};
@@ -52,6 +50,7 @@ pub use widget::{
     WidgetConfigError, validate_slider, validate_virtual_grid, validate_virtual_list,
 };
 pub use widget_id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
+pub use widgets::{calendar, carousel, rich_text};
 
 // ── Re-exports de dependências públicas ──────────────────────
 pub use arboard;
