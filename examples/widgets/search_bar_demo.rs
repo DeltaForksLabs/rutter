@@ -8,6 +8,8 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 const MOVIES: &[&str] = &[
     "O Poderoso Chefão",
     "Matrix",
@@ -25,6 +27,7 @@ const MOVIES: &[&str] = &[
 
 #[derive(Default)]
 pub struct SearchBarDemoState {
+    pub theme: ExampleTheme,
     pub query: String,
     pub last_search: String,
     pub status: String,
@@ -32,6 +35,7 @@ pub struct SearchBarDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     QueryChanged(String),
     SubmitSearch,
     ClearSearch,
@@ -86,6 +90,7 @@ impl AppLogic for SearchBarDemo {
         };
 
         let mut children = vec![
+            example_theme_selector(s.theme, Msg::ThemeChanged),
             Widget::Text {
                 content: "SearchBar Demo".into(),
                 color: None,
@@ -213,6 +218,7 @@ impl AppLogic for SearchBarDemo {
 
     fn update(s: &mut SearchBarDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::QueryChanged(v) => {
                 s.query = v;
                 s.status = "Editando consulta...".into();
@@ -238,8 +244,8 @@ impl AppLogic for SearchBarDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

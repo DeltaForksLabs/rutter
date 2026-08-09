@@ -106,6 +106,21 @@ pub trait AppLogic {
         crate::theme::Theme::default()
     }
 
+    /// Resolves the application theme from its current state.
+    ///
+    /// The default delegates to [`Self::theme`], so existing applications remain compatible.
+    ///
+    /// ```rust
+    /// use rutter::{AppLogic, Theme};
+    ///
+    /// fn active_theme<A: AppLogic>(state: &A::State) -> Theme {
+    ///     A::theme_for(state)
+    /// }
+    /// ```
+    fn theme_for(_state: &Self::State) -> crate::theme::Theme {
+        Self::theme()
+    }
+
     /// Retorna o locale usado para direção de layout e catálogos i18n.
     fn locale() -> Locale {
         Locale::default()

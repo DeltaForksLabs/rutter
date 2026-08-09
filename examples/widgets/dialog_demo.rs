@@ -8,8 +8,11 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, DialogPosition, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 #[derive(Default)]
 pub struct DialogDemoState {
+    pub theme: ExampleTheme,
     pub confirm_open: bool,
     pub delete_open: bool,
     pub info_open: bool,
@@ -18,6 +21,7 @@ pub struct DialogDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     OpenConfirm,
     OpenDelete,
     OpenInfo,
@@ -74,6 +78,7 @@ impl AppLogic for DialogDemo {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 Widget::Text {
                     content: "Dialog Demo".into(),
                     color: None,
@@ -184,6 +189,7 @@ impl AppLogic for DialogDemo {
 
     fn update(s: &mut DialogDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::OpenConfirm => {
                 s.confirm_open = true;
                 s.delete_open = false;
@@ -216,8 +222,8 @@ impl AppLogic for DialogDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

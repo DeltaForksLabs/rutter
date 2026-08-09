@@ -13,15 +13,19 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 const ITEM_COUNT: usize = 60;
 
 #[derive(Default)]
 pub struct ScrollDemoState {
+    pub theme: ExampleTheme,
     pub selected: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     ItemSelected(usize),
 }
 
@@ -96,6 +100,7 @@ impl AppLogic for ScrollDemo {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 Widget::Text {
                     content: "ScrollView — roda do mouse, ↑↓, arrastar scrollbar (FIX-4)".into(),
                     color: None,
@@ -131,12 +136,13 @@ impl AppLogic for ScrollDemo {
 
     fn update(s: &mut ScrollDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::ItemSelected(i) => s.selected = Some(i),
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

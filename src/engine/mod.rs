@@ -27,7 +27,9 @@ use winit::{
 };
 
 use self::cursor::CursorBlink;
-use self::gpu::{BackendType, GraphicsBackend, GraphicsError, create_best_backend};
+use self::gpu::{
+    BackendType, GraphicsBackend, GraphicsError, create_best_backend, create_required_backend,
+};
 use self::run_error::RutterRunError;
 use self::widget_state::{
     AnimState, ContextMenuState, ModalState, PopoverState, ScrollState, SelectState, SliderState,
@@ -45,6 +47,7 @@ use crate::layout::{
 use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
 use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
+use crate::theme::Theme;
 use crate::widget::{DialogAction, Widget};
 use crate::widget_id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
@@ -587,11 +590,27 @@ fn initial_window_attributes(surface_config: SurfaceConfig) -> winit::window::Wi
         .with_transparent(surface_config.is_transparent())
 }
 
-fn prepare_top_level_canvas(canvas: &Canvas, surface_config: SurfaceConfig, scale_factor: f32) {
+fn create_surface_backend(
+    event_loop: &winit::event_loop::ActiveEventLoop,
+    attributes: winit::window::WindowAttributes,
+    required_backend: Option<BackendType>,
+) -> Result<Box<dyn GraphicsBackend>, GraphicsError> {
+    match required_backend {
+        Some(backend) => create_required_backend(event_loop, attributes, backend),
+        None => create_best_backend(event_loop, attributes),
+    }
+}
+
+fn prepare_top_level_canvas(
+    canvas: &Canvas,
+    surface_config: SurfaceConfig,
+    theme: &Theme,
+    scale_factor: f32,
+) {
     let clear_color = if surface_config.is_transparent() {
         SkiaColor::TRANSPARENT
     } else {
-        SkiaColor::WHITE
+        theme.surface
     };
     canvas.restore_to_count(1);
     canvas.clear(clear_color);
@@ -652,15 +671,17 @@ impl<A: AppLogic> RutterEngine<A> {
         el: &winit::event_loop::ActiveEventLoop,
     ) -> Result<(), GraphicsError> {
         let attrs = initial_window_attributes(self.surface_config);
-        self.handle_resumed_with_attributes(el, attrs)
+        self.handle_resumed_with_attributes(el, attrs, None)
     }
 
     pub(crate) fn handle_resumed_with_attributes(
         &mut self,
         el: &winit::event_loop::ActiveEventLoop,
         attrs: winit::window::WindowAttributes,
+        required_backend: Option<BackendType>,
     ) -> Result<(), GraphicsError> {
-        let mut backend = create_best_backend(el, attrs)?;
+        let theme = A::theme_for(&self.app_state);
+        let mut backend = create_surface_backend(el, attrs, required_backend)?;
         if cfg!(debug_assertions) {
             eprintln!("rutter: initialized {} backend", backend.backend_type());
         }
@@ -669,7 +690,7 @@ impl<A: AppLogic> RutterEngine<A> {
         backend.resize(window.inner_size())?;
         {
             let canvas = backend.begin_frame()?;
-            prepare_top_level_canvas(canvas, self.surface_config, self.scale_factor);
+            prepare_top_level_canvas(canvas, self.surface_config, &theme, self.scale_factor);
         }
         backend.end_frame()?;
         self.accessibility_adapter = Some(accesskit_winit::Adapter::with_direct_handlers(
@@ -746,11 +767,12 @@ impl<A: AppLogic> RutterEngine<A> {
         let Some(input) = self.runtime_caches.inputs.get(&id).cloned() else {
             return;
         };
+        let theme = A::theme_for(&self.app_state);
         if !self.input_states.contains_key(&id) {
             let mut fs = self.font_system.borrow_mut();
             let mut state =
                 crate::input_state::InputWidgetState::new_with_limits(&mut fs, input.limits);
-            state.set_metrics(&mut fs, A::theme().font_body);
+            state.set_metrics(&mut fs, theme.font_body);
             self.input_states.insert(id, state);
         }
         if let Some(state) = self.input_states.get_mut(&id) {
@@ -1010,6 +1032,7 @@ impl<A: AppLogic> RutterEngine<A> {
             (size.width as f32 / self.scale_factor) as u32,
             (size.height as f32 / self.scale_factor) as u32,
         );
+        let theme = A::theme_for(&self.app_state);
         let widget_tree = A::view(&mut self.app_state);
         validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget_tree)?;
         let root = sync_taffy_tree_with_direction(
@@ -1034,7 +1057,7 @@ impl<A: AppLogic> RutterEngine<A> {
             &self.taffy,
             &widget_tree,
             Some(root),
-            A::theme().spacing,
+            theme.spacing,
         )?;
         collect_focus_order(&widget_tree, &mut self.runtime_cache_scratch.focus_order);
         std::mem::swap(&mut self.runtime_caches, &mut self.runtime_cache_scratch);
@@ -1553,7 +1576,7 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     fn sync_input_buffers(&mut self) {
-        let theme = A::theme();
+        let theme = A::theme_for(&self.app_state);
         let focused_input = self.focused_input_id();
         let mut fs = self.font_system.borrow_mut();
 
@@ -1632,6 +1655,7 @@ impl<A: AppLogic> RutterEngine<A> {
         self.try_ensure_widget_states()?;
         self.try_ensure_layout(phys)?;
 
+        let theme = A::theme_for(&self.app_state);
         let mut widget_tree = A::view(&mut self.app_state);
         validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget_tree)?;
         let lc = Point::new(
@@ -1663,7 +1687,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         operation: "begin frame",
                     })?;
             let canvas = backend.begin_frame()?;
-            prepare_top_level_canvas(canvas, self.surface_config, self.scale_factor);
+            prepare_top_level_canvas(canvas, self.surface_config, &theme, self.scale_factor);
 
             draw_widgets_with_cache(
                 canvas,
@@ -1680,7 +1704,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 &mut self.text_cache,
                 &mut self.image_cache,
                 self.cursor_blink.is_visible(),
-                &A::theme(),
+                &theme,
                 self.scale_factor,
             );
         }
@@ -1697,36 +1721,20 @@ impl<A: AppLogic> RutterEngine<A> {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/theme_propagation_engine_unit_tests.rs"]
+mod theme_propagation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    use cosmic_text::FontSystem;
-    use skia_safe::{Color, surfaces};
-
     use crate::layout::build_taffy_tree;
     use crate::widget::{DialogAction, DialogPosition, InputState};
+    use cosmic_text::FontSystem;
 
     fn fs() -> Rc<RefCell<FontSystem>> {
         Rc::new(RefCell::new(FontSystem::new()))
-    }
-
-    #[test]
-    fn surface_config_controls_window_transparency_and_frame_clear() {
-        let opaque = SurfaceConfig::default();
-        let transparent = SurfaceConfig::transparent();
-        assert!(!initial_window_attributes(opaque).transparent());
-        assert!(initial_window_attributes(transparent).transparent());
-
-        assert_eq!(prepared_surface_pixel(opaque), Color::WHITE);
-        assert_eq!(prepared_surface_pixel(transparent), Color::TRANSPARENT);
-    }
-
-    fn prepared_surface_pixel(surface_config: SurfaceConfig) -> Color {
-        let mut surface = surfaces::raster_n32_premul((2, 2)).unwrap();
-        surface.canvas().clear(Color::RED);
-        prepare_top_level_canvas(surface.canvas(), surface_config, 1.0);
-        surface.peek_pixels().unwrap().get_color((0, 0))
     }
 
     fn base_style(width: f32, height: f32) -> Style {

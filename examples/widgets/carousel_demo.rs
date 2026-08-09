@@ -10,16 +10,20 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, CarouselConfig, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 const ITEM_COUNT: usize = 2_000;
 
 #[derive(Default)]
 pub struct CarouselDemoState {
+    theme: ExampleTheme,
     weighted_selection: Option<usize>,
     fixed_selection: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     SelectWeighted(usize),
     SelectFixed(usize),
 }
@@ -43,18 +47,20 @@ impl AppLogic for CarouselDemo {
 
     fn update(state: &mut CarouselDemoState, message: Msg, _: &mut Clipboard) {
         match message {
+            Msg::ThemeChanged(theme) => state.theme = theme,
             Msg::SelectWeighted(index) => state.weighted_selection = Some(index),
             Msg::SelectFixed(index) => state.fixed_selection = Some(index),
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 
 fn carousel_demo_children<'a>(state: &CarouselDemoState) -> Vec<Widget<'a, Msg>> {
     vec![
+        example_theme_selector(state.theme, Msg::ThemeChanged),
         heading("CarouselView", 26.0),
         status_text("Weighted [1, 6, 2]", state.weighted_selection),
         weighted_carousel(),

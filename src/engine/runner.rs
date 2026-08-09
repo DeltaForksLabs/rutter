@@ -21,6 +21,7 @@ use winit::{
 };
 use zeroize::Zeroize;
 
+use super::gpu::{BackendType, GraphicsError};
 use super::run_error::RutterRunError;
 use super::{InputRuntime, RutterEngine, validate_runtime_reconstruction};
 use crate::app::AppLogic;
@@ -456,7 +457,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         if self.active_window_id.is_some() {
             return;
         }
-        match self.resume_surface(el, None) {
+        match self.resume_surface(el, None, None) {
             Ok(_) => {}
             Err(error) => self.terminate_for_error(el, error.into()),
         }
@@ -543,8 +544,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         if let Some(rect) = self.focused_input_rect {
                             let local_x = self.cursor_pos.x / self.engine.scale_factor - rect.left;
                             let local_y = self.cursor_pos.y / self.engine.scale_factor - rect.top;
-                            let pad_x = A::theme().spacing * 2.0;
-                            let pad_y = A::theme().spacing;
+                            let theme = A::theme_for(&self.engine.app_state);
+                            let pad_x = theme.spacing * 2.0;
+                            let pad_y = theme.spacing;
                             if let Some(ist) = self.engine.input_states.get_mut(&fid) {
                                 let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
                                 let click_y = ((local_y - pad_y) + ist.scroll_y).max(0.0);
@@ -602,6 +604,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     size.width as f32 / self.engine.scale_factor,
                     size.height as f32 / self.engine.scale_factor,
                 );
+                let theme = A::theme_for(&self.engine.app_state);
                 let (
                     context_menu_overlay_hit,
                     popover_overlay_hit,
@@ -625,7 +628,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             cursor,
                             viewport_size,
                             &self.engine.widget_states,
-                            A::theme().font_body,
+                            theme.font_body,
                         )
                     } else {
                         None
@@ -1003,27 +1006,36 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         &mut self,
         event_loop: &ActiveEventLoop,
         attributes: Option<WindowAttributes>,
-    ) -> Result<WindowId, crate::engine::gpu::GraphicsError> {
+        required_backend: Option<BackendType>,
+    ) -> Result<(WindowId, BackendType), GraphicsError> {
         match attributes {
-            Some(attributes) => self
-                .engine
-                .handle_resumed_with_attributes(event_loop, attributes)?,
+            Some(attributes) => self.engine.handle_resumed_with_attributes(
+                event_loop,
+                attributes,
+                required_backend,
+            )?,
             None => self.engine.handle_resumed(event_loop)?,
         }
         self.register_resumed_window()
     }
 
-    fn register_resumed_window(&mut self) -> Result<WindowId, crate::engine::gpu::GraphicsError> {
+    fn register_resumed_window(&mut self) -> Result<(WindowId, BackendType), GraphicsError> {
+        let backend = self
+            .engine
+            .backend_type()
+            .ok_or(GraphicsError::BackendUnavailable {
+                operation: "retaining the resumed surface backend",
+            })?;
         let window_id = self
             .engine
             .window
             .as_ref()
             .map(|window| window.id())
-            .ok_or(crate::engine::gpu::GraphicsError::BackendUnavailable {
+            .ok_or(GraphicsError::BackendUnavailable {
                 operation: "registering a resumed native window",
             })?;
         self.active_window_id = Some(window_id);
-        Ok(window_id)
+        Ok((window_id, backend))
     }
 
     pub(crate) fn release_surface(&mut self) {
@@ -1183,12 +1195,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         is_password: bool,
         is_multiline: bool,
     ) -> Option<String> {
+        let theme = A::theme_for(&self.engine.app_state);
         let state = self.engine.input_states.get_mut(&input_id)?;
         let mut font_system = self.engine.font_system.borrow_mut();
         state.sync_layout(
             &mut font_system,
             visible_width,
-            A::theme().font_body,
+            theme.font_body,
             is_multiline,
         );
         let changed = state.try_insert_text(&mut font_system, text).ok()?;
@@ -1199,7 +1212,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             &mut font_system,
             visible_width,
             visible_height,
-            A::theme().font_body,
+            theme.font_body,
             is_password,
             is_multiline,
         );
@@ -1405,8 +1418,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.focus_widget(Some(id));
         self.engine.ensure_input_state(id);
 
-        let pad_x = A::theme().spacing * 2.0;
-        let pad_y = A::theme().spacing;
+        let theme = A::theme_for(&self.engine.app_state);
+        let pad_x = theme.spacing * 2.0;
+        let pad_y = theme.spacing;
         let input = self.engine.runtime_caches.inputs.get(&id).cloned();
         if let Some(ist) = self.engine.input_states.get_mut(&id) {
             let mut fs = self.engine.font_system.borrow_mut();
@@ -1414,11 +1428,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 ist.sync_layout(
                     &mut fs,
                     input.visible_w,
-                    A::theme().font_body,
+                    theme.font_body,
                     input.is_multiline,
                 );
             } else {
-                ist.set_metrics(&mut fs, A::theme().font_body);
+                ist.set_metrics(&mut fs, theme.font_body);
             }
             ist.clear_selection();
             let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
@@ -1464,7 +1478,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 &mut fs,
                 visible_w,
                 visible_h,
-                A::theme().font_body,
+                theme.font_body,
                 is_password,
                 is_multiline,
             );
@@ -2025,6 +2039,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let is_multiline = input.is_multiline;
         let visible_w = input.visible_w;
         let visible_h = input.visible_h;
+        let theme = A::theme_for(&self.engine.app_state);
 
         let mut content_changed = false;
         let mut visual_changed = false;
@@ -2036,7 +2051,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(ist) = self.engine.input_states.get_mut(&fid) {
             {
                 let mut fs = self.engine.font_system.borrow_mut();
-                ist.sync_layout(&mut fs, visible_w, A::theme().font_body, is_multiline);
+                ist.sync_layout(&mut fs, visible_w, theme.font_body, is_multiline);
             }
 
             if is_del_key {
@@ -2048,7 +2063,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                             &mut fs,
                             visible_w,
                             visible_h,
-                            A::theme().font_body,
+                            theme.font_body,
                             is_password,
                             is_multiline,
                         );
@@ -2112,7 +2127,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         &mut fs,
                         visible_w,
                         visible_h,
-                        A::theme().font_body,
+                        theme.font_body,
                         is_password,
                         is_multiline,
                     );
@@ -2202,12 +2217,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         }
 
+        let theme = A::theme_for(&self.engine.app_state);
         let full = if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
             s.sync_layout(
                 &mut fs,
                 input.visible_w,
-                A::theme().font_body,
+                theme.font_body,
                 input.is_multiline,
             );
             let changed = match s.try_insert_text(&mut fs, &txt) {
@@ -2226,7 +2242,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 &mut fs,
                 input.visible_w,
                 input.visible_h,
-                A::theme().font_body,
+                theme.font_body,
                 input.is_password,
                 input.is_multiline,
             );
@@ -2256,12 +2272,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         };
 
+        let theme = A::theme_for(&self.engine.app_state);
         if let Some(s) = self.engine.input_states.get_mut(&fid) {
             let mut fs = self.engine.font_system.borrow_mut();
             s.sync_layout(
                 &mut fs,
                 input.visible_w,
-                A::theme().font_body,
+                theme.font_body,
                 input.is_multiline,
             );
             s.select_all(&mut fs);
@@ -2269,7 +2286,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 &mut fs,
                 input.visible_w,
                 input.visible_h,
-                A::theme().font_body,
+                theme.font_body,
                 input.is_password,
                 input.is_multiline,
             );
@@ -2328,12 +2345,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             &mut cosmic_text::FontSystem,
         ) -> Result<bool, InputLimitError>,
     ) -> Option<String> {
+        let theme = A::theme_for(&self.engine.app_state);
         let state = self.engine.input_states.get_mut(&input_id)?;
         let mut font_system = self.engine.font_system.borrow_mut();
         state.sync_layout(
             &mut font_system,
             input.visible_w,
-            A::theme().font_body,
+            theme.font_body,
             input.is_multiline,
         );
         if !restore(state, &mut font_system).ok()? {
@@ -2343,7 +2361,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             &mut font_system,
             input.visible_w,
             input.visible_h,
-            A::theme().font_body,
+            theme.font_body,
             input.is_password,
             input.is_multiline,
         );

@@ -11,8 +11,11 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 #[derive(Default)]
 pub struct ProgressDemoState {
+    pub theme: ExampleTheme,
     pub upload: f32, // 0.0 → 1.0
     pub download: f32,
     pub is_loading: bool,
@@ -20,6 +23,7 @@ pub struct ProgressDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     UploadStep,
     DownloadStep,
     ToggleLoading,
@@ -34,6 +38,7 @@ impl AppLogic for ProgressDemo {
 
     fn new(_: &mut FontSystem) -> Self::State {
         ProgressDemoState {
+            theme: ExampleTheme::Dark,
             upload: 0.2,
             download: 0.65,
             is_loading: true,
@@ -88,6 +93,7 @@ impl AppLogic for ProgressDemo {
         Widget::Column {
             style: col,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 // ── Upload — determinado ─────────────────────────────
                 Widget::Text {
                     content: format!("Upload: {:.0}%", s.upload * 100.0),
@@ -176,6 +182,7 @@ impl AppLogic for ProgressDemo {
 
     fn update(s: &mut ProgressDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::UploadStep => s.upload = (s.upload + 0.1).min(1.0),
             Msg::DownloadStep => s.download = (s.download + 0.1).min(1.0),
             Msg::ToggleLoading => s.is_loading = !s.is_loading,
@@ -187,8 +194,8 @@ impl AppLogic for ProgressDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

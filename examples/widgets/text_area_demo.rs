@@ -8,8 +8,11 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, InputState, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 #[derive(Default)]
 pub struct TextAreaDemoState {
+    pub theme: ExampleTheme,
     pub notes: String,
     pub description: String,
     pub validation_text: String,
@@ -17,6 +20,7 @@ pub struct TextAreaDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     NotesChanged(String),
     DescriptionChanged(String),
     ValidationChanged(String),
@@ -59,6 +63,7 @@ impl AppLogic for TextAreaDemo {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 Widget::Text {
                     content: "TextArea Demo".into(),
                     color: None,
@@ -140,14 +145,15 @@ impl AppLogic for TextAreaDemo {
 
     fn update(s: &mut TextAreaDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::NotesChanged(v) => s.notes = v,
             Msg::DescriptionChanged(v) => s.description = v,
             Msg::ValidationChanged(v) => s.validation_text = v,
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

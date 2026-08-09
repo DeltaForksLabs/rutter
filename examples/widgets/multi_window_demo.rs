@@ -11,20 +11,24 @@ use rutter::{
     Widget, WindowConfig,
 };
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 const SECOND_WINDOW: SurfaceId = SurfaceId::new(1);
 
 #[derive(Clone, Default)]
-struct MultiWindowState {
+pub(super) struct MultiWindowState {
+    theme: ExampleTheme,
     second_window_open: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Message {
+pub(super) enum Message {
+    ThemeChanged(ExampleTheme),
     OpenSecondWindow,
     CloseCurrentWindow,
 }
 
-struct MultiWindowDemo;
+pub(super) struct MultiWindowDemo;
 
 impl MultiWindowAppLogic for MultiWindowDemo {
     type State = MultiWindowState;
@@ -38,10 +42,10 @@ impl MultiWindowAppLogic for MultiWindowDemo {
         vec![main_window_request()]
     }
 
-    fn view<'a>(_: &'a mut Self::State, surface: SurfaceId) -> Widget<'a, Self::Message> {
+    fn view<'a>(state: &'a mut Self::State, surface: SurfaceId) -> Widget<'a, Self::Message> {
         match surface {
-            SurfaceId::PRIMARY => main_window_view(),
-            SECOND_WINDOW => second_window_view(),
+            SurfaceId::PRIMARY => with_theme_selector(main_window_view(), state.theme),
+            SECOND_WINDOW => with_theme_selector(second_window_view(), state.theme),
             _ => unknown_window_view(surface),
         }
     }
@@ -63,8 +67,8 @@ impl MultiWindowAppLogic for MultiWindowDemo {
         multi_window_commands(state, surface, message)
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 
@@ -74,6 +78,10 @@ fn multi_window_commands(
     message: Message,
 ) -> Vec<SurfaceCommand> {
     match message {
+        Message::ThemeChanged(theme) => {
+            state.theme = theme;
+            Vec::new()
+        }
         Message::OpenSecondWindow if !state.second_window_open => {
             state.second_window_open = true;
             vec![SurfaceCommand::Open(second_window_request())]
@@ -105,6 +113,19 @@ fn second_window_request() -> SurfaceRequest {
 fn set_second_window_presence(state: &mut MultiWindowState, surface: SurfaceId, present: bool) {
     if surface == SECOND_WINDOW {
         state.second_window_open = present;
+    }
+}
+
+fn with_theme_selector<'a>(view: Widget<'a, Message>, theme: ExampleTheme) -> Widget<'a, Message> {
+    match view {
+        Widget::Column {
+            mut children,
+            style,
+        } => {
+            children.insert(0, example_theme_selector(theme, Message::ThemeChanged));
+            Widget::Column { children, style }
+        }
+        other => other,
     }
 }
 

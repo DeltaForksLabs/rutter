@@ -10,7 +10,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 pub struct PopoverDemoState {
+    pub theme: ExampleTheme,
     pub open: bool,
     pub selected: &'static str,
     pub last_action: String,
@@ -18,6 +21,7 @@ pub struct PopoverDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     Toggle,
     Close,
     Pick(&'static str),
@@ -32,6 +36,7 @@ impl AppLogic for PopoverDemo {
 
     fn new(_: &mut FontSystem) -> Self::State {
         PopoverDemoState {
+            theme: ExampleTheme::Dark,
             open: false,
             selected: "Amber",
             last_action: "Open the popover and pick an option.".into(),
@@ -161,6 +166,7 @@ impl AppLogic for PopoverDemo {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 Widget::Text {
                     content: "Popover Demo".into(),
                     color: None,
@@ -195,6 +201,7 @@ impl AppLogic for PopoverDemo {
 
     fn update(s: &mut PopoverDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::Toggle => s.open = !s.open,
             Msg::Close => s.open = false,
             Msg::Pick(value) => {
@@ -208,8 +215,8 @@ impl AppLogic for PopoverDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

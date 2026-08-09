@@ -10,18 +10,33 @@ use rutter::{
     Theme, Widget,
 };
 
-struct RichTextDemo;
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
+#[derive(Default)]
+pub(super) struct State {
+    theme: ExampleTheme,
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum Message {
+    ThemeChanged(ExampleTheme),
+}
+
+pub(super) struct RichTextDemo;
 
 impl AppLogic for RichTextDemo {
-    type State = ();
-    type Message = ();
+    type State = State;
+    type Message = Message;
 
-    fn new(_: &mut FontSystem) -> Self::State {}
+    fn new(_: &mut FontSystem) -> Self::State {
+        State::default()
+    }
 
-    fn view<'a>(_: &'a mut Self::State) -> Widget<'a, Self::Message> {
+    fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message> {
         Widget::Column {
             style: page_style(),
             children: vec![
+                example_theme_selector(state.theme, Message::ThemeChanged),
                 Widget::rich_text(title_content(), line_style()),
                 Widget::rich_text(emphasis_content(), line_style()),
                 Widget::rich_text(inherited_content(), line_style()),
@@ -30,10 +45,14 @@ impl AppLogic for RichTextDemo {
         }
     }
 
-    fn update(_: &mut Self::State, _: Self::Message, _: &mut Clipboard) {}
+    fn update(state: &mut Self::State, message: Self::Message, _: &mut Clipboard) {
+        match message {
+            Message::ThemeChanged(theme) => state.theme = theme,
+        }
+    }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 
@@ -59,9 +78,7 @@ fn emphasis_content() -> RichText<'static> {
 }
 
 fn inherited_content() -> RichText<'static> {
-    let defaults = RichTextStyle::default()
-        .with_size(RichTextSize::new(18.0).unwrap())
-        .with_color(RichTextColor::rgb(190, 200, 215));
+    let defaults = RichTextStyle::default().with_size(RichTextSize::new(18.0).unwrap());
     RichText::from_spans([
         RichTextSpan::new("Inherited defaults, "),
         RichTextSpan::new("larger text")

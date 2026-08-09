@@ -9,12 +9,14 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 const LANGUAGES: &[&str] = &["Rust", "Python", "TypeScript", "Go", "Zig", "C++"];
 
 #[derive(Default)]
 pub struct ControlsDemoState {
     pub remember: bool,
-    pub dark_mode: bool,
+    pub theme: ExampleTheme,
     pub newsletter: bool,
     pub selected_lang: usize,
     pub radio_sel: u8,
@@ -24,6 +26,7 @@ pub struct ControlsDemoState {
 pub enum Msg {
     RememberToggled(bool),
     DarkModeToggled(bool),
+    ThemeChanged(ExampleTheme),
     NewsletterToggled(bool),
     LanguageChanged(usize),
     RadioA,
@@ -117,6 +120,7 @@ impl AppLogic for ControlsDemo {
         Widget::Column {
             style: col.clone(),
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 // ── Checkboxes ───────────────────────────────────────
                 Widget::Text {
                     content: "Checkboxes".into(),
@@ -173,7 +177,7 @@ impl AppLogic for ControlsDemo {
                             },
                         },
                         Widget::Switch {
-                            checked: s.dark_mode,
+                            checked: s.theme == ExampleTheme::Dark,
                             on_change: Msg::DarkModeToggled,
                             style: switch_s,
                         },
@@ -226,7 +230,7 @@ impl AppLogic for ControlsDemo {
                         "Lembrar={} | Newsletter={} | DarkMode={} | Radio={} | Lang={}",
                         s.remember,
                         s.newsletter,
-                        s.dark_mode,
+                        s.theme == ExampleTheme::Dark,
                         s.radio_sel,
                         LANGUAGES.get(s.selected_lang).copied().unwrap_or("-")
                     ),
@@ -241,7 +245,14 @@ impl AppLogic for ControlsDemo {
     fn update(s: &mut ControlsDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
             Msg::RememberToggled(v) => s.remember = v,
-            Msg::DarkModeToggled(v) => s.dark_mode = v,
+            Msg::DarkModeToggled(v) => {
+                s.theme = if v {
+                    ExampleTheme::Dark
+                } else {
+                    ExampleTheme::Light
+                };
+            }
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::NewsletterToggled(v) => s.newsletter = v,
             Msg::LanguageChanged(i) => s.selected_lang = i,
             Msg::RadioA => s.radio_sel = 0,
@@ -250,8 +261,8 @@ impl AppLogic for ControlsDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

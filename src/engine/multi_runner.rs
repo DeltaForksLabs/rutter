@@ -16,6 +16,7 @@ mod app_adapter;
 
 use self::app_adapter::{SurfaceAppAdapter, SurfaceAppState};
 use super::RutterEngine;
+use super::gpu::BackendType;
 use super::runner::RutterRunner;
 use crate::multi_window::{
     CloseBehavior, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand, SurfaceId,
@@ -23,6 +24,21 @@ use crate::multi_window::{
 };
 
 type SurfaceRunner<A> = RutterRunner<SurfaceAppAdapter<A>>;
+
+#[derive(Debug, Default)]
+struct MultiWindowBackendPreference {
+    retained: Option<BackendType>,
+}
+
+impl MultiWindowBackendPreference {
+    fn required_backend(&self) -> Option<BackendType> {
+        self.retained
+    }
+
+    fn retain_committed(&mut self, backend: BackendType) {
+        self.retained.get_or_insert(backend);
+    }
+}
 
 /// Owns multiple Rutter windows and routes each native event to one logical surface.
 pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
@@ -33,6 +49,7 @@ pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
     surface_configs: BTreeMap<SurfaceId, WindowConfig>,
     surface_runners: BTreeMap<SurfaceId, SurfaceRunner<A>>,
     routes: SurfaceRoutes<WindowId>,
+    backend_preference: MultiWindowBackendPreference,
     native_surfaces_active: bool,
     fatal_error: Option<MultiWindowRunError>,
 }
@@ -84,6 +101,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             surface_configs: BTreeMap::new(),
             surface_runners: BTreeMap::new(),
             routes: SurfaceRoutes::new(),
+            backend_preference: MultiWindowBackendPreference::default(),
             native_surfaces_active: false,
             fatal_error: None,
         })
@@ -96,11 +114,17 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     ) -> Result<(), MultiWindowRunError> {
         self.ensure_surface_is_available(request.surface)?;
         let mut runner = self.build_surface_runner(&request)?;
-        let native = runner
-            .resume_surface(event_loop, Some(request.window.window_attributes()))
+        let required_backend = self.backend_preference.required_backend();
+        let (native, committed_backend) = runner
+            .resume_surface(
+                event_loop,
+                Some(request.window.window_attributes()),
+                required_backend,
+            )
             .map_err(|error| surface_error(request.surface, error.into()))?;
         let surface = request.surface;
         self.register_committed_surface(request, native, runner)?;
+        self.backend_preference.retain_committed(committed_backend);
         self.notify_surface_created(surface);
         Ok(())
     }
@@ -158,13 +182,16 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         surface: SurfaceId,
     ) -> Result<(), MultiWindowRunError> {
         let attributes = self.config_for(surface)?.window_attributes();
+        let required_backend = self.backend_preference.required_backend();
         let runner = self.runner_for_mut(surface)?;
-        let native = runner
-            .resume_surface(event_loop, Some(attributes))
+        let (native, committed_backend) = runner
+            .resume_surface(event_loop, Some(attributes), required_backend)
             .map_err(|error| surface_error(surface, error.into()))?;
         self.routes
             .register_committed(surface, native)
-            .map_err(|error| route_error(surface, error))
+            .map_err(|error| route_error(surface, error))?;
+        self.backend_preference.retain_committed(committed_backend);
+        Ok(())
     }
 
     fn start_pending_surfaces(

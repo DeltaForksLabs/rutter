@@ -11,10 +11,13 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, InputState, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 // ── Estado ───────────────────────────────────────────────────
 
 #[derive(Default)]
 pub struct TextInputDemoState {
+    pub theme: ExampleTheme,
     pub text_normal: String,
     pub text_password: String,
     pub text_error: String,
@@ -23,6 +26,7 @@ pub struct TextInputDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     NormalChanged(String),
     PasswordChanged(String),
     ErrorChanged(String),
@@ -65,6 +69,7 @@ impl AppLogic for TextInputDemo {
         Widget::Column {
             style: col,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 // Campo normal
                 Widget::TextInput {
                     id: 1,
@@ -126,6 +131,7 @@ impl AppLogic for TextInputDemo {
 
     fn update(s: &mut TextInputDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::NormalChanged(v) => s.text_normal = v,
             Msg::PasswordChanged(v) => s.text_password = v,
             Msg::ErrorChanged(v) => s.text_error = v,
@@ -133,8 +139,8 @@ impl AppLogic for TextInputDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

@@ -10,8 +10,11 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, DialogPosition, InputState, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 #[derive(Default)]
 pub struct AdvancedWidgetsState {
+    pub theme: ExampleTheme,
     pub search: String,
     pub notes: String,
     pub dialog_open: bool,
@@ -20,6 +23,7 @@ pub struct AdvancedWidgetsState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     SearchChanged(String),
     SubmitSearch,
     NotesChanged(String),
@@ -167,6 +171,7 @@ impl AppLogic for AdvancedWidgetsDemo {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 Widget::Text {
                     content: "Advanced widgets".into(),
                     color: None,
@@ -257,6 +262,7 @@ impl AppLogic for AdvancedWidgetsDemo {
 
     fn update(s: &mut AdvancedWidgetsState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::SearchChanged(v) => s.search = v,
             Msg::SubmitSearch => {}
             Msg::NotesChanged(v) => s.notes = v,
@@ -265,8 +271,8 @@ impl AppLogic for AdvancedWidgetsDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

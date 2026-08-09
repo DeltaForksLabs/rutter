@@ -12,7 +12,10 @@ use rutter::{
 };
 use taffy::prelude::*;
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 pub struct CalendarDemoState {
+    theme: ExampleTheme,
     calendar_month: CalendarMonth,
     calendar_date: Option<CalendarDate>,
     picker_month: CalendarMonth,
@@ -24,6 +27,7 @@ pub struct CalendarDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     SelectCalendarDate(CalendarDate),
     NavigateCalendar(CalendarMonth),
     TogglePicker,
@@ -65,6 +69,7 @@ impl AppLogic for CalendarDemo {
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message> {
         Widget::Column {
             children: vec![
+                example_theme_selector(state.theme, Msg::ThemeChanged),
                 demo_text("Calendário e Date Picker", 24.0),
                 demo_text("Navegue por mês ou ano e selecione uma única data.", 14.0),
                 calendar_showcase(state),
@@ -75,6 +80,7 @@ impl AppLogic for CalendarDemo {
 
     fn update(state: &mut Self::State, message: Self::Message, _: &mut Clipboard) {
         match message {
+            Msg::ThemeChanged(theme) => state.theme = theme,
             Msg::SelectCalendarDate(date) => select_standalone_date(state, date),
             Msg::NavigateCalendar(month) => state.calendar_month = month,
             Msg::TogglePicker => state.picker_open = !state.picker_open,
@@ -84,14 +90,15 @@ impl AppLogic for CalendarDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 
 fn initial_calendar_demo_state(today_source: &impl CalendarTodaySource) -> CalendarDemoState {
     let today = today_source.today();
     CalendarDemoState {
+        theme: ExampleTheme::Dark,
         calendar_month: today.calendar_month(),
         calendar_date: Some(today),
         picker_month: today.calendar_month(),

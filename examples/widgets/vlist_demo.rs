@@ -10,16 +10,20 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 const TOTAL_ITEMS: usize = 1_000;
 
 #[derive(Default)]
 pub struct VListDemoState {
+    pub theme: ExampleTheme,
     pub selected: Option<usize>,
     pub filter: String,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     ItemSelected(usize),
     FilterChanged(String),
 }
@@ -70,6 +74,7 @@ impl AppLogic for VListDemo {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 Widget::Text {
                     content: format!("{} itens — renderização lazy (VirtualList)", TOTAL_ITEMS),
                     color: None,
@@ -122,13 +127,14 @@ impl AppLogic for VListDemo {
 
     fn update(s: &mut VListDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::ItemSelected(i) => s.selected = Some(i),
             Msg::FilterChanged(v) => s.filter = v,
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

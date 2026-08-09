@@ -42,6 +42,20 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
+        Self::light()
+    }
+}
+
+impl Theme {
+    /// Creates the project-owned light theme used by [`Theme::default`].
+    ///
+    /// ```rust
+    /// use rutter::{Theme, skia_safe::Color};
+    ///
+    /// let theme = Theme::light();
+    /// assert_eq!(theme.surface, Color::WHITE);
+    /// ```
+    pub fn light() -> Self {
         Self {
             primary: SkiaColor::from_rgb(103, 80, 164), // Material Purple
             on_primary: SkiaColor::WHITE,
@@ -57,9 +71,7 @@ impl Default for Theme {
             spacing: 8.0,
         }
     }
-}
 
-impl Theme {
     pub fn darken(color: SkiaColor, amount: f32) -> SkiaColor {
         let r = (color.r() as f32 * (1.0 - amount)).clamp(0.0, 255.0) as u8;
         let g = (color.g() as f32 * (1.0 - amount)).clamp(0.0, 255.0) as u8;
@@ -92,3 +104,7 @@ impl Theme {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/theme_propagation_unit_tests.rs"]
+mod tests;

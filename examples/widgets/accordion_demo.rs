@@ -8,8 +8,11 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 #[derive(Default)]
 pub struct AccordionDemoState {
+    pub theme: ExampleTheme,
     pub item_a_open: bool,
     pub item_b_open: bool,
     pub item_c_open: bool,
@@ -17,6 +20,7 @@ pub struct AccordionDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     ToggleA,
     ToggleB,
     ToggleC,
@@ -32,6 +36,7 @@ impl AppLogic for AccordionDemo {
 
     fn new(_: &mut FontSystem) -> Self::State {
         AccordionDemoState {
+            theme: ExampleTheme::Dark,
             item_a_open: true,
             item_b_open: false,
             item_c_open: false,
@@ -96,6 +101,7 @@ impl AppLogic for AccordionDemo {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 Widget::Text {
                     content: "Accordion Demo".into(),
                     color: None,
@@ -132,9 +138,14 @@ impl AppLogic for AccordionDemo {
                         color: Some(skia_safe::Color::from_argb(15, 255, 255, 255)),
                         radius: 8.0,
                         child: Box::new(Widget::Text {
-                            content: "• Tema: Escuro\n• Idioma: pt-BR\n• Autosave: habilitado"
-                                .into(),
-                            color: Some(skia_safe::Color::from_rgb(200, 200, 200)),
+                            content: format!(
+                                "• Tema: {}\n• Idioma: pt-BR\n• Autosave: habilitado",
+                                match s.theme {
+                                    ExampleTheme::Dark => "Escuro",
+                                    ExampleTheme::Light => "Claro",
+                                }
+                            ),
+                            color: None,
                             size: 14.0,
                             style: Style::default(),
                         }),
@@ -153,7 +164,7 @@ impl AppLogic for AccordionDemo {
                         child: Box::new(Widget::Text {
                             content: "• Endpoint: https://api.local\n• Timeout: 5s\n• Retry: 3"
                                 .into(),
-                            color: Some(skia_safe::Color::from_rgb(200, 200, 200)),
+                            color: None,
                             size: 14.0,
                             style: Style::default(),
                         }),
@@ -176,7 +187,7 @@ impl AppLogic for AccordionDemo {
                                 if s.item_b_open { "aberto" } else { "fechado" },
                                 if s.item_c_open { "aberto" } else { "fechado" }
                             ),
-                            color: Some(skia_safe::Color::from_rgb(200, 200, 200)),
+                            color: None,
                             size: 14.0,
                             style: Style::default(),
                         }),
@@ -188,6 +199,7 @@ impl AppLogic for AccordionDemo {
 
     fn update(s: &mut AccordionDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::ToggleA => s.item_a_open = !s.item_a_open,
             Msg::ToggleB => s.item_b_open = !s.item_b_open,
             Msg::ToggleC => s.item_c_open = !s.item_c_open,
@@ -204,8 +216,8 @@ impl AppLogic for AccordionDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

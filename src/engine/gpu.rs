@@ -151,42 +151,78 @@ pub fn create_best_backend(
     attrs: WindowAttributes,
 ) -> Result<Box<dyn GraphicsBackend>, GraphicsError> {
     let mut failures = Vec::new();
-    let transparent = attrs.transparent();
 
-    if let Some(backend) =
-        accept_backend_candidate(&mut failures, VkBackend::try_new(event_loop, attrs.clone()))
-    {
+    if let Some(backend) = accept_backend_candidate(
+        &mut failures,
+        create_backend_candidate(event_loop, attrs.clone(), BackendType::Vulkan),
+    ) {
         return Ok(backend);
     }
 
-    if let Some(backend) =
-        accept_backend_candidate(&mut failures, GlBackend::try_new(event_loop, attrs.clone()))
-    {
+    if let Some(backend) = accept_backend_candidate(
+        &mut failures,
+        create_backend_candidate(event_loop, attrs.clone(), BackendType::OpenGl),
+    ) {
         return Ok(backend);
     }
 
-    if let Err(failure) = validate_cpu_surface_transparency(transparent) {
-        failures.push(failure);
-        return Err(GraphicsError::NoBackendAvailable(failures));
+    if let Some(backend) = accept_backend_candidate(
+        &mut failures,
+        create_backend_candidate(event_loop, attrs, BackendType::CpuSoftbuffer),
+    ) {
+        return Ok(backend);
     }
-    let window = match event_loop.create_window(attrs) {
-        Ok(window) => Rc::new(window),
-        Err(error) => {
-            failures.push(BackendFailure::new(
-                BackendType::CpuSoftbuffer,
-                error.to_string(),
-            ));
-            return Err(GraphicsError::NoBackendAvailable(failures));
-        }
-    };
+    Err(GraphicsError::NoBackendAvailable(failures))
+}
 
-    match CpuBackend::new(window) {
-        Ok(backend) => Ok(Box::new(backend)),
-        Err(error) => {
-            failures.push(cpu_backend_failure(error));
-            Err(GraphicsError::NoBackendAvailable(failures))
-        }
+pub(crate) fn create_required_backend(
+    event_loop: &ActiveEventLoop,
+    attrs: WindowAttributes,
+    required_backend: BackendType,
+) -> Result<Box<dyn GraphicsBackend>, GraphicsError> {
+    initialize_required_backend(required_backend, |backend| {
+        create_backend_candidate(event_loop, attrs, backend)
+    })
+}
+
+fn initialize_required_backend<Backend>(
+    required_backend: BackendType,
+    probe: impl FnOnce(BackendType) -> Result<Backend, BackendFailure>,
+) -> Result<Backend, GraphicsError> {
+    probe(required_backend).map_err(|failure| {
+        GraphicsError::BackendInit(BackendFailure::new(
+            required_backend,
+            format!(
+                "{}; expected retained multi-window {required_backend} backend initialization without probing backend alternatives",
+                failure.reason
+            ),
+        ))
+    })
+}
+
+fn create_backend_candidate(
+    event_loop: &ActiveEventLoop,
+    attrs: WindowAttributes,
+    backend: BackendType,
+) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
+    match backend {
+        BackendType::Vulkan => VkBackend::try_new(event_loop, attrs),
+        BackendType::OpenGl => GlBackend::try_new(event_loop, attrs),
+        BackendType::CpuSoftbuffer => try_cpu_backend(event_loop, attrs),
     }
+}
+
+fn try_cpu_backend(
+    event_loop: &ActiveEventLoop,
+    attrs: WindowAttributes,
+) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
+    validate_cpu_surface_transparency(attrs.transparent())?;
+    let window = event_loop
+        .create_window(attrs)
+        .map(Rc::new)
+        .map_err(|error| BackendFailure::new(BackendType::CpuSoftbuffer, error.to_string()))?;
+    let backend = CpuBackend::new(window).map_err(cpu_backend_failure)?;
+    Ok(Box::new(backend))
 }
 
 fn cpu_backend_failure(error: GraphicsError) -> BackendFailure {
@@ -208,6 +244,10 @@ fn accept_backend_candidate<Backend>(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/gpu_backend_selection_unit_tests.rs"]
+mod backend_selection_tests;
 
 #[cfg(test)]
 mod tests {

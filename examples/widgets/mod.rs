@@ -22,6 +22,7 @@ pub mod scroll_demo;
 pub mod slider_demo;
 pub mod tab_demo;
 pub mod text_input_demo;
+pub mod theme_selector;
 pub mod vgrid_demo;
 pub mod vlist_demo;
 
@@ -32,3 +33,7 @@ pub mod dialog_demo;
 pub mod image_viewer_demo;
 pub mod search_bar_demo;
 pub mod text_area_demo;
+
+#[cfg(test)]
+#[path = "../../tests/unit/all_examples_theme_unit_tests.rs"]
+mod tests;

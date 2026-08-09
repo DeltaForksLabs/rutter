@@ -44,7 +44,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Typed application model based on state, messages, update, and view functions.
 - Declarative widget tree with manual or automatic widget IDs.
 - Taffy-backed layout tree with synchronization instead of full rebuilds on every layout update.
-- Theme support through a central `Theme` type.
+- State-aware Light/Dark theme support through a central `Theme` type.
 - Locale and Project Fluent catalog helpers for i18n and RTL layout direction.
 - Keyboard focus traversal for interactive widgets.
 - Audited multi-window runtime with stable surface IDs and per-window event routing.
@@ -137,6 +137,8 @@ cargo run -- rich_text
 cargo run -- advanced
 ```
 
+Every widget example starts in Dark mode and exposes an accessible SVG sun/moon toggle in the upper-right corner. Applications can preserve the static `theme()` API or implement `theme_for(state)` when the active palette depends on application state; opaque windows are cleared with the resolved `theme.surface` color.
+
 The widget demos live in `examples/widgets` and are intended to exercise isolated widgets and interaction patterns. The `examples/apps` directory is reserved for future complete example applications built with Rutter.
 
 ## Quick Start
@@ -199,7 +201,7 @@ fn main() {
 
 ### Multi-window applications
 
-`MultiWindowRunner` owns every native window, backend, AccessKit adapter, and input runtime. Applications use stable `SurfaceId` values and emit `SurfaceCommand` operations instead of creating Winit windows directly. Unknown events from failed backend probes are discarded before accessibility or rendering side effects.
+`MultiWindowRunner` owns every native window, backend, AccessKit adapter, and input runtime. Applications use stable `SurfaceId` values and emit `SurfaceCommand` operations instead of creating Winit windows directly. Unknown events from failed backend probes are discarded before accessibility or rendering side effects. After the first surface commits, later windows reuse its backend type instead of repeating failed Vulkan/OpenGL probes on Wayland.
 
 Run `cargo run -- multi_window` to open a centered **Open Second Window** button; the requested child window demonstrates a styled `RichText` phrase and independent close behavior.
 
@@ -256,7 +258,7 @@ Applications implement `AppLogic`. The framework owns the native event loop and 
 - `new` to initialize state.
 - `view` to build the widget tree.
 - `update` to process messages.
-- `theme` to provide colors, spacing, typography, and shape values.
+- `theme` for a static palette or `theme_for` for state-selected colors, spacing, typography, and shape values.
 
 ### Password input security
 

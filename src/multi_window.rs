@@ -257,6 +257,20 @@ pub trait MultiWindowAppLogic {
     fn theme() -> crate::theme::Theme {
         crate::theme::Theme::default()
     }
+    /// Resolves the application theme from its current shared state.
+    ///
+    /// The default delegates to [`Self::theme`], preserving existing implementations.
+    ///
+    /// ```rust
+    /// use rutter::{MultiWindowAppLogic, Theme};
+    ///
+    /// fn active_theme<A: MultiWindowAppLogic>(state: &A::State) -> Theme {
+    ///     A::theme_for(state)
+    /// }
+    /// ```
+    fn theme_for(_state: &Self::State) -> crate::theme::Theme {
+        Self::theme()
+    }
     /// Returns the locale used for layout direction and catalogs.
     fn locale() -> Locale {
         Locale::default()

@@ -14,6 +14,8 @@ use rutter::{
     widget::{Orientation, ToastKind, ToastPosition},
 };
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 // ── Estado ───────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -30,7 +32,7 @@ pub struct AppState {
     pub volume: f32,
     pub language: usize,
     pub remember: bool,
-    pub dark_mode: bool,
+    pub theme: ExampleTheme,
     pub upload_progress: f32,
     pub is_loading: bool,
 }
@@ -45,6 +47,7 @@ pub enum Msg {
     PasswordChanged(String),
     RememberToggled(bool),
     DarkModeToggled(bool),
+    ThemeChanged(ExampleTheme),
     VolumeChanged(f32),
     LanguageChanged(usize),
     TabChanged(usize),
@@ -297,7 +300,7 @@ impl AppLogic for MyApp {
                     if s.modal_confirmed {
                         Widget::Text {
                             content: "✓ Modal confirmed".into(),
-                            color: Some(skia_safe::Color::from_rgb(0x4e, 0xc9, 0xb0)),
+                            color: None,
                             size: 12.0,
                             style: Style::default(),
                         }
@@ -362,7 +365,7 @@ impl AppLogic for MyApp {
                                 },
                             },
                             Widget::Switch {
-                                checked: s.dark_mode,
+                                checked: s.theme == ExampleTheme::Dark,
                                 on_change: Msg::DarkModeToggled,
                                 style: switch_s,
                             },
@@ -440,7 +443,7 @@ impl AppLogic for MyApp {
                             .list_selected
                             .map(|i| format!("Selected: item #{i}"))
                             .unwrap_or_default(),
-                        color: Some(skia_safe::Color::from_rgb(0x4e, 0xc9, 0xb0)),
+                        color: None,
                         size: 12.0,
                         style: Style::default(),
                     },
@@ -492,7 +495,7 @@ impl AppLogic for MyApp {
                     },
                     Widget::Text {
                         content: "Are you sure you want to proceed? This cannot be undone.".into(),
-                        color: Some(skia_safe::Color::from_rgb(0x9d, 0x9d, 0x9d)),
+                        color: None,
                         size: 13.0,
                         style: Style::default(),
                     },
@@ -562,6 +565,7 @@ impl AppLogic for MyApp {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 tabbar,
                 Widget::Column {
                     style: content_col,
@@ -581,7 +585,14 @@ impl AppLogic for MyApp {
             }
             Msg::PasswordChanged(v) => s.password = v,
             Msg::RememberToggled(v) => s.remember = v,
-            Msg::DarkModeToggled(v) => s.dark_mode = v,
+            Msg::DarkModeToggled(v) => {
+                s.theme = if v {
+                    ExampleTheme::Dark
+                } else {
+                    ExampleTheme::Light
+                };
+            }
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::VolumeChanged(v) => s.volume = v,
             Msg::LanguageChanged(i) => s.language = i,
             Msg::TabChanged(i) => s.active_tab = i,
@@ -621,8 +632,8 @@ impl AppLogic for MyApp {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

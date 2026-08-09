@@ -5,6 +5,7 @@ use taffy::prelude::Style;
 
 use super::*;
 use crate::app::AppLogic;
+use crate::theme::Theme;
 use crate::widget::Widget;
 
 #[derive(Clone, Debug)]
@@ -39,6 +40,13 @@ impl MultiWindowAppLogic for FakeMultiWindowApp {
             FakeMessage::Increment => *state += 1,
         }
         Vec::new()
+    }
+
+    fn theme_for(state: &Self::State) -> Theme {
+        if *state == 41 {
+            return Theme::dark();
+        }
+        Theme::light()
     }
 }
 
@@ -83,6 +91,21 @@ fn surface_adapter_builds_the_requested_surface_view() {
 }
 
 #[test]
+fn surface_adapter_delegates_theme_resolution_to_the_shared_model() {
+    let mut state = SurfaceAppState::<FakeMultiWindowApp>::new(SurfaceId::new(8), 41, 3);
+
+    assert_eq!(
+        SurfaceAppAdapter::<FakeMultiWindowApp>::theme_for(&state).surface,
+        Theme::dark().surface
+    );
+    state.model = 0;
+    assert_eq!(
+        SurfaceAppAdapter::<FakeMultiWindowApp>::theme_for(&state).surface,
+        Theme::light().surface
+    );
+}
+
+#[test]
 fn scheduler_uses_the_earliest_surface_deadline() {
     let now = Instant::now();
     let early = now + Duration::from_millis(10);
@@ -122,10 +145,27 @@ fn suspended_logical_close_does_not_require_a_native_route() {
     let surface = SurfaceId::PRIMARY;
     let mut runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
     runtime
+        .backend_preference
+        .retain_committed(BackendType::OpenGl);
+    runtime
         .surface_configs
         .insert(surface, WindowConfig::default());
 
     assert!(runtime.close_surface(surface).is_ok());
     assert!(runtime.surface_configs.is_empty());
     assert!(runtime.routes.is_empty());
+    assert_eq!(
+        runtime.backend_preference.required_backend(),
+        Some(BackendType::OpenGl)
+    );
+}
+
+#[test]
+fn retained_backend_preference_keeps_first_commit_across_later_commits() {
+    let mut preference = MultiWindowBackendPreference::default();
+
+    preference.retain_committed(BackendType::OpenGl);
+    preference.retain_committed(BackendType::Vulkan);
+
+    assert_eq!(preference.required_backend(), Some(BackendType::OpenGl));
 }

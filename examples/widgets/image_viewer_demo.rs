@@ -9,6 +9,8 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 const RED_PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x18, 0x08, 0x02, 0x00, 0x00, 0x00, 0x6f, 0x15, 0xaa,
@@ -55,11 +57,13 @@ pub struct ImageSample {
 
 #[derive(Default)]
 pub struct ImageViewerDemoState {
+    pub theme: ExampleTheme,
     pub selected: usize,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     Previous,
     Next,
     Select(usize),
@@ -80,6 +84,7 @@ impl AppLogic for ImageViewerDemo {
         Widget::Column {
             style: page_style(),
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 title(selected.name),
                 large_image(selected.data),
                 controls(),
@@ -90,14 +95,15 @@ impl AppLogic for ImageViewerDemo {
 
     fn update(s: &mut ImageViewerDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::Previous => s.selected = previous_index(s.selected),
             Msg::Next => s.selected = next_index(s.selected),
             Msg::Select(index) => s.selected = index.min(SAMPLES.len() - 1),
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

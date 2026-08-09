@@ -9,8 +9,11 @@ use taffy::prelude::*;
 use rutter::widget::{ToastKind, ToastPosition};
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 #[derive(Default)]
 pub struct ModalToastDemoState {
+    pub theme: ExampleTheme,
     pub modal_open: bool,
     pub confirmed: bool,
     pub toast_info: bool,
@@ -21,6 +24,7 @@ pub struct ModalToastDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     OpenModal,
     CloseModal,
     ConfirmModal,
@@ -113,7 +117,7 @@ impl AppLogic for ModalToastDemo {
                     },
                     Widget::Text {
                         content: "Esta ação não pode ser desfeita. Deseja continuar?".into(),
-                        color: Some(skia_safe::Color::from_rgb(0x9d, 0x9d, 0x9d)),
+                        color: None,
                         size: 13.0,
                         style: Style::default(),
                     },
@@ -192,7 +196,7 @@ impl AppLogic for ModalToastDemo {
                         if s.confirmed {
                             Widget::Text {
                                 content: "✓ Ação confirmada!".into(),
-                                color: Some(skia_safe::Color::from_rgb(0x4e, 0xc9, 0xb0)),
+                                color: None,
                                 size: 13.0,
                                 style: Style::default(),
                             }
@@ -260,6 +264,7 @@ impl AppLogic for ModalToastDemo {
                         },
                     ],
                 },
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 modal,
                 toast_info,
                 toast_success,
@@ -271,6 +276,7 @@ impl AppLogic for ModalToastDemo {
 
     fn update(s: &mut ModalToastDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::OpenModal => s.modal_open = true,
             Msg::CloseModal => s.modal_open = false,
             Msg::ConfirmModal => {
@@ -291,8 +297,8 @@ impl AppLogic for ModalToastDemo {
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

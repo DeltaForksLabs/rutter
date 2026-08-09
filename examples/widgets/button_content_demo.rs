@@ -5,10 +5,11 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
-use skia_safe::Color;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
+
+use super::theme_selector::{ExampleTheme, example_theme_selector};
 
 const ICON_DATA: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -21,12 +22,14 @@ const ICON_DATA: &[u8] = &[
 
 #[derive(Default)]
 pub struct ButtonContentDemoState {
+    pub theme: ExampleTheme,
     pub clicks: u32,
     pub selected: u8,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     Save,
     SelectPrimary,
     SelectGhost,
@@ -47,13 +50,14 @@ impl AppLogic for ButtonContentDemo {
         Widget::Column {
             style: page_style(),
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 heading("ButtonContent"),
                 label(format!(
                     "Cliques: {} | Opcao: {}",
                     s.clicks,
                     selected_label(s.selected)
                 )),
-                action_row(),
+                action_row(s.theme),
                 preview_row(),
             ],
         }
@@ -61,34 +65,46 @@ impl AppLogic for ButtonContentDemo {
 
     fn update(s: &mut ButtonContentDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::Save => s.clicks += 1,
             Msg::SelectPrimary => s.selected = 1,
             Msg::SelectGhost => s.selected = 2,
-            Msg::Reset => *s = ButtonContentDemoState::default(),
+            Msg::Reset => {
+                s.clicks = 0;
+                s.selected = 0;
+            }
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 
-fn action_row<'a>() -> Widget<'a, Msg> {
+fn action_row<'a>(theme: ExampleTheme) -> Widget<'a, Msg> {
     Widget::Row {
         style: row_style(),
         children: vec![
-            rich_button("Save changes", "Save", Msg::Save, ButtonVariant::Primary),
+            rich_button(
+                "Save changes",
+                "Save",
+                Msg::Save,
+                ButtonVariant::Primary,
+                theme,
+            ),
             rich_button(
                 "Select primary",
                 "Primary",
                 Msg::SelectPrimary,
                 ButtonVariant::Ghost,
+                theme,
             ),
             rich_button(
                 "Select ghost",
                 "Ghost",
                 Msg::SelectGhost,
                 ButtonVariant::Ghost,
+                theme,
             ),
             text_button("Reset", Msg::Reset),
         ],
@@ -110,8 +126,16 @@ fn rich_button<'a>(
     text: &'a str,
     msg: Msg,
     variant: ButtonVariant,
+    theme: ExampleTheme,
 ) -> Widget<'a, Msg> {
-    Widget::button_content(label, button_body(text), msg, button_style(), None, variant)
+    Widget::button_content(
+        label,
+        button_body(text, theme, variant),
+        msg,
+        button_style(),
+        None,
+        variant,
+    )
 }
 
 fn swatch_button<'a>(label: &'a str, msg: Msg) -> Widget<'a, Msg> {
@@ -135,10 +159,10 @@ fn text_button<'a>(text: &'a str, msg: Msg) -> Widget<'a, Msg> {
     }
 }
 
-fn button_body<'a>(text: &'a str) -> Widget<'a, Msg> {
+fn button_body<'a>(text: &'a str, theme: ExampleTheme, variant: ButtonVariant) -> Widget<'a, Msg> {
     Widget::Row {
         style: button_body_style(),
-        children: vec![image_icon(18.0), button_label(text)],
+        children: vec![image_icon(18.0), button_label(text, theme, variant)],
     }
 }
 
@@ -150,11 +174,16 @@ fn image_icon<'a>(side: f32) -> Widget<'a, Msg> {
     }
 }
 
-fn button_label<'a>(text: &'a str) -> Widget<'a, Msg> {
+fn button_label<'a>(text: &'a str, theme: ExampleTheme, variant: ButtonVariant) -> Widget<'a, Msg> {
+    let theme = theme.resolve();
     Widget::Text {
         content: text.into(),
         style: Style::default(),
-        color: Some(Color::WHITE),
+        color: Some(if variant == ButtonVariant::Primary {
+            theme.on_primary
+        } else {
+            theme.on_surface
+        }),
         size: 14.0,
     }
 }

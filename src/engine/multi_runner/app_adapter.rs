@@ -58,6 +58,10 @@ impl<A: MultiWindowAppLogic> AppLogic for SurfaceAppAdapter<A> {
         A::theme()
     }
 
+    fn theme_for(state: &Self::State) -> Theme {
+        A::theme_for(&state.model)
+    }
+
     fn locale() -> Locale {
         A::locale()
     }

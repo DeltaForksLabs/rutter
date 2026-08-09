@@ -11,17 +11,21 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 const TABS_3: &[&str] = &["Perfil", "Configurações", "Segurança"];
 const TABS_5: &[&str] = &["Home", "Explore", "Library", "History", "Settings"];
 
 #[derive(Default)]
 pub struct TabDemoState {
+    pub theme: ExampleTheme,
     pub active3: usize,
     pub active5: usize,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     Tab3Changed(usize),
     Tab5Changed(usize),
 }
@@ -67,6 +71,7 @@ impl AppLogic for TabDemo {
         Widget::Column {
             style: root,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 // ── TabBar de 3 abas ─────────────────────────────────
                 Widget::TabBar {
                     id: 50,
@@ -116,13 +121,14 @@ impl AppLogic for TabDemo {
 
     fn update(s: &mut TabDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::Tab3Changed(i) => s.active3 = i,
             Msg::Tab5Changed(i) => s.active5 = i,
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 

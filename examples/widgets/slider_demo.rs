@@ -11,8 +11,11 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
+use super::theme_selector::{ExampleTheme, example_theme_selector};
+
 #[derive(Default)]
 pub struct SliderDemoState {
+    pub theme: ExampleTheme,
     pub volume: f32,     // step 1.0 — linear
     pub balance: f32,    // step 0.5 — semi-contínuo
     pub brightness: f32, // step 5.0 — granular (exemplo de uso explícito)
@@ -20,6 +23,7 @@ pub struct SliderDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    ThemeChanged(ExampleTheme),
     VolumeChanged(f32),
     BalanceChanged(f32),
     BrightnessChanged(f32),
@@ -33,6 +37,7 @@ impl AppLogic for SliderDemo {
 
     fn new(_: &mut FontSystem) -> Self::State {
         SliderDemoState {
+            theme: ExampleTheme::Dark,
             volume: 50.0,
             balance: 0.0,
             brightness: 75.0,
@@ -65,6 +70,7 @@ impl AppLogic for SliderDemo {
         Widget::Column {
             style: col,
             children: vec![
+                example_theme_selector(s.theme, Msg::ThemeChanged),
                 // ── Volume: step 1.0 (linear, padrão correto — FIX-6) ──
                 Widget::Text {
                     content: format!("Volume: {:.0}%", s.volume),
@@ -128,14 +134,15 @@ impl AppLogic for SliderDemo {
 
     fn update(s: &mut SliderDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
+            Msg::ThemeChanged(theme) => s.theme = theme,
             Msg::VolumeChanged(v) => s.volume = v,
             Msg::BalanceChanged(v) => s.balance = v,
             Msg::BrightnessChanged(v) => s.brightness = v,
         }
     }
 
-    fn theme() -> Theme {
-        Theme::dark()
+    fn theme_for(state: &Self::State) -> Theme {
+        state.theme.resolve()
     }
 }
 
