@@ -307,28 +307,8 @@ impl LayoutBlueprint {
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
-            Widget::Select { options, style, .. } => {
-                let resolved_id = widget.resolved_id(path).unwrap();
-                let is_open = widget_states
-                    .get(&resolved_id)
-                    .and_then(|s| s.as_select())
-                    .map(|s| s.is_open)
-                    .unwrap_or(false);
-                let style = if is_open {
-                    let closed_h = extract_height(style);
-                    Style {
-                        size: Size {
-                            height: Dimension::length(
-                                closed_h + options.len() as f32 * OPTION_HEIGHT,
-                            ),
-                            ..style.size
-                        },
-                        ..style.clone()
-                    }
-                } else {
-                    style.clone()
-                };
-                Self::leaf(Some(resolved_id), style)
+            Widget::Select { style, .. } => {
+                Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
             Widget::Text {
                 content,
@@ -721,10 +701,6 @@ fn apply_known_rich_text_size(known: Size<Option<f32>>, measured: RichTextMetric
         width: known.width.unwrap_or(measured.width),
         height: known.height.unwrap_or(measured.height),
     }
-}
-
-fn extract_height(style: &Style) -> f32 {
-    style.size.height.into_option().unwrap_or(40.0)
 }
 
 fn overlay_style(style: &Style) -> Style {

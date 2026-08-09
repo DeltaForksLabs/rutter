@@ -313,6 +313,8 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `Slider`
 - `Select`
 
+An open `Select` keeps its trigger in normal layout and renders its options in a dedicated overlay pass. The popup therefore covers later content without moving siblings, opens on the side with more usable space, and constrains long option lists to a viewport-safe window that follows keyboard and mouse-wheel selection.
+
 ### Display Widgets
 
 - `Text`

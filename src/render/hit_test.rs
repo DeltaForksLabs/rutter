@@ -12,7 +12,7 @@ use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::engine::widget_state::{WidgetState, virtual_grid_row_count};
 use crate::i18n::LayoutDirection;
-use crate::layout::{OPTION_HEIGHT, RutterContext, SCROLLBAR_W};
+use crate::layout::{RutterContext, SCROLLBAR_W};
 use crate::widget::{
     CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     CONTEXT_MENU_VIEWPORT_MARGIN, ContextMenuEntry, DialogAction, DialogPosition, POPOVER_GAP,
@@ -650,33 +650,7 @@ fn hit_test_impl<Msg: Clone>(
                 step: *step,
             })
         }
-        Widget::Select { options, .. } => {
-            let resolved_id = widget.resolved_id(path).unwrap();
-            let is_open = widget_states
-                .get(&resolved_id)
-                .and_then(|s| s.as_select())
-                .map(|s| s.is_open)
-                .unwrap_or(false);
-            let closed_h = layout.size.height
-                - if is_open {
-                    options.len() as f32 * OPTION_HEIGHT
-                } else {
-                    0.0
-                };
-            if mouse.y < abs_pos.y + closed_h {
-                return Some(HitResult::SelectToggle(resolved_id));
-            }
-            if is_open {
-                let rel_y = mouse.y - (abs_pos.y + closed_h);
-                let idx = (rel_y / OPTION_HEIGHT).floor() as usize;
-                let idx = idx.min(options.len().saturating_sub(1));
-                return Some(HitResult::SelectOption {
-                    id: resolved_id,
-                    index: idx,
-                });
-            }
-            None
-        }
+        Widget::Select { .. } => Some(HitResult::SelectToggle(widget.resolved_id(path).unwrap())),
         Widget::ScrollView { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
             path.push(0);

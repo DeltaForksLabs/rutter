@@ -11,6 +11,7 @@ mod image_cache;
 mod image_headers;
 pub mod pipeline;
 pub(crate) mod rich_text;
+pub(crate) mod select_overlay;
 mod svg;
 pub mod text;
 mod text_cache;
@@ -47,8 +48,7 @@ use crate::engine::widget_state::{
 use crate::i18n::LayoutDirection;
 use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{
-    OPTION_HEIGHT, RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction,
-    compute_layout,
+    RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction, compute_layout,
 };
 use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
 use crate::theme::Theme;
@@ -243,6 +243,17 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         scale,
         &mut path,
         Point::new(0.0, 0.0),
+    );
+    select_overlay::draw_select_overlays(
+        canvas,
+        taffy,
+        node,
+        widget,
+        widget_states,
+        mouse_pos,
+        font_cache,
+        theme,
+        scale,
     );
     draw_toast_overlays(canvas, widget, widget_states, font_cache, theme, scale);
     draw_context_menu_overlays(
@@ -1270,13 +1281,11 @@ fn draw_widgets_impl<'w, Msg>(
             let resolved_id = resolved_id.unwrap();
             let sel_state = widget_states.get(&resolved_id).and_then(|s| s.as_select());
             let is_open = sel_state.map(|s| s.is_open).unwrap_or(false);
-            let hovered = sel_state.and_then(|s| s.hovered_option);
-            draw_select(
+            draw_select_trigger(
                 canvas,
                 options,
                 *selected_index,
                 is_open,
-                hovered,
                 label,
                 placeholder,
                 is_focused,
@@ -3979,12 +3988,11 @@ fn is_svg_image(data: &[u8]) -> bool {
     trimmed.starts_with("<svg") || trimmed.starts_with("<?xml") && trimmed.contains("<svg")
 }
 
-fn draw_select(
+fn draw_select_trigger(
     canvas: &Canvas,
     options: &[&str],
     selected_index: usize,
     is_open: bool,
-    hovered_option: Option<usize>,
     label: &str,
     placeholder: &str,
     is_focused: bool,
@@ -3993,12 +4001,7 @@ fn draw_select(
     font_cache: &mut HashMap<(String, u32), Font>,
     theme: &Theme,
 ) {
-    let closed_h = size.1
-        - if is_open {
-            options.len() as f32 * OPTION_HEIGHT
-        } else {
-            0.0
-        };
+    let closed_h = size.1;
     let hovered = SkiaRect::from_xywh(0.0, 0.0, size.0, closed_h).contains(mouse);
     let mut bg = Paint::default();
     bg.set_color(if hovered {
@@ -4057,49 +4060,6 @@ fn draw_select(
         &cf,
         &cp,
     );
-    if is_open {
-        let dd = SkiaRect::from_xywh(0.0, closed_h, size.0, size.1 - closed_h);
-        let mut dbp = Paint::default();
-        dbp.set_color(theme.surface);
-        dbp.set_anti_alias(true);
-        canvas.draw_rrect(RRect::new_rect_xy(dd, 0.0, theme.radius_sm), &dbp);
-        let mut dbrd = Paint::default();
-        dbrd.set_style(paint::Style::Stroke);
-        dbrd.set_stroke_width(1.0);
-        dbrd.set_color(Theme::alpha(theme.on_surface, 80));
-        dbrd.set_anti_alias(true);
-        canvas.draw_rrect(RRect::new_rect_xy(dd, 0.0, theme.radius_sm), &dbrd);
-        for (i, opt) in options.iter().enumerate() {
-            let oy = closed_h + i as f32 * OPTION_HEIGHT;
-            if i == selected_index || hovered_option == Some(i) {
-                let mut ip = Paint::default();
-                ip.set_color(if i == selected_index {
-                    Theme::alpha(theme.primary, 30)
-                } else {
-                    Theme::alpha(theme.on_surface, 10)
-                });
-                ip.set_anti_alias(true);
-                canvas.draw_rect(
-                    SkiaRect::from_xywh(1.0, oy, size.0 - 2.0, OPTION_HEIGHT),
-                    &ip,
-                );
-            }
-            let ot = if i == selected_index {
-                theme.primary
-            } else {
-                theme.on_surface
-            };
-            let mut op = Paint::default();
-            op.set_color(ot);
-            op.set_anti_alias(true);
-            canvas.draw_str(
-                opt,
-                (8.0, oy + OPTION_HEIGHT / 2.0 + theme.font_body / 3.0),
-                &f,
-                &op,
-            );
-        }
-    }
     if is_focused {
         draw_focus_outline(
             canvas,

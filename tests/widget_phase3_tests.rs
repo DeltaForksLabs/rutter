@@ -7,7 +7,7 @@ use taffy::{TraversePartialTree, prelude::Style};
 
 use rutter::engine::runner::snap_to_step;
 use rutter::engine::widget_state::{AnimState, ScrollState, SelectState, SliderState, WidgetState};
-use rutter::layout::{OPTION_HEIGHT, build_taffy_tree};
+use rutter::layout::build_taffy_tree;
 use rutter::render::hit_test::{
     collect_input_ids, collect_stateful_ids, find_select_callback, find_slider_callback,
 };
@@ -382,7 +382,7 @@ fn select_closed_keeps_base_height() {
 }
 
 #[test]
-fn select_open_expands_height_by_options() {
+fn select_open_keeps_base_height_for_overlay() {
     use rutter::engine::widget_state::SelectState;
     let mut states: HashMap<u64, WidgetState> = HashMap::new();
     states.insert(
@@ -412,8 +412,7 @@ fn select_open_expands_height_by_options() {
     };
     let node = build_taffy_tree(&mut taffy, &w, fs(), &states);
     let style = taffy.style(node).unwrap();
-    let expected = taffy::style::Dimension::length(44.0 + 4.0 * OPTION_HEIGHT);
-    assert_eq!(style.size.height, expected);
+    assert_eq!(style.size.height, taffy::style::Dimension::length(44.0));
 }
 
 #[test]

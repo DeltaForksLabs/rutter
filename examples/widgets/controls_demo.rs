@@ -72,12 +72,26 @@ impl AppLogic for ControlsDemo {
             },
             ..Default::default()
         };
-        let check_s = Style {
-            flex_grow: 1.0,
+        let checkbox_row = Style {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            align_items: Some(AlignItems::Center),
             size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(28.0),
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
             },
+            max_size: Size {
+                width: Dimension::length(384.0),
+                height: Dimension::auto(),
+            },
+            gap: Size {
+                width: LengthPercentage::length(24.0),
+                height: LengthPercentage::length(12.0),
+            },
+            ..Default::default()
+        };
+        let check_s = Style {
+            size: Size::from_lengths(180.0, 28.0),
             ..Default::default()
         };
         let switch_s = Style {
@@ -102,23 +116,8 @@ impl AppLogic for ControlsDemo {
             ..Default::default()
         };
 
-        let col_rows: Style = Style {
-            flex_direction: FlexDirection::Row,
-            align_items: Some(AlignItems::Start),
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            // padding: Rect::length(10.0),
-            // gap: Size {
-            //     width: LengthPercentage::length(0.0),
-            //     height: LengthPercentage::length(18.0),
-            // },
-            ..Default::default()
-        };
-
         Widget::Column {
-            style: col.clone(),
+            style: col,
             children: vec![
                 example_theme_selector(s.theme, Msg::ThemeChanged),
                 // ── Checkboxes ───────────────────────────────────────
@@ -126,10 +125,10 @@ impl AppLogic for ControlsDemo {
                     content: "Checkboxes".into(),
                     color: None,
                     size: 18.0,
-                    style: col_rows.clone(),
+                    style: Style::default(),
                 },
                 Widget::Row {
-                    style: col_rows.clone(),
+                    style: checkbox_row,
                     children: vec![
                         Widget::Checkbox {
                             checked: s.remember,
@@ -145,18 +144,6 @@ impl AppLogic for ControlsDemo {
                         },
                     ],
                 },
-                // Widget::Checkbox {
-                //     checked: s.remember,
-                //     on_change: Msg::RememberToggled,
-                //     label: "Lembrar de mim",
-                //     style: check_s.clone(),
-                // },
-                // Widget::Checkbox {
-                //     checked: s.newsletter,
-                //     on_change: Msg::NewsletterToggled,
-                //     label: "Receber newsletter",
-                //     style: check_s.clone(),
-                // },
                 // ── Switch ───────────────────────────────────────────
                 Widget::Text {
                     content: "Switch".into(),
@@ -269,3 +256,7 @@ impl AppLogic for ControlsDemo {
 pub fn run() {
     RutterRunner::<ControlsDemo>::run();
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/controls_demo_layout_unit_tests.rs"]
+mod tests;
