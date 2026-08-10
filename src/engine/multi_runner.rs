@@ -9,7 +9,7 @@ use std::time::Instant;
 use cosmic_text::FontSystem;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
 mod app_adapter;
@@ -52,6 +52,7 @@ pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
     backend_preference: MultiWindowBackendPreference,
     native_surfaces_active: bool,
     fatal_error: Option<MultiWindowRunError>,
+    accessibility_waker: Option<EventLoopProxy<()>>,
 }
 
 impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
@@ -81,6 +82,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         let event_loop = EventLoop::new().map_err(MultiWindowRunError::from)?;
         event_loop.set_control_flow(ControlFlow::Wait);
         let mut runtime = Self::initialize()?;
+        runtime.accessibility_waker = Some(event_loop.create_proxy());
         let event_result = event_loop.run_app(&mut runtime);
         if let Some(error) = runtime.fatal_error {
             return Err(error);
@@ -104,6 +106,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             backend_preference: MultiWindowBackendPreference::default(),
             native_surfaces_active: false,
             fatal_error: None,
+            accessibility_waker: None,
         })
     }
 
@@ -148,6 +151,9 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             request.window.surface_config(),
         )
         .map_err(|error| surface_error(request.surface, error))?;
+        if let Some(waker) = self.accessibility_waker.clone() {
+            engine.set_accessibility_waker(waker);
+        }
         Ok(RutterRunner::with_engine(engine))
     }
 
@@ -385,6 +391,24 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 }
 
 impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<A> {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
+        let surfaces: Vec<SurfaceId> = self.surface_runners.keys().copied().collect();
+        for surface in surfaces {
+            let Some(runner) = self.surface_runners.get_mut(&surface) else {
+                continue;
+            };
+            runner.process_accessibility_actions();
+            if let Some(error) = runner.take_fatal_error() {
+                self.terminate_for_error(event_loop, surface_error(surface, error));
+                return;
+            }
+            self.synchronize_and_apply(event_loop, surface);
+            if self.fatal_error.is_some() {
+                return;
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.fatal_error.is_some() || self.native_surfaces_active {
             return;

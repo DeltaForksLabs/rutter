@@ -1,19 +1,29 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use accesskit::{
-    Action, ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, Node, NodeId,
-    Orientation as AccessOrientation, Rect, Role, Toggled, Tree, TreeId, TreeUpdate,
+    Action, ActivationHandler, DeactivationHandler, Node, NodeId, Orientation as AccessOrientation,
+    Rect, Role, Toggled, Tree, TreeId, TreeUpdate,
 };
 use skia_safe::Point;
 use taffy::prelude::{NodeId as TaffyNodeId, TaffyTree};
 
+use crate::engine::widget_state::WidgetState;
+use crate::i18n::LayoutDirection;
 use crate::input_state::InputWidgetState;
 use crate::layout::RutterContext;
+use crate::render::select_overlay::collector::{
+    collect_dropdown_triggers, collect_open_dropdown_overlays,
+};
 use crate::widget::{DialogAction, Widget};
 use crate::widget_id::resolve_accessibility_path_id;
+
+mod action_queue;
+mod dropdown_menu;
+
+pub(crate) use action_queue::AccessibilityActionInbox;
 
 const ROOT_ACCESSIBILITY_ID: u64 = 0;
 
@@ -27,13 +37,6 @@ impl ActivationHandler for LazyActivationHandler {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct IgnoredActionHandler;
-
-impl ActionHandler for IgnoredActionHandler {
-    fn do_action(&mut self, _: ActionRequest) {}
-}
-
-#[derive(Debug, Default)]
 pub(crate) struct IgnoredDeactivationHandler;
 
 impl DeactivationHandler for IgnoredDeactivationHandler {
@@ -43,7 +46,16 @@ impl DeactivationHandler for IgnoredDeactivationHandler {
 #[derive(Clone, Copy)]
 pub(crate) struct AccessibilityInputs<'a> {
     pub input_states: &'a HashMap<u64, InputWidgetState>,
+    pub widget_states: &'a HashMap<u64, WidgetState>,
     pub focused_widget_id: Option<u64>,
+    pub viewport: (f32, f32),
+    pub direction: LayoutDirection,
+}
+
+#[derive(Clone, Copy)]
+struct DropdownAccessibilityGeometry {
+    anchor: skia_safe::Rect,
+    visible_anchor: skia_safe::Rect,
 }
 
 pub(crate) fn build_accessibility_update<Msg>(
@@ -52,7 +64,36 @@ pub(crate) fn build_accessibility_update<Msg>(
     root_node: TaffyNodeId,
     inputs: AccessibilityInputs<'_>,
 ) -> TreeUpdate {
-    let mut builder = AccessibilityBuilder::new(taffy, inputs);
+    let dropdown_geometries = collect_dropdown_triggers(
+        widget,
+        taffy,
+        root_node,
+        inputs.widget_states,
+        inputs.viewport,
+    )
+    .into_iter()
+    .map(|trigger| {
+        (
+            trigger.id,
+            DropdownAccessibilityGeometry {
+                anchor: trigger.anchor,
+                visible_anchor: trigger.visible_anchor,
+            },
+        )
+    })
+    .collect();
+    let visible_dropdowns = collect_open_dropdown_overlays(
+        widget,
+        taffy,
+        root_node,
+        inputs.widget_states,
+        inputs.viewport,
+    )
+    .into_iter()
+    .map(|overlay| overlay.id)
+    .collect();
+    let mut builder =
+        AccessibilityBuilder::new(taffy, inputs, dropdown_geometries, visible_dropdowns);
     let children = builder.collect(
         widget,
         Some(root_node),
@@ -66,23 +107,32 @@ struct AccessibilityBuilder<'a> {
     taffy: &'a TaffyTree<RutterContext>,
     inputs: AccessibilityInputs<'a>,
     nodes: Vec<(NodeId, Node)>,
+    dropdown_geometries: HashMap<u64, DropdownAccessibilityGeometry>,
+    visible_dropdowns: HashSet<u64>,
 }
 
 impl<'a> AccessibilityBuilder<'a> {
-    fn new(taffy: &'a TaffyTree<RutterContext>, inputs: AccessibilityInputs<'a>) -> Self {
+    fn new(
+        taffy: &'a TaffyTree<RutterContext>,
+        inputs: AccessibilityInputs<'a>,
+        dropdown_geometries: HashMap<u64, DropdownAccessibilityGeometry>,
+        visible_dropdowns: HashSet<u64>,
+    ) -> Self {
         Self {
             taffy,
             inputs,
             nodes: Vec::new(),
+            dropdown_geometries,
+            visible_dropdowns,
         }
     }
 
     fn finish(mut self, children: Vec<NodeId>) -> TreeUpdate {
         let root = NodeId(ROOT_ACCESSIBILITY_ID);
-        let focus = self.focus_node_id(root);
         let mut root_node = Node::new(Role::Window);
         root_node.set_children(children);
         self.nodes.push((root, root_node));
+        let focus = self.focus_node_id(root);
         TreeUpdate {
             nodes: self.nodes,
             tree: Some(Tree::new(root)),
@@ -92,9 +142,15 @@ impl<'a> AccessibilityBuilder<'a> {
     }
 
     fn focus_node_id(&self, root: NodeId) -> NodeId {
-        self.inputs
+        let candidate = self
+            .inputs
             .focused_widget_id
             .map(access_node_id)
+            .unwrap_or(root);
+        self.nodes
+            .iter()
+            .any(|(id, _)| *id == candidate)
+            .then_some(candidate)
             .unwrap_or(root)
     }
 
@@ -130,6 +186,9 @@ impl<'a> AccessibilityBuilder<'a> {
             }
             Widget::Dialog { child, visible, .. } => {
                 self.collect_dialog(widget, child, *visible, node, frame, path)
+            }
+            Widget::DropdownMenu { label, entries, .. } => {
+                dropdown_menu::collect(self, widget, label, entries, frame, path)
             }
             _ => self.collect_leaf(widget, frame, path),
         }
@@ -711,7 +770,10 @@ mod tests {
             root,
             AccessibilityInputs {
                 input_states: inputs,
+                widget_states: &states,
                 focused_widget_id: None,
+                viewport: (300.0, 120.0),
+                direction: LayoutDirection::Ltr,
             },
         )
     }
@@ -865,7 +927,10 @@ mod tests {
             root,
             AccessibilityInputs {
                 input_states: &inputs,
+                widget_states: &states,
                 focused_widget_id: Some(focus_id),
+                viewport: (300.0, 120.0),
+                direction: LayoutDirection::Ltr,
             },
         );
 

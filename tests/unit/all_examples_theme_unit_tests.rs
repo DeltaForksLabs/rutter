@@ -5,11 +5,12 @@ use super::{
     accordion_demo::AccordionDemo, advanced_widgets_demo::AdvancedWidgetsDemo,
     button_content_demo::ButtonContentDemo, calendar_demo::CalendarDemo,
     carousel_demo::CarouselDemo, controls_demo::ControlsDemo, dialog_demo::DialogDemo,
-    form_demo::MyApp, image_viewer_demo::ImageViewerDemo, modal_toast_demo::ModalToastDemo,
-    multi_window_demo::MultiWindowDemo, popover_demo::PopoverDemo, progress_demo::ProgressDemo,
-    rich_text_demo::RichTextDemo, scroll_demo::ScrollDemo, search_bar_demo::SearchBarDemo,
-    slider_demo::SliderDemo, tab_demo::TabDemo, text_area_demo::TextAreaDemo,
-    text_input_demo::TextInputDemo, vgrid_demo::VGridDemo, vlist_demo::VListDemo,
+    dropdown_menu_demo::DropdownMenuDemo, form_demo::MyApp, image_viewer_demo::ImageViewerDemo,
+    modal_toast_demo::ModalToastDemo, multi_window_demo::MultiWindowDemo,
+    popover_demo::PopoverDemo, progress_demo::ProgressDemo, rich_text_demo::RichTextDemo,
+    scroll_demo::ScrollDemo, search_bar_demo::SearchBarDemo, slider_demo::SliderDemo,
+    tab_demo::TabDemo, text_area_demo::TextAreaDemo, text_input_demo::TextInputDemo,
+    vgrid_demo::VGridDemo, vlist_demo::VListDemo,
 };
 
 #[test]
@@ -21,6 +22,7 @@ fn foundational_examples_start_dark_with_theme_selectors() {
     assert_single_window_theme::<CarouselDemo>();
     assert_single_window_theme::<ControlsDemo>();
     assert_single_window_theme::<DialogDemo>();
+    assert_single_window_theme::<DropdownMenuDemo>();
 }
 
 #[test]

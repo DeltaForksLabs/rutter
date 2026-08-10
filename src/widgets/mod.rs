@@ -5,4 +5,5 @@
 
 pub mod calendar;
 pub mod carousel;
+pub mod dropdown_menu;
 pub mod rich_text;

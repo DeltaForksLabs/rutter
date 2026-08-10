@@ -338,6 +338,7 @@ impl LayoutBlueprint {
             Widget::ProgressBar { style, .. }
             | Widget::Spinner { style, .. }
             | Widget::TabBar { style, .. }
+            | Widget::DropdownMenu { style, .. }
             | Widget::TextArea { style, .. }
             | Widget::TextInput { style, .. }
             | Widget::SearchBar { style, .. }
@@ -819,6 +820,35 @@ mod tests {
             child: Box::new(text("Inner", 14.0)),
             style: Style::default(),
         }
+    }
+
+    #[test]
+    fn dropdown_menu_remains_a_keyed_leaf_when_open() {
+        let menu = Widget::dropdown_menu(
+            "File",
+            vec![crate::DropdownMenuEntry::item("Save", ())],
+            Style {
+                size: Size {
+                    width: Dimension::length(96.0),
+                    height: Dimension::length(36.0),
+                },
+                ..Style::default()
+            },
+        )
+        .with_id(77);
+        let mut state = crate::dropdown_menu::DropdownMenuState::default();
+        let Widget::DropdownMenu { entries, .. } = &menu else {
+            unreachable!();
+        };
+        state.open_at_first(entries);
+        let closed = LayoutBlueprint::from_widget(&menu, &empty_states());
+        let open_states = HashMap::from([(77, WidgetState::DropdownMenu(state))]);
+        let open = LayoutBlueprint::from_widget(&menu, &open_states);
+
+        assert_eq!(closed, open);
+        assert_eq!(open.key, Some(77));
+        assert!(open.children.is_empty());
+        assert_eq!(open.style.size.width, Dimension::length(96.0));
     }
 
     #[test]

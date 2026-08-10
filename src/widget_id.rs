@@ -7,6 +7,7 @@ use std::num::NonZeroU64;
 use crate::widget::{AUTO_ID, DialogAction, Widget, WidgetIdTag};
 pub use crate::widget_id_error::WidgetIdError;
 use crate::widget_structure::{WidgetStructureKind, widget_structure_kind};
+use crate::widgets::dropdown_menu::{DropdownMenuEntryKind, entry_at_path};
 
 pub(crate) const AUTOMATIC_ID_NAMESPACE_BIT: u64 = 1 << 63;
 const ACCESSIBILITY_PATH_HASH_OFFSET: u64 = 0x6a09e667f3bcc909;
@@ -270,6 +271,7 @@ impl WidgetIdVisitor {
                 self.register_dialog(widget, DialogAction::Confirm, origin)?;
                 self.register_dialog(widget, DialogAction::Cancel, origin)
             }
+            Widget::DropdownMenu { .. } => self.register_dropdown_menu(widget, origin),
             _ => Ok(()),
         }
     }
@@ -282,7 +284,7 @@ impl WidgetIdVisitor {
     ) -> WidgetIdResult {
         for index in 0..count {
             if let Some(value) = widget.tab_focus_id(&self.path, index) {
-                self.insert_subwidget(value, WidgetIdTag::Tab, "Tab", index, origin)?;
+                self.insert_subwidget(value, WidgetIdTag::Tab, "Tab", &[index], origin)?;
             }
         }
         Ok(())
@@ -301,7 +303,70 @@ impl WidgetIdVisitor {
             DialogAction::Confirm => (WidgetIdTag::DialogConfirm, "DialogConfirm", 0),
             DialogAction::Cancel => (WidgetIdTag::DialogCancel, "DialogCancel", 1),
         };
-        self.insert_subwidget(value, family, widget_type, slot, origin)
+        self.insert_subwidget(value, family, widget_type, &[slot], origin)
+    }
+
+    fn register_dropdown_menu<Msg>(
+        &mut self,
+        widget: &Widget<'_, Msg>,
+        origin: WidgetIdOrigin,
+    ) -> WidgetIdResult {
+        let value = widget.dropdown_menu_popup_id(&self.path).unwrap();
+        self.insert_subwidget(
+            value,
+            WidgetIdTag::DropdownMenuPopup,
+            "DropdownMenuPopup",
+            &[],
+            origin,
+        )?;
+        self.register_dropdown_items(widget, origin)
+    }
+
+    fn register_dropdown_items<Msg>(
+        &mut self,
+        widget: &Widget<'_, Msg>,
+        origin: WidgetIdOrigin,
+    ) -> WidgetIdResult {
+        for entry_path in widget.dropdown_menu_item_paths() {
+            self.register_submenu_popup(widget, &entry_path, origin)?;
+            let value = widget
+                .dropdown_menu_item_focus_id(&self.path, &entry_path)
+                .unwrap();
+            self.insert_subwidget(
+                value,
+                WidgetIdTag::DropdownMenuItem,
+                "DropdownMenuItem",
+                &entry_path,
+                origin,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn register_submenu_popup<Msg>(
+        &mut self,
+        widget: &Widget<'_, Msg>,
+        entry_path: &[usize],
+        origin: WidgetIdOrigin,
+    ) -> WidgetIdResult {
+        let Widget::DropdownMenu { entries, .. } = widget else {
+            return Ok(());
+        };
+        if entry_at_path(entries, entry_path).map(|entry| entry.kind())
+            != Some(DropdownMenuEntryKind::Submenu)
+        {
+            return Ok(());
+        }
+        let value = widget
+            .dropdown_menu_submenu_popup_id(&self.path, entry_path)
+            .unwrap();
+        self.insert_subwidget(
+            value,
+            WidgetIdTag::DropdownMenuPopup,
+            "DropdownMenuPopup",
+            entry_path,
+            origin,
+        )
     }
 
     fn insert_subwidget(
@@ -309,11 +374,11 @@ impl WidgetIdVisitor {
         value: u64,
         family: WidgetIdTag,
         widget_type: &'static str,
-        slot: usize,
+        subwidget_path: &[usize],
         origin: WidgetIdOrigin,
     ) -> WidgetIdResult {
         let mut path = self.path.clone();
-        path.push(slot);
+        path.extend_from_slice(subwidget_path);
         self.snapshot.insert_owner(WidgetIdOwner {
             value,
             family,
@@ -414,3 +479,7 @@ fn inconsistent_tree_error(
         rebuilt_owner: rebuilt.owners.get(&value).map(|owner| format!("{owner:?}")),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/dropdown_menu_id_unit_tests.rs"]
+mod dropdown_menu_tests;

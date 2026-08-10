@@ -12,11 +12,15 @@ use taffy::prelude::Style;
 
 use crate::widget_id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
 use crate::widgets::carousel::CarouselConfig;
+use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
 /// árvore. IDs manuais seguros devem ser criados com [`WidgetId::manual`].
 pub const AUTO_ID: u64 = 0;
+
+const WIDGET_ID_HASH_OFFSET: u64 = 0xcbf29ce484222325;
+const WIDGET_ID_HASH_PRIME: u64 = 0x100000001b3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WidgetConfigError {
@@ -221,6 +225,9 @@ pub(crate) enum WidgetIdTag {
     Popover = 24,
     AccessibilityLeaf = 25,
     CarouselView = 26,
+    DropdownMenu = 27,
+    DropdownMenuPopup = 28,
+    DropdownMenuItem = 29,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,44 +240,30 @@ pub(crate) fn resolve_widget_id(raw_id: u64, tag: WidgetIdTag, path: &[usize]) -
     if raw_id != AUTO_ID {
         return raw_id;
     }
-
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    let mut hash = FNV_OFFSET;
-    hash ^= tag as u64;
-    hash = hash.wrapping_mul(FNV_PRIME);
-
+    let mut hash = hash_widget_id_segment(WIDGET_ID_HASH_OFFSET, tag as u64);
     for &segment in path {
-        hash ^= (segment as u64).wrapping_add(1);
-        hash = hash.wrapping_mul(FNV_PRIME);
+        hash = hash_widget_id_segment(hash, (segment as u64).wrapping_add(1));
     }
-
-    let resolved = hash | AUTOMATIC_ID_NAMESPACE_BIT;
-    if resolved == AUTO_ID {
-        AUTOMATIC_ID_NAMESPACE_BIT
-    } else {
-        resolved
-    }
+    hash | AUTOMATIC_ID_NAMESPACE_BIT
 }
 
 pub(crate) fn resolve_subwidget_id(base_id: u64, tag: WidgetIdTag, slot: usize) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
+    let path: [usize; 1] = [slot];
+    resolve_subwidget_path_id(base_id, tag, &path)
+}
 
-    let mut hash = FNV_OFFSET;
-    hash ^= tag as u64;
-    hash = hash.wrapping_mul(FNV_PRIME);
-    hash ^= base_id;
-    hash = hash.wrapping_mul(FNV_PRIME);
-    hash ^= (slot as u64).wrapping_add(1);
-    hash = hash.wrapping_mul(FNV_PRIME);
-
-    let resolved = hash | AUTOMATIC_ID_NAMESPACE_BIT;
-    if resolved == AUTO_ID {
-        AUTOMATIC_ID_NAMESPACE_BIT
-    } else {
-        resolved
+pub(crate) fn resolve_subwidget_path_id(base_id: u64, tag: WidgetIdTag, path: &[usize]) -> u64 {
+    let mut hash = hash_widget_id_segment(WIDGET_ID_HASH_OFFSET, tag as u64);
+    hash = hash_widget_id_segment(hash, base_id);
+    for &segment in path {
+        hash = hash_widget_id_segment(hash, (segment as u64).wrapping_add(1));
     }
+    hash | AUTOMATIC_ID_NAMESPACE_BIT
+}
+
+fn hash_widget_id_segment(hash: u64, segment: u64) -> u64 {
+    let mixed: u64 = hash ^ segment;
+    mixed.wrapping_mul(WIDGET_ID_HASH_PRIME)
 }
 
 pub enum Widget<'a, Msg> {
@@ -460,6 +453,12 @@ pub enum Widget<'a, Msg> {
         id: u64,
         child: Box<Widget<'a, Msg>>,
         entries: &'a [ContextMenuEntry<'a, Msg>],
+        style: Style,
+    },
+    DropdownMenu {
+        id: u64,
+        label: &'a str,
+        entries: Vec<DropdownMenuEntry<'a, Msg>>,
         style: Style,
     },
     Popover {
@@ -872,6 +871,33 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates an engine-owned menu button whose label is also its accessibility label.
+    ///
+    /// ```rust
+    /// use rutter::{DropdownMenuEntry, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// enum Msg { Save }
+    /// let menu = Widget::dropdown_menu(
+    ///     "File",
+    ///     vec![DropdownMenuEntry::item("Save", Msg::Save)],
+    ///     Style::default(),
+    /// );
+    /// assert!(matches!(menu, Widget::DropdownMenu { label: "File", .. }));
+    /// ```
+    pub fn dropdown_menu(
+        label: &'a str,
+        entries: Vec<DropdownMenuEntry<'a, Msg>>,
+        style: Style,
+    ) -> Self {
+        Self::DropdownMenu {
+            id: AUTO_ID,
+            label,
+            entries,
+            style,
+        }
+    }
+
     pub fn popover(
         open: bool,
         anchor: Widget<'a, Msg>,
@@ -1071,6 +1097,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Dialog { id: slot, .. }
             | Self::Toast { id: slot, .. }
             | Self::ContextMenu { id: slot, .. }
+            | Self::DropdownMenu { id: slot, .. }
             | Self::Popover { id: slot, .. }
             | Self::CarouselView { id: slot, .. }
             | Self::VirtualList { id: slot, .. }
@@ -1145,6 +1172,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::Dialog { id, .. } => (Some(*id), WidgetIdTag::Dialog, "Dialog"),
             Self::Toast { id, .. } => (Some(*id), WidgetIdTag::Toast, "Toast"),
             Self::ContextMenu { id, .. } => (Some(*id), WidgetIdTag::ContextMenu, "ContextMenu"),
+            Self::DropdownMenu { id, .. } => (Some(*id), WidgetIdTag::DropdownMenu, "DropdownMenu"),
             Self::Popover { id, .. } => (Some(*id), WidgetIdTag::Popover, "Popover"),
             Self::CarouselView { id, .. } => (Some(*id), WidgetIdTag::CarouselView, "CarouselView"),
             Self::VirtualList { id, .. } | Self::VirtualListContent { id, .. } => {
@@ -1175,6 +1203,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::SearchBar { .. }
             | Self::Slider { .. }
             | Self::Select { .. }
+            | Self::DropdownMenu { .. }
             | Self::Accordion { .. }
             | Self::TabBar { .. }
             | Self::CarouselView { .. }
@@ -1195,6 +1224,62 @@ impl<'a, Msg> Widget<'a, Msg> {
             )),
             _ => None,
         }
+    }
+
+    pub(crate) fn dropdown_menu_popup_id(&self, widget_path: &[usize]) -> Option<u64> {
+        match self {
+            Self::DropdownMenu { .. } => Some(resolve_subwidget_path_id(
+                self.resolved_id(widget_path)?,
+                WidgetIdTag::DropdownMenuPopup,
+                &[],
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn dropdown_menu_submenu_popup_id(
+        &self,
+        widget_path: &[usize],
+        entry_path: &[usize],
+    ) -> Option<u64> {
+        match self {
+            Self::DropdownMenu { .. } => Some(resolve_subwidget_path_id(
+                self.resolved_id(widget_path)?,
+                WidgetIdTag::DropdownMenuPopup,
+                entry_path,
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn dropdown_menu_item_focus_id(
+        &self,
+        widget_path: &[usize],
+        entry_path: &[usize],
+    ) -> Option<u64> {
+        match self {
+            Self::DropdownMenu { .. } => Some(resolve_subwidget_path_id(
+                self.resolved_id(widget_path)?,
+                WidgetIdTag::DropdownMenuItem,
+                entry_path,
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn dropdown_menu_item_paths(&self) -> Vec<Vec<usize>> {
+        let Self::DropdownMenu { entries, .. } = self else {
+            return Vec::new();
+        };
+        flatten_entry_paths(entries)
+            .into_iter()
+            .filter(|path| {
+                !matches!(
+                    entry_at_path(entries, path),
+                    Some(DropdownMenuEntry::Separator)
+                )
+            })
+            .collect()
     }
 
     pub(crate) fn dialog_action_focus_id(

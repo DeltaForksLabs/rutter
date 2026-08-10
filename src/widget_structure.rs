@@ -43,6 +43,7 @@ pub(crate) enum WidgetStructureKind {
     VirtualListContent,
     VirtualGrid,
     VirtualGridContent,
+    DropdownMenu,
 }
 
 impl WidgetStructureKind {
@@ -86,6 +87,7 @@ impl WidgetStructureKind {
             Self::VirtualListContent => "VirtualListContent",
             Self::VirtualGrid => "VirtualGrid",
             Self::VirtualGridContent => "VirtualGridContent",
+            Self::DropdownMenu => "DropdownMenu",
         }
     }
 }
@@ -126,6 +128,7 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::Dialog { .. } => Kind::DialogHidden,
         Widget::Toast { .. } => Kind::Toast,
         Widget::ContextMenu { .. } => Kind::ContextMenu,
+        Widget::DropdownMenu { .. } => Kind::DropdownMenu,
         Widget::Popover { open: true, .. } => Kind::PopoverOpen,
         Widget::Popover { .. } => Kind::PopoverClosed,
         Widget::CarouselView { .. } => Kind::CarouselView,

@@ -32,12 +32,20 @@ use crate::input_limits::{
     validate_utf8_range,
 };
 use crate::input_state::InputWidgetState;
+use crate::render::dropdown_menu_overlay::{
+    DropdownMenuOverlayHit, hit_test_dropdown_menu_overlay,
+};
 use crate::render::hit_test::{
     ContextMenuOverlayHit, HitResult, PopoverOverlayHit, find_context_menu_target,
     find_scroll_focus, find_scrollbar_drag_hit, hit_test, hit_test_context_menu_overlay,
     hit_test_popover_overlay,
 };
+use crate::render::select_overlay::collector::collect_open_dropdown_overlays;
 use crate::render::select_overlay::hit_test_select_overlay;
+
+mod accessibility_actions;
+mod dropdown_keyboard;
+mod dropdown_pointer;
 
 fn is_bidi_override_char(ch: char) -> bool {
     matches!(
@@ -255,7 +263,8 @@ fn map_key(key: &Key, ctrl: bool) -> Option<Action> {
 }
 
 fn is_activation_key(key: &Key) -> bool {
-    matches!(key, Key::Named(NamedKey::Enter)) || matches!(key, Key::Character(ch) if ch == " ")
+    matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space))
+        || matches!(key, Key::Character(ch) if ch == " ")
 }
 
 fn collect_toast_runtime_state(widget_states: &HashMap<u64, WidgetState>) -> (Vec<u64>, bool) {
@@ -457,6 +466,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let el = EventLoop::new().map_err(RutterRunError::from)?;
         el.set_control_flow(ControlFlow::Wait);
         let mut r = Self::with_engine(RutterEngine::new()?);
+        r.engine.set_accessibility_waker(el.create_proxy());
         let event_result = el.run_app(&mut r);
         if let Some(error) = r.fatal_error {
             return Err(error);
@@ -466,6 +476,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 }
 
 impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
+        self.process_accessibility_actions();
+        if self.fatal_error.is_some() {
+            event_loop.exit();
+        }
+    }
+
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.active_window_id.is_some() {
             return;
@@ -503,6 +520,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             return;
         }
         self.engine.process_accessibility_event(&event);
+        self.process_accessibility_actions();
+        if self.fatal_error.is_some() {
+            el.exit();
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(size) => {
@@ -578,6 +600,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         }
                     }
                 }
+                if let Err(error) = self.refresh_dropdown_hover() {
+                    self.terminate_for_error(el, error);
+                    return;
+                }
                 self.redraw();
             }
             WindowEvent::MouseInput {
@@ -620,6 +646,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 let theme = A::theme_for(&self.engine.app_state);
                 let (
                     context_menu_overlay_hit,
+                    dropdown_menu_overlay_hit,
                     select_overlay_hit,
                     popover_overlay_hit,
                     context_menu_target,
@@ -647,6 +674,24 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     } else {
                         None
                     };
+                    let dropdown_menu_overlay_hit =
+                        if matches!(button, MouseButton::Left | MouseButton::Right) {
+                            let overlays = collect_open_dropdown_overlays(
+                                &wt,
+                                &self.engine.taffy,
+                                self.engine.last_root_node,
+                                &self.engine.widget_states,
+                                viewport_size,
+                            );
+                            hit_test_dropdown_menu_overlay(
+                                &overlays,
+                                cursor,
+                                viewport_size,
+                                A::locale().direction(),
+                            )
+                        } else {
+                            None
+                        };
                     let popover_overlay_hit = if button == MouseButton::Left {
                         hit_test_popover_overlay(
                             &wt,
@@ -713,6 +758,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     );
                     (
                         context_menu_overlay_hit,
+                        dropdown_menu_overlay_hit,
                         select_overlay_hit,
                         popover_overlay_hit,
                         context_menu_target,
@@ -724,6 +770,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 
                 if let Some(menu_hit) = context_menu_overlay_hit {
                     self.close_all_selects();
+                    self.close_all_dropdown_menus();
                     match menu_hit {
                         ContextMenuOverlayHit::Item { msg, .. } => {
                             self.engine.close_all_context_menus();
@@ -737,6 +784,19 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     }
                     self.redraw();
                     return;
+                }
+
+                if let Some(dropdown_hit) = dropdown_menu_overlay_hit {
+                    self.close_all_selects();
+                    let route_through_dropdown = button == MouseButton::Right
+                        || !matches!(dropdown_hit, DropdownMenuOverlayHit::Trigger { .. });
+                    if route_through_dropdown {
+                        let consumed = self.handle_dropdown_pointer_hit(dropdown_hit, button);
+                        if consumed {
+                            self.redraw();
+                            return;
+                        }
+                    }
                 }
 
                 if let Some(select_hit) = select_overlay_hit {
@@ -775,6 +835,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 
                 if button == MouseButton::Right {
                     self.close_all_selects();
+                    self.close_all_dropdown_menus();
                     if let Some(id) = context_menu_target {
                         self.engine.open_context_menu(id, cursor);
                         self.redraw();
@@ -887,6 +948,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                     }
                                 }
                                 self.engine.layout_dirty = true;
+                            }
+                        }
+                        HitResult::DropdownMenuToggle(id) => {
+                            if button == winit::event::MouseButton::Left {
+                                self.toggle_dropdown_menu(id, false);
                             }
                         }
                         HitResult::SelectOption { id, index } => {
@@ -1013,6 +1079,13 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                let dropdown_target = match self.refresh_dropdown_scroll_target() {
+                    Ok(target) => target,
+                    Err(error) => {
+                        self.terminate_for_error(el, error);
+                        return;
+                    }
+                };
                 let select_popup = match self.refresh_scroll_target_at_cursor() {
                     Ok(select_popup) => select_popup,
                     Err(error) => {
@@ -1021,6 +1094,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     }
                 };
                 let (delta_x, delta_y) = wheel_deltas(delta);
+                if let Some(target) = dropdown_target {
+                    let _ = self.scroll_open_dropdown(target, delta_y);
+                    self.redraw();
+                    return;
+                }
                 let select_changed =
                     select_popup.is_some_and(|id| self.scroll_open_select(id, delta_y));
                 if select_changed || self.scroll_active_target(delta_x, delta_y) {
@@ -1267,6 +1345,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn focus_widget(&mut self, focus_id: Option<u64>) {
+        let retained_menu = focus_id
+            .and_then(|id| self.dropdown_focus_target(id))
+            .map(|(id, _)| id);
+        self.close_dropdowns_except(retained_menu);
         if self.engine.focused_widget_id == focus_id {
             return;
         }
@@ -1583,6 +1665,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         };
         if self.engine.runtime_caches.inputs.contains_key(&fid) {
             return false;
+        }
+        if self.handle_dropdown_key(fid, key) {
+            return true;
         }
 
         if let Some(msg) = self.engine.runtime_caches.buttons.get(&fid).cloned() {
@@ -2048,6 +2133,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         }
         if let Key::Named(NamedKey::Escape) = key {
+            if self.close_active_dropdown_menu() {
+                self.redraw();
+                return;
+            }
             self.close_all_selects();
             self.engine.close_all_context_menus();
             self.dismiss_open_popovers();
@@ -2093,6 +2182,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn handle_tab(&mut self) {
+        if let Some((id, _)) = self
+            .engine
+            .focused_widget_id
+            .and_then(|focus_id| self.dropdown_focus_target(focus_id))
+        {
+            self.close_dropdown_menu(id, true);
+        }
         let ids = self.engine.runtime_caches.focus_order.clone();
         if ids.is_empty() {
             return;

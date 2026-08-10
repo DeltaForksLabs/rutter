@@ -6,6 +6,7 @@
 // ============================================================
 
 pub mod cursor;
+mod dropdown_menu_runtime;
 pub mod gpu;
 pub mod multi_runner;
 pub mod run_error;
@@ -27,6 +28,7 @@ use winit::{
 };
 
 use self::cursor::CursorBlink;
+use self::dropdown_menu_runtime::{DropdownMenuItemRuntime, DropdownMenuRuntime};
 use self::gpu::{
     BackendType, GraphicsBackend, GraphicsError, create_best_backend, create_required_backend,
 };
@@ -36,8 +38,8 @@ use self::widget_state::{
     TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
 };
 use crate::accessibility::{
-    AccessibilityInputs, IgnoredActionHandler, IgnoredDeactivationHandler, LazyActivationHandler,
-    build_accessibility_update,
+    AccessibilityActionInbox, AccessibilityInputs, IgnoredDeactivationHandler,
+    LazyActivationHandler, build_accessibility_update,
 };
 use crate::app::{AppLogic, SurfaceConfig};
 use crate::input_limits::{InputKind, InputLimits};
@@ -45,6 +47,9 @@ use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
 };
 use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
+use crate::render::select_overlay::collector::{
+    collect_dropdown_triggers, collect_open_dropdown_overlays,
+};
 use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::theme::Theme;
@@ -132,12 +137,13 @@ fn collect_toast_runtime_updates_impl<Msg>(
     }
 }
 
-fn collect_focus_order<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>) {
+fn collect_focus_order<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>) -> bool {
     let mut path = Vec::new();
     if collect_overlay_focus_scope(widget, out, &mut path) {
-        return;
+        return true;
     }
     collect_focus_order_impl(widget, out, &mut path);
+    false
 }
 
 fn collect_overlay_focus_scope<Msg>(
@@ -200,23 +206,31 @@ fn collect_overlay_focus_scope<Msg>(
             if !visible {
                 return false;
             }
+            let first_focus_index = out.len();
             path.push(0);
             let found = collect_overlay_focus_scope(child, out, path);
             if !found {
                 collect_focus_order_impl(child, out, path);
             }
             path.pop();
+            if out.len() == first_focus_index {
+                out.push(widget.resolved_id(path).unwrap());
+            }
             true
         }
         Widget::Dialog { visible, .. } => {
             if !visible {
                 return false;
             }
+            let first_focus_index = out.len();
             if let Some(cancel_id) = widget.dialog_action_focus_id(path, DialogAction::Cancel) {
                 out.push(cancel_id);
             }
             if let Some(confirm_id) = widget.dialog_action_focus_id(path, DialogAction::Confirm) {
                 out.push(confirm_id);
+            }
+            if out.len() == first_focus_index {
+                out.push(widget.resolved_id(path).unwrap());
             }
             true
         }
@@ -236,6 +250,7 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::SearchBar { .. }
         | Widget::Slider { .. }
         | Widget::Select { .. }
+        | Widget::DropdownMenu { .. }
         | Widget::CarouselView { .. }
         | Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
@@ -379,6 +394,10 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     accordions: HashMap<u64, Msg>,
     sliders: HashMap<u64, SliderRuntime<Msg>>,
     selects: HashMap<u64, SelectRuntime<Msg>>,
+    dropdown_menus: HashMap<u64, DropdownMenuRuntime<Msg>>,
+    dropdown_menu_items: HashMap<u64, DropdownMenuItemRuntime>,
+    visible_dropdown_menus: HashSet<u64>,
+    visible_dropdown_triggers: HashSet<u64>,
     tabs: HashMap<u64, TabRuntime<Msg>>,
     tab_items: HashMap<u64, TabFocusRuntime>,
     carousels: HashMap<u64, CarouselRuntime<Msg>>,
@@ -401,6 +420,10 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             accordions: HashMap::new(),
             sliders: HashMap::new(),
             selects: HashMap::new(),
+            dropdown_menus: HashMap::new(),
+            dropdown_menu_items: HashMap::new(),
+            visible_dropdown_menus: HashSet::new(),
+            visible_dropdown_triggers: HashSet::new(),
             tabs: HashMap::new(),
             tab_items: HashMap::new(),
             carousels: HashMap::new(),
@@ -424,6 +447,10 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.accordions.clear();
         self.sliders.clear();
         self.selects.clear();
+        self.dropdown_menus.clear();
+        self.dropdown_menu_items.clear();
+        self.visible_dropdown_menus.clear();
+        self.visible_dropdown_triggers.clear();
         self.tabs.clear();
         self.tab_items.clear();
         self.carousels.clear();
@@ -432,6 +459,96 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.toast_dismiss.clear();
         self.popover_dismiss.clear();
     }
+}
+
+fn runtime_focus_is_live<Msg: Clone>(caches: &WidgetRuntimeCaches<Msg>, id: u64) -> bool {
+    if caches.dropdown_menus.contains_key(&id) {
+        return caches.visible_dropdown_triggers.contains(&id);
+    }
+    if caches.focus_order.contains(&id) {
+        return true;
+    }
+    caches
+        .dropdown_menu_items
+        .get(&id)
+        .is_some_and(|item| caches.visible_dropdown_menus.contains(&item.parent_id))
+}
+
+fn close_suppressed_dropdowns(
+    states: &mut HashMap<u64, WidgetState>,
+    visible_dropdowns: &HashSet<u64>,
+) -> HashSet<u64> {
+    let mut closed = HashSet::new();
+    for (id, state) in states {
+        if visible_dropdowns.contains(id) {
+            continue;
+        }
+        if let Some(menu) = state.as_dropdown_menu_mut().filter(|menu| menu.is_open()) {
+            menu.close();
+            closed.insert(*id);
+        }
+    }
+    closed
+}
+
+fn close_changed_dropdown_topologies<Msg: Clone>(
+    current: &WidgetRuntimeCaches<Msg>,
+    next: &WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+) -> HashSet<u64> {
+    let changed = current
+        .dropdown_menus
+        .iter()
+        .filter_map(|(id, runtime)| {
+            next.dropdown_menus
+                .get(id)
+                .is_some_and(|next| !runtime.has_same_topology(next))
+                .then_some(*id)
+        })
+        .collect::<HashSet<_>>();
+    for id in &changed {
+        if let Some(menu) = states
+            .get_mut(id)
+            .and_then(WidgetState::as_dropdown_menu_mut)
+        {
+            menu.close();
+        }
+    }
+    changed
+}
+
+fn focused_changed_dropdown<Msg: Clone>(
+    caches: &WidgetRuntimeCaches<Msg>,
+    focused_id: Option<u64>,
+    changed: &HashSet<u64>,
+) -> Option<u64> {
+    let item = caches.dropdown_menu_items.get(&focused_id?)?;
+    changed.contains(&item.parent_id).then_some(item.parent_id)
+}
+
+fn focus_belongs_to_dropdowns<Msg: Clone>(
+    caches: &WidgetRuntimeCaches<Msg>,
+    focused_id: Option<u64>,
+    dropdown_ids: &HashSet<u64>,
+) -> bool {
+    let Some(focused_id) = focused_id else {
+        return false;
+    };
+    if caches.dropdown_menus.contains_key(&focused_id) {
+        return dropdown_ids.contains(&focused_id);
+    }
+    caches
+        .dropdown_menu_items
+        .get(&focused_id)
+        .is_some_and(|item| dropdown_ids.contains(&item.parent_id))
+}
+
+fn first_live_focus_id<Msg: Clone>(caches: &WidgetRuntimeCaches<Msg>) -> Option<u64> {
+    caches
+        .focus_order
+        .iter()
+        .copied()
+        .find(|id| runtime_focus_is_live(caches, *id))
 }
 
 fn insert_runtime_entry<V>(
@@ -457,6 +574,7 @@ fn widget_state_matches_seed(state: &WidgetState, kind: &str) -> bool {
         (WidgetState::Slider(_), "slider")
             | (WidgetState::Scroll(_), "scroll")
             | (WidgetState::Select(_), "select")
+            | (WidgetState::DropdownMenu(_), "dropdown_menu")
             | (WidgetState::Anim(_), "anim")
             | (WidgetState::Tab(_), "tab")
             | (WidgetState::Modal(_), "modal")
@@ -553,6 +671,7 @@ fn sync_virtual_grid_runtime<Msg: Clone>(
 pub struct RutterEngine<A: AppLogic> {
     pub window: Option<Rc<Window>>,
     accessibility_adapter: Option<accesskit_winit::Adapter>,
+    accessibility_actions: AccessibilityActionInbox,
     graphics_backend: Option<Box<dyn GraphicsBackend>>,
     pub font_system: Rc<RefCell<FontSystem>>,
     pub swash_cache: SwashCache,
@@ -635,6 +754,7 @@ impl<A: AppLogic> RutterEngine<A> {
         Ok(Self {
             window: None,
             accessibility_adapter: None,
+            accessibility_actions: AccessibilityActionInbox::default(),
             graphics_backend: None,
             font_system,
             swash_cache: SwashCache::new(),
@@ -697,7 +817,7 @@ impl<A: AppLogic> RutterEngine<A> {
             el,
             &window,
             LazyActivationHandler,
-            IgnoredActionHandler,
+            self.accessibility_actions.handler(),
             IgnoredDeactivationHandler,
         ));
         self.window = Some(window.clone());
@@ -710,6 +830,7 @@ impl<A: AppLogic> RutterEngine<A> {
 
     pub(crate) fn release_surface(&mut self) {
         self.accessibility_adapter = None;
+        self.accessibility_actions.retire_generation();
         self.graphics_backend = None;
         self.window = None;
         self.layout_dirty = true;
@@ -731,6 +852,16 @@ impl<A: AppLogic> RutterEngine<A> {
             return;
         };
         adapter.process_event(&window, event);
+    }
+
+    pub(crate) fn take_accessibility_actions(&self) -> Vec<accesskit::ActionRequest> {
+        self.accessibility_actions.drain()
+    }
+
+    pub(crate) fn set_accessibility_waker(&self, proxy: winit::event_loop::EventLoopProxy<()>) {
+        self.accessibility_actions.set_waker(move || {
+            let _ = proxy.send_event(());
+        });
     }
 
     pub fn backend_type(&self) -> Option<BackendType> {
@@ -834,6 +965,9 @@ impl<A: AppLogic> RutterEngine<A> {
                     "slider" => WidgetState::Slider(SliderState::default()),
                     "scroll" => WidgetState::Scroll(ScrollState::default()),
                     "select" => WidgetState::Select(SelectState::default()),
+                    "dropdown_menu" => {
+                        WidgetState::DropdownMenu(crate::dropdown_menu::DropdownMenuState::default())
+                    }
                     "anim" => {
                         has_anim = true;
                         WidgetState::Anim(AnimState::default())
@@ -1059,13 +1193,62 @@ impl<A: AppLogic> RutterEngine<A> {
             Some(root),
             theme.spacing,
         )?;
-        collect_focus_order(&widget_tree, &mut self.runtime_cache_scratch.focus_order);
+        let overlay_focus_scope =
+            collect_focus_order(&widget_tree, &mut self.runtime_cache_scratch.focus_order);
+        self.runtime_cache_scratch.visible_dropdown_triggers = collect_dropdown_triggers(
+            &widget_tree,
+            &self.taffy,
+            root,
+            &self.widget_states,
+            (logical.width as f32, logical.height as f32),
+        )
+        .into_iter()
+        .map(|trigger| trigger.id)
+        .collect();
+        self.runtime_cache_scratch.visible_dropdown_menus = collect_open_dropdown_overlays(
+            &widget_tree,
+            &self.taffy,
+            root,
+            &self.widget_states,
+            (logical.width as f32, logical.height as f32),
+        )
+        .into_iter()
+        .map(|overlay| overlay.id)
+        .collect();
+        let suppressed_dropdowns = close_suppressed_dropdowns(
+            &mut self.widget_states,
+            &self.runtime_cache_scratch.visible_dropdown_menus,
+        );
+        let changed_dropdowns = close_changed_dropdown_topologies(
+            &self.runtime_caches,
+            &self.runtime_cache_scratch,
+            &mut self.widget_states,
+        );
+        let focus_outside_overlay = overlay_focus_scope
+            && self
+                .focused_widget_id
+                .is_none_or(|id| !runtime_focus_is_live(&self.runtime_cache_scratch, id));
+        if focus_outside_overlay
+            || focus_belongs_to_dropdowns(
+                &self.runtime_caches,
+                self.focused_widget_id,
+                &suppressed_dropdowns,
+            )
+        {
+            self.focused_widget_id = first_live_focus_id(&self.runtime_cache_scratch);
+        } else if let Some(parent_id) = focused_changed_dropdown(
+            &self.runtime_caches,
+            self.focused_widget_id,
+            &changed_dropdowns,
+        ) {
+            self.focused_widget_id = Some(parent_id);
+        }
         std::mem::swap(&mut self.runtime_caches, &mut self.runtime_cache_scratch);
         drop(widget_tree);
         self.sync_input_buffers();
         if self
             .focused_widget_id
-            .is_some_and(|id| !self.runtime_caches.focus_order.contains(&id))
+            .is_some_and(|id| !runtime_focus_is_live(&self.runtime_caches, id))
         {
             self.focused_widget_id = None;
         }
@@ -1258,6 +1441,25 @@ impl<A: AppLogic> RutterEngine<A> {
                         option_count: options.len(),
                     },
                     "selects",
+                )?;
+            }
+            Widget::DropdownMenu { entries, .. } => {
+                let id = widget.resolved_id(path).unwrap();
+                let runtime = DropdownMenuRuntime::from_widget(widget, path, entries);
+                runtime.validate_entry_identities(id)?;
+                for (focus_id, item) in runtime.item_focus_entries(id) {
+                    insert_runtime_entry(
+                        &mut runtime_caches.dropdown_menu_items,
+                        focus_id,
+                        item,
+                        "dropdown menu items",
+                    )?;
+                }
+                insert_runtime_entry(
+                    &mut runtime_caches.dropdown_menus,
+                    id,
+                    runtime,
+                    "dropdown menus",
                 )?;
             }
             Widget::Accordion {
@@ -1669,7 +1871,13 @@ impl<A: AppLogic> RutterEngine<A> {
                 self.last_root_node,
                 AccessibilityInputs {
                     input_states: &self.input_states,
+                    widget_states: &self.widget_states,
                     focused_widget_id: self.focused_widget_id,
+                    viewport: (
+                        phys.width as f32 / self.scale_factor,
+                        phys.height as f32 / self.scale_factor,
+                    ),
+                    direction: A::locale().direction(),
                 },
             )
         });
@@ -1723,6 +1931,10 @@ impl<A: AppLogic> RutterEngine<A> {
 #[cfg(test)]
 #[path = "../../tests/unit/theme_propagation_engine_unit_tests.rs"]
 mod theme_propagation_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/dropdown_menu_engine_unit_tests.rs"]
+mod dropdown_menu_tests;
 
 #[cfg(test)]
 mod tests {

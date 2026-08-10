@@ -48,6 +48,7 @@ pub enum HitResult<Msg> {
         step: f32,
     },
     SelectToggle(u64),
+    DropdownMenuToggle(u64),
     SelectOption {
         id: u64,
         index: usize,
@@ -651,6 +652,9 @@ fn hit_test_impl<Msg: Clone>(
             })
         }
         Widget::Select { .. } => Some(HitResult::SelectToggle(widget.resolved_id(path).unwrap())),
+        Widget::DropdownMenu { .. } => Some(HitResult::DropdownMenuToggle(
+            widget.resolved_id(path).unwrap(),
+        )),
         Widget::ScrollView { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
             path.push(0);
@@ -1055,6 +1059,9 @@ fn collect_stateful_ids_impl<Msg>(
     match widget {
         Widget::Slider { .. } => out.push((widget.resolved_id(path).unwrap(), "slider")),
         Widget::Select { .. } => out.push((widget.resolved_id(path).unwrap(), "select")),
+        Widget::DropdownMenu { .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "dropdown_menu"))
+        }
         Widget::Spinner { .. } => out.push((widget.resolved_id(path).unwrap(), "anim")),
         Widget::ScrollView { child, .. } => {
             out.push((widget.resolved_id(path).unwrap(), "scroll"));

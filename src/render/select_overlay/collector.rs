@@ -11,24 +11,42 @@ use super::super::hit_test::{modal_card_rect, popover_rect};
 use crate::engine::widget_state::{PopoverState, WidgetState};
 use crate::layout::RutterContext;
 use crate::widget::Widget;
+use crate::widgets::dropdown_menu::{DropdownMenuEntry, DropdownMenuState};
 
 #[derive(Clone, Copy)]
-pub(super) struct SelectOverlay<'a> {
-    pub(super) id: u64,
-    pub(super) options: &'a [&'a str],
-    pub(super) selected_index: usize,
-    pub(super) hovered_option: Option<usize>,
-    pub(super) anchor: SkiaRect,
+pub(crate) struct SelectOverlay<'a> {
+    pub(crate) id: u64,
+    pub(crate) options: &'a [&'a str],
+    pub(crate) selected_index: usize,
+    pub(crate) hovered_option: Option<usize>,
+    pub(crate) anchor: SkiaRect,
+    owner: OverlayOwner,
+}
+
+pub(crate) struct DropdownOverlay<'a, Msg> {
+    pub(crate) id: u64,
+    pub(crate) entries: &'a [DropdownMenuEntry<'a, Msg>],
+    pub(crate) anchor: SkiaRect,
+    pub(crate) visible_anchor: SkiaRect,
+    pub(crate) state: DropdownMenuState,
+    pub(crate) owner: OverlayOwner,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DropdownTrigger {
+    pub(crate) id: u64,
+    pub(crate) anchor: SkiaRect,
+    pub(crate) visible_anchor: SkiaRect,
     owner: OverlayOwner,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct OverlayOwner {
+pub(crate) struct OverlayOwner {
     phase: u8,
     order: u64,
 }
 
-pub(super) fn collect_open_select_overlays<'a, Msg>(
+pub(crate) fn collect_open_select_overlays<'a, Msg>(
     widget: &Widget<'a, Msg>,
     taffy: &TaffyTree<RutterContext>,
     root: NodeId,
@@ -37,14 +55,46 @@ pub(super) fn collect_open_select_overlays<'a, Msg>(
 ) -> Vec<SelectOverlay<'a>> {
     let mut collector = SelectOverlayCollector::new(taffy, widget_states, viewport);
     collector.visit(widget, root, Point::new(0.0, 0.0));
-    collector.finish()
+    collector.finish_selects()
 }
 
-struct SelectOverlayCollector<'tree, 'widget> {
+pub(crate) fn collect_open_dropdown_overlays<'widget, 'entry, Msg>(
+    widget: &'widget Widget<'entry, Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    root: NodeId,
+    widget_states: &HashMap<u64, WidgetState>,
+    viewport: (f32, f32),
+) -> Vec<DropdownOverlay<'widget, Msg>>
+where
+    'entry: 'widget,
+{
+    let mut collector = SelectOverlayCollector::new(taffy, widget_states, viewport);
+    collector.visit(widget, root, Point::new(0.0, 0.0));
+    collector.finish_dropdowns()
+}
+
+pub(crate) fn collect_dropdown_triggers<'widget, 'entry, Msg>(
+    widget: &'widget Widget<'entry, Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    root: NodeId,
+    widget_states: &HashMap<u64, WidgetState>,
+    viewport: (f32, f32),
+) -> Vec<DropdownTrigger>
+where
+    'entry: 'widget,
+{
+    let mut collector = SelectOverlayCollector::new(taffy, widget_states, viewport);
+    collector.visit(widget, root, Point::new(0.0, 0.0));
+    collector.finish_dropdown_triggers()
+}
+
+struct SelectOverlayCollector<'tree, 'widget, 'entry, Msg> {
     taffy: &'tree TaffyTree<RutterContext>,
     widget_states: &'tree HashMap<u64, WidgetState>,
     viewport: (f32, f32),
-    overlays: Vec<SelectOverlay<'widget>>,
+    overlays: Vec<SelectOverlay<'entry>>,
+    dropdowns: Vec<DropdownOverlay<'widget, Msg>>,
+    dropdown_triggers: Vec<DropdownTrigger>,
     path: Vec<usize>,
     clip: Option<SkiaRect>,
     active_owner: OverlayOwner,
@@ -52,7 +102,7 @@ struct SelectOverlayCollector<'tree, 'widget> {
     next_order: u64,
 }
 
-impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
+impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget, 'entry, Msg> {
     fn new(
         taffy: &'tree TaffyTree<RutterContext>,
         widget_states: &'tree HashMap<u64, WidgetState>,
@@ -63,6 +113,8 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
             widget_states,
             viewport,
             overlays: Vec::new(),
+            dropdowns: Vec::new(),
+            dropdown_triggers: Vec::new(),
             path: Vec::new(),
             clip: Some(SkiaRect::from_xywh(0.0, 0.0, viewport.0, viewport.1)),
             active_owner: OverlayOwner::default(),
@@ -71,13 +123,25 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         }
     }
 
-    fn finish(mut self) -> Vec<SelectOverlay<'widget>> {
+    fn finish_selects(mut self) -> Vec<SelectOverlay<'entry>> {
         self.overlays
             .retain(|overlay| overlay.owner == self.top_owner);
         self.overlays
     }
 
-    fn visit<Msg>(&mut self, widget: &Widget<'widget, Msg>, node: NodeId, parent: Point) {
+    fn finish_dropdowns(mut self) -> Vec<DropdownOverlay<'widget, Msg>> {
+        self.dropdowns
+            .retain(|overlay| overlay.owner == self.top_owner);
+        self.dropdowns
+    }
+
+    fn finish_dropdown_triggers(mut self) -> Vec<DropdownTrigger> {
+        self.dropdown_triggers
+            .retain(|trigger| trigger.owner == self.top_owner);
+        self.dropdown_triggers
+    }
+
+    fn visit(&mut self, widget: &'widget Widget<'entry, Msg>, node: NodeId, parent: Point) {
         let Some((absolute, size)) = self.node_frame(node, parent) else {
             return;
         };
@@ -87,6 +151,9 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
                 selected_index,
                 ..
             } => self.capture_select(widget, options, *selected_index, absolute, size),
+            Widget::DropdownMenu { entries, .. } => {
+                self.capture_dropdown(widget, entries, absolute, size)
+            }
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
                 self.visit_children(children, node, absolute)
             }
@@ -117,10 +184,10 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         Some((absolute, (layout.size.width, layout.size.height)))
     }
 
-    fn capture_select<Msg>(
+    fn capture_select(
         &mut self,
-        widget: &Widget<'widget, Msg>,
-        options: &'widget [&'widget str],
+        widget: &Widget<'entry, Msg>,
+        options: &'entry [&'entry str],
         selected_index: usize,
         absolute: Point,
         size: (f32, f32),
@@ -143,9 +210,46 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         });
     }
 
-    fn visit_children<Msg>(
+    fn capture_dropdown(
         &mut self,
-        children: &[Widget<'widget, Msg>],
+        widget: &Widget<'entry, Msg>,
+        entries: &'widget [DropdownMenuEntry<'entry, Msg>],
+        absolute: Point,
+        size: (f32, f32),
+    ) {
+        let id = widget.resolved_id(&self.path).unwrap();
+        let anchor = SkiaRect::from_xywh(absolute.x, absolute.y, size.0, size.1);
+        if self.clip.is_some_and(|clip| !rects_overlap(anchor, clip)) {
+            return;
+        }
+        let visible_anchor = self
+            .clip
+            .map_or(anchor, |clip| intersect_rect(anchor, clip));
+        self.dropdown_triggers.push(DropdownTrigger {
+            id,
+            anchor,
+            visible_anchor,
+            owner: self.active_owner,
+        });
+        let Some(WidgetState::DropdownMenu(state)) = self.widget_states.get(&id) else {
+            return;
+        };
+        if !state.is_open() {
+            return;
+        }
+        self.dropdowns.push(DropdownOverlay {
+            id,
+            entries,
+            anchor,
+            visible_anchor,
+            state: state.clone(),
+            owner: self.active_owner,
+        });
+    }
+
+    fn visit_children(
+        &mut self,
+        children: &'widget [Widget<'entry, Msg>],
         node: NodeId,
         absolute: Point,
     ) {
@@ -159,9 +263,9 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         }
     }
 
-    fn visit_child<Msg>(
+    fn visit_child(
         &mut self,
-        child: &Widget<'widget, Msg>,
+        child: &'widget Widget<'entry, Msg>,
         child_node: NodeId,
         parent: Point,
         path_index: usize,
@@ -171,9 +275,9 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         self.path.pop();
     }
 
-    fn visit_first<Msg>(
+    fn visit_first(
         &mut self,
-        child: &Widget<'widget, Msg>,
+        child: &'widget Widget<'entry, Msg>,
         node: NodeId,
         parent: Point,
         path_index: usize,
@@ -188,10 +292,10 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         }
     }
 
-    fn visit_scroll<Msg>(
+    fn visit_scroll(
         &mut self,
-        widget: &Widget<'widget, Msg>,
-        child: &Widget<'widget, Msg>,
+        widget: &Widget<'entry, Msg>,
+        child: &'widget Widget<'entry, Msg>,
         node: NodeId,
         absolute: Point,
         size: (f32, f32),
@@ -210,10 +314,10 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         self.clip = previous_clip;
     }
 
-    fn visit_accordion<Msg>(
+    fn visit_accordion(
         &mut self,
         expanded: bool,
-        child: &Widget<'widget, Msg>,
+        child: &'widget Widget<'entry, Msg>,
         node: NodeId,
         absolute: Point,
     ) {
@@ -224,10 +328,10 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         self.visit_first(child, node, parent, 0);
     }
 
-    fn visit_modal<Msg>(
+    fn visit_modal(
         &mut self,
         visible: bool,
-        child: &Widget<'widget, Msg>,
+        child: &'widget Widget<'entry, Msg>,
         node: NodeId,
         absolute: Point,
         size: (f32, f32),
@@ -251,11 +355,11 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         self.visit_overlay_child(child, child_node, parent, 0, 1);
     }
 
-    fn visit_popover<Msg>(
+    fn visit_popover(
         &mut self,
-        widget: &Widget<'widget, Msg>,
-        anchor: &Widget<'widget, Msg>,
-        content: &Widget<'widget, Msg>,
+        widget: &Widget<'entry, Msg>,
+        anchor: &'widget Widget<'entry, Msg>,
+        content: &'widget Widget<'entry, Msg>,
         node: NodeId,
         absolute: Point,
     ) {
@@ -276,9 +380,9 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         }
     }
 
-    fn visit_popover_content<Msg>(
+    fn visit_popover_content(
         &mut self,
-        content: &Widget<'widget, Msg>,
+        content: &'widget Widget<'entry, Msg>,
         nodes: &[NodeId],
         state: &PopoverState,
     ) {
@@ -317,9 +421,9 @@ impl<'tree, 'widget> SelectOverlayCollector<'tree, 'widget> {
         Some((popup_node, content_node))
     }
 
-    fn visit_overlay_child<Msg>(
+    fn visit_overlay_child(
         &mut self,
-        child: &Widget<'widget, Msg>,
+        child: &'widget Widget<'entry, Msg>,
         child_node: NodeId,
         parent: Point,
         path_index: usize,
@@ -359,10 +463,14 @@ fn intersect_optional(existing: Option<SkiaRect>, next: SkiaRect) -> Option<Skia
     let Some(existing) = existing else {
         return Some(next);
     };
-    Some(SkiaRect::new(
+    Some(intersect_rect(existing, next))
+}
+
+fn intersect_rect(existing: SkiaRect, next: SkiaRect) -> SkiaRect {
+    SkiaRect::new(
         existing.left.max(next.left),
         existing.top.max(next.top),
         existing.right.min(next.right),
         existing.bottom.min(next.bottom),
-    ))
+    )
 }

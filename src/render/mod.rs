@@ -5,10 +5,12 @@
 // Rutter Framework — render/mod.rs
 // ============================================================
 
+pub(crate) mod dropdown_menu_overlay;
 pub mod hit_test;
 pub mod image;
 mod image_cache;
 mod image_headers;
+mod overlay_canvas;
 pub mod pipeline;
 pub(crate) mod rich_text;
 pub(crate) mod select_overlay;
@@ -254,6 +256,18 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         font_cache,
         theme,
         scale,
+    );
+    dropdown_menu_overlay::draw_dropdown_menu_overlays(
+        canvas,
+        taffy,
+        node,
+        widget,
+        widget_states,
+        mouse_pos,
+        font_cache,
+        theme,
+        scale,
+        node_layout_direction(taffy, node),
     );
     draw_toast_overlays(canvas, widget, widget_states, font_cache, theme, scale);
     draw_context_menu_overlays(
@@ -1293,6 +1307,25 @@ fn draw_widgets_impl<'w, Msg>(
                 local_mouse,
                 font_cache,
                 theme,
+                node_layout_direction(taffy, node),
+            );
+        }
+        Widget::DropdownMenu { label, .. } => {
+            let resolved_id = resolved_id.unwrap();
+            let is_open = matches!(
+                widget_states.get(&resolved_id),
+                Some(WidgetState::DropdownMenu(state)) if state.is_open()
+            );
+            dropdown_menu_overlay::draw_dropdown_menu_trigger(
+                canvas,
+                label,
+                is_open,
+                is_focused,
+                size,
+                local_mouse,
+                font_cache,
+                theme,
+                node_layout_direction(taffy, node),
             );
         }
         Widget::TabBar { tabs, active, .. } => {
@@ -4000,6 +4033,7 @@ fn draw_select_trigger(
     mouse: Point,
     font_cache: &mut HashMap<(String, u32), Font>,
     theme: &Theme,
+    direction: LayoutDirection,
 ) {
     let closed_h = size.1;
     let hovered = SkiaRect::from_xywh(0.0, 0.0, size.0, closed_h).contains(mouse);
@@ -4030,7 +4064,13 @@ fn draw_select_trigger(
             Theme::alpha(theme.on_surface, 160)
         });
         p.set_anti_alias(true);
-        canvas.draw_str(label, (6.0, -4.0), &f, &p);
+        let width = f.measure_str(label, Some(&p)).0;
+        canvas.draw_str(
+            label,
+            (inline_text_x(direction, size.0, width, 6.0), -4.0),
+            &f,
+            &p,
+        );
     }
     let display = options.get(selected_index).copied().unwrap_or(placeholder);
     let tc = if display == placeholder {
@@ -4042,9 +4082,13 @@ fn draw_select_trigger(
     let mut tp = Paint::default();
     tp.set_color(tc);
     tp.set_anti_alias(true);
+    let display_width = f.measure_str(display, Some(&tp)).0;
     canvas.draw_str(
         display,
-        (8.0, closed_h / 2.0 + theme.font_body / 3.0),
+        (
+            inline_text_x(direction, size.0, display_width, 8.0),
+            closed_h / 2.0 + theme.font_body / 3.0,
+        ),
         &f,
         &tp,
     );
@@ -4054,9 +4098,13 @@ fn draw_select_trigger(
     cp.set_color(Theme::alpha(theme.on_surface, 160));
     cp.set_anti_alias(true);
     let cw = cf.measure_str(chevron, Some(&cp)).0;
+    let chevron_x = match direction {
+        LayoutDirection::Ltr => size.0 - cw - 8.0,
+        LayoutDirection::Rtl => 8.0,
+    };
     canvas.draw_str(
         chevron,
-        (size.0 - cw - 8.0, closed_h / 2.0 + theme.font_body / 3.0),
+        (chevron_x, closed_h / 2.0 + theme.font_body / 3.0),
         &cf,
         &cp,
     );
@@ -4067,6 +4115,13 @@ fn draw_select_trigger(
             theme.radius_sm,
             theme,
         );
+    }
+}
+
+fn inline_text_x(direction: LayoutDirection, width: f32, text_width: f32, padding: f32) -> f32 {
+    match direction {
+        LayoutDirection::Ltr => padding,
+        LayoutDirection::Rtl => (width - text_width - padding).max(padding),
     }
 }
 

@@ -54,7 +54,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 ### Accessibility
 
 - AccessKit-backed accessibility tree integrated with `winit`.
-- Semantic roles for buttons, text inputs, toggles, sliders, progress indicators, lists, grids, dialogs, and status messages.
+- Semantic roles for buttons, text inputs, toggles, sliders, progress indicators, lists, grids, menus, dialogs, and status messages.
 - Accessible labels, values, toggle state, numeric ranges, and focus propagation from the Rutter widget tree.
 - Window events are forwarded only to the matching window's AccessKit adapter so platform assistive technologies observe the correct UI.
 - The window is kept hidden until the accessibility adapter is initialized, avoiding an initial inaccessible window snapshot.
@@ -65,13 +65,14 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Text and rich-content button variants, checkbox, switch, radio, slider, select, progress bar, and spinner.
 - Text input, search bar, and multiline text area.
 - Scroll view, virtual list, virtual grid, and horizontally virtualized carousel for large item sets.
-- Calendar, date picker, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
+- Calendar, date picker, dropdown menu, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
 
 ### Overlays
 
 - Dialogs with floating positions: top, center, and bottom.
 - Context menus triggered from right-click interactions.
 - Generic popovers anchored to a widget and capable of rendering arbitrary widget content.
+- Accessible dropdown menus with viewport-aware submenus and independent scrolling surfaces.
 - Toast notifications with independent placement and timers.
 
 ### Rendering
@@ -130,6 +131,7 @@ cargo run -- modal_toast
 cargo run -- vlist
 cargo run -- vgrid
 cargo run -- popover
+cargo run -- dropdown_menu
 cargo run -- calendar
 cargo run -- carousel
 cargo run -- multi_window
@@ -315,6 +317,8 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 
 An open `Select` keeps its trigger in normal layout and renders its options in a dedicated overlay pass. The popup therefore covers later content without moving siblings, opens on the side with more usable space, and constrains long option lists to a viewport-safe window that follows keyboard and mouse-wheel selection.
 
+`Select` chooses one value. `DropdownMenu` instead exposes commands and optional checkbox/radio state; it does not represent a selected form value.
+
 ### Display Widgets
 
 - `Text`
@@ -342,6 +346,7 @@ let widget: Widget<'_, ()> = Widget::rich_text(content, Style::default());
 - `Dialog`
 - `Toast`
 - `ContextMenu`
+- `DropdownMenu`
 - `Popover`
 - `Calendar`
 - `DatePicker`
@@ -352,6 +357,37 @@ let widget: Widget<'_, ()> = Widget::rich_text(content, Style::default());
 - `VirtualGridContent`
 
 `VirtualListContent` and `VirtualGridContent` keep row and cell virtualization while allowing each visible item to render arbitrary widget content, including images, icons, and composed layouts.
+
+### DropdownMenu
+
+`Widget::dropdown_menu` creates an engine-owned menu button. Entries are recursively owned and support commands, disabled commands, separators, checkboxes, radio items, and nested submenus. Root menus prefer the block-end side of the trigger, submenus prefer inline-end, and both flip or clamp against the viewport. Long menu levels scroll independently with the mouse wheel.
+
+```rust
+use rutter::{DropdownMenuEntry, Widget};
+
+let menu = Widget::dropdown_menu(
+    "Project actions",
+    vec![
+        DropdownMenuEntry::item("Open", Msg::Open),
+        DropdownMenuEntry::checkbox("Show grid", state.show_grid, Msg::ToggleGrid),
+        DropdownMenuEntry::separator(),
+        DropdownMenuEntry::submenu(
+            "Export",
+            vec![
+                DropdownMenuEntry::item("JSON", Msg::ExportJson),
+                DropdownMenuEntry::disabled_item("PDF (not installed)"),
+            ],
+        ),
+    ],
+    trigger_style,
+);
+```
+
+Sibling entries with the same kind, label, and enabled state must use distinct stable keys, such as `DropdownMenuEntry::item("Open", message).with_key(7)`. This lets the runtime reject stale actions safely when otherwise identical commands reorder.
+
+Enter, Space, Arrow Down, and Arrow Up open the menu. Arrow keys, Home, End, and typeahead move focus; the locale-aware inline arrow opens submenus and the opposite arrow returns to the parent. Escape and item activation close the menu and restore trigger focus, while Tab closes it and continues normal traversal. Disabled entries remain focusable for announcement but cannot activate.
+
+AccessKit exposes the trigger as a button with `HasPopup::Menu`, each surface as `Menu`, and command/check/radio descendants through the matching menu-item roles. Focus, click, expand, and collapse requests from assistive technology are routed through the same runtime transitions used by pointer and keyboard input. See `examples/widgets/dropdown_menu_demo.rs` or run `cargo run -- dropdown_menu`.
 
 ### CarouselView
 

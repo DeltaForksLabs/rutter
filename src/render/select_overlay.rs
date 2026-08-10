@@ -6,13 +6,14 @@ use std::collections::HashMap;
 use skia_safe::{Contains, Font, Paint, Point, RRect, Rect as SkiaRect, canvas::Canvas, paint};
 use taffy::prelude::{NodeId, TaffyTree};
 
+use super::overlay_canvas::logical_canvas_size;
 use super::text::get_cached_font;
 use crate::engine::widget_state::WidgetState;
 use crate::layout::{OPTION_HEIGHT, RutterContext};
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-mod collector;
+pub(crate) mod collector;
 
 use collector::{SelectOverlay, collect_open_select_overlays};
 
@@ -126,15 +127,6 @@ fn visible_option_count(option_count: usize, available_height: f32) -> usize {
 fn first_visible_option(option_count: usize, visible_options: usize, focus: usize) -> usize {
     let maximum = option_count.saturating_sub(visible_options);
     focus.saturating_sub(visible_options / 2).min(maximum)
-}
-
-fn logical_canvas_size(canvas: &Canvas, scale: f32) -> (f32, f32) {
-    let dimensions = canvas.image_info().dimensions();
-    let logical_scale = scale.max(f32::EPSILON);
-    (
-        dimensions.width as f32 / logical_scale,
-        dimensions.height as f32 / logical_scale,
-    )
 }
 
 fn select_option_at(rect: SkiaRect, mouse: Point, option_count: usize) -> Option<usize> {

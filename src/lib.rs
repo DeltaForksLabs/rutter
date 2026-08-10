@@ -30,6 +30,7 @@ pub use calendar::{
     CalendarConfig, CalendarDate, CalendarError, CalendarLabels, CalendarMonth, WeekStart,
 };
 pub use carousel::{CarouselConfig, CarouselConfigError};
+pub use dropdown_menu::{DropdownMenuEntry, DropdownMenuEntryKind};
 pub use engine::multi_runner::MultiWindowRunner;
 pub use engine::run_error::RutterRunError;
 pub use engine::runner::RutterRunner;
@@ -50,7 +51,7 @@ pub use widget::{
     WidgetConfigError, validate_slider, validate_virtual_grid, validate_virtual_list,
 };
 pub use widget_id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
-pub use widgets::{calendar, carousel, rich_text};
+pub use widgets::{calendar, carousel, dropdown_menu, rich_text};
 
 // ── Re-exports de dependências públicas ──────────────────────
 pub use arboard;

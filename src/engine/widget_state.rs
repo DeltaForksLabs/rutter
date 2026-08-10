@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::layout::{SCROLLBAR_W, VIRTUAL_GRID_GAP, VIRTUAL_GRID_PADDING};
 use crate::widgets::carousel::CarouselState;
+use crate::widgets::dropdown_menu::DropdownMenuState;
 
 // ── (mantidos da Fase 3) ──────────────────────────────────────
 
@@ -469,6 +470,7 @@ pub enum WidgetState {
     Toast(ToastState),
     Modal(ModalState),
     ContextMenu(ContextMenuState),
+    DropdownMenu(DropdownMenuState),
     Popover(PopoverState),
     Tab(TabState),
     Carousel(CarouselState),
@@ -571,6 +573,22 @@ impl WidgetState {
     pub fn as_context_menu_mut(&mut self) -> Option<&mut ContextMenuState> {
         if let Self::ContextMenu(s) = self {
             Some(s)
+        } else {
+            None
+        }
+    }
+    /// Returns retained dropdown state when this value belongs to a dropdown menu.
+    pub fn as_dropdown_menu(&self) -> Option<&DropdownMenuState> {
+        if let Self::DropdownMenu(state) = self {
+            Some(state)
+        } else {
+            None
+        }
+    }
+    /// Returns mutable retained dropdown state when this value belongs to a dropdown menu.
+    pub fn as_dropdown_menu_mut(&mut self) -> Option<&mut DropdownMenuState> {
+        if let Self::DropdownMenu(state) = self {
+            Some(state)
         } else {
             None
         }
@@ -998,6 +1016,15 @@ mod tests {
         let ws = WidgetState::ContextMenu(ContextMenuState::default());
         assert!(ws.as_context_menu().is_some());
         assert!(ws.as_tab().is_none());
+    }
+
+    #[test]
+    fn widget_state_dropdown_menu_accessors_preserve_open_state() {
+        let entries = [crate::DropdownMenuEntry::item("Save", ())];
+        let mut ws = WidgetState::DropdownMenu(DropdownMenuState::default());
+        ws.as_dropdown_menu_mut().unwrap().open_at_first(&entries);
+        assert!(ws.as_dropdown_menu().unwrap().is_open());
+        assert!(ws.as_context_menu().is_none());
     }
 
     #[test]

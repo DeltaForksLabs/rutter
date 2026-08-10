@@ -53,6 +53,14 @@ pub enum WidgetIdError {
         validated_type: Option<&'static str>,
         rebuilt_type: Option<&'static str>,
     },
+    AmbiguousDropdownEntryIdentity {
+        menu_id: u64,
+        label: String,
+        first_path: Vec<usize>,
+        second_path: Vec<usize>,
+        first_key: Option<u64>,
+        second_key: Option<u64>,
+    },
 }
 
 impl Display for WidgetIdError {
@@ -122,6 +130,19 @@ impl Display for WidgetIdError {
                 "widget tree structure differs at node {index}: validated {} and rebuilt {}; expected identical widget variants for each reconstruction",
                 validated_type.unwrap_or("<missing>"),
                 rebuilt_type.unwrap_or("<missing>")
+            ),
+            Self::AmbiguousDropdownEntryIdentity {
+                menu_id,
+                label,
+                first_path,
+                second_path,
+                first_key,
+                second_key,
+            } => write!(
+                formatter,
+                "dropdown menu ID {menu_id} has indistinguishable label {label:?} at {} with key {first_key:?} and {} with key {second_key:?}; expected otherwise-identical sibling entries to have distinct explicit keys",
+                TreePath(first_path),
+                TreePath(second_path)
             ),
         }
     }
