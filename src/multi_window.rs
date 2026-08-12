@@ -231,9 +231,14 @@ pub enum SurfaceCommand {
 pub trait MultiWindowAppLogic {
     type State: Clone;
     type Message: Clone + Debug;
-    /// Creates the application state shared by logical surfaces.
+    /// Creates the state used by [`MultiWindowRunner::run`](crate::MultiWindowRunner::run).
+    /// Injected startup through [`MultiWindowRunner::run_with`](crate::MultiWindowRunner::run_with)
+    /// or [`MultiWindowRunner::run_with_state`](crate::MultiWindowRunner::run_with_state) bypasses
+    /// this hook.
     fn new(font_system: &mut FontSystem) -> Self::State;
-    /// Returns startup surfaces; the default contains only [`SurfaceId::PRIMARY`].
+    /// Returns surfaces for the default runner startup path.
+    ///
+    /// The default contains only [`SurfaceId::PRIMARY`]. Injected startup bypasses this hook.
     fn initial_surfaces() -> Vec<SurfaceRequest> {
         vec![SurfaceRequest::new(
             SurfaceId::PRIMARY,
@@ -309,6 +314,7 @@ pub enum MultiWindowRunError {
     NativeRouteConflict { surface: SurfaceId, native: String },
     UnknownLogicalSurface(SurfaceId),
     EmptyInitialSurfaces,
+    Startup(Box<dyn Error + Send + Sync>),
 }
 impl Display for MultiWindowRunError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
@@ -333,6 +339,10 @@ impl Display for MultiWindowRunError {
             Self::EmptyInitialSurfaces => formatter.write_str(
                 "initial surface registry is empty; expected at least one logical surface",
             ),
+            Self::Startup(error) => write!(
+                formatter,
+                "multi-window startup failed: {error}; expected the injected state factory to initialize successfully"
+            ),
         }
     }
 }
@@ -341,6 +351,7 @@ impl Error for MultiWindowRunError {
         match self {
             Self::EventLoop(error) => Some(error),
             Self::Surface(_, error) => Some(error),
+            Self::Startup(error) => Some(error.as_ref()),
             _ => None,
         }
     }

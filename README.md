@@ -249,6 +249,26 @@ impl MultiWindowAppLogic for App {
 MultiWindowRunner::<App>::run();
 ```
 
+Applications that load configuration or dependencies before entering the event loop can inject both state and a dynamically constructed surface registry. The fallible factory runs once before native event-loop creation and receives the same `FontSystem` later shared by every surface engine, so font-aware initialization does not create a detached text environment.
+
+```rust
+let initial_state = State::from_loaded_config(config);
+let panel_surfaces = active_panels
+    .into_iter()
+    .map(|panel| SurfaceRequest::new(panel.id, panel.window))
+    .collect();
+
+MultiWindowRunner::<App>::run_with(
+    move |font_system| {
+        State::load_fonts(font_system)?;
+        Ok::<_, ConfigError>(initial_state)
+    },
+    panel_surfaces,
+);
+```
+
+If state construction is already complete and does not need the shared font database, use `MultiWindowRunner::<App>::run_with_state(initial_state, panel_surfaces)`.
+
 Each committed surface has independent title, size, decorations, resizability, transparency, close behavior, widget state, layout, graphics presentation, and accessibility routing. Closing a normal secondary surface removes only that surface; the event loop exits when no surfaces remain or when an `ExitApplication` close policy/`SurfaceCommand::Exit` requests it.
 
 ## Architecture

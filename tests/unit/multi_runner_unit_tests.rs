@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
@@ -136,8 +137,135 @@ fn native_route_collision_is_a_surface_scoped_typed_error() {
 fn initialization_pauses_scheduled_work_until_native_resume() {
     let runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
 
+    assert_eq!(runtime.canonical_state, 0);
+    assert_eq!(runtime.pending_surfaces.len(), 1);
+    assert_eq!(runtime.pending_surfaces[0].surface, SurfaceId::PRIMARY);
     assert!(!runtime.native_surfaces_active);
     assert!(runtime.routes.is_empty());
+}
+
+#[test]
+fn injected_bootstrap_uses_factory_state_and_dynamic_surface_order() {
+    let factory_calls = Cell::new(0);
+    let surfaces = vec![
+        SurfaceRequest::new(
+            SurfaceId::new(2),
+            WindowConfig::default().with_title("Second panel"),
+        ),
+        SurfaceRequest::new(
+            SurfaceId::new(1),
+            WindowConfig::default().with_title("First panel"),
+        ),
+    ];
+
+    let runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize_with(
+        |_| {
+            factory_calls.set(factory_calls.get() + 1);
+            Ok::<_, std::convert::Infallible>(41)
+        },
+        surfaces.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(factory_calls.get(), 1);
+    assert_eq!(runtime.canonical_state, 41);
+    assert_eq!(runtime.pending_surfaces, surfaces);
+}
+
+#[test]
+fn injected_bootstrap_reuses_initial_surface_validation() {
+    let factory_calls = Cell::new(0);
+    let empty = MultiWindowRunner::<FakeMultiWindowApp>::initialize_with(
+        |_| {
+            factory_calls.set(factory_calls.get() + 1);
+            Ok::<_, std::convert::Infallible>(41)
+        },
+        Vec::new(),
+    );
+    assert!(matches!(
+        empty,
+        Err(MultiWindowRunError::EmptyInitialSurfaces)
+    ));
+    assert_eq!(factory_calls.get(), 0);
+
+    let duplicate_id = SurfaceId::new(7);
+    let duplicate = vec![
+        SurfaceRequest::new(duplicate_id, WindowConfig::default().with_title("One")),
+        SurfaceRequest::new(duplicate_id, WindowConfig::default().with_title("Two")),
+    ];
+    let result = MultiWindowRunner::<FakeMultiWindowApp>::initialize_with(
+        |_| Ok::<_, std::convert::Infallible>(41),
+        duplicate,
+    );
+
+    assert!(matches!(
+        result,
+        Err(MultiWindowRunError::DuplicateLogicalSurface(id)) if id == duplicate_id
+    ));
+}
+
+#[test]
+fn injected_bootstrap_preserves_factory_failure() {
+    let startup_error =
+        std::io::Error::new(std::io::ErrorKind::NotFound, "missing panel configuration");
+    let result = MultiWindowRunner::<FakeMultiWindowApp>::initialize_with(
+        |_| Err::<u64, _>(startup_error),
+        vec![SurfaceRequest::new(
+            SurfaceId::PRIMARY,
+            WindowConfig::default(),
+        )],
+    );
+
+    assert!(matches!(
+        result,
+        Err(MultiWindowRunError::Startup(error))
+            if error.to_string() == "missing panel configuration"
+    ));
+}
+
+#[test]
+fn injected_bootstrap_accepts_an_already_boxed_failure() {
+    let result = MultiWindowRunner::<FakeMultiWindowApp>::initialize_with(
+        |_| {
+            let error: Box<dyn std::error::Error + Send + Sync> =
+                Box::new(std::io::Error::other("boxed startup failure"));
+            Err::<u64, _>(error)
+        },
+        vec![SurfaceRequest::new(
+            SurfaceId::PRIMARY,
+            WindowConfig::default(),
+        )],
+    );
+
+    assert!(matches!(
+        result,
+        Err(MultiWindowRunError::Startup(error))
+            if error.to_string() == "boxed startup failure"
+    ));
+}
+
+#[test]
+fn injected_factory_mutates_the_retained_font_system() {
+    let runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize_with(
+        |font_system| {
+            font_system.db_mut().set_sans_serif_family("Injected Sans");
+            Ok::<_, std::convert::Infallible>(41)
+        },
+        vec![SurfaceRequest::new(
+            SurfaceId::PRIMARY,
+            WindowConfig::default(),
+        )],
+    )
+    .unwrap();
+
+    assert_eq!(
+        runtime
+            .font_system
+            .borrow()
+            .db()
+            .family_name(&cosmic_text::fontdb::Family::SansSerif),
+        "Injected Sans"
+    );
 }
 
 #[test]

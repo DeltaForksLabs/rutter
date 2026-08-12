@@ -9,10 +9,11 @@ use std::time::Instant;
 use cosmic_text::FontSystem;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 mod app_adapter;
+mod startup;
 
 use self::app_adapter::{SurfaceAppAdapter, SurfaceAppState};
 use super::RutterEngine;
@@ -56,60 +57,6 @@ pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
 }
 
 impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
-    /// Runs a multi-window application and prints controlled failures.
-    ///
-    /// ```no_run
-    /// # use rutter::{MultiWindowAppLogic, MultiWindowRunner};
-    /// # fn launch<A: MultiWindowAppLogic + 'static>() {
-    /// MultiWindowRunner::<A>::run();
-    /// # }
-    /// ```
-    pub fn run() {
-        if let Err(error) = Self::try_run() {
-            eprintln!("Rutter multi-window application failed: {error}");
-        }
-    }
-
-    /// Runs a multi-window application while preserving typed lifecycle failures.
-    ///
-    /// ```no_run
-    /// # use rutter::{MultiWindowAppLogic, MultiWindowRunner};
-    /// # fn launch<A: MultiWindowAppLogic + 'static>() {
-    /// MultiWindowRunner::<A>::try_run().expect("multi-window application failed");
-    /// # }
-    /// ```
-    pub fn try_run() -> Result<(), MultiWindowRunError> {
-        let event_loop = EventLoop::new().map_err(MultiWindowRunError::from)?;
-        event_loop.set_control_flow(ControlFlow::Wait);
-        let mut runtime = Self::initialize()?;
-        runtime.accessibility_waker = Some(event_loop.create_proxy());
-        let event_result = event_loop.run_app(&mut runtime);
-        if let Some(error) = runtime.fatal_error {
-            return Err(error);
-        }
-        event_result.map_err(MultiWindowRunError::from)
-    }
-
-    fn initialize() -> Result<Self, MultiWindowRunError> {
-        let mut font_system = FontSystem::new();
-        let canonical_state = A::new(&mut font_system);
-        let pending_surfaces = A::initial_surfaces();
-        validate_initial_surfaces(&pending_surfaces)?;
-        Ok(Self {
-            font_system: Rc::new(RefCell::new(font_system)),
-            canonical_state,
-            revision: 0,
-            pending_surfaces,
-            surface_configs: BTreeMap::new(),
-            surface_runners: BTreeMap::new(),
-            routes: SurfaceRoutes::new(),
-            backend_preference: MultiWindowBackendPreference::default(),
-            native_surfaces_active: false,
-            fatal_error: None,
-            accessibility_waker: None,
-        })
-    }
-
     fn open_surface(
         &mut self,
         event_loop: &ActiveEventLoop,
