@@ -7,8 +7,8 @@ use taffy::prelude::*;
 
 use rutter::{
     ButtonVariant, CloseBehavior, MultiWindowAppLogic, MultiWindowRunner, RichText, RichTextColor,
-    RichTextSize, RichTextSpan, RichTextStyle, SurfaceCommand, SurfaceId, SurfaceRequest, Theme,
-    Widget, WindowConfig,
+    RichTextSize, RichTextSpan, RichTextStyle, SurfaceCommand, SurfaceEvent, SurfaceId,
+    SurfaceRequest, Theme, Widget, WindowConfig, WindowLevel,
 };
 
 use super::theme_selector::{ExampleTheme, example_theme_selector};
@@ -58,6 +58,14 @@ impl MultiWindowAppLogic for MultiWindowDemo {
         set_second_window_presence(state, surface, false);
     }
 
+    fn surface_event(
+        _: &mut Self::State,
+        surface: SurfaceId,
+        event: SurfaceEvent,
+    ) -> Vec<SurfaceCommand> {
+        surface_focus_commands(surface, event)
+    }
+
     fn update(
         state: &mut Self::State,
         surface: SurfaceId,
@@ -82,13 +90,24 @@ fn multi_window_commands(
             state.theme = theme;
             Vec::new()
         }
-        Message::OpenSecondWindow if !state.second_window_open => {
-            state.second_window_open = true;
-            vec![SurfaceCommand::Open(second_window_request())]
-        }
-        Message::OpenSecondWindow => Vec::new(),
+        Message::OpenSecondWindow => open_second_window_commands(state),
         Message::CloseCurrentWindow => vec![SurfaceCommand::Close(surface)],
     }
+}
+
+fn open_second_window_commands(state: &mut MultiWindowState) -> Vec<SurfaceCommand> {
+    if state.second_window_open {
+        return Vec::new();
+    }
+    state.second_window_open = true;
+    vec![
+        SurfaceCommand::Open(second_window_request()),
+        SurfaceCommand::SetVisible {
+            surface: SECOND_WINDOW,
+            visible: true,
+        },
+        SurfaceCommand::RequestRedraw(SECOND_WINDOW),
+    ]
 }
 
 fn main_window_request() -> SurfaceRequest {
@@ -103,11 +122,26 @@ fn main_window_request() -> SurfaceRequest {
 
 fn second_window_request() -> SurfaceRequest {
     let window = WindowConfig::default()
-        .with_title("Second Window")
+        .with_title("Temporary Inspector")
         .with_resizable(false)
         .with_inner_size(560, 260)
-        .expect("second window size 560x260 must contain positive dimensions");
+        .expect("temporary window size 560x260 must contain positive dimensions")
+        .with_min_inner_size(480, 220)
+        .expect("temporary minimum size 480x220 must contain positive dimensions")
+        .with_max_inner_size(720, 420)
+        .expect("temporary maximum size 720x420 must contain positive dimensions")
+        .with_position(160, 140)
+        .with_window_level(WindowLevel::AlwaysOnTop)
+        .with_visible(false)
+        .with_close_on_focus_loss(true);
     SurfaceRequest::new(SECOND_WINDOW, window)
+}
+
+fn surface_focus_commands(surface: SurfaceId, event: SurfaceEvent) -> Vec<SurfaceCommand> {
+    if surface != SECOND_WINDOW || event != SurfaceEvent::FocusChanged(true) {
+        return Vec::new();
+    }
+    vec![SurfaceCommand::RequestRedraw(surface)]
 }
 
 fn set_second_window_presence(state: &mut MultiWindowState, surface: SurfaceId, present: bool) {
@@ -157,10 +191,10 @@ fn second_window_rich_text<'a>() -> Widget<'a, Message> {
         RichTextSize::new(22.0).expect("rich-text font size 22 must be finite and within 1..=512");
     let content = RichText::from_spans([
         RichTextSpan::new("Hello from the "),
-        RichTextSpan::new("second window")
+        RichTextSpan::new("temporary window")
             .bold()
             .with_color(RichTextColor::rgb(90, 180, 255)),
-        RichTextSpan::new(" — rendered with RichText!").italic(),
+        RichTextSpan::new(" — it closes after focus moves away.").italic(),
     ])
     .with_default_style(RichTextStyle::default().with_size(font_size));
     Widget::rich_text(content, rich_text_layout_style())

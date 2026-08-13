@@ -57,7 +57,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Semantic roles for buttons, text inputs, toggles, sliders, progress indicators, lists, grids, menus, dialogs, and status messages.
 - Accessible labels, values, toggle state, numeric ranges, and focus propagation from the Rutter widget tree.
 - Window events are forwarded only to the matching window's AccessKit adapter so platform assistive technologies observe the correct UI.
-- The window is kept hidden until the accessibility adapter is initialized, avoiding an initial inaccessible window snapshot.
+- On platforms with native visibility control, the window is kept hidden until the accessibility adapter is initialized, avoiding an initial inaccessible window snapshot.
 
 ### Widgets
 
@@ -205,12 +205,12 @@ fn main() {
 
 `MultiWindowRunner` owns every native window, backend, AccessKit adapter, and input runtime. Applications use stable `SurfaceId` values and emit `SurfaceCommand` operations instead of creating Winit windows directly. Unknown events from failed backend probes are discarded before accessibility or rendering side effects. After the first surface commits, later windows reuse its backend type instead of repeating failed Vulkan/OpenGL probes on Wayland.
 
-Run `cargo run -- multi_window` to open a centered **Open Second Window** button; the requested child window demonstrates a styled `RichText` phrase and independent close behavior.
+Run `cargo run -- multi_window` to open a centered **Open Second Window** button. The requested temporary inspector demonstrates position and size constraints, topmost level, deferred visibility, explicit redraw, focus events, and automatic closure after it gains and then loses focus.
 
 ```rust
 use rutter::{
     CloseBehavior, MultiWindowAppLogic, MultiWindowRunner, SurfaceCommand,
-    SurfaceId, SurfaceRequest, Widget, WindowConfig,
+    SurfaceEvent, SurfaceId, SurfaceRequest, Widget, WindowConfig, WindowLevel,
 };
 
 const PANEL: SurfaceId = SurfaceId::new(1);
@@ -226,6 +226,11 @@ impl MultiWindowAppLogic for App {
     fn initial_surfaces() -> Vec<SurfaceRequest> {
         let panel = WindowConfig::default()
             .with_title("Panel")
+            .with_position(160, 140)
+            .with_min_inner_size(320, 200).expect("positive minimum size")
+            .with_max_inner_size(900, 700).expect("maximum must exceed minimum")
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_close_on_focus_loss(true)
             .with_close_behavior(CloseBehavior::ExitApplication);
         vec![SurfaceRequest::new(PANEL, panel)]
     }
@@ -242,6 +247,15 @@ impl MultiWindowAppLogic for App {
         _clipboard: &mut arboard::Clipboard,
     ) -> Vec<SurfaceCommand> {
         let _ = (state, source, msg);
+        Vec::new()
+    }
+
+    fn surface_event(
+        state: &mut State,
+        surface: SurfaceId,
+        event: SurfaceEvent,
+    ) -> Vec<SurfaceCommand> {
+        state.record_focus(surface, event);
         Vec::new()
     }
 }
@@ -269,7 +283,11 @@ MultiWindowRunner::<App>::run_with(
 
 If state construction is already complete and does not need the shared font database, use `MultiWindowRunner::<App>::run_with_state(initial_state, panel_surfaces)`.
 
-Each committed surface has independent title, size, decorations, resizability, transparency, close behavior, widget state, layout, graphics presentation, and accessibility routing. Closing a normal secondary surface removes only that surface; the event loop exits when no surfaces remain or when an `ExitApplication` close policy/`SurfaceCommand::Exit` requests it.
+Each committed surface has independent title, initial position, inner/minimum/maximum size, window level, visibility, decorations, resizability, transparency, close behavior, widget state, layout, graphics presentation, and accessibility routing. Sizes and positions use physical pixels; negative coordinates are valid for multi-monitor desktops. Position, visibility, and window level are platform hints and may be ignored, notably by Wayland compositors.
+
+`SurfaceEvent::FocusChanged` reaches application logic after the matching native event is forwarded to AccessKit and the surface engine. `SurfaceCommand::SetVisible` changes native visibility and persists the desired value across suspension/resume. `SurfaceCommand::RequestRedraw` asks the compositor for an asynchronous frame without invalidating layout; redraw requests can be coalesced. Both commands reject unknown logical surface IDs, while redraw is a safe no-op for a registered surface during suspension.
+
+Temporary panels can use `WindowConfig::with_close_on_focus_loss(true)`. The runtime waits until that window has gained focus at least once before closing it on focus loss, which avoids treating an initial unfocused notification as dismissal. Closing a normal secondary surface removes only that surface; the event loop exits when no surfaces remain or when an `ExitApplication` close policy/`SurfaceCommand::Exit` requests it.
 
 ## Architecture
 

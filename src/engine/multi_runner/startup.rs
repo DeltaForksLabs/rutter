@@ -183,6 +183,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             surface_configs: BTreeMap::new(),
             surface_runners: BTreeMap::new(),
             routes: SurfaceRoutes::new(),
+            focus_acquired_surfaces: HashSet::new(),
             backend_preference: MultiWindowBackendPreference::default(),
             native_surfaces_active: false,
             fatal_error: None,

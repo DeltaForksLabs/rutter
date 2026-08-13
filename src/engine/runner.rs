@@ -1174,6 +1174,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.redraw();
     }
 
+    pub(crate) fn set_surface_visible(&self, visible: bool) {
+        if let Some(window) = self.engine.window.as_ref() {
+            window.set_visible(visible);
+        }
+    }
+
+    pub(crate) fn request_surface_redraw(&self) {
+        self.redraw();
+    }
+
     pub(crate) fn take_fatal_error(&mut self) -> Option<RutterRunError> {
         self.fatal_error.take()
     }

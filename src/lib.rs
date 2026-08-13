@@ -37,8 +37,9 @@ pub use engine::runner::RutterRunner;
 pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};
 pub use input_limits::{InputKind, InputLimitError, InputLimits};
 pub use multi_window::{
-    CloseBehavior, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand, SurfaceId,
-    SurfaceRequest, WindowConfig, WindowConfigError, WindowSize,
+    CloseBehavior, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand, SurfaceEvent,
+    SurfaceId, SurfaceRequest, WindowConfig, WindowConfigError, WindowLevel, WindowPosition,
+    WindowSize,
 };
 pub use render::text::TextShapeCacheLimits;
 pub use rich_text::{

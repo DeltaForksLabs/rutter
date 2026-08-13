@@ -1,6 +1,6 @@
 [package]
 name    = "rutter"
-version = "0.22.0"
+version = "0.23.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "High-performance Rust UI framework featuring Skia rendering (Vulkan/OpenGL), Taffy flexbox layouts, and advanced typography."
@@ -38,6 +38,9 @@ zeroize     = "1.8.2"
 
 [dev-dependencies]
 # sem deps extras — testes usam apenas a stdlib + deps acima
+
+[lib]
+crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []

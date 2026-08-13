@@ -705,7 +705,7 @@ pub struct RutterEngine<A: AppLogic> {
 fn initial_window_attributes(surface_config: SurfaceConfig) -> winit::window::WindowAttributes {
     Window::default_attributes()
         .with_title("Rutter")
-        .with_visible(false)
+        .with_visible(true)
         .with_transparent(surface_config.is_transparent())
 }
 
@@ -718,6 +718,15 @@ fn create_surface_backend(
         Some(backend) => create_required_backend(event_loop, attributes, backend),
         None => create_best_backend(event_loop, attributes),
     }
+}
+
+fn defer_window_visibility(
+    mut attributes: winit::window::WindowAttributes,
+) -> (winit::window::WindowAttributes, bool) {
+    let desired_visibility = attributes.visible;
+    // Supported platforms should not expose a window before AccessKit can describe it.
+    attributes.visible = false;
+    (attributes, desired_visibility)
 }
 
 fn prepare_top_level_canvas(
@@ -800,6 +809,18 @@ impl<A: AppLogic> RutterEngine<A> {
         attrs: winit::window::WindowAttributes,
         required_backend: Option<BackendType>,
     ) -> Result<(), GraphicsError> {
+        let (attrs, desired_visibility) = defer_window_visibility(attrs);
+        let (backend, window) = self.create_initialized_backend(el, attrs, required_backend)?;
+        self.commit_surface_backend(el, backend, window, desired_visibility);
+        Ok(())
+    }
+
+    fn create_initialized_backend(
+        &mut self,
+        el: &winit::event_loop::ActiveEventLoop,
+        attrs: winit::window::WindowAttributes,
+        required_backend: Option<BackendType>,
+    ) -> Result<(Box<dyn GraphicsBackend>, Rc<Window>), GraphicsError> {
         let theme = A::theme_for(&self.app_state);
         let mut backend = create_surface_backend(el, attrs, required_backend)?;
         if cfg!(debug_assertions) {
@@ -813,6 +834,16 @@ impl<A: AppLogic> RutterEngine<A> {
             prepare_top_level_canvas(canvas, self.surface_config, &theme, self.scale_factor);
         }
         backend.end_frame()?;
+        Ok((backend, window))
+    }
+
+    fn commit_surface_backend(
+        &mut self,
+        el: &winit::event_loop::ActiveEventLoop,
+        backend: Box<dyn GraphicsBackend>,
+        window: Rc<Window>,
+        desired_visibility: bool,
+    ) {
         self.accessibility_adapter = Some(accesskit_winit::Adapter::with_direct_handlers(
             el,
             &window,
@@ -823,9 +854,8 @@ impl<A: AppLogic> RutterEngine<A> {
         self.window = Some(window.clone());
         self.graphics_backend = Some(backend);
         self.layout_dirty = true;
-        window.set_visible(true);
+        window.set_visible(desired_visibility);
         window.request_redraw();
-        Ok(())
     }
 
     pub(crate) fn release_surface(&mut self) {

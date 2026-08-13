@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use super::*;
-use winit::dpi::Size;
+use winit::dpi::{PhysicalPosition, PhysicalSize, Position, Size};
+use winit::window::WindowLevel as WinitWindowLevel;
 
 #[derive(Default)]
 struct FakeAccessibilityAdapter {
@@ -26,8 +27,15 @@ fn config_defaults_and_attributes_are_independent() {
     assert!(!defaults.is_transparent());
     assert!(defaults.has_decorations());
     assert!(defaults.is_resizable());
+    assert!(defaults.is_visible());
+    assert!(!defaults.closes_on_focus_loss());
     assert_eq!(defaults.inner_size(), None);
+    assert_eq!(defaults.min_inner_size(), None);
+    assert_eq!(defaults.max_inner_size(), None);
+    assert_eq!(defaults.position(), None);
+    assert_eq!(defaults.window_level(), WindowLevel::Normal);
     assert_eq!(defaults.close_behavior(), CloseBehavior::CloseSurface);
+    assert!(defaults.window_attributes().visible);
 
     let configured = defaults
         .clone()
@@ -37,6 +45,14 @@ fn config_defaults_and_attributes_are_independent() {
         .with_resizable(false)
         .with_inner_size(900, 700)
         .unwrap()
+        .with_min_inner_size(500, 400)
+        .unwrap()
+        .with_max_inner_size(1200, 900)
+        .unwrap()
+        .with_position(-80, 120)
+        .with_window_level(WindowLevel::AlwaysOnTop)
+        .with_visible(false)
+        .with_close_on_focus_loss(true)
         .with_close_behavior(CloseBehavior::ExitApplication);
     let attributes = configured.window_attributes();
 
@@ -50,6 +66,20 @@ fn config_defaults_and_attributes_are_independent() {
         attributes.inner_size,
         Some(Size::Physical(PhysicalSize::new(900, 700)))
     );
+    assert_eq!(
+        attributes.min_inner_size,
+        Some(Size::Physical(PhysicalSize::new(500, 400)))
+    );
+    assert_eq!(
+        attributes.max_inner_size,
+        Some(Size::Physical(PhysicalSize::new(1200, 900)))
+    );
+    assert_eq!(
+        attributes.position,
+        Some(Position::Physical(PhysicalPosition::new(-80, 120)))
+    );
+    assert_eq!(attributes.window_level, WinitWindowLevel::AlwaysOnTop);
+    assert!(configured.closes_on_focus_loss());
     assert!(configured.surface_config().is_transparent());
     assert!(!defaults.surface_config().is_transparent());
 }
@@ -65,6 +95,25 @@ fn zero_window_dimension_is_rejected_with_context() {
     assert_eq!(error, expected);
     assert!(error.to_string().contains("0x480"));
     assert!(WindowConfig::default().with_inner_size(640, 0).is_err());
+}
+
+#[test]
+fn crossed_window_size_bounds_are_rejected_with_context() {
+    let error = WindowConfig::default()
+        .with_min_inner_size(800, 600)
+        .unwrap()
+        .with_max_inner_size(640, 480)
+        .unwrap_err();
+
+    assert!(matches!(error, WindowConfigError::InvalidSizeBounds { .. }));
+    assert!(error.to_string().contains("800x600..=640x480"));
+    assert!(
+        WindowConfig::default()
+            .with_max_inner_size(640, 480)
+            .unwrap()
+            .with_min_inner_size(800, 600)
+            .is_err()
+    );
 }
 
 #[test]
@@ -184,4 +233,18 @@ fn default_initial_registry_contains_primary_surface() {
     );
     assert!(FakeMultiWindowLogic::text_shape_cache_limits().max_entries > 0);
     assert_eq!(FakeMultiWindowLogic::theme().font_body, 16.0);
+}
+
+#[test]
+fn default_surface_event_hook_requires_no_application_changes() {
+    let mut state = ();
+
+    assert!(
+        FakeMultiWindowLogic::surface_event(
+            &mut state,
+            SurfaceId::PRIMARY,
+            SurfaceEvent::FocusChanged(false),
+        )
+        .is_empty()
+    );
 }

@@ -14,14 +14,16 @@ use winit::window::WindowId;
 
 mod app_adapter;
 mod startup;
+mod surface_commands;
+mod surface_events;
 
 use self::app_adapter::{SurfaceAppAdapter, SurfaceAppState};
 use super::RutterEngine;
 use super::gpu::BackendType;
 use super::runner::RutterRunner;
 use crate::multi_window::{
-    CloseBehavior, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand, SurfaceId,
-    SurfaceRequest, SurfaceRouteRegistrationError, SurfaceRoutes, WindowConfig,
+    CloseBehavior, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand, SurfaceEvent,
+    SurfaceId, SurfaceRequest, SurfaceRouteRegistrationError, SurfaceRoutes, WindowConfig,
 };
 
 type SurfaceRunner<A> = RutterRunner<SurfaceAppAdapter<A>>;
@@ -50,6 +52,7 @@ pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
     surface_configs: BTreeMap<SurfaceId, WindowConfig>,
     surface_runners: BTreeMap<SurfaceId, SurfaceRunner<A>>,
     routes: SurfaceRoutes<WindowId>,
+    focus_acquired_surfaces: HashSet<SurfaceId>,
     backend_preference: MultiWindowBackendPreference,
     native_surfaces_active: bool,
     fatal_error: Option<MultiWindowRunError>,
@@ -173,24 +176,6 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             .ok_or(MultiWindowRunError::UnknownLogicalSurface(surface))
     }
 
-    fn dispatch_surface_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        surface: SurfaceId,
-        native: WindowId,
-        event: WindowEvent,
-    ) {
-        let runner = match self.runner_for_mut(surface) {
-            Ok(runner) => runner,
-            Err(error) => return self.terminate_for_error(event_loop, error),
-        };
-        runner.window_event(event_loop, native, event);
-        if let Some(error) = runner.take_fatal_error() {
-            return self.terminate_for_error(event_loop, surface_error(surface, error));
-        }
-        self.synchronize_and_apply(event_loop, surface);
-    }
-
     fn synchronize_and_apply(&mut self, event_loop: &ActiveEventLoop, surface: SurfaceId) {
         let commands = match self.synchronize_surface_state(surface) {
             Ok(commands) => commands,
@@ -242,36 +227,6 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         self.publish_surface_state(model, self.revision);
     }
 
-    fn apply_surface_commands(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        commands: Vec<SurfaceCommand>,
-    ) -> Result<(), MultiWindowRunError> {
-        for command in commands {
-            match command {
-                SurfaceCommand::Open(request) => self.open_surface(event_loop, request)?,
-                SurfaceCommand::Close(surface) => self.close_surface(surface)?,
-                SurfaceCommand::Exit => {
-                    event_loop.exit();
-                    return Ok(());
-                }
-            }
-        }
-        self.exit_if_no_surfaces(event_loop);
-        Ok(())
-    }
-
-    fn close_surface(&mut self, surface: SurfaceId) -> Result<(), MultiWindowRunError> {
-        if !self.surface_configs.contains_key(&surface) {
-            return Err(MultiWindowRunError::UnknownLogicalSurface(surface));
-        }
-        self.routes.remove_surface(surface);
-        self.surface_configs.remove(&surface);
-        self.surface_runners.remove(&surface);
-        self.notify_surface_closed(surface);
-        Ok(())
-    }
-
     fn handle_close_request(&mut self, event_loop: &ActiveEventLoop, surface: SurfaceId) {
         let behavior = match self.config_for(surface) {
             Ok(config) => config.close_behavior(),
@@ -294,6 +249,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             return;
         };
         self.surface_configs.remove(&surface);
+        self.focus_acquired_surfaces.remove(&surface);
         self.surface_runners.remove(&surface);
         self.notify_surface_closed(surface);
         self.exit_if_no_surfaces(event_loop);
@@ -308,7 +264,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             };
             earliest = minimum_deadline(earliest, runner.process_scheduled_work());
             self.synchronize_and_apply(event_loop, surface);
-            if self.fatal_error.is_some() {
+            if schedule_iteration_stops(event_loop.exiting(), self.fatal_error.is_some()) {
                 return None;
             }
         }
@@ -317,6 +273,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn release_native_surfaces(&mut self) {
         self.routes.clear();
+        self.focus_acquired_surfaces.clear();
         for runner in self.surface_runners.values_mut() {
             runner.release_surface();
         }
@@ -350,7 +307,7 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
                 return;
             }
             self.synchronize_and_apply(event_loop, surface);
-            if self.fatal_error.is_some() {
+            if schedule_iteration_stops(event_loop.exiting(), self.fatal_error.is_some()) {
                 return;
             }
         }
@@ -447,6 +404,10 @@ fn minimum_deadline(current: Option<Instant>, candidate: Option<Instant>) -> Opt
         (Some(current), None) => Some(current),
         (None, candidate) => candidate,
     }
+}
+
+fn schedule_iteration_stops(event_loop_exiting: bool, fatal_error: bool) -> bool {
+    event_loop_exiting || fatal_error
 }
 
 #[cfg(test)]

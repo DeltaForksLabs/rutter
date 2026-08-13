@@ -43,6 +43,18 @@ impl MultiWindowAppLogic for FakeMultiWindowApp {
         Vec::new()
     }
 
+    fn surface_event(
+        state: &mut Self::State,
+        surface: SurfaceId,
+        event: SurfaceEvent,
+    ) -> Vec<SurfaceCommand> {
+        if event == SurfaceEvent::FocusChanged(false) {
+            return Vec::new();
+        }
+        *state += 1;
+        vec![SurfaceCommand::RequestRedraw(surface)]
+    }
+
     fn theme_for(state: &Self::State) -> Theme {
         if *state == 41 {
             return Theme::dark();
@@ -116,6 +128,13 @@ fn scheduler_uses_the_earliest_surface_deadline() {
     assert_eq!(minimum_deadline(None, Some(late)), Some(late));
     assert_eq!(minimum_deadline(Some(early), None), Some(early));
     assert_eq!(minimum_deadline(None, None), None);
+}
+
+#[test]
+fn surface_iteration_stops_for_exit_or_fatal_error() {
+    assert!(!schedule_iteration_stops(false, false));
+    assert!(schedule_iteration_stops(true, false));
+    assert!(schedule_iteration_stops(false, true));
 }
 
 #[test]
@@ -296,4 +315,157 @@ fn retained_backend_preference_keeps_first_commit_across_later_commits() {
     preference.retain_committed(BackendType::Vulkan);
 
     assert_eq!(preference.required_backend(), Some(BackendType::OpenGl));
+}
+
+#[test]
+fn native_focus_events_translate_without_exposing_other_winit_events() {
+    assert_eq!(
+        surface_events::translate_surface_event(&WindowEvent::Focused(true)),
+        Some(SurfaceEvent::FocusChanged(true))
+    );
+    assert_eq!(
+        surface_events::translate_surface_event(&WindowEvent::Focused(false)),
+        Some(SurfaceEvent::FocusChanged(false))
+    );
+    assert_eq!(
+        surface_events::translate_surface_event(&WindowEvent::CloseRequested),
+        None
+    );
+}
+
+#[test]
+fn application_focus_event_publishes_state_and_returns_commands() {
+    let mut runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
+
+    let commands =
+        runtime.notify_surface_event(SurfaceId::PRIMARY, SurfaceEvent::FocusChanged(true));
+
+    assert_eq!(runtime.canonical_state, 1);
+    assert_eq!(runtime.revision, 1);
+    assert_eq!(
+        commands,
+        vec![SurfaceCommand::RequestRedraw(SurfaceId::PRIMARY)]
+    );
+}
+
+#[test]
+fn suspended_visibility_updates_are_persisted_for_native_resume() {
+    let surface = SurfaceId::PRIMARY;
+    let mut runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
+    runtime
+        .surface_configs
+        .insert(surface, WindowConfig::default());
+    runtime.surface_runners.insert(
+        surface,
+        runtime
+            .build_surface_runner(&SurfaceRequest::new(surface, WindowConfig::default()))
+            .unwrap(),
+    );
+
+    runtime.set_surface_visibility(surface, false).unwrap();
+
+    assert!(!runtime.config_for(surface).unwrap().is_visible());
+    assert!(
+        !runtime
+            .config_for(surface)
+            .unwrap()
+            .window_attributes()
+            .visible
+    );
+}
+
+#[test]
+fn suspended_redraw_requests_are_safe_and_unknown_targets_are_rejected() {
+    let surface = SurfaceId::PRIMARY;
+    let unknown = SurfaceId::new(99);
+    let mut runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
+    runtime
+        .surface_configs
+        .insert(surface, WindowConfig::default());
+    runtime.surface_runners.insert(
+        surface,
+        runtime
+            .build_surface_runner(&SurfaceRequest::new(surface, WindowConfig::default()))
+            .unwrap(),
+    );
+
+    assert!(runtime.request_surface_redraw(surface).is_ok());
+    assert!(matches!(
+        runtime.request_surface_redraw(unknown),
+        Err(MultiWindowRunError::UnknownLogicalSurface(id)) if id == unknown
+    ));
+    assert!(matches!(
+        runtime.set_surface_visibility(unknown, false),
+        Err(MultiWindowRunError::UnknownLogicalSurface(id)) if id == unknown
+    ));
+}
+
+#[test]
+fn focus_loss_close_requires_a_prior_focus_gain() {
+    let surface = SurfaceId::new(7);
+    let mut runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
+    runtime.surface_configs.insert(
+        surface,
+        WindowConfig::default().with_close_on_focus_loss(true),
+    );
+
+    assert!(
+        !runtime
+            .focus_loss_closes_surface(surface, SurfaceEvent::FocusChanged(false))
+            .unwrap()
+    );
+    assert!(
+        !runtime
+            .focus_loss_closes_surface(surface, SurfaceEvent::FocusChanged(true))
+            .unwrap()
+    );
+    assert!(
+        runtime
+            .focus_loss_closes_surface(surface, SurfaceEvent::FocusChanged(false))
+            .unwrap()
+    );
+}
+
+#[test]
+fn temporary_surface_is_removed_after_focus_gain_then_loss() {
+    let surface = SurfaceId::new(7);
+    let mut runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
+    runtime.surface_configs.insert(
+        surface,
+        WindowConfig::default().with_close_on_focus_loss(true),
+    );
+
+    assert!(
+        !runtime
+            .focus_loss_closes_surface(surface, SurfaceEvent::FocusChanged(true))
+            .unwrap()
+    );
+    assert!(runtime.surface_configs.contains_key(&surface));
+    let closes_automatically = runtime
+        .focus_loss_closes_surface(surface, SurfaceEvent::FocusChanged(false))
+        .unwrap();
+    assert!(
+        runtime
+            .apply_automatic_surface_close(surface, closes_automatically)
+            .unwrap()
+    );
+    assert!(!runtime.surface_configs.contains_key(&surface));
+    assert!(!runtime.focus_acquired_surfaces.contains(&surface));
+}
+
+#[test]
+fn explicit_lifecycle_commands_suppress_automatic_focus_close() {
+    let surface = SurfaceId::new(7);
+    assert!(!surface_events::commands_end_surface_lifecycle(
+        &[],
+        surface
+    ));
+    assert!(surface_events::commands_end_surface_lifecycle(
+        &[SurfaceCommand::Close(surface)],
+        surface
+    ));
+    assert!(surface_events::commands_end_surface_lifecycle(
+        &[SurfaceCommand::Exit],
+        surface
+    ));
 }

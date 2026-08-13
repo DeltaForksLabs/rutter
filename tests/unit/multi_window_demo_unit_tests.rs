@@ -1,5 +1,5 @@
 use super::*;
-use rutter::RichTextWeight;
+use rutter::{RichTextWeight, WindowLevel, WindowPosition};
 
 #[test]
 fn demo_starts_with_only_the_centered_primary_window() {
@@ -27,9 +27,17 @@ fn open_message_requests_one_second_window_until_it_closes() {
         panic!("main demo action must be a Button")
     };
     let commands = multi_window_commands(&mut state, SurfaceId::PRIMARY, on_press.clone());
-    assert!(
-        matches!(&commands[..], [SurfaceCommand::Open(request)] if request.surface == SECOND_WINDOW && request.window.title() == "Second Window")
-    );
+    assert!(matches!(
+        &commands[..],
+        [
+            SurfaceCommand::Open(request),
+            SurfaceCommand::SetVisible { surface, visible: true },
+            SurfaceCommand::RequestRedraw(redraw),
+        ] if request.surface == SECOND_WINDOW
+            && request.window.title() == "Temporary Inspector"
+            && *surface == SECOND_WINDOW
+            && *redraw == SECOND_WINDOW
+    ));
     assert!(state.second_window_open);
     assert!(
         multi_window_commands(&mut state, SurfaceId::PRIMARY, Message::OpenSecondWindow).is_empty()
@@ -45,8 +53,36 @@ fn open_message_requests_one_second_window_until_it_closes() {
     assert!(state.second_window_open);
     <MultiWindowDemo as MultiWindowAppLogic>::surface_closed(&mut state, SECOND_WINDOW);
     let reopened = multi_window_commands(&mut state, SurfaceId::PRIMARY, on_press.clone());
+    assert!(matches!(
+        &reopened[..],
+        [SurfaceCommand::Open(request), ..] if request.surface == SECOND_WINDOW
+    ));
+}
+
+#[test]
+fn temporary_window_uses_constrained_topmost_hidden_configuration() {
+    let request = second_window_request();
+
+    assert_eq!(
+        request.window.position(),
+        Some(WindowPosition::new(160, 140))
+    );
+    assert_eq!(request.window.min_inner_size().unwrap().width(), 480);
+    assert_eq!(request.window.max_inner_size().unwrap().height(), 420);
+    assert_eq!(request.window.window_level(), WindowLevel::AlwaysOnTop);
+    assert!(!request.window.is_visible());
+    assert!(request.window.closes_on_focus_loss());
+}
+
+#[test]
+fn temporary_window_requests_redraw_only_on_focus_gain() {
+    assert_eq!(
+        surface_focus_commands(SECOND_WINDOW, SurfaceEvent::FocusChanged(true)),
+        vec![SurfaceCommand::RequestRedraw(SECOND_WINDOW)]
+    );
+    assert!(surface_focus_commands(SECOND_WINDOW, SurfaceEvent::FocusChanged(false)).is_empty());
     assert!(
-        matches!(&reopened[..], [SurfaceCommand::Open(request)] if request.surface == SECOND_WINDOW)
+        surface_focus_commands(SurfaceId::PRIMARY, SurfaceEvent::FocusChanged(true)).is_empty()
     );
 }
 
@@ -60,7 +96,7 @@ fn second_and_unknown_windows_render_rich_text() {
     };
     assert_eq!(
         content.plain_text(),
-        "Hello from the second window — rendered with RichText!"
+        "Hello from the temporary window — it closes after focus moves away."
     );
     assert_eq!(
         content.spans()[1].style().weight(),

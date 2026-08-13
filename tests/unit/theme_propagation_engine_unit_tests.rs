@@ -1,12 +1,22 @@
 use skia_safe::{Color, surfaces};
 
-use super::{initial_window_attributes, prepare_top_level_canvas};
+use super::{defer_window_visibility, initial_window_attributes, prepare_top_level_canvas};
 use crate::{SurfaceConfig, Theme};
 
 #[test]
 fn surface_config_controls_native_window_transparency() {
     assert!(!initial_window_attributes(SurfaceConfig::default()).transparent());
     assert!(initial_window_attributes(SurfaceConfig::transparent()).transparent());
+    assert!(initial_window_attributes(SurfaceConfig::default()).visible);
+}
+
+#[test]
+fn desired_visibility_is_deferred_until_accessibility_initialization() {
+    let visible = initial_window_attributes(SurfaceConfig::default());
+    let (creation_attributes, desired_visibility) = defer_window_visibility(visible);
+
+    assert!(!creation_attributes.visible);
+    assert!(desired_visibility);
 }
 
 #[test]
