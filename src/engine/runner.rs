@@ -24,7 +24,7 @@ use zeroize::Zeroize;
 use super::gpu::{BackendType, GraphicsError};
 use super::run_error::RutterRunError;
 use super::{InputRuntime, RutterEngine, validate_runtime_reconstruction};
-use crate::app::AppLogic;
+use crate::app::{AppLogic, LogicalPointerPosition};
 use crate::engine::widget_state::WidgetState;
 use crate::i18n::LayoutDirection;
 use crate::input_limits::{
@@ -849,6 +849,8 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         self.redraw();
                         return;
                     }
+                    self.dispatch_secondary_pointer_pressed(cursor);
+                    return;
                 } else if self.engine.any_context_menu_open() {
                     self.engine.close_all_context_menus();
                     self.redraw();
@@ -1121,6 +1123,13 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    fn dispatch_secondary_pointer_pressed(&mut self, cursor: Point) {
+        let position = LogicalPointerPosition::new(cursor.x, cursor.y);
+        A::secondary_pointer_pressed(&mut self.engine.app_state, position);
+        self.engine.layout_dirty = true;
+        self.redraw();
+    }
+
     pub(crate) fn resume_surface(
         &mut self,
         event_loop: &ActiveEventLoop,

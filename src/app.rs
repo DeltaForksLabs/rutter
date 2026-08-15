@@ -16,6 +16,43 @@ use crate::input_limits::{InputKind, InputLimits};
 use crate::render::text::TextShapeCacheLimits;
 use crate::widget::Widget;
 
+/// Logical client coordinates for a pointer event dispatched by Rutter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogicalPointerPosition {
+    x: f32,
+    y: f32,
+}
+
+impl LogicalPointerPosition {
+    /// Creates a position in logical pixels relative to the surface top-left corner.
+    ///
+    /// ```rust
+    /// let position = rutter::LogicalPointerPosition::new(12.0, 24.0);
+    /// assert_eq!((position.x(), position.y()), (12.0, 24.0));
+    /// ```
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    /// Returns the logical horizontal coordinate.
+    ///
+    /// ```rust
+    /// assert_eq!(rutter::LogicalPointerPosition::new(7.0, 9.0).x(), 7.0);
+    /// ```
+    pub const fn x(self) -> f32 {
+        self.x
+    }
+
+    /// Returns the logical vertical coordinate.
+    ///
+    /// ```rust
+    /// assert_eq!(rutter::LogicalPointerPosition::new(7.0, 9.0).y(), 9.0);
+    /// ```
+    pub const fn y(self) -> f32 {
+        self.y
+    }
+}
+
 /// Configures the compositor-facing top-level drawing surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SurfaceConfig {
@@ -100,6 +137,12 @@ pub trait AppLogic {
 
     /// Processa uma mensagem e muta o estado.
     fn update(state: &mut Self::State, message: Self::Message, clipboard: &mut Clipboard);
+
+    /// Observes a secondary-button press not claimed by an in-surface context menu.
+    ///
+    /// Applications can use this source event to create a platform-owned popup
+    /// instead of rendering an overlay that is clipped to the source surface.
+    fn secondary_pointer_pressed(_state: &mut Self::State, _position: LogicalPointerPosition) {}
 
     /// Retorna o tema da aplicação.
     fn theme() -> crate::theme::Theme {
