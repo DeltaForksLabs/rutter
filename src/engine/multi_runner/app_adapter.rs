@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
 
-use crate::app::{AppLogic, LogicalPointerPosition};
+use crate::app::{AppLogic, LogicalPointerPosition, SecondaryPointerContext};
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
 use crate::multi_window::{MultiWindowAppLogic, SurfaceCommand, SurfaceId};
@@ -56,8 +56,16 @@ impl<A: MultiWindowAppLogic> AppLogic for SurfaceAppAdapter<A> {
 
     fn secondary_pointer_pressed(state: &mut Self::State, position: LogicalPointerPosition) {
         let commands = A::secondary_pointer_pressed(&mut state.model, state.surface, position);
-        state.revision += 1;
-        state.commands.extend(commands);
+        retain_secondary_pointer_commands(state, commands);
+    }
+
+    fn secondary_pointer_pressed_with_context(
+        state: &mut Self::State,
+        context: SecondaryPointerContext,
+    ) {
+        let commands =
+            A::secondary_pointer_pressed_with_context(&mut state.model, state.surface, context);
+        retain_secondary_pointer_commands(state, commands);
     }
 
     fn theme() -> Theme {
@@ -81,12 +89,26 @@ impl<A: MultiWindowAppLogic> AppLogic for SurfaceAppAdapter<A> {
     }
 }
 
+fn retain_secondary_pointer_commands<A: MultiWindowAppLogic>(
+    state: &mut SurfaceAppState<A>,
+    commands: Vec<SurfaceCommand>,
+) {
+    state.revision += 1;
+    state.commands.extend(commands);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn pointer_test_view<'a, State>(_: &'a mut State, _: SurfaceId) -> Widget<'a, ()> {
+        Widget::Spacer {
+            style: Default::default(),
+        }
+    }
+
     #[derive(Clone, Debug, Default, PartialEq)]
-    struct PointerState(Option<(SurfaceId, LogicalPointerPosition)>);
+    struct PointerState(Option<(SurfaceId, SecondaryPointerContext)>);
 
     struct PointerApp;
 
@@ -98,10 +120,44 @@ mod tests {
             PointerState::default()
         }
 
-        fn view<'a>(_: &'a mut Self::State, _: SurfaceId) -> Widget<'a, Self::Message> {
-            Widget::Spacer {
-                style: Default::default(),
-            }
+        fn view<'a>(state: &'a mut Self::State, surface: SurfaceId) -> Widget<'a, Self::Message> {
+            pointer_test_view(state, surface)
+        }
+
+        fn update(
+            _: &mut Self::State,
+            _: SurfaceId,
+            _: Self::Message,
+            _: &mut Clipboard,
+        ) -> Vec<SurfaceCommand> {
+            Vec::new()
+        }
+
+        fn secondary_pointer_pressed_with_context(
+            state: &mut Self::State,
+            surface: SurfaceId,
+            context: SecondaryPointerContext,
+        ) -> Vec<SurfaceCommand> {
+            state.0 = Some((surface, context));
+            vec![SurfaceCommand::RequestRedraw(surface)]
+        }
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq)]
+    struct LegacyPointerState(Option<(SurfaceId, LogicalPointerPosition)>);
+
+    struct LegacyPointerApp;
+
+    impl MultiWindowAppLogic for LegacyPointerApp {
+        type State = LegacyPointerState;
+        type Message = ();
+
+        fn new(_: &mut FontSystem) -> Self::State {
+            LegacyPointerState::default()
+        }
+
+        fn view<'a>(state: &'a mut Self::State, surface: SurfaceId) -> Widget<'a, Self::Message> {
+            pointer_test_view(state, surface)
         }
 
         fn update(
@@ -127,12 +183,34 @@ mod tests {
     fn secondary_pointer_event_retains_source_position_and_commands() {
         let surface = SurfaceId::new(7);
         let mut state = SurfaceAppState::new(surface, PointerState::default(), 3);
-        let position = LogicalPointerPosition::new(12.0, 24.0);
+        let context = SecondaryPointerContext::new(
+            LogicalPointerPosition::new(12.0, 24.0),
+            Some(crate::app::PhysicalDesktopPosition::new(112, 224)),
+            2.0,
+        );
 
-        SurfaceAppAdapter::<PointerApp>::secondary_pointer_pressed(&mut state, position);
+        SurfaceAppAdapter::<PointerApp>::secondary_pointer_pressed_with_context(
+            &mut state, context,
+        );
 
-        assert_eq!(state.model.0, Some((surface, position)));
+        assert_eq!(state.model.0, Some((surface, context)));
         assert_eq!(state.revision, 4);
+        assert_eq!(state.commands, [SurfaceCommand::RequestRedraw(surface)]);
+    }
+
+    #[test]
+    fn contextual_adapter_preserves_legacy_multi_window_callback() {
+        let surface = SurfaceId::new(8);
+        let logical = LogicalPointerPosition::new(16.0, 32.0);
+        let context = SecondaryPointerContext::new(logical, None, 1.5);
+        let mut state = SurfaceAppState::new(surface, LegacyPointerState::default(), 4);
+
+        SurfaceAppAdapter::<LegacyPointerApp>::secondary_pointer_pressed_with_context(
+            &mut state, context,
+        );
+
+        assert_eq!(state.model.0, Some((surface, logical)));
+        assert_eq!(state.revision, 5);
         assert_eq!(state.commands, [SurfaceCommand::RequestRedraw(surface)]);
     }
 }

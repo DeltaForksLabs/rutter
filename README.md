@@ -209,14 +209,16 @@ Run `cargo run -- multi_window` to open a centered **Open Second Window** button
 
 ```rust
 use rutter::{
-    CloseBehavior, MultiWindowAppLogic, MultiWindowRunner, SurfaceCommand,
-    SurfaceEvent, SurfaceId, SurfaceRequest, Widget, WindowConfig, WindowLevel,
+    CloseBehavior, MultiWindowAppLogic, MultiWindowRunner, SecondaryPointerContext,
+    SurfaceCommand, SurfaceEvent, SurfaceId, SurfaceRequest, Widget, WindowConfig, WindowLevel,
 };
 
 const PANEL: SurfaceId = SurfaceId::new(1);
+const POPUP: SurfaceId = SurfaceId::new(2);
 
 // State is cloned into isolated per-window UI sessions after each update.
 // Rc-backed fields can keep large shared models inexpensive to synchronize.
+// State also stores `popup_open: bool` for the optional pointer popup below.
 impl MultiWindowAppLogic for App {
     type State = State;
     type Message = Msg;
@@ -258,6 +260,38 @@ impl MultiWindowAppLogic for App {
         state.record_focus(surface, event);
         Vec::new()
     }
+
+    fn surface_created(state: &mut State, surface: SurfaceId) {
+        if surface == POPUP {
+            state.popup_open = true;
+        }
+    }
+
+    fn surface_closed(state: &mut State, surface: SurfaceId) {
+        if surface == POPUP {
+            state.popup_open = false;
+        }
+    }
+
+    fn secondary_pointer_pressed_with_context(
+        state: &mut State,
+        source: SurfaceId,
+        context: SecondaryPointerContext,
+    ) -> Vec<SurfaceCommand> {
+        if source != PANEL || state.popup_open {
+            return Vec::new();
+        }
+        let Some(position) = context.desktop_position() else {
+            return Vec::new(); // Use an in-surface overlay when absolute positioning is unavailable.
+        };
+        let popup = WindowConfig::default()
+            .with_title("Pointer popup")
+            .with_position(position.x(), position.y())
+            .with_decorations(false)
+            .with_inner_size(320, 240).expect("positive popup size")
+            .with_close_on_focus_loss(true);
+        vec![SurfaceCommand::Open(SurfaceRequest::new(POPUP, popup))]
+    }
 }
 
 MultiWindowRunner::<App>::run();
@@ -286,6 +320,8 @@ If state construction is already complete and does not need the shared font data
 Each committed surface has independent title, initial position, inner/minimum/maximum size, window level, visibility, decorations, resizability, transparency, close behavior, widget state, layout, graphics presentation, and accessibility routing. Sizes and positions use physical pixels; negative coordinates are valid for multi-monitor desktops. Position, visibility, and window level are platform hints and may be ignored, notably by Wayland compositors.
 
 `SurfaceEvent::FocusChanged` reaches application logic after the matching native event is forwarded to AccessKit and the surface engine. `SurfaceCommand::SetVisible` changes native visibility and persists the desired value across suspension/resume. `SurfaceCommand::RequestRedraw` asks the compositor for an asynchronous frame without invalidating layout; redraw requests can be coalesced. Both commands reject unknown logical surface IDs, while redraw is a safe no-op for a registered surface during suspension.
+
+Unclaimed right-button presses reach `secondary_pointer_pressed_with_context` only after open select, dropdown, context-menu, and popover overlays have had dismissal priority; visible modals and dialogs consume the press. `SecondaryPointerContext` contains logical client coordinates, the source scale factor, and optional physical desktop coordinates. Absolute coordinates are unavailable on Wayland, Android, iOS, and Web, where `desktop_position()` returns `None` and applications should retain an in-surface overlay fallback. The original `secondary_pointer_pressed` callback remains supported through the default compatibility bridge. Track a fixed popup surface's lifecycle—as in the example—to avoid opening a duplicate `SurfaceId`.
 
 Temporary panels can use `WindowConfig::with_close_on_focus_loss(true)`. The runtime waits until that window has gained focus at least once before closing it on focus loss, which avoids treating an initial unfocused notification as dismissal. Closing a normal secondary surface removes only that surface; the event loop exits when no surfaces remain or when an `ExitApplication` close policy/`SurfaceCommand::Exit` requests it.
 

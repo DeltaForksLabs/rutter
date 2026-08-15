@@ -53,6 +53,118 @@ impl LogicalPointerPosition {
     }
 }
 
+/// Physical desktop coordinates suitable for positioning a native popup window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysicalDesktopPosition {
+    x: i32,
+    y: i32,
+}
+
+impl PhysicalDesktopPosition {
+    /// Creates a physical desktop position, including negative multi-monitor coordinates.
+    ///
+    /// ```rust
+    /// let position = rutter::PhysicalDesktopPosition::new(-1600, 240);
+    /// assert_eq!((position.x(), position.y()), (-1600, 240));
+    /// ```
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+
+    /// Returns the physical horizontal desktop coordinate.
+    ///
+    /// ```rust
+    /// assert_eq!(rutter::PhysicalDesktopPosition::new(12, 24).x(), 12);
+    /// ```
+    pub const fn x(self) -> i32 {
+        self.x
+    }
+
+    /// Returns the physical vertical desktop coordinate.
+    ///
+    /// ```rust
+    /// assert_eq!(rutter::PhysicalDesktopPosition::new(12, 24).y(), 24);
+    /// ```
+    pub const fn y(self) -> i32 {
+        self.y
+    }
+}
+
+/// Coordinates and scale resolved for an unclaimed secondary-button press.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SecondaryPointerContext {
+    client_position: LogicalPointerPosition,
+    desktop_position: Option<PhysicalDesktopPosition>,
+    scale_factor: f64,
+}
+
+impl SecondaryPointerContext {
+    /// Creates pointer context from logical client and optional physical desktop coordinates.
+    ///
+    /// ```rust
+    /// use rutter::{LogicalPointerPosition, PhysicalDesktopPosition, SecondaryPointerContext};
+    /// let context = SecondaryPointerContext::new(
+    ///     LogicalPointerPosition::new(10.0, 20.0),
+    ///     Some(PhysicalDesktopPosition::new(110, 220)),
+    ///     2.0,
+    /// );
+    /// assert_eq!(context.scale_factor(), 2.0);
+    /// ```
+    pub const fn new(
+        client_position: LogicalPointerPosition,
+        desktop_position: Option<PhysicalDesktopPosition>,
+        scale_factor: f64,
+    ) -> Self {
+        Self {
+            client_position,
+            desktop_position,
+            scale_factor,
+        }
+    }
+
+    /// Returns logical coordinates relative to the source surface client area.
+    ///
+    /// ```rust
+    /// use rutter::{LogicalPointerPosition, SecondaryPointerContext};
+    /// let context = SecondaryPointerContext::new(
+    ///     LogicalPointerPosition::new(10.0, 20.0), None, 1.0,
+    /// );
+    /// assert_eq!(context.client_position().x(), 10.0);
+    /// ```
+    pub const fn client_position(self) -> LogicalPointerPosition {
+        self.client_position
+    }
+
+    /// Returns physical desktop coordinates when the window system exposes its client origin.
+    ///
+    /// Wayland and Android normally return `None` because absolute top-level positions are not
+    /// available through Winit.
+    ///
+    /// ```rust
+    /// use rutter::{LogicalPointerPosition, SecondaryPointerContext};
+    /// let context = SecondaryPointerContext::new(
+    ///     LogicalPointerPosition::new(10.0, 20.0), None, 1.0,
+    /// );
+    /// assert!(context.desktop_position().is_none());
+    /// ```
+    pub const fn desktop_position(self) -> Option<PhysicalDesktopPosition> {
+        self.desktop_position
+    }
+
+    /// Returns the physical-pixels-per-logical-pixel scale of the source surface.
+    ///
+    /// ```rust
+    /// use rutter::{LogicalPointerPosition, SecondaryPointerContext};
+    /// let context = SecondaryPointerContext::new(
+    ///     LogicalPointerPosition::new(10.0, 20.0), None, 1.5,
+    /// );
+    /// assert_eq!(context.scale_factor(), 1.5);
+    /// ```
+    pub const fn scale_factor(self) -> f64 {
+        self.scale_factor
+    }
+}
+
 /// Configures the compositor-facing top-level drawing surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SurfaceConfig {
@@ -144,6 +256,17 @@ pub trait AppLogic {
     /// instead of rendering an overlay that is clipped to the source surface.
     fn secondary_pointer_pressed(_state: &mut Self::State, _position: LogicalPointerPosition) {}
 
+    /// Observes an unclaimed secondary-button press with native positioning context.
+    ///
+    /// The default forwards logical client coordinates to [`Self::secondary_pointer_pressed`],
+    /// preserving implementations of the original callback.
+    fn secondary_pointer_pressed_with_context(
+        state: &mut Self::State,
+        context: SecondaryPointerContext,
+    ) {
+        Self::secondary_pointer_pressed(state, context.client_position());
+    }
+
     /// Retorna o tema da aplicação.
     fn theme() -> crate::theme::Theme {
         crate::theme::Theme::default()
@@ -202,5 +325,47 @@ pub trait AppLogic {
     /// ```
     fn surface_config() -> SurfaceConfig {
         SurfaceConfig::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct LegacyPointerState(Option<LogicalPointerPosition>);
+
+    struct LegacyPointerApp;
+
+    impl AppLogic for LegacyPointerApp {
+        type State = LegacyPointerState;
+        type Message = ();
+
+        fn new(_: &mut FontSystem) -> Self::State {
+            LegacyPointerState::default()
+        }
+
+        fn view<'a>(_: &'a mut Self::State) -> Widget<'a, Self::Message> {
+            Widget::Spacer {
+                style: Default::default(),
+            }
+        }
+
+        fn update(_: &mut Self::State, _: Self::Message, _: &mut Clipboard) {}
+
+        fn secondary_pointer_pressed(state: &mut Self::State, position: LogicalPointerPosition) {
+            state.0 = Some(position);
+        }
+    }
+
+    #[test]
+    fn contextual_callback_preserves_legacy_logical_callback() {
+        let mut state = LegacyPointerState::default();
+        let logical = LogicalPointerPosition::new(12.0, 24.0);
+        let context = SecondaryPointerContext::new(logical, None, 1.5);
+
+        LegacyPointerApp::secondary_pointer_pressed_with_context(&mut state, context);
+
+        assert_eq!(state.0, Some(logical));
     }
 }

@@ -25,7 +25,10 @@ mod widget_structure;
 mod widgets;
 
 // ── Re-exports ergonômicos ───────────────────────────────────
-pub use app::{AppLogic, LogicalPointerPosition, SurfaceConfig};
+pub use app::{
+    AppLogic, LogicalPointerPosition, PhysicalDesktopPosition, SecondaryPointerContext,
+    SurfaceConfig,
+};
 pub use calendar::{
     CalendarConfig, CalendarDate, CalendarError, CalendarLabels, CalendarMonth, WeekStart,
 };

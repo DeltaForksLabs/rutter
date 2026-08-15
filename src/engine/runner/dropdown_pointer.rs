@@ -350,11 +350,8 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 }
 
-fn dropdown_right_click_consumes(hit: &DropdownMenuOverlayHit) -> bool {
-    !matches!(
-        hit,
-        DropdownMenuOverlayHit::Dismiss { .. } | DropdownMenuOverlayHit::Trigger { .. }
-    )
+fn dropdown_right_click_consumes(_: &DropdownMenuOverlayHit) -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -362,11 +359,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn right_click_propagates_only_after_outside_dismissal() {
-        assert!(!dropdown_right_click_consumes(
+    fn open_dropdown_consumes_every_right_click_while_dismissing() {
+        assert!(dropdown_right_click_consumes(
             &DropdownMenuOverlayHit::Dismiss { id: 7 }
         ));
-        assert!(!dropdown_right_click_consumes(
+        assert!(dropdown_right_click_consumes(
             &DropdownMenuOverlayHit::Trigger { id: 7 }
         ));
         assert!(dropdown_right_click_consumes(

@@ -14,6 +14,7 @@ use cosmic_text::{Action, Edit, FontSystem, Motion};
 use skia_safe::{Point, Rect as SkiaRect};
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalPosition,
     event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
@@ -24,7 +25,7 @@ use zeroize::Zeroize;
 use super::gpu::{BackendType, GraphicsError};
 use super::run_error::RutterRunError;
 use super::{InputRuntime, RutterEngine, validate_runtime_reconstruction};
-use crate::app::{AppLogic, LogicalPointerPosition};
+use crate::app::AppLogic;
 use crate::engine::widget_state::WidgetState;
 use crate::i18n::LayoutDirection;
 use crate::input_limits::{
@@ -40,12 +41,17 @@ use crate::render::hit_test::{
     find_scroll_focus, find_scrollbar_drag_hit, hit_test, hit_test_context_menu_overlay,
     hit_test_popover_overlay,
 };
-use crate::render::select_overlay::collector::collect_open_dropdown_overlays;
+use crate::render::select_overlay::collector::{
+    collect_open_dropdown_overlays, collect_open_select_overlays,
+};
 use crate::render::select_overlay::hit_test_select_overlay;
 
 mod accessibility_actions;
 mod dropdown_keyboard;
 mod dropdown_pointer;
+mod secondary_pointer;
+
+use self::secondary_pointer::{SecondaryPointerBlockers, has_visible_blocking_overlay};
 
 fn is_bidi_override_char(ch: char) -> bool {
     matches!(
@@ -421,6 +427,7 @@ pub struct RutterRunner<A: AppLogic> {
     engine: RutterEngine<A>,
     active_window_id: Option<WindowId>,
     cursor_pos: Point,
+    cursor_physical: PhysicalPosition<f64>,
     scroll_drag: Option<ScrollDrag>,
     mouse_down: bool,
     last_click_time: std::time::Instant,
@@ -435,6 +442,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             engine,
             active_window_id: None,
             cursor_pos: Point::new(0.0, 0.0),
+            cursor_physical: PhysicalPosition::new(0.0, 0.0),
             scroll_drag: None,
             mouse_down: false,
             last_click_time: Instant::now(),
@@ -542,6 +550,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             WindowEvent::ModifiersChanged(m) => self.engine.modifiers = m,
             WindowEvent::Ime(Ime::Commit(text)) => self.insert_text_commit(&text),
             WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_physical = position;
                 self.cursor_pos = Point::new(position.x as f32, position.y as f32);
                 self.engine.last_mouse_pos = Point::new(
                     self.cursor_pos.x / self.engine.scale_factor,
@@ -644,6 +653,8 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     size.height as f32 / self.engine.scale_factor,
                 );
                 let theme = A::theme_for(&self.engine.app_state);
+                let context_menu_was_open = self.engine.any_context_menu_open();
+                let popover_was_open = self.engine.any_popover_open();
                 let (
                     context_menu_overlay_hit,
                     dropdown_menu_overlay_hit,
@@ -652,6 +663,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     context_menu_target,
                     scroll_drag_hit,
                     active_scroll_id,
+                    secondary_pointer_blockers,
                     mut hit,
                 ) = {
                     let wt = A::view(&mut self.engine.app_state);
@@ -716,6 +728,24 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     } else {
                         None
                     };
+                    let secondary_pointer_blockers = if button == MouseButton::Right {
+                        let select_popup_open = !collect_open_select_overlays(
+                            &wt,
+                            &self.engine.taffy,
+                            self.engine.last_root_node,
+                            &self.engine.widget_states,
+                            viewport_size,
+                        )
+                        .is_empty();
+                        SecondaryPointerBlockers::new(
+                            select_popup_open,
+                            context_menu_was_open,
+                            popover_was_open,
+                            has_visible_blocking_overlay(&wt),
+                        )
+                    } else {
+                        SecondaryPointerBlockers::default()
+                    };
                     let context_menu_target = if button == MouseButton::Right {
                         find_context_menu_target(
                             &wt,
@@ -764,6 +794,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         context_menu_target,
                         scroll_drag_hit,
                         active_scroll_id,
+                        secondary_pointer_blockers,
                         hit,
                     )
                 };
@@ -834,22 +865,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
 
                 if button == MouseButton::Right {
-                    self.close_all_selects();
-                    self.close_all_dropdown_menus();
-                    if let Some(id) = context_menu_target {
-                        self.engine.open_context_menu(id, cursor);
-                        self.redraw();
-                        return;
-                    }
-                    if self.engine.close_all_context_menus() {
-                        self.redraw();
-                        return;
-                    }
-                    if self.engine.close_all_popovers() {
-                        self.redraw();
-                        return;
-                    }
-                    self.dispatch_secondary_pointer_pressed(cursor);
+                    self.route_secondary_pointer_press(
+                        secondary_pointer_blockers,
+                        context_menu_target,
+                    );
                     return;
                 } else if self.engine.any_context_menu_open() {
                     self.engine.close_all_context_menus();
@@ -1123,13 +1142,6 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
-    fn dispatch_secondary_pointer_pressed(&mut self, cursor: Point) {
-        let position = LogicalPointerPosition::new(cursor.x, cursor.y);
-        A::secondary_pointer_pressed(&mut self.engine.app_state, position);
-        self.engine.layout_dirty = true;
-        self.redraw();
-    }
-
     pub(crate) fn resume_surface(
         &mut self,
         event_loop: &ActiveEventLoop,

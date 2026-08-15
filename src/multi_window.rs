@@ -1,6 +1,6 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
-use crate::LogicalPointerPosition;
+use crate::app::{LogicalPointerPosition, SecondaryPointerContext};
 use crate::engine::run_error::RutterRunError;
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
@@ -143,6 +143,18 @@ pub trait MultiWindowAppLogic {
         _position: LogicalPointerPosition,
     ) -> Vec<SurfaceCommand> {
         Vec::new()
+    }
+    /// Observes an unclaimed secondary-button press with native positioning context.
+    ///
+    /// The default forwards logical coordinates to [`Self::secondary_pointer_pressed`], preserving
+    /// existing implementations while allowing native popup placement where desktop coordinates
+    /// are available.
+    fn secondary_pointer_pressed_with_context(
+        state: &mut Self::State,
+        surface: SurfaceId,
+        context: SecondaryPointerContext,
+    ) -> Vec<SurfaceCommand> {
+        Self::secondary_pointer_pressed(state, surface, context.client_position())
     }
     /// Returns the application theme.
     fn theme() -> crate::theme::Theme {
