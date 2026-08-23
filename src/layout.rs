@@ -19,6 +19,7 @@ use crate::i18n::LayoutDirection;
 use crate::render::RichTextRenderer;
 use crate::render::rich_text::{RichTextDirection, RichTextMetrics, RichTextWidth};
 use crate::widget::Widget;
+use crate::widgets::counter::{COUNTER_DEFAULT_HEIGHT, counter_preferred_width};
 use crate::widgets::rich_text::OwnedRichTextSpec;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -32,6 +33,11 @@ pub const VIRTUAL_GRID_PADDING: f32 = 8.0;
 pub struct TextContext {
     pub content: String,
     pub font_size: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CounterContext {
+    pub value: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +70,7 @@ pub enum RutterContext {
     #[default]
     None,
     Text(TextContext),
+    Counter(CounterContext),
     RichText(OwnedRichTextSpec),
 }
 
@@ -310,6 +317,11 @@ impl LayoutBlueprint {
             Widget::Select { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
+            Widget::Counter { value, style, .. } => Self::leaf_with_context(
+                Some(widget.resolved_id(path).unwrap()),
+                style.clone(),
+                RutterContext::Counter(CounterContext { value: *value }),
+            ),
             Widget::Text {
                 content,
                 style,
@@ -346,10 +358,14 @@ impl LayoutBlueprint {
             | Widget::CarouselView { style, .. }
             | Widget::VirtualList { style, .. }
             | Widget::VirtualListContent { style, .. }
+            | Widget::VirtualListWithSelection { style, .. }
+            | Widget::VirtualListContentWithSelection { style, .. }
             | Widget::VirtualGrid { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
-            Widget::VirtualGridContent { style, .. } => {
+            Widget::VirtualGridContent { style, .. }
+            | Widget::VirtualGridWithSelection { style, .. }
+            | Widget::VirtualGridContentWithSelection { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
             Widget::Toast { .. } => Self::leaf(
@@ -615,6 +631,7 @@ pub fn compute_layout(
                 Some(RutterContext::Text(text)) => {
                     measure_plain_text(text, known, available, &fs_rc)
                 }
+                Some(RutterContext::Counter(counter)) => measure_counter(counter, known),
                 Some(RutterContext::RichText(content)) => measure_rich_text(
                     content,
                     known,
@@ -626,6 +643,16 @@ pub fn compute_layout(
             },
         )
         .unwrap();
+}
+
+fn measure_counter(counter: &CounterContext, known: Size<Option<f32>>) -> Size<f32> {
+    let height = known.height.unwrap_or(COUNTER_DEFAULT_HEIGHT);
+    Size {
+        width: known
+            .width
+            .unwrap_or_else(|| counter_preferred_width(counter.value, height)),
+        height,
+    }
 }
 
 fn measure_plain_text(

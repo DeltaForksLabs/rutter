@@ -9,6 +9,7 @@
 //   cargo run -- form           # demo completa (padrão)
 //   cargo run -- text_input
 //   cargo run -- slider
+//   cargo run -- counter
 //   cargo run -- progress
 //   cargo run -- controls
 //   cargo run -- tabs
@@ -38,6 +39,7 @@ fn main() {
     match demo.as_str() {
         "text_input" => widget_examples::text_input_demo::run(),
         "slider" => widget_examples::slider_demo::run(),
+        "counter" => widget_examples::counter_demo::run(),
         "progress" => widget_examples::progress_demo::run(),
         "controls" => widget_examples::controls_demo::run(),
         "tabs" => widget_examples::tab_demo::run(),

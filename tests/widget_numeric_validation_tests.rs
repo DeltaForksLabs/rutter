@@ -1,4 +1,34 @@
-use rutter::{WidgetConfigError, validate_slider, validate_virtual_grid, validate_virtual_list};
+use rutter::{
+    CounterConfigError, WidgetConfigError, validate_counter, validate_slider,
+    validate_virtual_grid, validate_virtual_list,
+};
+
+#[test]
+fn counter_validation_rejects_invalid_ranges_values_and_steps() {
+    assert_eq!(
+        validate_counter(1, 3, 2, 1),
+        Err(CounterConfigError::InvalidRange { min: 3, max: 2 })
+    );
+    assert_eq!(
+        validate_counter(5, 0, 3, 1),
+        Err(CounterConfigError::ValueOutOfRange {
+            value: 5,
+            min: 0,
+            max: 3,
+        })
+    );
+    assert_eq!(
+        validate_counter(1, 0, 3, 0),
+        Err(CounterConfigError::InvalidStep { step: 0 })
+    );
+    assert!(
+        validate_counter(5, 0, 3, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("value 5")
+    );
+    assert!(validate_counter(-1, -3, 3, 2).is_ok());
+}
 
 #[test]
 fn slider_validation_rejects_non_finite_and_reversed_ranges() {

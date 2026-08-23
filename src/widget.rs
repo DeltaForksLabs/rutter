@@ -50,6 +50,61 @@ impl fmt::Display for WidgetConfigError {
 
 impl std::error::Error for WidgetConfigError {}
 
+/// Reports an invalid integer counter configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CounterConfigError {
+    InvalidRange { min: i64, max: i64 },
+    ValueOutOfRange { value: i64, min: i64, max: i64 },
+    InvalidStep { step: i64 },
+}
+
+impl fmt::Display for CounterConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRange { min, max } => {
+                write!(
+                    formatter,
+                    "invalid counter range {min}..={max}, expected min <= max"
+                )
+            }
+            Self::ValueOutOfRange { value, min, max } => write!(
+                formatter,
+                "invalid counter value {value}, expected a value within {min}..={max}"
+            ),
+            Self::InvalidStep { step } => {
+                write!(formatter, "invalid counter step {step}, expected step > 0")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CounterConfigError {}
+
+/// Validates the value, range, and step supplied to an integer counter.
+///
+/// ```rust
+/// use rutter::validate_counter;
+///
+/// assert!(validate_counter(1, 0, 9, 1).is_ok());
+/// ```
+pub fn validate_counter(
+    value: i64,
+    min: i64,
+    max: i64,
+    step: i64,
+) -> Result<(), CounterConfigError> {
+    if min > max {
+        return Err(CounterConfigError::InvalidRange { min, max });
+    }
+    if value < min || value > max {
+        return Err(CounterConfigError::ValueOutOfRange { value, min, max });
+    }
+    if step <= 0 {
+        return Err(CounterConfigError::InvalidStep { step });
+    }
+    Ok(())
+}
+
 pub fn validate_slider(value: f32, min: f32, max: f32, step: f32) -> Result<(), WidgetConfigError> {
     if value.is_finite()
         && min.is_finite()
@@ -75,6 +130,57 @@ pub fn validate_virtual_grid(columns: usize, item_height: f32) -> Result<(), Wid
         return Err(WidgetConfigError::InvalidVirtualGridColumns);
     }
     validate_virtual_list(item_height)
+}
+
+/// Selection configuration for a virtual list or grid.
+///
+/// [`VirtualSelection::Multiple`] callbacks receive sorted, unique, in-range
+/// indices. Keep the returned selection in application state and provide it
+/// again on the next view. Pointer dragging selects a range in lists and a
+/// rectangle in grids; Ctrl/Command-drag adds that region.
+///
+/// ```rust
+/// use rutter::VirtualSelection;
+///
+/// let selection = VirtualSelection::multiple(&[1, 4], |_| ());
+/// assert!(matches!(selection, VirtualSelection::Multiple { .. }));
+/// ```
+#[derive(Clone, Copy)]
+pub enum VirtualSelection<'a, Msg> {
+    Single(fn(usize) -> Msg),
+    Multiple {
+        selected: &'a [usize],
+        on_change: fn(Vec<usize>) -> Msg,
+    },
+}
+
+impl<'a, Msg> VirtualSelection<'a, Msg> {
+    /// Creates a single-selection configuration.
+    ///
+    /// ```rust
+    /// use rutter::VirtualSelection;
+    ///
+    /// let selection: VirtualSelection<'_, ()> = VirtualSelection::single(|_| ());
+    /// assert!(matches!(selection, VirtualSelection::Single(_)));
+    /// ```
+    pub const fn single(on_select: fn(usize) -> Msg) -> Self {
+        Self::Single(on_select)
+    }
+
+    /// Creates a controlled multiselection configuration.
+    ///
+    /// ```rust
+    /// use rutter::VirtualSelection;
+    ///
+    /// let selection: VirtualSelection<'_, ()> = VirtualSelection::multiple(&[1, 4], |_| ());
+    /// assert!(matches!(selection, VirtualSelection::Multiple { .. }));
+    /// ```
+    pub const fn multiple(selected: &'a [usize], on_change: fn(Vec<usize>) -> Msg) -> Self {
+        Self::Multiple {
+            selected,
+            on_change,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -228,6 +334,7 @@ pub(crate) enum WidgetIdTag {
     DropdownMenu = 27,
     DropdownMenuPopup = 28,
     DropdownMenuItem = 29,
+    Counter = 30,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,6 +482,16 @@ pub enum Widget<'a, Msg> {
         style: Style,
         label: &'a str,
     },
+    Counter {
+        id: u64,
+        value: i64,
+        min: i64,
+        max: i64,
+        step: i64,
+        on_change: fn(i64) -> Msg,
+        style: Style,
+        label: &'a str,
+    },
     Select {
         id: u64,
         options: &'a [&'a str],
@@ -510,6 +627,40 @@ pub enum Widget<'a, Msg> {
         item_count: usize,
         items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
         on_select: fn(usize) -> Msg,
+        style: Style,
+    },
+    VirtualListWithSelection {
+        id: u64,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        selection: VirtualSelection<'a, Msg>,
+        style: Style,
+    },
+    VirtualListContentWithSelection {
+        id: u64,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        selection: VirtualSelection<'a, Msg>,
+        style: Style,
+    },
+    VirtualGridWithSelection {
+        id: u64,
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        selection: VirtualSelection<'a, Msg>,
+        style: Style,
+    },
+    VirtualGridContentWithSelection {
+        id: u64,
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        selection: VirtualSelection<'a, Msg>,
         style: Style,
     },
 }
@@ -663,6 +814,61 @@ impl<'a, Msg> Widget<'a, Msg> {
     ) -> Result<Self, WidgetConfigError> {
         validate_slider(value, min, max, step)?;
         Ok(Self::slider(value, min, max, step, on_change, style, label))
+    }
+
+    /// Creates a controlled integer counter rendered as `- value +`.
+    ///
+    /// ```rust
+    /// use rutter::Widget;
+    /// use taffy::prelude::Style;
+    ///
+    /// enum Msg { QuantityChanged(i64) }
+    /// let counter = Widget::counter(1, 0, 9, 1, Msg::QuantityChanged, Style::default(), "Quantity");
+    /// assert!(matches!(counter, Widget::Counter { value: 1, .. }));
+    /// ```
+    pub fn counter(
+        value: i64,
+        min: i64,
+        max: i64,
+        step: i64,
+        on_change: fn(i64) -> Msg,
+        style: Style,
+        label: &'a str,
+    ) -> Self {
+        Self::Counter {
+            id: AUTO_ID,
+            value,
+            min,
+            max,
+            step,
+            on_change,
+            style,
+            label,
+        }
+    }
+
+    /// Validates and creates a controlled integer counter.
+    ///
+    /// ```rust
+    /// use rutter::Widget;
+    /// use taffy::prelude::Style;
+    ///
+    /// let counter: Widget<'_, ()> = Widget::try_counter(1, 0, 9, 1, |_| (), Style::default(), "Quantity")?;
+    /// # Ok::<(), rutter::CounterConfigError>(())
+    /// ```
+    pub fn try_counter(
+        value: i64,
+        min: i64,
+        max: i64,
+        step: i64,
+        on_change: fn(i64) -> Msg,
+        style: Style,
+        label: &'a str,
+    ) -> Result<Self, CounterConfigError> {
+        validate_counter(value, min, max, step)?;
+        Ok(Self::counter(
+            value, min, max, step, on_change, style, label,
+        ))
     }
 
     pub fn select(
@@ -975,6 +1181,40 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a virtual list with an explicit typed selection configuration.
+    ///
+    /// [`VirtualSelection::Single`] keeps the single-index callback. With
+    /// [`VirtualSelection::Multiple`], pointer dragging selects list ranges and
+    /// the callback receives the full sorted selection.
+    ///
+    /// ```rust
+    /// use rutter::{VirtualSelection, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// enum Msg { SelectionChanged(Vec<usize>) }
+    /// let selected: [usize; 0] = [];
+    /// let rows = |_| Some(String::from("Row"));
+    /// let _ = Widget::virtual_list_with_selection(
+    ///     32.0, 10, &rows, VirtualSelection::multiple(&selected, Msg::SelectionChanged), Style::default(),
+    /// );
+    /// ```
+    pub fn virtual_list_with_selection(
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        selection: VirtualSelection<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::VirtualListWithSelection {
+            id: AUTO_ID,
+            item_height,
+            item_count,
+            items,
+            selection,
+            style,
+        }
+    }
+
     /// Creates a virtualized list whose visible rows are rendered from widgets.
     /// Item widgets are visual-only and receive isolated runtime-state maps so
     /// on-demand IDs cannot alias controls in the application tree.
@@ -1015,6 +1255,40 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a content-based virtual list with explicit selection configuration.
+    ///
+    /// Visible item widgets remain visual-only, matching
+    /// [`Widget::virtual_list_content`], while selection remains controlled by
+    /// [`VirtualSelection`].
+    ///
+    /// ```rust
+    /// use rutter::{VirtualSelection, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// enum Msg { SelectionChanged(Vec<usize>) }
+    /// let selected: [usize; 0] = [];
+    /// let rows = |_| Some(Widget::Text { content: "Row".into(), color: None, size: 14.0, style: Style::default() });
+    /// let _ = Widget::virtual_list_content_with_selection(
+    ///     32.0, 10, &rows, VirtualSelection::multiple(&selected, Msg::SelectionChanged), Style::default(),
+    /// );
+    /// ```
+    pub fn virtual_list_content_with_selection(
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        selection: VirtualSelection<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::VirtualListContentWithSelection {
+            id: AUTO_ID,
+            item_height,
+            item_count,
+            items,
+            selection,
+            style,
+        }
+    }
+
     pub fn virtual_grid(
         columns: usize,
         item_height: f32,
@@ -1030,6 +1304,42 @@ impl<'a, Msg> Widget<'a, Msg> {
             item_count,
             items,
             on_select,
+            style,
+        }
+    }
+
+    /// Creates a virtual grid with an explicit typed selection configuration.
+    ///
+    /// [`VirtualSelection::Single`] keeps the single-index callback. With
+    /// [`VirtualSelection::Multiple`], pointer dragging selects grid rectangles
+    /// and the callback receives the full sorted selection.
+    ///
+    /// ```rust
+    /// use rutter::{VirtualSelection, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// enum Msg { SelectionChanged(Vec<usize>) }
+    /// let selected: [usize; 0] = [];
+    /// let cells = |_| Some(String::from("Cell"));
+    /// let _ = Widget::virtual_grid_with_selection(
+    ///     3, 48.0, 12, &cells, VirtualSelection::multiple(&selected, Msg::SelectionChanged), Style::default(),
+    /// );
+    /// ```
+    pub fn virtual_grid_with_selection(
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        selection: VirtualSelection<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::VirtualGridWithSelection {
+            id: AUTO_ID,
+            columns,
+            item_height,
+            item_count,
+            items,
+            selection,
             style,
         }
     }
@@ -1076,6 +1386,42 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a content-based virtual grid with explicit selection configuration.
+    ///
+    /// Visible item widgets remain visual-only, matching
+    /// [`Widget::virtual_grid_content`], while pointer dragging selects a
+    /// controlled rectangular cell region.
+    ///
+    /// ```rust
+    /// use rutter::{VirtualSelection, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// enum Msg { SelectionChanged(Vec<usize>) }
+    /// let selected: [usize; 0] = [];
+    /// let cells = |_| Some(Widget::Text { content: "Cell".into(), color: None, size: 14.0, style: Style::default() });
+    /// let _ = Widget::virtual_grid_content_with_selection(
+    ///     3, 48.0, 12, &cells, VirtualSelection::multiple(&selected, Msg::SelectionChanged), Style::default(),
+    /// );
+    /// ```
+    pub fn virtual_grid_content_with_selection(
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        selection: VirtualSelection<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::VirtualGridContentWithSelection {
+            id: AUTO_ID,
+            columns,
+            item_height,
+            item_count,
+            items,
+            selection,
+            style,
+        }
+    }
+
     pub fn with_id(mut self, id: u64) -> Self {
         self.assign_raw_id(id);
         self
@@ -1087,6 +1433,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::TextArea { id: slot, .. }
             | Self::SearchBar { id: slot, .. }
             | Self::Slider { id: slot, .. }
+            | Self::Counter { id: slot, .. }
             | Self::Select { id: slot, .. }
             | Self::ProgressBar { id: slot, .. }
             | Self::Spinner { id: slot, .. }
@@ -1102,8 +1449,12 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::CarouselView { id: slot, .. }
             | Self::VirtualList { id: slot, .. }
             | Self::VirtualListContent { id: slot, .. }
+            | Self::VirtualListWithSelection { id: slot, .. }
+            | Self::VirtualListContentWithSelection { id: slot, .. }
             | Self::VirtualGrid { id: slot, .. }
-            | Self::VirtualGridContent { id: slot, .. } => {
+            | Self::VirtualGridContent { id: slot, .. }
+            | Self::VirtualGridWithSelection { id: slot, .. }
+            | Self::VirtualGridContentWithSelection { id: slot, .. } => {
                 *slot = id;
                 true
             }
@@ -1162,6 +1513,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::TextArea { id, .. } => (Some(*id), WidgetIdTag::TextArea, "TextArea"),
             Self::SearchBar { id, .. } => (Some(*id), WidgetIdTag::SearchBar, "SearchBar"),
             Self::Slider { id, .. } => (Some(*id), WidgetIdTag::Slider, "Slider"),
+            Self::Counter { id, .. } => (Some(*id), WidgetIdTag::Counter, "Counter"),
             Self::Select { id, .. } => (Some(*id), WidgetIdTag::Select, "Select"),
             Self::ProgressBar { id, .. } => (Some(*id), WidgetIdTag::ProgressBar, "ProgressBar"),
             Self::Spinner { id, .. } => (Some(*id), WidgetIdTag::Spinner, "Spinner"),
@@ -1175,10 +1527,16 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::DropdownMenu { id, .. } => (Some(*id), WidgetIdTag::DropdownMenu, "DropdownMenu"),
             Self::Popover { id, .. } => (Some(*id), WidgetIdTag::Popover, "Popover"),
             Self::CarouselView { id, .. } => (Some(*id), WidgetIdTag::CarouselView, "CarouselView"),
-            Self::VirtualList { id, .. } | Self::VirtualListContent { id, .. } => {
+            Self::VirtualList { id, .. }
+            | Self::VirtualListContent { id, .. }
+            | Self::VirtualListWithSelection { id, .. }
+            | Self::VirtualListContentWithSelection { id, .. } => {
                 (Some(*id), WidgetIdTag::VirtualList, "VirtualList")
             }
-            Self::VirtualGrid { id, .. } | Self::VirtualGridContent { id, .. } => {
+            Self::VirtualGrid { id, .. }
+            | Self::VirtualGridContent { id, .. }
+            | Self::VirtualGridWithSelection { id, .. }
+            | Self::VirtualGridContentWithSelection { id, .. } => {
                 (Some(*id), WidgetIdTag::VirtualGrid, "VirtualGrid")
             }
             _ => return None,
@@ -1202,6 +1560,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::TextArea { .. }
             | Self::SearchBar { .. }
             | Self::Slider { .. }
+            | Self::Counter { .. }
             | Self::Select { .. }
             | Self::DropdownMenu { .. }
             | Self::Accordion { .. }
@@ -1209,8 +1568,12 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::CarouselView { .. }
             | Self::VirtualList { .. }
             | Self::VirtualListContent { .. }
+            | Self::VirtualListWithSelection { .. }
+            | Self::VirtualListContentWithSelection { .. }
             | Self::VirtualGrid { .. }
-            | Self::VirtualGridContent { .. } => self.resolved_id(path),
+            | Self::VirtualGridContent { .. }
+            | Self::VirtualGridWithSelection { .. }
+            | Self::VirtualGridContentWithSelection { .. } => self.resolved_id(path),
             _ => None,
         }
     }

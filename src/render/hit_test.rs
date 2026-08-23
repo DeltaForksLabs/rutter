@@ -13,6 +13,7 @@ use taffy::prelude::{NodeId, TaffyTree};
 use crate::engine::widget_state::{WidgetState, virtual_grid_row_count};
 use crate::i18n::LayoutDirection;
 use crate::layout::{RutterContext, SCROLLBAR_W};
+use crate::render::counter::{CounterSegment, counter_segment_at};
 use crate::widget::{
     CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     CONTEXT_MENU_VIEWPORT_MARGIN, ContextMenuEntry, DialogAction, DialogPosition, POPOVER_GAP,
@@ -47,6 +48,11 @@ pub enum HitResult<Msg> {
         max: f32,
         step: f32,
     },
+    CounterAdjust {
+        id: u64,
+        increment: bool,
+    },
+    CounterFocus(u64),
     SelectToggle(u64),
     DropdownMenuToggle(u64),
     SelectOption {
@@ -80,6 +86,15 @@ pub struct ScrollbarDragHit {
     pub start_offset: f32,
     pub viewport_h: f32,
     pub content_h: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScrollbarMetrics {
+    current_offset: f32,
+    viewport_h: f32,
+    content_h: f32,
+    thumb_y: f32,
+    thumb_h: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -651,6 +666,21 @@ fn hit_test_impl<Msg: Clone>(
                 step: *step,
             })
         }
+        Widget::Counter { .. } => {
+            let id = widget.resolved_id(path).unwrap();
+            let local = Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y);
+            match counter_segment_at((layout.size.width, layout.size.height), local) {
+                CounterSegment::Decrement => Some(HitResult::CounterAdjust {
+                    id,
+                    increment: false,
+                }),
+                CounterSegment::Increment => Some(HitResult::CounterAdjust {
+                    id,
+                    increment: true,
+                }),
+                CounterSegment::Value => Some(HitResult::CounterFocus(id)),
+            }
+        }
         Widget::Select { .. } => Some(HitResult::SelectToggle(widget.resolved_id(path).unwrap())),
         Widget::DropdownMenu { .. } => Some(HitResult::DropdownMenuToggle(
             widget.resolved_id(path).unwrap(),
@@ -884,6 +914,16 @@ fn hit_test_impl<Msg: Clone>(
             item_height,
             item_count,
             ..
+        }
+        | Widget::VirtualListWithSelection {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContentWithSelection {
+            item_height,
+            item_count,
+            ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let scroll_y = widget_states
@@ -909,6 +949,18 @@ fn hit_test_impl<Msg: Clone>(
             ..
         }
         | Widget::VirtualGridContent {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridWithSelection {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridContentWithSelection {
             columns,
             item_height,
             item_count,
@@ -1097,11 +1149,17 @@ fn collect_stateful_ids_impl<Msg>(
                 path.pop();
             }
         }
-        Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => {
+        Widget::VirtualList { .. }
+        | Widget::VirtualListContent { .. }
+        | Widget::VirtualListWithSelection { .. }
+        | Widget::VirtualListContentWithSelection { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "vlist"))
         }
         Widget::CarouselView { .. } => out.push((widget.resolved_id(path).unwrap(), "carousel")),
-        Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => {
+        Widget::VirtualGrid { .. }
+        | Widget::VirtualGridContent { .. }
+        | Widget::VirtualGridWithSelection { .. }
+        | Widget::VirtualGridContentWithSelection { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "vgrid"))
         }
         Widget::Modal { child, .. } => {
@@ -1368,6 +1426,16 @@ fn find_vlist_props_impl<Msg>(
             ..
         }
         | Widget::VirtualListContent {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListWithSelection {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContentWithSelection {
             item_height,
             item_count,
             ..
@@ -1730,8 +1798,12 @@ fn find_scroll_focus_impl<Msg>(
         }
         Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
+        | Widget::VirtualListWithSelection { .. }
+        | Widget::VirtualListContentWithSelection { .. }
         | Widget::VirtualGrid { .. }
         | Widget::VirtualGridContent { .. }
+        | Widget::VirtualGridWithSelection { .. }
+        | Widget::VirtualGridContentWithSelection { .. }
         | Widget::CarouselView { .. } => Some(widget.resolved_id(path).unwrap()),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
@@ -1801,6 +1873,70 @@ pub fn find_scrollbar_drag_hit<Msg>(
     find_scrollbar_drag_hit_impl(widget, taffy, node_id, mouse, abs, widget_states, &mut path)
 }
 
+fn scrollbar_drag_hit(
+    id: u64,
+    abs_pos: Point,
+    size: (f32, f32),
+    metrics: ScrollbarMetrics,
+    mouse: Point,
+) -> Option<ScrollbarDragHit> {
+    let track = scrollbar_track_rect(abs_pos, size);
+    let thumb = SkiaRect::from_xywh(
+        track.left,
+        abs_pos.y + metrics.thumb_y,
+        SCROLLBAR_W,
+        metrics.thumb_h,
+    );
+    let start_offset = scrollbar_press_offset(track, thumb, metrics, mouse)?;
+    Some(ScrollbarDragHit {
+        id,
+        start_offset,
+        viewport_h: metrics.viewport_h,
+        content_h: metrics.content_h,
+    })
+}
+
+fn scrollbar_track_rect(abs_pos: Point, size: (f32, f32)) -> SkiaRect {
+    SkiaRect::from_xywh(
+        abs_pos.x + size.0 - SCROLLBAR_W - 2.0,
+        abs_pos.y,
+        SCROLLBAR_W,
+        size.1,
+    )
+}
+
+fn scrollbar_press_offset(
+    track: SkiaRect,
+    thumb: SkiaRect,
+    metrics: ScrollbarMetrics,
+    mouse: Point,
+) -> Option<f32> {
+    if !track.contains(mouse) {
+        return None;
+    }
+    if thumb.contains(mouse) {
+        return Some(metrics.current_offset);
+    }
+    Some(scrollbar_track_offset(track, thumb, metrics, mouse.y))
+}
+
+fn scrollbar_track_offset(
+    track: SkiaRect,
+    thumb: SkiaRect,
+    metrics: ScrollbarMetrics,
+    pointer_y: f32,
+) -> f32 {
+    let travel = (track.height() - thumb.height()).max(0.0);
+    let scrollable = (metrics.content_h - metrics.viewport_h).max(0.0);
+    if travel <= f32::EPSILON || scrollable <= f32::EPSILON {
+        return 0.0;
+    }
+    // Centering the thumb makes the click identify the viewport's destination
+    // while allowing the same pointer press to continue as a smooth drag.
+    let thumb_top = (pointer_y - track.top - thumb.height() * 0.5).clamp(0.0, travel);
+    thumb_top / travel * scrollable
+}
+
 fn find_scrollbar_drag_hit_impl<Msg>(
     widget: &Widget<Msg>,
     taffy: &TaffyTree<RutterContext>,
@@ -1840,18 +1976,19 @@ fn find_scrollbar_drag_hit_impl<Msg>(
                 return None;
             }
             let thumb_h = (layout.size.height * s.thumb_ratio()).max(20.0);
-            let thumb_y = abs_pos.y + s.thumb_y();
-            let sb_x = abs_pos.x + layout.size.width - SCROLLBAR_W - 2.0;
-            let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
-            if thumb_rect.contains(mouse) {
-                return Some(ScrollbarDragHit {
-                    id: resolved_id,
-                    start_offset: s.offset_y,
+            scrollbar_drag_hit(
+                resolved_id,
+                abs_pos,
+                (layout.size.width, layout.size.height),
+                ScrollbarMetrics {
+                    current_offset: s.offset_y,
                     viewport_h: s.viewport_h.max(layout.size.height),
                     content_h: s.content_height,
-                });
-            }
-            None
+                    thumb_y: s.thumb_y(),
+                    thumb_h,
+                },
+                mouse,
+            )
         }
         Widget::VirtualList {
             item_count,
@@ -1859,6 +1996,16 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             ..
         }
         | Widget::VirtualListContent {
+            item_count,
+            item_height,
+            ..
+        }
+        | Widget::VirtualListWithSelection {
+            item_count,
+            item_height,
+            ..
+        }
+        | Widget::VirtualListContentWithSelection {
             item_count,
             item_height,
             ..
@@ -1870,18 +2017,19 @@ fn find_scrollbar_drag_hit_impl<Msg>(
                 return None;
             }
             let thumb_h = (layout.size.height * s.thumb_ratio(*item_height, *item_count)).max(20.0);
-            let thumb_y = abs_pos.y + s.thumb_y(*item_height, *item_count);
-            let sb_x = abs_pos.x + layout.size.width - SCROLLBAR_W - 2.0;
-            let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
-            if thumb_rect.contains(mouse) {
-                return Some(ScrollbarDragHit {
-                    id: resolved_id,
-                    start_offset: s.scroll_y,
+            scrollbar_drag_hit(
+                resolved_id,
+                abs_pos,
+                (layout.size.width, layout.size.height),
+                ScrollbarMetrics {
+                    current_offset: s.scroll_y,
                     viewport_h: s.viewport_h.max(layout.size.height),
                     content_h: total_h,
-                });
-            }
-            None
+                    thumb_y: s.thumb_y(*item_height, *item_count),
+                    thumb_h,
+                },
+                mouse,
+            )
         }
         Widget::VirtualGrid {
             item_count,
@@ -1890,6 +2038,18 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             ..
         }
         | Widget::VirtualGridContent {
+            item_count,
+            item_height,
+            columns,
+            ..
+        }
+        | Widget::VirtualGridWithSelection {
+            item_count,
+            item_height,
+            columns,
+            ..
+        }
+        | Widget::VirtualGridContentWithSelection {
             item_count,
             item_height,
             columns,
@@ -1903,18 +2063,19 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             }
             let thumb_h =
                 (layout.size.height * s.thumb_ratio(*item_height, *item_count, *columns)).max(20.0);
-            let thumb_y = abs_pos.y + s.thumb_y(*item_height, *item_count, *columns);
-            let sb_x = abs_pos.x + layout.size.width - SCROLLBAR_W - 2.0;
-            let thumb_rect = SkiaRect::from_xywh(sb_x, thumb_y, SCROLLBAR_W, thumb_h);
-            if thumb_rect.contains(mouse) {
-                return Some(ScrollbarDragHit {
-                    id: resolved_id,
-                    start_offset: s.scroll_y,
+            scrollbar_drag_hit(
+                resolved_id,
+                abs_pos,
+                (layout.size.width, layout.size.height),
+                ScrollbarMetrics {
+                    current_offset: s.scroll_y,
                     viewport_h: s.viewport_h.max(layout.size.height),
                     content_h: total_h,
-                });
-            }
-            None
+                    thumb_y: s.thumb_y(*item_height, *item_count, *columns),
+                    thumb_h,
+                },
+                mouse,
+            )
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
@@ -1988,10 +2149,13 @@ mod tests {
     use winit::dpi::PhysicalSize;
 
     use super::{
-        HitResult, collect_input_ids, collect_stateful_ids, dialog_card_rect, find_scroll_focus,
-        hit_test, rounded_rect_contains,
+        HitResult, ScrollbarMetrics, collect_input_ids, collect_stateful_ids, dialog_card_rect,
+        find_scroll_focus, find_scrollbar_drag_hit, hit_test, rounded_rect_contains,
+        scrollbar_drag_hit,
     };
-    use crate::engine::widget_state::{ScrollState, WidgetState};
+    use crate::engine::widget_state::{
+        ScrollState, VirtualGridState, VirtualListState, WidgetState,
+    };
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::{AUTO_ID, ButtonVariant, DialogPosition, InputState, Widget};
     use crate::widgets::carousel::CarouselState;
@@ -2193,6 +2357,142 @@ mod tests {
             &states,
         );
         assert_eq!(focus, Some(62));
+    }
+
+    #[test]
+    fn scrollbar_track_click_maps_all_scrollable_widgets_to_the_clicked_position() {
+        let (scroll_view, scroll_view_states) = scrollable_view();
+        let (virtual_list, virtual_list_states) = scrollable_list();
+        let (virtual_grid, virtual_grid_states) = scrollable_grid();
+
+        assert_eq!(
+            bottom_scrollbar_track_hit(&scroll_view, &scroll_view_states).start_offset,
+            900.0
+        );
+        assert_eq!(
+            bottom_scrollbar_track_hit(&virtual_list, &virtual_list_states).start_offset,
+            1900.0
+        );
+        assert_eq!(
+            bottom_scrollbar_track_hit(&virtual_grid, &virtual_grid_states).start_offset,
+            1900.0
+        );
+    }
+
+    #[test]
+    fn scrollbar_thumb_click_keeps_its_existing_offset_for_dragging() {
+        let hit = scrollbar_drag_hit(
+            7,
+            Point::new(0.0, 0.0),
+            (100.0, 100.0),
+            ScrollbarMetrics {
+                current_offset: 300.0,
+                viewport_h: 100.0,
+                content_h: 1000.0,
+                thumb_y: 20.0,
+                thumb_h: 20.0,
+            },
+            Point::new(94.0, 25.0),
+        )
+        .expect("a click on scrollbar thumb at (94, 25) must start dragging");
+
+        assert_eq!(hit.start_offset, 300.0);
+    }
+
+    #[test]
+    fn scrollbar_track_click_maps_an_intermediate_position_to_scroll_offset() {
+        let hit = scrollbar_drag_hit(
+            7,
+            Point::new(0.0, 0.0),
+            (100.0, 100.0),
+            ScrollbarMetrics {
+                current_offset: 0.0,
+                viewport_h: 100.0,
+                content_h: 1000.0,
+                thumb_y: 0.0,
+                thumb_h: 20.0,
+            },
+            Point::new(94.0, 50.0),
+        )
+        .expect("a scrollbar track click at (94, 50) must return a scroll hit");
+
+        assert_eq!(hit.start_offset, 450.0);
+    }
+
+    fn bottom_scrollbar_track_hit(
+        widget: &Widget<'_, Msg>,
+        states: &HashMap<u64, WidgetState>,
+    ) -> super::ScrollbarDragHit {
+        let (taffy, root) = test_layout(widget, states, PhysicalSize::new(100, 100));
+        find_scrollbar_drag_hit(
+            widget,
+            &taffy,
+            root,
+            Point::new(94.0, 90.0),
+            Point::new(0.0, 0.0),
+            states,
+        )
+        .expect("a scrollbar track click at (94, 90) must return a scroll hit")
+    }
+
+    fn scrollable_view() -> (Widget<'static, Msg>, HashMap<u64, WidgetState>) {
+        let content = Widget::Spacer {
+            style: fixed_size_style(100.0, 1000.0),
+        };
+        let widget = Widget::scroll_view(content, fixed_size_style(100.0, 100.0)).with_id(11);
+        let states = HashMap::from([(
+            11,
+            WidgetState::Scroll(ScrollState {
+                offset_y: 0.0,
+                content_height: 1000.0,
+                viewport_h: 100.0,
+            }),
+        )]);
+        (widget, states)
+    }
+
+    fn scrollable_list() -> (Widget<'static, Msg>, HashMap<u64, WidgetState>) {
+        let widget = Widget::virtual_list(
+            20.0,
+            100,
+            &virtual_text_item,
+            usize_msg,
+            fixed_size_style(100.0, 100.0),
+        )
+        .with_id(12);
+        let states = HashMap::from([(
+            12,
+            WidgetState::VList(VirtualListState {
+                viewport_h: 100.0,
+                ..VirtualListState::default()
+            }),
+        )]);
+        (widget, states)
+    }
+
+    fn scrollable_grid() -> (Widget<'static, Msg>, HashMap<u64, WidgetState>) {
+        let widget = Widget::virtual_grid(
+            4,
+            20.0,
+            400,
+            &virtual_text_item,
+            usize_msg,
+            fixed_size_style(100.0, 100.0),
+        )
+        .with_id(13);
+        let states = HashMap::from([(
+            13,
+            WidgetState::VGrid(VirtualGridState {
+                viewport_w: 100.0,
+                viewport_h: 100.0,
+                ..VirtualGridState::default()
+            }),
+        )]);
+        (widget, states)
+    }
+
+    fn virtual_text_item(_: usize) -> Option<String> {
+        Some(String::from("item"))
     }
 
     fn fixed_size_style(width: f32, height: f32) -> Style {

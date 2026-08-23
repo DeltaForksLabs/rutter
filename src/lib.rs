@@ -51,8 +51,9 @@ pub use rich_text::{
 };
 pub use theme::Theme;
 pub use widget::{
-    AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget,
-    WidgetConfigError, validate_slider, validate_virtual_grid, validate_virtual_list,
+    AUTO_ID, ButtonVariant, ContextMenuEntry, CounterConfigError, DialogPosition, InputState,
+    VirtualSelection, Widget, WidgetConfigError, validate_counter, validate_slider,
+    validate_virtual_grid, validate_virtual_list,
 };
 pub use widget_id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
 pub use widgets::{calendar, carousel, dropdown_menu, rich_text};

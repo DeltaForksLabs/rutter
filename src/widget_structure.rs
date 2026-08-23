@@ -22,6 +22,7 @@ pub(crate) enum WidgetStructureKind {
     Switch,
     Radio,
     Slider,
+    Counter,
     Select,
     ProgressBar,
     Spinner,
@@ -41,8 +42,12 @@ pub(crate) enum WidgetStructureKind {
     CarouselView,
     VirtualList,
     VirtualListContent,
+    VirtualListWithSelection,
+    VirtualListContentWithSelection,
     VirtualGrid,
     VirtualGridContent,
+    VirtualGridWithSelection,
+    VirtualGridContentWithSelection,
     DropdownMenu,
 }
 
@@ -66,6 +71,7 @@ impl WidgetStructureKind {
             Self::Switch => "Switch",
             Self::Radio => "Radio",
             Self::Slider => "Slider",
+            Self::Counter => "Counter",
             Self::Select => "Select",
             Self::ProgressBar => "ProgressBar",
             Self::Spinner => "Spinner",
@@ -85,8 +91,12 @@ impl WidgetStructureKind {
             Self::CarouselView => "CarouselView",
             Self::VirtualList => "VirtualList",
             Self::VirtualListContent => "VirtualListContent",
+            Self::VirtualListWithSelection => "VirtualListWithSelection",
+            Self::VirtualListContentWithSelection => "VirtualListContentWithSelection",
             Self::VirtualGrid => "VirtualGrid",
             Self::VirtualGridContent => "VirtualGridContent",
+            Self::VirtualGridWithSelection => "VirtualGridWithSelection",
+            Self::VirtualGridContentWithSelection => "VirtualGridContentWithSelection",
             Self::DropdownMenu => "DropdownMenu",
         }
     }
@@ -114,6 +124,7 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::Switch { .. } => Kind::Switch,
         Widget::Radio { .. } => Kind::Radio,
         Widget::Slider { .. } => Kind::Slider,
+        Widget::Counter { .. } => Kind::Counter,
         Widget::Select { .. } => Kind::Select,
         Widget::ProgressBar { .. } => Kind::ProgressBar,
         Widget::Spinner { .. } => Kind::Spinner,
@@ -134,7 +145,11 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::CarouselView { .. } => Kind::CarouselView,
         Widget::VirtualList { .. } => Kind::VirtualList,
         Widget::VirtualListContent { .. } => Kind::VirtualListContent,
+        Widget::VirtualListWithSelection { .. } => Kind::VirtualListWithSelection,
+        Widget::VirtualListContentWithSelection { .. } => Kind::VirtualListContentWithSelection,
         Widget::VirtualGrid { .. } => Kind::VirtualGrid,
         Widget::VirtualGridContent { .. } => Kind::VirtualGridContent,
+        Widget::VirtualGridWithSelection { .. } => Kind::VirtualGridWithSelection,
+        Widget::VirtualGridContentWithSelection { .. } => Kind::VirtualGridContentWithSelection,
     }
 }

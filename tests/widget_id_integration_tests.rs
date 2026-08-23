@@ -61,6 +61,10 @@ fn tab_bar(id: u64) -> TestWidget {
     Widget::tab_bar(&["One", "Two"], 0, |_| (), Style::default()).with_id(id)
 }
 
+fn counter(id: u64) -> TestWidget {
+    Widget::counter(1, 0, 9, 1, |_| (), Style::default(), "Quantity").with_id(id)
+}
+
 #[test]
 fn regular_and_rich_text_are_transition_compatible() {
     let regular: TestWidget = Widget::Text {
@@ -174,6 +178,23 @@ fn manual_tab_bar_move_keeps_derived_ids_compatible() {
     let moved = WidgetIdSnapshot::capture(&column(vec![tab_bar(23)])).unwrap();
 
     assert_eq!(previous.validate_transition_to(&moved), Ok(()));
+}
+
+#[test]
+fn counter_has_its_own_id_family_and_accepts_manual_assignment() {
+    let assigned = counter(AUTO_ID).try_with_id(31).unwrap();
+    assert!(matches!(assigned, Widget::Counter { id: 31, .. }));
+
+    let previous = WidgetIdSnapshot::capture(&counter(17)).unwrap();
+    let next = WidgetIdSnapshot::capture(
+        &Widget::slider(1.0, 0.0, 9.0, 1.0, |_| (), Style::default(), "Quantity").with_id(17),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        previous.validate_transition_to(&next),
+        Err(WidgetIdError::IncompatibleReuse { value: 17, .. })
+    ));
 }
 
 #[test]

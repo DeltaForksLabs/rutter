@@ -11,6 +11,7 @@ pub mod gpu;
 pub mod multi_runner;
 pub mod run_error;
 pub mod runner;
+mod virtual_selection;
 pub mod widget_state;
 
 use std::cell::RefCell;
@@ -33,6 +34,7 @@ use self::gpu::{
     BackendType, GraphicsBackend, GraphicsError, create_best_backend, create_required_backend,
 };
 use self::run_error::RutterRunError;
+use self::virtual_selection::{VirtualMultiSelectionLayout, VirtualMultiSelectionState};
 use self::widget_state::{
     AnimState, ContextMenuState, ModalState, PopoverState, ScrollState, SelectState, SliderState,
     TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
@@ -53,7 +55,7 @@ use crate::render::select_overlay::collector::{
 use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::theme::Theme;
-use crate::widget::{DialogAction, Widget};
+use crate::widget::{DialogAction, VirtualSelection, Widget};
 use crate::widget_id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
 
@@ -249,13 +251,20 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::TextArea { .. }
         | Widget::SearchBar { .. }
         | Widget::Slider { .. }
+        | Widget::Counter { .. }
         | Widget::Select { .. }
         | Widget::DropdownMenu { .. }
         | Widget::CarouselView { .. }
         | Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
+        | Widget::VirtualListWithSelection { .. }
+        | Widget::VirtualListContentWithSelection { .. }
         | Widget::VirtualGrid { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
-        Widget::VirtualGridContent { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
+        Widget::VirtualGridContent { .. }
+        | Widget::VirtualGridWithSelection { .. }
+        | Widget::VirtualGridContentWithSelection { .. } => {
+            out.push(widget.keyboard_focus_id(path).unwrap())
+        }
         Widget::TabBar { tabs, .. } => {
             for index in 0..tabs.len() {
                 if let Some(focus_id) = widget.tab_focus_id(path, index) {
@@ -335,6 +344,15 @@ struct SliderRuntime<Msg> {
 }
 
 #[derive(Debug, Clone)]
+struct CounterRuntime<Msg> {
+    on_change: fn(i64) -> Msg,
+    value: i64,
+    min: i64,
+    max: i64,
+    step: i64,
+}
+
+#[derive(Debug, Clone)]
 struct ToggleRuntime<Msg> {
     on_change: fn(bool) -> Msg,
     checked: bool,
@@ -376,6 +394,14 @@ struct VGridRuntime<Msg> {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct VirtualMultiSelectionRuntime<Msg> {
+    pub(crate) on_change: fn(Vec<usize>) -> Msg,
+    pub(crate) item_count: usize,
+    pub(crate) item_height: f32,
+    pub(crate) layout: VirtualMultiSelectionLayout,
+}
+
+#[derive(Debug, Clone)]
 struct CarouselRuntime<Msg> {
     on_select: fn(usize) -> Msg,
     item_count: usize,
@@ -393,6 +419,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     radios: HashMap<u64, fn() -> Msg>,
     accordions: HashMap<u64, Msg>,
     sliders: HashMap<u64, SliderRuntime<Msg>>,
+    counters: HashMap<u64, CounterRuntime<Msg>>,
     selects: HashMap<u64, SelectRuntime<Msg>>,
     dropdown_menus: HashMap<u64, DropdownMenuRuntime<Msg>>,
     dropdown_menu_items: HashMap<u64, DropdownMenuItemRuntime>,
@@ -403,6 +430,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     carousels: HashMap<u64, CarouselRuntime<Msg>>,
     vlists: HashMap<u64, VListRuntime<Msg>>,
     vgrids: HashMap<u64, VGridRuntime<Msg>>,
+    virtual_multi_selections: HashMap<u64, VirtualMultiSelectionRuntime<Msg>>,
     toast_dismiss: HashMap<u64, Msg>,
     popover_dismiss: HashMap<u64, Msg>,
 }
@@ -419,6 +447,7 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             radios: HashMap::new(),
             accordions: HashMap::new(),
             sliders: HashMap::new(),
+            counters: HashMap::new(),
             selects: HashMap::new(),
             dropdown_menus: HashMap::new(),
             dropdown_menu_items: HashMap::new(),
@@ -429,6 +458,7 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             carousels: HashMap::new(),
             vlists: HashMap::new(),
             vgrids: HashMap::new(),
+            virtual_multi_selections: HashMap::new(),
             toast_dismiss: HashMap::new(),
             popover_dismiss: HashMap::new(),
         }
@@ -446,6 +476,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.radios.clear();
         self.accordions.clear();
         self.sliders.clear();
+        self.counters.clear();
         self.selects.clear();
         self.dropdown_menus.clear();
         self.dropdown_menu_items.clear();
@@ -456,6 +487,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.carousels.clear();
         self.vlists.clear();
         self.vgrids.clear();
+        self.virtual_multi_selections.clear();
         self.toast_dismiss.clear();
         self.popover_dismiss.clear();
     }
@@ -615,14 +647,7 @@ fn sync_virtual_list_runtime<Msg: Clone>(
 ) -> Result<(), WidgetIdError> {
     let resolved_id = widget.resolved_id(path).unwrap();
     insert_runtime_entry(&mut caches.vlists, resolved_id, runtime, "virtual lists")?;
-    if let Some(layout) = layout {
-        if let Some(s) = states
-            .get_mut(&resolved_id)
-            .and_then(|ws| ws.as_vlist_mut())
-        {
-            s.viewport_h = layout.size.height;
-        }
-    }
+    sync_virtual_list_viewport(states, resolved_id, layout);
     Ok(())
 }
 
@@ -656,16 +681,111 @@ fn sync_virtual_grid_runtime<Msg: Clone>(
 ) -> Result<(), WidgetIdError> {
     let resolved_id = widget.resolved_id(path).unwrap();
     insert_runtime_entry(&mut caches.vgrids, resolved_id, runtime, "virtual grids")?;
-    if let Some(layout) = layout {
-        if let Some(s) = states
-            .get_mut(&resolved_id)
-            .and_then(|ws| ws.as_vgrid_mut())
-        {
-            s.viewport_w = layout.size.width;
-            s.viewport_h = layout.size.height;
+    sync_virtual_grid_viewport(states, resolved_id, layout);
+    Ok(())
+}
+
+fn sync_virtual_list_viewport(
+    states: &mut HashMap<u64, WidgetState>,
+    id: u64,
+    layout: Option<&taffy::tree::Layout>,
+) {
+    let Some(height) = layout.map(|layout| layout.size.height) else {
+        return;
+    };
+    let Some(state) = states.get_mut(&id).and_then(WidgetState::as_vlist_mut) else {
+        return;
+    };
+    state.viewport_h = height;
+}
+
+fn sync_virtual_grid_viewport(
+    states: &mut HashMap<u64, WidgetState>,
+    id: u64,
+    layout: Option<&taffy::tree::Layout>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    let Some(state) = states.get_mut(&id).and_then(WidgetState::as_vgrid_mut) else {
+        return;
+    };
+    state.viewport_w = layout.size.width;
+    state.viewport_h = layout.size.height;
+}
+
+fn sync_virtual_multi_selection_runtime<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    widget_states: &mut HashMap<u64, WidgetState>,
+    selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
+    id: u64,
+    layout: Option<&taffy::tree::Layout>,
+    selected: &[usize],
+    runtime: VirtualMultiSelectionRuntime<Msg>,
+) -> Result<(), WidgetIdError> {
+    let active =
+        sync_virtual_multi_selection_state(selection_states, id, selected, runtime.item_count);
+    sync_virtual_multi_selection_active(widget_states, id, runtime.layout, active);
+    sync_virtual_multi_selection_viewport(widget_states, id, runtime.layout, layout);
+    insert_runtime_entry(
+        &mut caches.virtual_multi_selections,
+        id,
+        runtime,
+        "virtual multiselections",
+    )
+}
+
+fn sync_virtual_multi_selection_viewport(
+    widget_states: &mut HashMap<u64, WidgetState>,
+    id: u64,
+    layout: VirtualMultiSelectionLayout,
+    layout_box: Option<&taffy::tree::Layout>,
+) {
+    match layout {
+        VirtualMultiSelectionLayout::List => {
+            sync_virtual_list_viewport(widget_states, id, layout_box)
+        }
+        VirtualMultiSelectionLayout::Grid { .. } => {
+            sync_virtual_grid_viewport(widget_states, id, layout_box)
         }
     }
-    Ok(())
+}
+
+fn sync_virtual_multi_selection_state(
+    selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
+    id: u64,
+    selected: &[usize],
+    item_count: usize,
+) -> Option<usize> {
+    let state = selection_states.entry(id).or_default();
+    state.reconcile(selected, item_count);
+    state.active()
+}
+
+fn sync_virtual_multi_selection_active(
+    widget_states: &mut HashMap<u64, WidgetState>,
+    id: u64,
+    layout: VirtualMultiSelectionLayout,
+    active: Option<usize>,
+) {
+    match layout {
+        VirtualMultiSelectionLayout::List => {
+            if let Some(state) = widget_states
+                .get_mut(&id)
+                .and_then(WidgetState::as_vlist_mut)
+            {
+                state.selected_row = active;
+            }
+        }
+        VirtualMultiSelectionLayout::Grid { .. } => {
+            if let Some(state) = widget_states
+                .get_mut(&id)
+                .and_then(WidgetState::as_vgrid_mut)
+            {
+                state.selected_item = active;
+            }
+        }
+    }
 }
 
 pub struct RutterEngine<A: AppLogic> {
@@ -687,6 +807,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub app_state: A::State,
     pub input_states: HashMap<u64, crate::input_state::InputWidgetState>,
     pub widget_states: HashMap<u64, WidgetState>,
+    virtual_multi_selection_states: HashMap<u64, VirtualMultiSelectionState>,
     widget_id_snapshot: Option<WidgetIdSnapshot>,
     pub focused_widget_id: Option<u64>,
     pub active_scroll_id: Option<u64>,
@@ -779,6 +900,7 @@ impl<A: AppLogic> RutterEngine<A> {
             app_state,
             input_states: HashMap::new(),
             widget_states: HashMap::new(),
+            virtual_multi_selection_states: HashMap::new(),
             widget_id_snapshot: None,
             focused_widget_id: None,
             active_scroll_id: None,
@@ -1218,11 +1340,17 @@ impl<A: AppLogic> RutterEngine<A> {
         Self::sync_runtime_metadata(
             &mut self.runtime_cache_scratch,
             &mut self.widget_states,
+            &mut self.virtual_multi_selection_states,
             &self.taffy,
             &widget_tree,
             Some(root),
             theme.spacing,
         )?;
+        self.virtual_multi_selection_states.retain(|id, _| {
+            self.runtime_cache_scratch
+                .virtual_multi_selections
+                .contains_key(id)
+        });
         let overlay_focus_scope =
             collect_focus_order(&widget_tree, &mut self.runtime_cache_scratch.focus_order);
         self.runtime_cache_scratch.visible_dropdown_triggers = collect_dropdown_triggers(
@@ -1289,6 +1417,7 @@ impl<A: AppLogic> RutterEngine<A> {
     fn sync_runtime_metadata<Msg: Clone>(
         runtime_caches: &mut WidgetRuntimeCaches<Msg>,
         widget_states: &mut HashMap<u64, WidgetState>,
+        selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
         taffy: &TaffyTree<RutterContext>,
         widget: &Widget<Msg>,
         node: Option<NodeId>,
@@ -1298,6 +1427,7 @@ impl<A: AppLogic> RutterEngine<A> {
         Self::sync_runtime_metadata_impl(
             runtime_caches,
             widget_states,
+            selection_states,
             taffy,
             widget,
             node,
@@ -1310,6 +1440,7 @@ impl<A: AppLogic> RutterEngine<A> {
     fn sync_runtime_metadata_impl<Msg: Clone>(
         runtime_caches: &mut WidgetRuntimeCaches<Msg>,
         widget_states: &mut HashMap<u64, WidgetState>,
+        selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
         taffy: &TaffyTree<RutterContext>,
         widget: &Widget<Msg>,
         node: Option<NodeId>,
@@ -1456,6 +1587,28 @@ impl<A: AppLogic> RutterEngine<A> {
                     "sliders",
                 )?;
             }
+            Widget::Counter {
+                value,
+                on_change,
+                min,
+                max,
+                step,
+                ..
+            } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
+                insert_runtime_entry(
+                    &mut runtime_caches.counters,
+                    resolved_id,
+                    CounterRuntime {
+                        on_change: *on_change,
+                        value: *value,
+                        min: *min,
+                        max: *max,
+                        step: *step,
+                    },
+                    "counters",
+                )?;
+            }
             Widget::Select {
                 options,
                 selected_index,
@@ -1505,6 +1658,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 Self::sync_runtime_metadata_impl(
                     runtime_caches,
                     widget_states,
+                    selection_states,
                     taffy,
                     child.as_ref(),
                     Self::first_child(node, taffy),
@@ -1570,6 +1724,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 Self::sync_runtime_metadata_impl(
                     runtime_caches,
                     widget_states,
+                    selection_states,
                     taffy,
                     child.as_ref(),
                     Self::first_child(node, taffy),
@@ -1608,6 +1763,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 Self::sync_runtime_metadata_impl(
                     runtime_caches,
                     widget_states,
+                    selection_states,
                     taffy,
                     child.as_ref(),
                     Self::first_child(node, taffy),
@@ -1642,6 +1798,51 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                 )?;
             }
+            Widget::VirtualListWithSelection {
+                item_height,
+                item_count,
+                selection,
+                ..
+            }
+            | Widget::VirtualListContentWithSelection {
+                item_height,
+                item_count,
+                selection,
+                ..
+            } => match selection {
+                VirtualSelection::Single(on_select) => sync_virtual_list_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    layout,
+                    path,
+                    VListRuntime {
+                        on_select: *on_select,
+                        item_height: *item_height,
+                        item_count: *item_count,
+                    },
+                )?,
+                VirtualSelection::Multiple {
+                    selected,
+                    on_change,
+                } => {
+                    let id = widget.resolved_id(path).unwrap();
+                    sync_virtual_multi_selection_runtime(
+                        runtime_caches,
+                        widget_states,
+                        selection_states,
+                        id,
+                        layout,
+                        selected,
+                        VirtualMultiSelectionRuntime {
+                            on_change: *on_change,
+                            item_count: *item_count,
+                            item_height: *item_height,
+                            layout: VirtualMultiSelectionLayout::List,
+                        },
+                    )?
+                }
+            },
             Widget::CarouselView {
                 item_count,
                 on_select,
@@ -1689,6 +1890,54 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                 )?;
             }
+            Widget::VirtualGridWithSelection {
+                columns,
+                item_height,
+                item_count,
+                selection,
+                ..
+            }
+            | Widget::VirtualGridContentWithSelection {
+                columns,
+                item_height,
+                item_count,
+                selection,
+                ..
+            } => match selection {
+                VirtualSelection::Single(on_select) => sync_virtual_grid_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    layout,
+                    path,
+                    VGridRuntime {
+                        on_select: *on_select,
+                        columns: *columns,
+                        item_height: *item_height,
+                        item_count: *item_count,
+                    },
+                )?,
+                VirtualSelection::Multiple {
+                    selected,
+                    on_change,
+                } => {
+                    let id = widget.resolved_id(path).unwrap();
+                    sync_virtual_multi_selection_runtime(
+                        runtime_caches,
+                        widget_states,
+                        selection_states,
+                        id,
+                        layout,
+                        selected,
+                        VirtualMultiSelectionRuntime {
+                            on_change: *on_change,
+                            item_count: *item_count,
+                            item_height: *item_height,
+                            layout: VirtualMultiSelectionLayout::Grid { columns: *columns },
+                        },
+                    )?
+                }
+            },
             Widget::Popover {
                 anchor,
                 content,
@@ -1727,6 +1976,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     Self::sync_runtime_metadata_impl(
                         runtime_caches,
                         widget_states,
+                        selection_states,
                         taffy,
                         anchor.as_ref(),
                         Some(anchor_node),
@@ -1744,6 +1994,7 @@ impl<A: AppLogic> RutterEngine<A> {
                             Self::sync_runtime_metadata_impl(
                                 runtime_caches,
                                 widget_states,
+                                selection_states,
                                 taffy,
                                 content.as_ref(),
                                 Some(content_node),
@@ -1763,6 +2014,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     Self::sync_runtime_metadata_impl(
                         runtime_caches,
                         widget_states,
+                        selection_states,
                         taffy,
                         child,
                         node_children.get(i).copied(),
@@ -1781,6 +2033,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 Self::sync_runtime_metadata_impl(
                     runtime_caches,
                     widget_states,
+                    selection_states,
                     taffy,
                     child.as_ref(),
                     Self::first_child(node, taffy),
@@ -1858,9 +2111,11 @@ impl<A: AppLogic> RutterEngine<A> {
         spacing: f32,
     ) {
         runtime_caches.clear();
+        let mut selection_states = HashMap::new();
         Self::sync_runtime_metadata(
             runtime_caches,
             widget_states,
+            &mut selection_states,
             taffy,
             widget,
             Some(root),
@@ -1993,7 +2248,9 @@ mod tests {
     enum Msg {
         Str(String),
         Float(f32),
+        Integer(i64),
         Usize(usize),
+        Indices(Vec<usize>),
         Submit,
         Dismiss,
     }
@@ -2039,6 +2296,16 @@ mod tests {
                     on_change: Msg::Float,
                     style: base_style(240.0, 20.0),
                     label: "",
+                },
+                Widget::Counter {
+                    id: 10,
+                    value: 3,
+                    min: -2,
+                    max: 8,
+                    step: 2,
+                    on_change: Msg::Integer,
+                    style: base_style(160.0, 40.0),
+                    label: "Quantity",
                 },
                 Widget::Select {
                     id: 3,
@@ -2155,6 +2422,13 @@ mod tests {
         assert_eq!(slider.step, 5.0);
         assert_eq!((slider.on_change)(55.0), Msg::Float(55.0));
 
+        let counter = runtime_caches.counters.get(&10).unwrap();
+        assert_eq!(
+            (counter.value, counter.min, counter.max, counter.step),
+            (3, -2, 8, 2)
+        );
+        assert_eq!((counter.on_change)(5), Msg::Integer(5));
+
         let select = runtime_caches.selects.get(&3).unwrap();
         assert_eq!(select.selected_index, 0);
         assert_eq!(select.option_count, 2);
@@ -2203,6 +2477,80 @@ mod tests {
 
         assert_eq!(runtime_caches.toast_dismiss.get(&6), Some(&Msg::Dismiss));
         assert_eq!(runtime_caches.popover_dismiss.get(&8), Some(&Msg::Dismiss));
+    }
+
+    #[test]
+    fn runtime_metadata_syncs_configured_collection_viewports() {
+        let list_selection = [1, 3];
+        let grid_selection = [2, 4];
+        let widget = Widget::Column {
+            children: vec![
+                Widget::virtual_list_with_selection(
+                    30.0,
+                    50,
+                    &|_| None,
+                    VirtualSelection::multiple(&list_selection, Msg::Indices),
+                    base_style(240.0, 180.0),
+                )
+                .with_id(31),
+                Widget::virtual_grid_with_selection(
+                    4,
+                    64.0,
+                    60,
+                    &|_| None,
+                    VirtualSelection::multiple(&grid_selection, Msg::Indices),
+                    base_style(240.0, 192.0),
+                )
+                .with_id(32),
+            ],
+            style: Style::default(),
+        };
+        let mut widget_states = HashMap::from([
+            (31, WidgetState::VList(VirtualListState::default())),
+            (32, WidgetState::VGrid(VirtualGridState::default())),
+        ]);
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &widget, fs(), &widget_states);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(400, 500),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
+        let mut runtime_caches = WidgetRuntimeCaches::<Msg>::default();
+
+        RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
+            &mut runtime_caches,
+            &mut widget_states,
+            &taffy,
+            &widget,
+            root,
+            DummyApp::theme().spacing,
+        );
+
+        assert_eq!(
+            (runtime_caches
+                .virtual_multi_selections
+                .get(&31)
+                .unwrap()
+                .on_change)(vec![1, 3]),
+            Msg::Indices(vec![1, 3])
+        );
+        assert_eq!(
+            widget_states
+                .get(&31)
+                .and_then(WidgetState::as_vlist)
+                .map(|state| (state.viewport_h, state.selected_row)),
+            Some((180.0, Some(1)))
+        );
+        assert_eq!(
+            widget_states
+                .get(&32)
+                .and_then(WidgetState::as_vgrid)
+                .map(|state| (state.viewport_w, state.viewport_h, state.selected_item)),
+            Some((240.0, 192.0, Some(2)))
+        );
     }
 
     #[test]
@@ -2293,6 +2641,17 @@ mod tests {
         collect_focus_order(&carousel, &mut focus_order);
 
         assert_eq!(focus_order, vec![24]);
+    }
+
+    #[test]
+    fn focus_order_registers_counter_as_one_keyboard_stop() {
+        let counter =
+            Widget::counter(1, 0, 9, 1, Msg::Integer, base_style(160.0, 40.0), "Count").with_id(25);
+        let mut focus_order = Vec::new();
+
+        collect_focus_order(&counter, &mut focus_order);
+
+        assert_eq!(focus_order, vec![25]);
     }
 
     #[test]

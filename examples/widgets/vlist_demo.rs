@@ -8,7 +8,7 @@ use arboard::Clipboard;
 use cosmic_text::FontSystem;
 use taffy::prelude::*;
 
-use rutter::{AppLogic, RutterRunner, Theme, Widget};
+use rutter::{AppLogic, RutterRunner, Theme, VirtualSelection, Widget};
 
 use super::theme_selector::{ExampleTheme, example_theme_selector};
 
@@ -17,14 +17,14 @@ const TOTAL_ITEMS: usize = 1_000;
 #[derive(Default)]
 pub struct VListDemoState {
     pub theme: ExampleTheme,
-    pub selected: Option<usize>,
+    pub selected: Vec<usize>,
     pub filter: String,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     ThemeChanged(ExampleTheme),
-    ItemSelected(usize),
+    SelectionChanged(Vec<usize>),
     FilterChanged(String),
 }
 
@@ -68,9 +68,6 @@ impl AppLogic for VListDemo {
             ..Default::default()
         };
 
-        // Captura o filtro para uso no closure (lifetime seguro)
-        // let filter_ref = &s.filter;
-
         Widget::Column {
             style: root,
             children: vec![
@@ -93,30 +90,28 @@ impl AppLogic for VListDemo {
                     is_password: false,
                 },
                 Widget::Text {
-                    content: s
-                        .selected
-                        .map(|i| format!("Selecionado: item #{:04}", i + 1))
-                        .unwrap_or_else(|| "Nenhum selecionado".into()),
+                    content: list_selection_caption(&s.selected),
                     color: None,
                     size: 14.0,
                     style: Style::default(),
                 },
-                Widget::VirtualList {
-                    id: 60,
-                    item_height: 32.0,
-                    item_count: TOTAL_ITEMS,
-                    items: &|i| {
+                Widget::virtual_list_with_selection(
+                    32.0,
+                    TOTAL_ITEMS,
+                    &|i| {
                         Some(format!(
                             "Item #{:04} — evento de log do framework #{}",
                             i + 1,
                             i * 7 + 1
                         ))
                     },
-                    on_select: Msg::ItemSelected,
-                    style: list_s,
-                },
+                    VirtualSelection::multiple(&s.selected, Msg::SelectionChanged),
+                    list_s,
+                )
+                .with_id(60),
                 Widget::Text {
-                    content: "Roda do mouse para rolar. Clique para selecionar.".into(),
+                    content: "Arraste para selecionar um intervalo. Shift estende; Ctrl/Command alterna ou adiciona."
+                        .into(),
                     color: None,
                     size: 11.0,
                     style: Style::default(),
@@ -128,7 +123,7 @@ impl AppLogic for VListDemo {
     fn update(s: &mut VListDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
             Msg::ThemeChanged(theme) => s.theme = theme,
-            Msg::ItemSelected(i) => s.selected = Some(i),
+            Msg::SelectionChanged(selected) => s.selected = selected,
             Msg::FilterChanged(v) => s.filter = v,
         }
     }
@@ -138,6 +133,26 @@ impl AppLogic for VListDemo {
     }
 }
 
+fn list_selection_caption(selected: &[usize]) -> String {
+    match selected {
+        [] => "Nenhum selecionado".into(),
+        [index] => format!("Selecionado: item #{:04}", index + 1),
+        indices => format!("{} itens selecionados", indices.len()),
+    }
+}
+
 pub fn run() {
     RutterRunner::<VListDemo>::run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_selection_caption_describes_empty_single_and_multiple_sets() {
+        assert_eq!(list_selection_caption(&[]), "Nenhum selecionado");
+        assert_eq!(list_selection_caption(&[4]), "Selecionado: item #0005");
+        assert_eq!(list_selection_caption(&[1, 3]), "2 itens selecionados");
+    }
 }

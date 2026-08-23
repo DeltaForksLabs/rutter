@@ -5,6 +5,7 @@
 // Rutter Framework — render/mod.rs
 // ============================================================
 
+pub(crate) mod counter;
 pub(crate) mod dropdown_menu_overlay;
 pub mod hit_test;
 pub mod image;
@@ -20,7 +21,7 @@ mod text_cache;
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{BTreeSet, HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     rc::Rc,
     time::Instant,
@@ -34,6 +35,7 @@ use skia_safe::{
 use taffy::Direction;
 use taffy::prelude::{NodeId, TaffyTree};
 
+use self::counter::{CounterRenderInput, draw_counter};
 pub use self::image_cache::ImageRenderCache;
 use self::rich_text::RichTextDirection;
 pub use self::rich_text::RichTextRenderer;
@@ -57,7 +59,7 @@ use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     ContextMenuEntry, DialogAction, DialogPosition, InputState, Orientation, ToastKind,
-    ToastPosition, Widget,
+    ToastPosition, VirtualSelection, Widget,
 };
 use crate::widgets::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
 use crate::widgets::rich_text::OwnedRichTextSpec;
@@ -1223,6 +1225,19 @@ fn draw_widgets_impl<'w, Msg>(
                 theme,
             );
         }
+        Widget::Counter {
+            value, min, max, ..
+        } => draw_counter(CounterRenderInput {
+            canvas,
+            value: *value,
+            min: *min,
+            max: *max,
+            is_focused,
+            size,
+            mouse: local_mouse,
+            font_cache,
+            theme,
+        }),
         Widget::ProgressBar {
             value,
             indeterminate,
@@ -1500,13 +1515,18 @@ fn draw_widgets_impl<'w, Msg>(
             let scroll_y = vstate.map(|v| v.scroll_y).unwrap_or(0.0);
             let selected = vstate.and_then(|v| v.selected_row);
             let hovered = vstate.and_then(|v| v.hovered_row);
+            let selected_rows = legacy_virtual_selection(selected);
             draw_virtual_list(
                 canvas,
                 item_height,
                 item_count,
                 items,
                 scroll_y,
-                selected,
+                VirtualSelectionPaint {
+                    selected: &selected_rows,
+                    active: selected,
+                    focused: is_focused,
+                },
                 hovered,
                 size,
                 local_mouse,
@@ -1525,14 +1545,98 @@ fn draw_widgets_impl<'w, Msg>(
             let scroll_y = vstate.map(|v| v.scroll_y).unwrap_or(0.0);
             let selected = vstate.and_then(|v| v.selected_row);
             let hovered = vstate.and_then(|v| v.hovered_row);
+            let selected_rows = legacy_virtual_selection(selected);
             draw_virtual_list_content(
                 canvas,
                 item_height,
                 item_count,
                 items,
                 scroll_y,
-                selected,
+                VirtualSelectionPaint {
+                    selected: &selected_rows,
+                    active: selected,
+                    focused: is_focused,
+                },
                 hovered,
+                size,
+                local_mouse,
+                theme,
+                &mut VirtualItemDrawContext {
+                    fs,
+                    swash,
+                    font_cache,
+                    text_cache,
+                    image_cache,
+                    layout_fs: layout_fs.clone(),
+                    layout_direction: node_layout_direction(taffy, node),
+                    cursor_visible,
+                    scale,
+                },
+                path,
+            );
+        }
+        Widget::VirtualListWithSelection {
+            item_height,
+            item_count,
+            items,
+            selection,
+            ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let vstate = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_vlist);
+            let selected_rows = configured_virtual_selection(
+                selection,
+                *item_count,
+                vstate.and_then(|state| state.selected_row),
+            );
+            draw_virtual_list(
+                canvas,
+                item_height,
+                item_count,
+                items,
+                vstate.map(|state| state.scroll_y).unwrap_or(0.0),
+                VirtualSelectionPaint {
+                    selected: &selected_rows,
+                    active: vstate.and_then(|state| state.selected_row),
+                    focused: is_focused,
+                },
+                vstate.and_then(|state| state.hovered_row),
+                size,
+                local_mouse,
+                font_cache,
+                theme,
+            );
+        }
+        Widget::VirtualListContentWithSelection {
+            item_height,
+            item_count,
+            items,
+            selection,
+            ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let vstate = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_vlist);
+            let selected_rows = configured_virtual_selection(
+                selection,
+                *item_count,
+                vstate.and_then(|state| state.selected_row),
+            );
+            draw_virtual_list_content(
+                canvas,
+                item_height,
+                item_count,
+                items,
+                vstate.map(|state| state.scroll_y).unwrap_or(0.0),
+                VirtualSelectionPaint {
+                    selected: &selected_rows,
+                    active: vstate.and_then(|state| state.selected_row),
+                    focused: is_focused,
+                },
+                vstate.and_then(|state| state.hovered_row),
                 size,
                 local_mouse,
                 theme,
@@ -1562,6 +1666,7 @@ fn draw_widgets_impl<'w, Msg>(
             let scroll_y = gstate.map(|g| g.scroll_y).unwrap_or(0.0);
             let selected = gstate.and_then(|g| g.selected_item);
             let hovered = gstate.and_then(|g| g.hovered_item);
+            let selected_cells = legacy_virtual_selection(selected);
             draw_virtual_grid(
                 canvas,
                 columns,
@@ -1570,11 +1675,14 @@ fn draw_widgets_impl<'w, Msg>(
                 items,
                 gstate,
                 scroll_y,
-                selected,
+                VirtualSelectionPaint {
+                    selected: &selected_cells,
+                    active: selected,
+                    focused: is_focused,
+                },
                 hovered,
                 size,
                 local_mouse,
-                is_focused,
                 font_cache,
                 theme,
             );
@@ -1591,6 +1699,7 @@ fn draw_widgets_impl<'w, Msg>(
             let scroll_y = gstate.map(|g| g.scroll_y).unwrap_or(0.0);
             let selected = gstate.and_then(|g| g.selected_item);
             let hovered = gstate.and_then(|g| g.hovered_item);
+            let selected_cells = legacy_virtual_selection(selected);
             draw_virtual_grid_content(
                 canvas,
                 columns,
@@ -1599,11 +1708,99 @@ fn draw_widgets_impl<'w, Msg>(
                 items,
                 gstate,
                 scroll_y,
-                selected,
+                VirtualSelectionPaint {
+                    selected: &selected_cells,
+                    active: selected,
+                    focused: is_focused,
+                },
                 hovered,
                 size,
                 local_mouse,
-                is_focused,
+                theme,
+                &mut VirtualItemDrawContext {
+                    fs,
+                    swash,
+                    font_cache,
+                    text_cache,
+                    image_cache,
+                    layout_fs: layout_fs.clone(),
+                    layout_direction: node_layout_direction(taffy, node),
+                    cursor_visible,
+                    scale,
+                },
+                path,
+            );
+        }
+        Widget::VirtualGridWithSelection {
+            columns,
+            item_height,
+            item_count,
+            items,
+            selection,
+            ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let gstate = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_vgrid);
+            let selected_cells = configured_virtual_selection(
+                selection,
+                *item_count,
+                gstate.and_then(|state| state.selected_item),
+            );
+            draw_virtual_grid(
+                canvas,
+                columns,
+                item_height,
+                item_count,
+                items,
+                gstate,
+                gstate.map(|state| state.scroll_y).unwrap_or(0.0),
+                VirtualSelectionPaint {
+                    selected: &selected_cells,
+                    active: gstate.and_then(|state| state.selected_item),
+                    focused: is_focused,
+                },
+                gstate.and_then(|state| state.hovered_item),
+                size,
+                local_mouse,
+                font_cache,
+                theme,
+            );
+        }
+        Widget::VirtualGridContentWithSelection {
+            columns,
+            item_height,
+            item_count,
+            items,
+            selection,
+            ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let gstate = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_vgrid);
+            let selected_cells = configured_virtual_selection(
+                selection,
+                *item_count,
+                gstate.and_then(|state| state.selected_item),
+            );
+            draw_virtual_grid_content(
+                canvas,
+                columns,
+                item_height,
+                item_count,
+                items,
+                gstate,
+                gstate.map(|state| state.scroll_y).unwrap_or(0.0),
+                VirtualSelectionPaint {
+                    selected: &selected_cells,
+                    active: gstate.and_then(|state| state.selected_item),
+                    focused: is_focused,
+                },
+                gstate.and_then(|state| state.hovered_item),
+                size,
+                local_mouse,
                 theme,
                 &mut VirtualItemDrawContext {
                     fs,
@@ -2530,7 +2727,7 @@ fn draw_virtual_list(
     item_count: &usize,
     items: &dyn Fn(usize) -> Option<String>,
     scroll_y: f32,
-    selected: Option<usize>,
+    selection: VirtualSelectionPaint<'_>,
     hovered: Option<usize>,
     size: (f32, f32),
     mouse: Point,
@@ -2554,7 +2751,7 @@ fn draw_virtual_list(
     for i in first..last {
         let y = i as f32 * ih - scroll_y;
         let rect = SkiaRect::from_xywh(0.0, y, size.0 - SCROLLBAR_W - 4.0, ih);
-        let is_sel = selected == Some(i);
+        let is_sel = selection.is_selected(i);
         let is_hov = hovered == Some(i) || SkiaRect::from_xywh(0.0, y, size.0, ih).contains(mouse);
 
         if is_sel || is_hov {
@@ -2583,6 +2780,8 @@ fn draw_virtual_list(
             canvas.draw_str(&text, (12.0, ty), &f, &tp);
         }
 
+        draw_virtual_item_focus(canvas, rect, selection.is_active(i), 0.0, theme);
+
         let mut sep = Paint::default();
         sep.set_color(Theme::alpha(theme.on_surface, 15));
         sep.set_style(paint::Style::Stroke);
@@ -2591,6 +2790,7 @@ fn draw_virtual_list(
     }
 
     canvas.restore();
+    draw_virtual_collection_focus(canvas, selection, size, theme);
 
     let total_h = ih * count as f32;
     if total_h > size.1 {
@@ -2612,6 +2812,42 @@ struct VirtualItemDrawContext<'a> {
 }
 
 struct CarouselViewPaintState<'a>(Option<usize>, (f32, f32), Point, bool, &'a Theme);
+
+#[derive(Clone, Copy)]
+struct VirtualSelectionPaint<'a> {
+    selected: &'a BTreeSet<usize>,
+    active: Option<usize>,
+    focused: bool,
+}
+
+impl VirtualSelectionPaint<'_> {
+    fn is_selected(self, index: usize) -> bool {
+        self.selected.contains(&index)
+    }
+
+    fn is_active(self, index: usize) -> bool {
+        self.focused && self.active == Some(index)
+    }
+}
+
+fn legacy_virtual_selection(selected: Option<usize>) -> BTreeSet<usize> {
+    selected.into_iter().collect()
+}
+
+fn configured_virtual_selection<Msg>(
+    selection: &VirtualSelection<'_, Msg>,
+    item_count: usize,
+    single_selected: Option<usize>,
+) -> BTreeSet<usize> {
+    match selection {
+        VirtualSelection::Single(_) => legacy_virtual_selection(single_selected),
+        VirtualSelection::Multiple { selected, .. } => selected
+            .iter()
+            .copied()
+            .filter(|index| *index < item_count)
+            .collect(),
+    }
+}
 
 fn draw_carousel_view<'w, Msg>(
     canvas: &Canvas,
@@ -2788,7 +3024,7 @@ fn draw_virtual_list_content<'w, Msg>(
     item_count: &usize,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
     scroll_y: f32,
-    selected: Option<usize>,
+    selection: VirtualSelectionPaint<'_>,
     hovered: Option<usize>,
     size: (f32, f32),
     mouse: Point,
@@ -2803,10 +3039,11 @@ fn draw_virtual_list_content<'w, Msg>(
     canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
     for i in visible_virtual_rows(scroll_y, ih, size.1, count) {
         draw_virtual_list_content_row(
-            canvas, items, i, ih, scroll_y, selected, hovered, size, mouse, theme, ctx, path,
+            canvas, items, i, ih, scroll_y, selection, hovered, size, mouse, theme, ctx, path,
         );
     }
     canvas.restore();
+    draw_virtual_collection_focus(canvas, selection, size, theme);
     draw_list_scrollbar_if_needed(canvas, scroll_y, ih * count as f32, size, theme);
 }
 
@@ -2817,7 +3054,7 @@ fn draw_virtual_list_content_row<'w, Msg>(
     index: usize,
     item_height: f32,
     scroll_y: f32,
-    selected: Option<usize>,
+    selection: VirtualSelectionPaint<'_>,
     hovered: Option<usize>,
     size: (f32, f32),
     mouse: Point,
@@ -2829,7 +3066,13 @@ fn draw_virtual_list_content_row<'w, Msg>(
     let rect = SkiaRect::from_xywh(0.0, y, size.0 - SCROLLBAR_W - 4.0, item_height);
     let is_hovered =
         hovered == Some(index) || SkiaRect::from_xywh(0.0, y, size.0, item_height).contains(mouse);
-    draw_virtual_item_highlight(canvas, rect, selected == Some(index), is_hovered, theme);
+    draw_virtual_item_highlight(
+        canvas,
+        rect,
+        selection.is_selected(index),
+        is_hovered,
+        theme,
+    );
     if let Some(item) = items(index) {
         path.push(index);
         draw_virtual_item_widget(
@@ -2844,6 +3087,7 @@ fn draw_virtual_list_content_row<'w, Msg>(
         );
         path.pop();
     }
+    draw_virtual_item_focus(canvas, rect, selection.is_active(index), 0.0, theme);
     draw_virtual_row_separator(canvas, y, item_height, size.0, theme);
 }
 
@@ -2880,11 +3124,10 @@ fn draw_virtual_grid(
     items: &dyn Fn(usize) -> Option<String>,
     state: Option<&VirtualGridState>,
     scroll_y: f32,
-    selected: Option<usize>,
+    selection: VirtualSelectionPaint<'_>,
     hovered: Option<usize>,
     size: (f32, f32),
     mouse: Point,
-    is_focused: bool,
     font_cache: &mut HashMap<(String, u32), Font>,
     theme: &Theme,
 ) {
@@ -2919,7 +3162,7 @@ fn draw_virtual_grid(
 
             let cell_x = virtual_grid_cell_left(col, size.0, columns);
             let rect = SkiaRect::from_xywh(cell_x, cell_y, cell_w, cell_h);
-            let is_sel = selected == Some(index);
+            let is_sel = selection.is_selected(index);
             let is_hov = hovered == Some(index) || rect.contains(mouse);
 
             let fill = if is_sel {
@@ -2953,19 +3196,13 @@ fn draw_virtual_grid(
                 &cell_border,
             );
 
-            if is_focused && is_sel {
-                draw_focus_outline(
-                    canvas,
-                    SkiaRect::from_xywh(
-                        rect.left + 1.0,
-                        rect.top + 1.0,
-                        (rect.width() - 2.0).max(0.0),
-                        (rect.height() - 2.0).max(0.0),
-                    ),
-                    theme.radius_sm,
-                    theme,
-                );
-            }
+            draw_virtual_item_focus(
+                canvas,
+                rect,
+                selection.is_active(index),
+                theme.radius_sm,
+                theme,
+            );
 
             if let Some(text) = items(index) {
                 let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
@@ -2986,14 +3223,7 @@ fn draw_virtual_grid(
 
     canvas.restore();
 
-    if is_focused && selected.is_none() {
-        draw_focus_outline(
-            canvas,
-            SkiaRect::from_xywh(2.0, 2.0, (size.0 - 4.0).max(0.0), (size.1 - 4.0).max(0.0)),
-            theme.radius_sm,
-            theme,
-        );
-    }
+    draw_virtual_collection_focus(canvas, selection, size, theme);
 
     if let Some((ratio, thumb_y)) =
         virtual_grid_scrollbar_metrics(state, scroll_y, row_h, count, columns, row_count, size.1)
@@ -3011,11 +3241,10 @@ fn draw_virtual_grid_content<'w, Msg>(
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
     state: Option<&VirtualGridState>,
     scroll_y: f32,
-    selected: Option<usize>,
+    selection: VirtualSelectionPaint<'_>,
     hovered: Option<usize>,
     size: (f32, f32),
     mouse: Point,
-    is_focused: bool,
     theme: &Theme,
     ctx: &mut VirtualItemDrawContext<'_>,
     path: &mut Vec<usize>,
@@ -3029,11 +3258,12 @@ fn draw_virtual_grid_content<'w, Msg>(
     canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
     for row in visible_virtual_rows(scroll_y, row_h, size.1, row_count) {
         draw_virtual_grid_content_row(
-            canvas, items, row, columns, row_h, count, scroll_y, selected, hovered, size, mouse,
-            is_focused, theme, ctx, path,
+            canvas, items, row, columns, row_h, count, scroll_y, selection, hovered, size, mouse,
+            theme, ctx, path,
         );
     }
     canvas.restore();
+    draw_virtual_collection_focus(canvas, selection, size, theme);
     if let Some((ratio, thumb_y)) =
         virtual_grid_scrollbar_metrics(state, scroll_y, row_h, count, columns, row_count, size.1)
     {
@@ -3050,11 +3280,10 @@ fn draw_virtual_grid_content_row<'w, Msg>(
     row_h: f32,
     count: usize,
     scroll_y: f32,
-    selected: Option<usize>,
+    selection: VirtualSelectionPaint<'_>,
     hovered: Option<usize>,
     size: (f32, f32),
     mouse: Point,
-    is_focused: bool,
     theme: &Theme,
     ctx: &mut VirtualItemDrawContext<'_>,
     path: &mut Vec<usize>,
@@ -3066,8 +3295,8 @@ fn draw_virtual_grid_content_row<'w, Msg>(
             break;
         }
         draw_virtual_grid_content_cell(
-            canvas, items, index, col, y, row_h, columns, selected, hovered, size, mouse,
-            is_focused, theme, ctx, path,
+            canvas, items, index, col, y, row_h, columns, selection, hovered, size, mouse, theme,
+            ctx, path,
         );
     }
 }
@@ -3081,21 +3310,30 @@ fn draw_virtual_grid_content_cell<'w, Msg>(
     y: f32,
     row_h: f32,
     columns: usize,
-    selected: Option<usize>,
+    selection: VirtualSelectionPaint<'_>,
     hovered: Option<usize>,
     size: (f32, f32),
     mouse: Point,
-    is_focused: bool,
     theme: &Theme,
     ctx: &mut VirtualItemDrawContext<'_>,
     path: &mut Vec<usize>,
 ) {
     let rect = virtual_grid_cell_rect(col, y, row_h, size.0, columns);
     let is_hovered = hovered == Some(index) || rect.contains(mouse);
-    draw_virtual_grid_cell_frame(canvas, rect, selected == Some(index), is_hovered, theme);
-    if is_focused && selected == Some(index) {
-        draw_focus_outline(canvas, inset_rect(rect, 1.0), theme.radius_sm, theme);
-    }
+    draw_virtual_grid_cell_frame(
+        canvas,
+        rect,
+        selection.is_selected(index),
+        is_hovered,
+        theme,
+    );
+    draw_virtual_item_focus(
+        canvas,
+        rect,
+        selection.is_active(index),
+        theme.radius_sm,
+        theme,
+    );
     if let Some(item) = items(index) {
         path.push(index);
         draw_virtual_item_widget(
@@ -3206,6 +3444,31 @@ fn draw_virtual_background(canvas: &Canvas, size: (f32, f32), theme: &Theme) {
     bg.set_color(theme.surface);
     bg.set_anti_alias(true);
     canvas.draw_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), &bg);
+}
+
+fn draw_virtual_item_focus(
+    canvas: &Canvas,
+    rect: SkiaRect,
+    focused: bool,
+    radius: f32,
+    theme: &Theme,
+) {
+    if focused {
+        draw_focus_outline(canvas, inset_rect(rect, 1.0), radius, theme);
+    }
+}
+
+fn draw_virtual_collection_focus(
+    canvas: &Canvas,
+    selection: VirtualSelectionPaint<'_>,
+    size: (f32, f32),
+    theme: &Theme,
+) {
+    if !selection.focused || selection.active.is_some() {
+        return;
+    }
+    let rect = SkiaRect::from_xywh(2.0, 2.0, (size.0 - 4.0).max(0.0), (size.1 - 4.0).max(0.0));
+    draw_focus_outline(canvas, rect, theme.radius_sm, theme);
 }
 
 fn draw_virtual_item_highlight(
@@ -4199,7 +4462,11 @@ fn rrect(size: (f32, f32), r: f32) -> RRect {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, collections::HashMap, rc::Rc};
+    use std::{
+        cell::RefCell,
+        collections::{BTreeSet, HashMap},
+        rc::Rc,
+    };
 
     use cosmic_text::{FontSystem, SwashCache};
     use skia_safe::{Canvas, Color, Font, Point, Surface, surfaces};
@@ -4207,8 +4474,9 @@ mod tests {
     use winit::dpi::PhysicalSize;
 
     use super::{
-        ImageRenderCache, RichTextRenderer, draw_image, draw_virtual_grid, draw_widgets,
-        is_svg_image, svg_cache_key, virtual_grid_scrollbar_metrics, visible_carousel_selection,
+        ImageRenderCache, RichTextRenderer, VirtualSelectionPaint, draw_image, draw_virtual_grid,
+        draw_widgets, is_svg_image, svg_cache_key, virtual_grid_scrollbar_metrics,
+        visible_carousel_selection,
     };
     use crate::engine::widget_state::VirtualGridState;
     use crate::layout::{SCROLLBAR_W, build_taffy_tree, compute_layout};
@@ -4446,6 +4714,7 @@ mod tests {
     fn draw_virtual_grid_renders_scrollbar_thumb() {
         let theme = Theme::dark();
         let state = grid_state();
+        let selected = BTreeSet::new();
         let mut surface = surfaces::raster_n32_premul((120, 80)).unwrap();
         let mut font_cache = HashMap::new();
 
@@ -4457,11 +4726,14 @@ mod tests {
             &grid_item,
             Some(&state),
             state.scroll_y,
-            None,
+            VirtualSelectionPaint {
+                selected: &selected,
+                active: None,
+                focused: false,
+            },
             None,
             (120.0, 80.0),
             Point::new(-1.0, -1.0),
-            false,
             &mut font_cache,
             &theme,
         );

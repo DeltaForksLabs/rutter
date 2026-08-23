@@ -47,9 +47,11 @@ use crate::render::select_overlay::collector::{
 use crate::render::select_overlay::hit_test_select_overlay;
 
 mod accessibility_actions;
+mod counter;
 mod dropdown_keyboard;
 mod dropdown_pointer;
 mod secondary_pointer;
+mod virtual_selection;
 
 use self::secondary_pointer::{SecondaryPointerBlockers, has_visible_blocking_overlay};
 
@@ -396,6 +398,32 @@ fn carousel_wheel_delta(delta_x: f32, delta_y: f32, direction: LayoutDirection) 
     }
 }
 
+fn virtual_multi_pointer_index<Msg>(id: u64, hit: Option<HitResult<Msg>>) -> Option<usize> {
+    match hit {
+        Some(HitResult::VListSelect { id: hit_id, index })
+        | Some(HitResult::VGridSelect { id: hit_id, index })
+            if hit_id == id =>
+        {
+            Some(index)
+        }
+        _ => None,
+    }
+}
+
+fn apply_scrollbar_drag_offset(widget_state: &mut WidgetState, offset: f32) {
+    if let Some(scroll_state) = widget_state.as_scroll_mut() {
+        scroll_state.offset_y = offset;
+        return;
+    }
+    if let Some(list_state) = widget_state.as_vlist_mut() {
+        list_state.scroll_y = offset;
+        return;
+    }
+    if let Some(grid_state) = widget_state.as_vgrid_mut() {
+        grid_state.scroll_y = offset;
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ScrollDrag {
     id: u64,
@@ -429,6 +457,7 @@ pub struct RutterRunner<A: AppLogic> {
     cursor_pos: Point,
     cursor_physical: PhysicalPosition<f64>,
     scroll_drag: Option<ScrollDrag>,
+    virtual_multi_pointer_capture: Option<u64>,
     mouse_down: bool,
     last_click_time: std::time::Instant,
     last_click_pos: Point,
@@ -444,6 +473,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             cursor_pos: Point::new(0.0, 0.0),
             cursor_physical: PhysicalPosition::new(0.0, 0.0),
             scroll_drag: None,
+            virtual_multi_pointer_capture: None,
             mouse_down: false,
             last_click_time: Instant::now(),
             last_click_pos: Point::new(0.0, 0.0),
@@ -566,13 +596,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     let ratio = scrollable / track_h.max(1.0);
                     let new_offset = (drag.start_offset + dy_px * ratio).clamp(0.0, scrollable);
                     if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                        if let Some(s) = ws.as_scroll_mut() {
-                            s.offset_y = new_offset;
-                        } else if let Some(s) = ws.as_vlist_mut() {
-                            s.scroll_y = new_offset;
-                        } else if let Some(s) = ws.as_vgrid_mut() {
-                            s.scroll_y = new_offset;
-                        }
+                        apply_scrollbar_drag_offset(ws, new_offset);
                     }
                     self.redraw();
                     return;
@@ -584,6 +608,17 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
 
                 if self.mouse_down {
+                    match self.extend_virtual_multi_pointer_capture() {
+                        Ok(true) => {
+                            self.redraw();
+                            return;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            self.terminate_for_error(el, error);
+                            return;
+                        }
+                    }
                     if let Some(fid) = self.engine.focused_input_id() {
                         if let Some(rect) = self.focused_input_rect {
                             let local_x = self.cursor_pos.x / self.engine.scale_factor - rect.left;
@@ -960,6 +995,17 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 }
                             }
                         }
+                        HitResult::CounterAdjust { id, increment } => {
+                            if button == winit::event::MouseButton::Left {
+                                self.focus_widget(Some(id));
+                                self.adjust_counter(id, increment);
+                            }
+                        }
+                        HitResult::CounterFocus(id) => {
+                            if button == winit::event::MouseButton::Left {
+                                self.focus_widget(Some(id));
+                            }
+                        }
                         HitResult::SelectToggle(id) => {
                             if button == winit::event::MouseButton::Left {
                                 self.focus_widget(Some(id));
@@ -1021,51 +1067,69 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         HitResult::VListSelect { id, index } => {
                             if button == winit::event::MouseButton::Left {
                                 self.focus_widget(Some(id));
-                                if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                    if let Some(vl) = ws.as_vlist_mut() {
-                                        vl.selected_row = Some(index);
-                                    }
-                                }
-                                let cb = self
+                                let is_multi_selection = self
                                     .engine
                                     .runtime_caches
-                                    .vlists
-                                    .get(&id)
-                                    .map(|v| v.on_select);
-                                if let Some(cb) = cb {
-                                    let msg = cb(index);
-                                    A::update(
-                                        &mut self.engine.app_state,
-                                        msg,
-                                        &mut self.engine.clipboard,
-                                    );
+                                    .virtual_multi_selections
+                                    .contains_key(&id);
+                                if is_multi_selection {
+                                    self.select_virtual_multi_item(id, index);
+                                } else {
+                                    if let Some(ws) = self.engine.widget_states.get_mut(&id) {
+                                        if let Some(vl) = ws.as_vlist_mut() {
+                                            vl.selected_row = Some(index);
+                                        }
+                                    }
+                                    let cb = self
+                                        .engine
+                                        .runtime_caches
+                                        .vlists
+                                        .get(&id)
+                                        .map(|v| v.on_select);
+                                    if let Some(cb) = cb {
+                                        let msg = cb(index);
+                                        A::update(
+                                            &mut self.engine.app_state,
+                                            msg,
+                                            &mut self.engine.clipboard,
+                                        );
+                                    }
+                                    self.engine.layout_dirty = true;
                                 }
-                                self.engine.layout_dirty = true;
                             }
                         }
                         HitResult::VGridSelect { id, index } => {
                             if button == winit::event::MouseButton::Left {
                                 self.focus_widget(Some(id));
-                                if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                    if let Some(grid) = ws.as_vgrid_mut() {
-                                        grid.selected_item = Some(index);
-                                    }
-                                }
-                                let cb = self
+                                let is_multi_selection = self
                                     .engine
                                     .runtime_caches
-                                    .vgrids
-                                    .get(&id)
-                                    .map(|v| v.on_select);
-                                if let Some(cb) = cb {
-                                    let msg = cb(index);
-                                    A::update(
-                                        &mut self.engine.app_state,
-                                        msg,
-                                        &mut self.engine.clipboard,
-                                    );
+                                    .virtual_multi_selections
+                                    .contains_key(&id);
+                                if is_multi_selection {
+                                    self.select_virtual_multi_item(id, index);
+                                } else {
+                                    if let Some(ws) = self.engine.widget_states.get_mut(&id) {
+                                        if let Some(grid) = ws.as_vgrid_mut() {
+                                            grid.selected_item = Some(index);
+                                        }
+                                    }
+                                    let cb = self
+                                        .engine
+                                        .runtime_caches
+                                        .vgrids
+                                        .get(&id)
+                                        .map(|v| v.on_select);
+                                    if let Some(cb) = cb {
+                                        let msg = cb(index);
+                                        A::update(
+                                            &mut self.engine.app_state,
+                                            msg,
+                                            &mut self.engine.clipboard,
+                                        );
+                                    }
+                                    self.engine.layout_dirty = true;
                                 }
-                                self.engine.layout_dirty = true;
                             }
                         }
                         HitResult::CarouselSelect { id, index } => {
@@ -1087,6 +1151,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 ..
             } => {
                 self.mouse_down = false;
+                self.end_virtual_multi_pointer_capture();
                 if self.scroll_drag.take().is_some() {
                     self.redraw();
                 }
@@ -1128,7 +1193,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if !self.handle_text_commit(&event) {
-                    self.handle_key(&event.logical_key);
+                    self.handle_key(&event.logical_key, event.repeat);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -1181,6 +1246,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     pub(crate) fn release_surface(&mut self) {
         self.active_window_id = None;
         self.scroll_drag = None;
+        self.end_virtual_multi_pointer_capture();
         self.mouse_down = false;
         self.focused_input_rect = None;
         self.engine.release_surface();
@@ -1443,6 +1509,48 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.dispatch_carousel_selection(id, index, &runtime);
     }
 
+    fn extend_virtual_multi_pointer_capture(&mut self) -> Result<bool, RutterRunError> {
+        let Some(id) = self.virtual_multi_pointer_capture else {
+            return Ok(false);
+        };
+        let Some(size) = self
+            .engine
+            .window
+            .as_ref()
+            .map(|window| window.inner_size())
+        else {
+            return Ok(false);
+        };
+        self.engine.try_ensure_widget_states()?;
+        self.engine.try_ensure_layout(size)?;
+        let index = self.virtual_multi_pointer_index_at_cursor(id)?;
+        Ok(index.is_some_and(|index| self.extend_virtual_multi_pointer_selection(id, index)))
+    }
+
+    fn virtual_multi_pointer_index_at_cursor(
+        &mut self,
+        id: u64,
+    ) -> Result<Option<usize>, RutterRunError> {
+        let widget = A::view(&mut self.engine.app_state);
+        validate_runtime_reconstruction(self.engine.widget_id_snapshot.as_ref(), &widget)?;
+        let hit = hit_test(
+            &widget,
+            &self.engine.taffy,
+            self.engine.last_root_node,
+            self.engine.last_mouse_pos,
+            Point::new(0.0, 0.0),
+            &self.engine.widget_states,
+        );
+        Ok(virtual_multi_pointer_index(id, hit))
+    }
+
+    fn end_virtual_multi_pointer_capture(&mut self) {
+        let Some(id) = self.virtual_multi_pointer_capture.take() else {
+            return;
+        };
+        self.end_virtual_multi_pointer_selection(id);
+    }
+
     fn refresh_scroll_target_at_cursor(&mut self) -> Result<Option<u64>, RutterRunError> {
         let size = self.engine.window.as_ref().unwrap().inner_size();
         self.engine.try_ensure_widget_states()?;
@@ -1529,6 +1637,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn scroll_vertical_target(&mut self, id: u64, delta_y: f32) -> bool {
+        if self.scroll_virtual_multi_target(id, delta_y) {
+            return true;
+        }
         let list = self.engine.runtime_caches.vlists.get(&id).cloned();
         let grid = self.engine.runtime_caches.vgrids.get(&id).cloned();
         let Some(state) = self.engine.widget_states.get_mut(&id) else {
@@ -1601,6 +1712,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn begin_scroll_drag(&mut self, hit: crate::render::hit_test::ScrollbarDragHit) {
+        if let Some(widget_state) = self.engine.widget_states.get_mut(&hit.id) {
+            apply_scrollbar_drag_offset(widget_state, hit.start_offset);
+        }
         self.scroll_drag = Some(ScrollDrag {
             id: hit.id,
             start_y: self.cursor_pos.y,
@@ -1609,6 +1723,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             content_h: hit.content_h,
         });
         self.engine.active_scroll_id = Some(hit.id);
+        self.redraw();
     }
 
     fn focus_input_at(
@@ -1783,6 +1898,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 self.redraw();
                 return true;
             }
+        }
+
+        if self.adjust_focused_counter_key(fid, key) {
+            self.redraw();
+            return true;
         }
 
         if let Some(select) = self.engine.runtime_caches.selects.get(&fid).cloned() {
@@ -2017,9 +2137,18 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.redraw();
     }
 
-    fn handle_key(&mut self, key: &Key) {
+    fn handle_key(&mut self, key: &Key, repeat: bool) {
         if self.engine.focused_widget_id.is_none() {
             if let Some(sid) = self.engine.active_scroll_id {
+                if self
+                    .engine
+                    .runtime_caches
+                    .virtual_multi_selections
+                    .contains_key(&sid)
+                    && self.handle_virtual_multi_selection_key(sid, key, repeat)
+                {
+                    return;
+                }
                 let vlist_props = self
                     .engine
                     .runtime_caches
@@ -2174,6 +2303,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.engine.active_scroll_id = None;
             self.redraw();
             return;
+        }
+        if let Some(focused_id) = self.engine.focused_widget_id {
+            if self.handle_virtual_multi_selection_key(focused_id, key, repeat) {
+                return;
+            }
         }
         if self.engine.modifiers.state().control_key() {
             if self.engine.focused_input_id().is_none() {
@@ -2608,14 +2742,18 @@ mod tests {
     use winit::keyboard::{Key, NamedKey};
 
     use super::{
-        WindowEventDestination, carousel_key_index, carousel_wheel_delta, classify_window_event,
-        collect_open_popover_dismissals, collect_toast_runtime_state, input_copy_is_blocked,
-        sanitize_clipboard_text, sanitize_input_text, wheel_deltas, wheel_select_index,
+        WindowEventDestination, apply_scrollbar_drag_offset, carousel_key_index,
+        carousel_wheel_delta, classify_window_event, collect_open_popover_dismissals,
+        collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text,
+        sanitize_input_text, virtual_multi_pointer_index, wheel_deltas, wheel_select_index,
     };
     use crate::LayoutDirection;
-    use crate::engine::widget_state::{PopoverState, ToastState, WidgetState};
+    use crate::engine::widget_state::{
+        PopoverState, ScrollState, ToastState, VirtualGridState, VirtualListState, WidgetState,
+    };
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
+    use crate::render::hit_test::HitResult;
 
     #[test]
     fn wheel_deltas_preserve_horizontal_trackpad_input() {
@@ -2629,6 +2767,37 @@ mod tests {
             ))),
             (-12.0, 8.0)
         );
+    }
+
+    #[test]
+    fn pointer_capture_routes_list_and_grid_items_from_the_same_collection() {
+        assert_eq!(
+            virtual_multi_pointer_index::<()>(7, Some(HitResult::VListSelect { id: 7, index: 2 })),
+            Some(2)
+        );
+        assert_eq!(
+            virtual_multi_pointer_index::<()>(7, Some(HitResult::VGridSelect { id: 7, index: 5 })),
+            Some(5)
+        );
+        assert_eq!(
+            virtual_multi_pointer_index::<()>(7, Some(HitResult::VGridSelect { id: 8, index: 5 })),
+            None
+        );
+    }
+
+    #[test]
+    fn scrollbar_drag_writes_the_target_offset_to_every_vertical_scroll_state() {
+        let mut scroll = WidgetState::Scroll(ScrollState::default());
+        let mut list = WidgetState::VList(VirtualListState::default());
+        let mut grid = WidgetState::VGrid(VirtualGridState::default());
+
+        apply_scrollbar_drag_offset(&mut scroll, 120.0);
+        apply_scrollbar_drag_offset(&mut list, 240.0);
+        apply_scrollbar_drag_offset(&mut grid, 360.0);
+
+        assert_eq!(scroll.as_scroll().map(|state| state.offset_y), Some(120.0));
+        assert_eq!(list.as_vlist().map(|state| state.scroll_y), Some(240.0));
+        assert_eq!(grid.as_vgrid().map(|state| state.scroll_y), Some(360.0));
     }
 
     #[test]

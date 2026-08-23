@@ -8,7 +8,7 @@ use arboard::Clipboard;
 use cosmic_text::FontSystem;
 use taffy::prelude::*;
 
-use rutter::{AppLogic, RutterRunner, Theme, Widget};
+use rutter::{AppLogic, RutterRunner, Theme, VirtualSelection, Widget};
 
 use super::theme_selector::{ExampleTheme, example_theme_selector};
 
@@ -17,13 +17,13 @@ const TOTAL_ITEMS: usize = 1_200;
 #[derive(Default)]
 pub struct VGridDemoState {
     pub theme: ExampleTheme,
-    pub selected: Option<usize>,
+    pub selected: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     ThemeChanged(ExampleTheme),
-    CellSelected(usize),
+    SelectionChanged(Vec<usize>),
 }
 
 pub struct VGridDemo;
@@ -73,29 +73,23 @@ impl AppLogic for VGridDemo {
                     style: Style::default(),
                 },
                 Widget::Text {
-                    content: s
-                        .selected
-                        .map(|i| format!("Selecionado: card #{:04}", i + 1))
-                        .unwrap_or_else(|| {
-                            "Nenhuma célula selecionada. Use clique ou setas.".into()
-                        }),
+                    content: grid_selection_caption(&s.selected),
                     color: None,
                     size: 14.0,
                     style: Style::default(),
                 },
-                Widget::virtual_grid(
+                Widget::virtual_grid_with_selection(
                     4,
                     72.0,
                     TOTAL_ITEMS,
                     &|i| Some(format!("Card #{:04}", i + 1)),
-                    Msg::CellSelected,
+                    VirtualSelection::multiple(&s.selected, Msg::SelectionChanged),
                     grid_s,
                 )
                 .with_id(70),
                 Widget::Text {
-                    content:
-                        "Setas movem a seleção, PageUp/PageDown rolam, Enter confirma a célula."
-                            .into(),
+                    content: "Arraste para selecionar um retângulo. Shift+setas estende; Ctrl/Command+A seleciona tudo."
+                        .into(),
                     color: None,
                     size: 11.0,
                     style: Style::default(),
@@ -107,7 +101,7 @@ impl AppLogic for VGridDemo {
     fn update(s: &mut VGridDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
             Msg::ThemeChanged(theme) => s.theme = theme,
-            Msg::CellSelected(i) => s.selected = Some(i),
+            Msg::SelectionChanged(selected) => s.selected = selected,
         }
     }
 
@@ -116,6 +110,29 @@ impl AppLogic for VGridDemo {
     }
 }
 
+fn grid_selection_caption(selected: &[usize]) -> String {
+    match selected {
+        [] => "Nenhuma célula selecionada. Use clique ou setas.".into(),
+        [index] => format!("Selecionado: card #{:04}", index + 1),
+        indices => format!("{} cards selecionados", indices.len()),
+    }
+}
+
 pub fn run() {
     RutterRunner::<VGridDemo>::run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_selection_caption_describes_empty_single_and_multiple_sets() {
+        assert_eq!(
+            grid_selection_caption(&[]),
+            "Nenhuma célula selecionada. Use clique ou setas."
+        );
+        assert_eq!(grid_selection_caption(&[4]), "Selecionado: card #0005");
+        assert_eq!(grid_selection_caption(&[1, 3]), "2 cards selecionados");
+    }
 }

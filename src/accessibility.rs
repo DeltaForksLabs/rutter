@@ -17,7 +17,7 @@ use crate::layout::RutterContext;
 use crate::render::select_overlay::collector::{
     collect_dropdown_triggers, collect_open_dropdown_overlays,
 };
-use crate::widget::{DialogAction, Widget};
+use crate::widget::{DialogAction, VirtualSelection, Widget};
 use crate::widget_id::resolve_accessibility_path_id;
 
 mod action_queue;
@@ -478,13 +478,20 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         Widget::Switch { .. } => Role::Switch,
         Widget::Radio { .. } => Role::RadioButton,
         Widget::Slider { .. } => Role::Slider,
+        Widget::Counter { .. } => Role::SpinButton,
         Widget::Select { .. } => Role::ComboBox,
         Widget::ProgressBar { .. } | Widget::Spinner { .. } => Role::ProgressIndicator,
         Widget::TabBar { .. } => Role::TabList,
         Widget::Toast { visible: true, .. } => Role::Status,
         Widget::CarouselView { .. } => Role::ListBox,
-        Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => Role::ListBox,
-        Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => Role::Grid,
+        Widget::VirtualList { .. }
+        | Widget::VirtualListContent { .. }
+        | Widget::VirtualListWithSelection { .. }
+        | Widget::VirtualListContentWithSelection { .. } => Role::ListBox,
+        Widget::VirtualGrid { .. }
+        | Widget::VirtualGridContent { .. }
+        | Widget::VirtualGridWithSelection { .. }
+        | Widget::VirtualGridContentWithSelection { .. } => Role::Grid,
         _ => return None,
     })
 }
@@ -518,7 +525,7 @@ fn apply_actions<Msg>(node: &mut Node, widget: &Widget<Msg>) {
         | Widget::Switch { .. }
         | Widget::Radio { .. }
         | Widget::Select { .. } => node.add_action(Action::Click),
-        Widget::Slider { .. } => {
+        Widget::Slider { .. } | Widget::Counter { .. } => {
             node.add_action(Action::Increment);
             node.add_action(Action::Decrement);
         }
@@ -539,6 +546,18 @@ fn apply_toggle_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
 fn apply_numeric_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
     match widget {
         Widget::Slider {
+            value,
+            min,
+            max,
+            step,
+            ..
+        } => {
+            node.set_numeric_value(*value as f64);
+            node.set_min_numeric_value(*min as f64);
+            node.set_max_numeric_value(*max as f64);
+            node.set_numeric_value_step(*step as f64);
+        }
+        Widget::Counter {
             value,
             min,
             max,
@@ -600,6 +619,19 @@ fn apply_collection_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
         Widget::VirtualList { item_count, .. } | Widget::VirtualListContent { item_count, .. } => {
             node.set_size_of_set(*item_count)
         }
+        Widget::VirtualListWithSelection {
+            item_count,
+            selection,
+            ..
+        }
+        | Widget::VirtualListContentWithSelection {
+            item_count,
+            selection,
+            ..
+        } => {
+            node.set_size_of_set(*item_count);
+            set_multiselectable_if_needed(node, selection);
+        }
         Widget::VirtualGrid {
             item_count,
             columns,
@@ -612,6 +644,22 @@ fn apply_collection_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
         } => {
             node.set_row_count(item_count.div_ceil((*columns).max(1)));
             node.set_column_count((*columns).max(1));
+        }
+        Widget::VirtualGridWithSelection {
+            item_count,
+            columns,
+            selection,
+            ..
+        }
+        | Widget::VirtualGridContentWithSelection {
+            item_count,
+            columns,
+            selection,
+            ..
+        } => {
+            node.set_row_count(item_count.div_ceil((*columns).max(1)));
+            node.set_column_count((*columns).max(1));
+            set_multiselectable_if_needed(node, selection);
         }
         _ => {}
     }
@@ -644,7 +692,9 @@ fn set_widget_label<Msg>(
         Widget::TextInput { label, .. } | Widget::TextArea { label, .. } => node.set_label(*label),
         Widget::SearchBar { .. } => node.set_label("Search"),
         Widget::Checkbox { label, .. } | Widget::Radio { label, .. } => node.set_label(*label),
-        Widget::Slider { label, .. } | Widget::Select { label, .. } => node.set_label(*label),
+        Widget::Slider { label, .. }
+        | Widget::Counter { label, .. }
+        | Widget::Select { label, .. } => node.set_label(*label),
         Widget::ProgressBar { .. } => node.set_label("Progress"),
         Widget::Spinner { .. } => node.set_label("Loading"),
         Widget::Toast { message, .. } => node.set_label(*message),
@@ -652,11 +702,36 @@ fn set_widget_label<Msg>(
         Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => {
             node.set_label("Virtual list")
         }
+        Widget::VirtualListWithSelection { selection, .. }
+        | Widget::VirtualListContentWithSelection { selection, .. } => node.set_label(
+            virtual_selection_label(selection, "Virtual list", "Virtual multiselect list"),
+        ),
         Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => {
             node.set_label("Virtual grid")
         }
+        Widget::VirtualGridWithSelection { selection, .. }
+        | Widget::VirtualGridContentWithSelection { selection, .. } => node.set_label(
+            virtual_selection_label(selection, "Virtual grid", "Virtual multiselect grid"),
+        ),
         _ => set_input_value(node, widget, input_states, path),
     }
+}
+
+fn set_multiselectable_if_needed<Msg>(node: &mut Node, selection: &VirtualSelection<'_, Msg>) {
+    if matches!(selection, VirtualSelection::Multiple { .. }) {
+        node.set_multiselectable();
+    }
+}
+
+fn virtual_selection_label<Msg>(
+    selection: &VirtualSelection<'_, Msg>,
+    single_label: &'static str,
+    multiple_label: &'static str,
+) -> &'static str {
+    if matches!(selection, VirtualSelection::Multiple { .. }) {
+        return multiple_label;
+    }
+    single_label
 }
 
 fn set_nonempty_placeholder(node: &mut Node, placeholder: &str) {
@@ -845,6 +920,23 @@ mod tests {
 
         assert_eq!(button.label(), Some("Upload image"));
         assert!(button.supports_action(Action::Click));
+    }
+
+    #[test]
+    fn accessibility_update_exposes_counter_spin_button_metadata() {
+        let widget =
+            Widget::counter(1, 0, 5, 1, |_| (), base_style(160.0, 40.0), "Quantity").with_id(17);
+
+        let update = build_update(&widget);
+        let counter = node_for(&update, Role::SpinButton);
+
+        assert_eq!(counter.label(), Some("Quantity"));
+        assert_eq!(counter.numeric_value(), Some(1.0));
+        assert_eq!(counter.min_numeric_value(), Some(0.0));
+        assert_eq!(counter.max_numeric_value(), Some(5.0));
+        assert_eq!(counter.numeric_value_step(), Some(1.0));
+        assert!(counter.supports_action(Action::Increment));
+        assert!(counter.supports_action(Action::Decrement));
     }
 
     #[test]

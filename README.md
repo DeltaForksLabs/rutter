@@ -62,7 +62,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 ### Widgets
 
 - Text, rich text spans, image, spacer, divider, container, row, and column primitives.
-- Text and rich-content button variants, checkbox, switch, radio, slider, select, progress bar, and spinner.
+- Text and rich-content button variants, checkbox, switch, radio, slider, counter, select, progress bar, and spinner.
 - Text input, search bar, and multiline text area.
 - Scroll view, virtual list, virtual grid, and horizontally virtualized carousel for large item sets.
 - Calendar, date picker, dropdown menu, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
@@ -122,6 +122,7 @@ cargo run -- text_area
 cargo run -- search_bar
 cargo run -- controls
 cargo run -- slider
+cargo run -- counter
 cargo run -- progress
 cargo run -- scroll
 cargo run -- tabs
@@ -387,9 +388,12 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `Switch`
 - `Radio`
 - `Slider`
+- `Counter`
 - `Select`
 
 An open `Select` keeps its trigger in normal layout and renders its options in a dedicated overlay pass. The popup therefore covers later content without moving siblings, opens on the side with more usable space, and constrains long option lists to a viewport-safe window that follows keyboard and mouse-wheel selection.
+
+`Counter` is a controlled signed-integer spin button rendered as `- value +`. It sends `on_change` only when decrement or increment produces a bounded value. With an automatic width, it measures its central value from its character count so the action buttons stay close as the number grows. Use `Widget::counter(value, min, max, step, on_change, style, label)` for direct construction or `Widget::try_counter` to validate the range, value, and step. Keyboard users can adjust it with Arrow keys, Home, End, Page Up, and Page Down; assistive technologies receive a `SpinButton` with increment, decrement, and numeric-range metadata.
 
 `Select` chooses one value. `DropdownMenu` instead exposes commands and optional checkbox/radio state; it does not represent a selected form value.
 
@@ -431,6 +435,27 @@ let widget: Widget<'_, ()> = Widget::rich_text(content, Style::default());
 - `VirtualGridContent`
 
 `VirtualListContent` and `VirtualGridContent` keep row and cell virtualization while allowing each visible item to render arbitrary widget content, including images, icons, and composed layouts.
+
+`VirtualSelection` configures either single selection or controlled multiselection for virtual collections through `virtual_list_with_selection`, `virtual_list_content_with_selection`, `virtual_grid_with_selection`, and `virtual_grid_content_with_selection`. Use `VirtualSelection::multiple(&state.selected, Msg::SelectionChanged)` for file-manager-style selection: a plain click replaces the set, Shift selects a range, and Ctrl (or Command on macOS) toggles an item. Dragging selects a contiguous list range or a rectangular grid region; Ctrl/Command-drag adds that region to the selection. The multiselection callback receives a sorted, unique `Vec<usize>`; store it in application state and supply it again on the next view. Arrow keys replace or extend the selection with Shift, Ctrl/Command+Arrow moves the active item without changing selection, Ctrl/Command+Space toggles the active item, and Ctrl/Command+A selects all items.
+
+```rust
+use rutter::{VirtualSelection, Widget};
+use taffy::prelude::Style;
+
+enum Msg {
+    SelectionChanged(Vec<usize>),
+}
+
+let selected = [0, 2];
+let names = |index| Some(format!("File {index}"));
+let files = Widget::virtual_list_with_selection(
+    32.0,
+    100,
+    &names,
+    VirtualSelection::multiple(&selected, Msg::SelectionChanged),
+    Style::default(),
+);
+```
 
 ### DropdownMenu
 
