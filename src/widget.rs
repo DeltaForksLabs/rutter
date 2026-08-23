@@ -14,6 +14,7 @@ use crate::widget_id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
 use crate::widgets::carousel::CarouselConfig;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
+use crate::widgets::time::{ClockConfig, TimeZone};
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
 /// árvore. IDs manuais seguros devem ser criados com [`WidgetId::manual`].
@@ -335,6 +336,7 @@ pub(crate) enum WidgetIdTag {
     DropdownMenuPopup = 28,
     DropdownMenuItem = 29,
     Counter = 30,
+    Clock = 31,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,6 +375,8 @@ fn hash_widget_id_segment(hash: u64, segment: u64) -> u64 {
     mixed.wrapping_mul(WIDGET_ID_HASH_PRIME)
 }
 
+// Keep public Popover fields unboxed so callers can construct this variant directly.
+#[allow(clippy::large_enum_variant)]
 pub enum Widget<'a, Msg> {
     Column {
         children: Vec<Widget<'a, Msg>>,
@@ -489,6 +493,13 @@ pub enum Widget<'a, Msg> {
         max: i64,
         step: i64,
         on_change: fn(i64) -> Msg,
+        style: Style,
+        label: &'a str,
+    },
+    Clock {
+        id: u64,
+        time_zone: TimeZone,
+        config: ClockConfig,
         style: Style,
         label: &'a str,
     },
@@ -719,6 +730,8 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    // This positional constructor is public API; changing it would be breaking.
+    #[allow(clippy::too_many_arguments)]
     pub fn text_input(
         on_change: fn(String) -> Msg,
         on_submit: Option<Msg>,
@@ -1434,6 +1447,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::SearchBar { id: slot, .. }
             | Self::Slider { id: slot, .. }
             | Self::Counter { id: slot, .. }
+            | Self::Clock { id: slot, .. }
             | Self::Select { id: slot, .. }
             | Self::ProgressBar { id: slot, .. }
             | Self::Spinner { id: slot, .. }
@@ -1514,6 +1528,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::SearchBar { id, .. } => (Some(*id), WidgetIdTag::SearchBar, "SearchBar"),
             Self::Slider { id, .. } => (Some(*id), WidgetIdTag::Slider, "Slider"),
             Self::Counter { id, .. } => (Some(*id), WidgetIdTag::Counter, "Counter"),
+            Self::Clock { id, .. } => (Some(*id), WidgetIdTag::Clock, "Clock"),
             Self::Select { id, .. } => (Some(*id), WidgetIdTag::Select, "Select"),
             Self::ProgressBar { id, .. } => (Some(*id), WidgetIdTag::ProgressBar, "ProgressBar"),
             Self::Spinner { id, .. } => (Some(*id), WidgetIdTag::Spinner, "Spinner"),

@@ -164,20 +164,11 @@ impl ToastState {
 }
 
 /// Estado de um Modal (overlay com backdrop).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ModalState {
     pub visible: bool,
     /// Alpha atual do backdrop (0–255) para fade-in/out.
     pub backdrop_alpha: u8,
-}
-
-impl Default for ModalState {
-    fn default() -> Self {
-        Self {
-            visible: false,
-            backdrop_alpha: 0,
-        }
-    }
 }
 
 impl ModalState {

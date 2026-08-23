@@ -8,3 +8,4 @@ pub mod carousel;
 pub(crate) mod counter;
 pub mod dropdown_menu;
 pub mod rich_text;
+pub mod time;

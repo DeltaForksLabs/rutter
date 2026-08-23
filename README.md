@@ -134,6 +134,7 @@ cargo run -- vgrid
 cargo run -- popover
 cargo run -- dropdown_menu
 cargo run -- calendar
+cargo run -- time
 cargo run -- carousel
 cargo run -- multi_window
 cargo run -- rich_text
@@ -404,6 +405,7 @@ An open `Select` keeps its trigger in normal layout and renders its options in a
 - `Image`
 - `ProgressBar`
 - `Spinner`
+- `Clock`
 
 `RichText` replaces `StrongText` with one accessible text leaf containing inherited span styles for weight, italic slant, underline, size, and color. Skia Paragraph provides matching shaping, wrapping, RTL layout, measurement, and painting.
 See [`docs/RICH_TEXT_MIGRATION.md`](docs/RICH_TEXT_MIGRATION.md) for the 0.19 migration from `StrongText` and exhaustive `Widget`/`RutterContext` matches.
@@ -428,6 +430,7 @@ let widget: Widget<'_, ()> = Widget::rich_text(content, Style::default());
 - `Popover`
 - `Calendar`
 - `DatePicker`
+- `TimePicker`
 - `CarouselView`
 - `VirtualList`
 - `VirtualListContent`
@@ -535,6 +538,39 @@ let calendar = Widget::calendar_with_config(
 
 See `examples/widgets/calendar_demo.rs` or run `cargo run -- calendar` for standalone and popover usage.
 
+### Clock and Time Picker
+
+`Widget::clock` renders the current instant in a `TimeZone` and redraws at each second boundary. `TimeZone::iana` accepts a named IANA zone with daylight-saving rules, while `TimeZone::fixed_offset` creates a fixed offset east of UTC. `ClockFormat` selects 12- or 24-hour notation and whether seconds or the zone name are visible. The clock is exposed as dynamic text to AccessKit.
+
+`Widget::time_picker` composes an anchored `Popover`, bounded `Counter` fields, and a `Select` for IANA timezone choices. It is controlled: keep `open`, `TimeOfDay`, and the selected zone index in application state. Hour, minute, and second callbacks remain separate so an application can choose its own carry and wrapping behavior. `TimePickerConfig::new` validates every zone name and returns a descriptive error instead of accepting an invalid identifier.
+
+```rust
+use rutter::{ClockConfig, ClockFormat, TimeOfDay, TimePickerConfig, TimeZone, Widget};
+use taffy::prelude::Style;
+
+#[derive(Clone)]
+enum Msg { Toggle, Close, Hour(i64), Minute(i64), Second(i64), Zone(usize) }
+
+const ZONES: &[&str] = &["UTC", "America/Sao_Paulo"];
+let selected_time = TimeOfDay::new(9, 30, 0)?;
+let picker_config = TimePickerConfig::new(
+    ZONES, 0, Msg::Toggle, Msg::Close, Msg::Hour, Msg::Minute,
+    Msg::Second, Msg::Zone, "Event time",
+)?;
+let clock: Widget<'_, Msg> = Widget::clock_with_config(
+    TimeZone::UTC,
+    ClockConfig::new(ClockFormat::twelve_hour(), 28.0)?,
+    Style::default(),
+    "Current UTC time",
+);
+let picker = Widget::time_picker(
+    false, selected_time, picker_config, Style::default(), Style::default(),
+);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Resolve a scheduled wall-clock value with `TimeOfDay::resolve(CalendarDate, TimeZone)` and handle `LocalTimeResolution::{Single, Ambiguous, Nonexistent}` explicitly. This prevents daylight-saving gaps and repeated local times from being silently converted to a different instant. See `examples/widgets/time_demo.rs` or run `cargo run -- time` for a live clock and Portuguese picker labels.
+
 ## Rendering Backends
 
 Rutter tries to initialize rendering backends in this order:
@@ -562,8 +598,9 @@ Further performance work is expected as the framework matures.
 
 ```text
 src/
-  calendar/               Gregorian date types and composed calendar widgets
-  carousel/               Carousel configuration, geometry, and runtime state
+  widgets/calendar/       Gregorian date types and composed calendar widgets
+  widgets/carousel/       Carousel configuration, geometry, and runtime state
+  widgets/time/           Timezone-aware clock values and time-picker controls
   app.rs                  AppLogic trait and application contract
   engine/                 Runtime engine, runner, GPU backends, widget state
   input_state.rs          Editable text state and cursor/selection helpers

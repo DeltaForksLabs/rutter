@@ -285,10 +285,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         kind: DropdownMenuEntryKind,
         disabled: bool,
     ) {
-        if kind == DropdownMenuEntryKind::Submenu && !disabled {
-            if let Some(state) = self.dropdown_state_mut(id) {
-                state.expand_submenu(path.clone(), None);
-            }
+        if kind == DropdownMenuEntryKind::Submenu
+            && !disabled
+            && let Some(state) = self.dropdown_state_mut(id)
+        {
+            state.expand_submenu(path.clone(), None);
         }
         self.focus_dropdown_path(id, path);
     }

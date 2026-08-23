@@ -25,9 +25,9 @@ pub struct TabDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    ThemeChanged(ExampleTheme),
-    Tab3Changed(usize),
-    Tab5Changed(usize),
+    Theme(ExampleTheme),
+    Tab3(usize),
+    Tab5(usize),
 }
 
 pub struct TabDemo;
@@ -71,13 +71,13 @@ impl AppLogic for TabDemo {
         Widget::Column {
             style: root,
             children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
+                example_theme_selector(s.theme, Msg::Theme),
                 // ── TabBar de 3 abas ─────────────────────────────────
                 Widget::TabBar {
                     id: 50,
                     tabs: TABS_3,
                     active: s.active3,
-                    on_change: Msg::Tab3Changed,
+                    on_change: Msg::Tab3,
                     style: tab_s.clone(),
                 },
                 Widget::Column {
@@ -103,7 +103,7 @@ impl AppLogic for TabDemo {
                     id: 51,
                     tabs: TABS_5,
                     active: s.active5,
-                    on_change: Msg::Tab5Changed,
+                    on_change: Msg::Tab5,
                     style: tab_s,
                 },
                 Widget::Column {
@@ -121,9 +121,9 @@ impl AppLogic for TabDemo {
 
     fn update(s: &mut TabDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
-            Msg::ThemeChanged(theme) => s.theme = theme,
-            Msg::Tab3Changed(i) => s.active3 = i,
-            Msg::Tab5Changed(i) => s.active5 = i,
+            Msg::Theme(theme) => s.theme = theme,
+            Msg::Tab3(i) => s.active3 = i,
+            Msg::Tab5(i) => s.active5 = i,
         }
     }
 

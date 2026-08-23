@@ -19,6 +19,7 @@ use crate::render::select_overlay::collector::{
 };
 use crate::widget::{DialogAction, VirtualSelection, Widget};
 use crate::widget_id::resolve_accessibility_path_id;
+use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
 
 mod action_queue;
 mod dropdown_menu;
@@ -147,11 +148,11 @@ impl<'a> AccessibilityBuilder<'a> {
             .focused_widget_id
             .map(access_node_id)
             .unwrap_or(root);
-        self.nodes
-            .iter()
-            .any(|(id, _)| *id == candidate)
-            .then_some(candidate)
-            .unwrap_or(root)
+        if self.nodes.iter().any(|(id, _)| *id == candidate) {
+            candidate
+        } else {
+            root
+        }
     }
 
     fn collect<Msg>(
@@ -479,6 +480,7 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         Widget::Radio { .. } => Role::RadioButton,
         Widget::Slider { .. } => Role::Slider,
         Widget::Counter { .. } => Role::SpinButton,
+        Widget::Clock { .. } => Role::TextRun,
         Widget::Select { .. } => Role::ComboBox,
         Widget::ProgressBar { .. } | Widget::Spinner { .. } => Role::ProgressIndicator,
         Widget::TabBar { .. } => Role::TabList,
@@ -695,6 +697,12 @@ fn set_widget_label<Msg>(
         Widget::Slider { label, .. }
         | Widget::Counter { label, .. }
         | Widget::Select { label, .. } => node.set_label(*label),
+        Widget::Clock {
+            label,
+            time_zone,
+            config,
+            ..
+        } => set_clock_label(node, label, *time_zone, config.format()),
         Widget::ProgressBar { .. } => node.set_label("Progress"),
         Widget::Spinner { .. } => node.set_label("Loading"),
         Widget::Toast { message, .. } => node.set_label(*message),
@@ -715,6 +723,15 @@ fn set_widget_label<Msg>(
         ),
         _ => set_input_value(node, widget, input_states, path),
     }
+}
+
+fn set_clock_label(node: &mut Node, label: &str, time_zone: TimeZone, format: ClockFormat) {
+    let clock_text = current_clock_text(time_zone, format);
+    if label.is_empty() {
+        node.set_label(clock_text);
+        return;
+    }
+    node.set_label(format!("{label}: {clock_text}"));
 }
 
 fn set_multiselectable_if_needed<Msg>(node: &mut Node, selection: &VirtualSelection<'_, Msg>) {
@@ -937,6 +954,23 @@ mod tests {
         assert_eq!(counter.numeric_value_step(), Some(1.0));
         assert!(counter.supports_action(Action::Increment));
         assert!(counter.supports_action(Action::Decrement));
+    }
+
+    #[test]
+    fn accessibility_update_exposes_current_clock_text() {
+        let widget = Widget::clock(
+            crate::TimeZone::UTC,
+            base_style(240.0, 40.0),
+            "Current UTC time",
+        )
+        .with_id(18);
+
+        let update = build_update(&widget);
+        let clock = node_for(&update, Role::TextRun);
+        let label = clock.label().unwrap();
+
+        assert!(label.starts_with("Current UTC time: "));
+        assert!(label.ends_with(" UTC"));
     }
 
     #[test]

@@ -80,6 +80,10 @@ pub enum HitResult<Msg> {
     },
 }
 
+pub type InputChangeCallback<Msg> = fn(String) -> Msg;
+pub type InputCallbacks<Msg> = (InputChangeCallback<Msg>, Option<Msg>);
+pub type InputProperties<Msg> = (InputChangeCallback<Msg>, Option<Msg>, bool, bool);
+
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollbarDragHit {
     pub id: u64,
@@ -190,7 +194,13 @@ pub(crate) fn dialog_card_rect(position: DialogPosition, viewport_size: (f32, f3
 }
 
 pub(crate) fn modal_card_rect(content_height: f32, viewport_size: (f32, f32)) -> SkiaRect {
-    let width = (viewport_size.0 * 0.85).min(MODAL_MAX_CARD_W).max(1.0);
+    let requested_width = viewport_size.0 * 0.85;
+    let width = if requested_width.is_nan() {
+        // Preserve the previous min/max fallback for malformed viewport widths.
+        MODAL_MAX_CARD_W
+    } else {
+        requested_width.clamp(1.0, MODAL_MAX_CARD_W)
+    };
     let height = content_height
         .max(MODAL_MIN_CARD_H)
         .min((viewport_size.1 * 0.9).max(1.0));
@@ -235,39 +245,39 @@ fn hit_test_context_menu_overlay_impl<Msg: Clone>(
             let menu_state = widget_states
                 .get(&resolved_id)
                 .and_then(|s| s.as_context_menu());
-            if let Some(state) = menu_state {
-                if state.is_open {
-                    *any_open = true;
-                    let rect = context_menu_rect(
-                        entries,
-                        Point::new(state.anchor_x, state.anchor_y),
-                        viewport_size,
-                        font_size,
-                    );
-                    if rect.contains(mouse) {
-                        let mut y = rect.top + CONTEXT_MENU_PAD_Y;
-                        for entry in entries.iter() {
-                            let item_h = match entry {
-                                ContextMenuEntry::Item { .. } => CONTEXT_MENU_ITEM_H,
-                                ContextMenuEntry::Separator => CONTEXT_MENU_SEPARATOR_H,
+            if let Some(state) = menu_state
+                && state.is_open
+            {
+                *any_open = true;
+                let rect = context_menu_rect(
+                    entries,
+                    Point::new(state.anchor_x, state.anchor_y),
+                    viewport_size,
+                    font_size,
+                );
+                if rect.contains(mouse) {
+                    let mut y = rect.top + CONTEXT_MENU_PAD_Y;
+                    for entry in entries.iter() {
+                        let item_h = match entry {
+                            ContextMenuEntry::Item { .. } => CONTEXT_MENU_ITEM_H,
+                            ContextMenuEntry::Separator => CONTEXT_MENU_SEPARATOR_H,
+                        };
+                        let item_rect = SkiaRect::from_xywh(rect.left, y, rect.width(), item_h);
+                        if item_rect.contains(mouse) {
+                            return match entry {
+                                ContextMenuEntry::Item {
+                                    on_select: Some(msg),
+                                    ..
+                                } => Some(ContextMenuOverlayHit::Item {
+                                    id: resolved_id,
+                                    msg: msg.clone(),
+                                }),
+                                _ => Some(ContextMenuOverlayHit::Consume),
                             };
-                            let item_rect = SkiaRect::from_xywh(rect.left, y, rect.width(), item_h);
-                            if item_rect.contains(mouse) {
-                                return match entry {
-                                    ContextMenuEntry::Item {
-                                        on_select: Some(msg),
-                                        ..
-                                    } => Some(ContextMenuOverlayHit::Item {
-                                        id: resolved_id,
-                                        msg: msg.clone(),
-                                    }),
-                                    _ => Some(ContextMenuOverlayHit::Consume),
-                                };
-                            }
-                            y += item_h;
                         }
-                        return Some(ContextMenuOverlayHit::Consume);
+                        y += item_h;
                     }
+                    return Some(ContextMenuOverlayHit::Consume);
                 }
             }
             path.push(0);
@@ -413,62 +423,62 @@ fn hit_test_popover_overlay_impl<Msg: Clone>(
             let popover = widget_states
                 .get(&resolved_id)
                 .and_then(|state| state.as_popover());
-            if let Some(popover) = popover {
-                if popover.is_open {
-                    *any_open = true;
-                    if let Some(popup_node) = node_children.get(1).copied() {
-                        if let Ok(popup_layout) = taffy.layout(popup_node) {
-                            let anchor_rect = SkiaRect::from_xywh(
-                                popover.anchor_x,
-                                popover.anchor_y,
-                                popover.anchor_w,
-                                popover.anchor_h,
-                            );
-                            let rect = popover_rect(
-                                anchor_rect,
-                                (popup_layout.size.width, popup_layout.size.height),
+            if let Some(popover) = popover
+                && popover.is_open
+            {
+                *any_open = true;
+                if let Some(popup_node) = node_children.get(1).copied()
+                    && let Ok(popup_layout) = taffy.layout(popup_node)
+                {
+                    let anchor_rect = SkiaRect::from_xywh(
+                        popover.anchor_x,
+                        popover.anchor_y,
+                        popover.anchor_w,
+                        popover.anchor_h,
+                    );
+                    let rect = popover_rect(
+                        anchor_rect,
+                        (popup_layout.size.width, popup_layout.size.height),
+                        viewport_size,
+                    );
+                    if rect.contains(mouse) {
+                        if let Some(content_node) = taffy
+                            .children(popup_node)
+                            .ok()
+                            .and_then(|ids| ids.first().copied())
+                        {
+                            path.push(1);
+                            let nested = hit_test_popover_overlay_impl(
+                                content,
+                                taffy,
+                                content_node,
+                                mouse,
+                                Point::new(rect.left, rect.top),
                                 viewport_size,
+                                widget_states,
+                                path,
+                                any_open,
                             );
-                            if rect.contains(mouse) {
-                                if let Some(content_node) = taffy
-                                    .children(popup_node)
-                                    .ok()
-                                    .and_then(|ids| ids.first().copied())
-                                {
-                                    path.push(1);
-                                    let nested = hit_test_popover_overlay_impl(
-                                        content,
-                                        taffy,
-                                        content_node,
-                                        mouse,
-                                        Point::new(rect.left, rect.top),
-                                        viewport_size,
-                                        widget_states,
-                                        path,
-                                        any_open,
-                                    );
-                                    if nested.is_some() {
-                                        path.pop();
-                                        return nested;
-                                    }
-                                    let content_hit = hit_test_impl(
-                                        content,
-                                        taffy,
-                                        content_node,
-                                        mouse,
-                                        Point::new(rect.left, rect.top),
-                                        widget_states,
-                                        path,
-                                    );
-                                    path.pop();
-                                    return Some(match content_hit {
-                                        Some(hit) => PopoverOverlayHit::Content(hit),
-                                        None => PopoverOverlayHit::Consume,
-                                    });
-                                }
-                                return Some(PopoverOverlayHit::Consume);
+                            if nested.is_some() {
+                                path.pop();
+                                return nested;
                             }
+                            let content_hit = hit_test_impl(
+                                content,
+                                taffy,
+                                content_node,
+                                mouse,
+                                Point::new(rect.left, rect.top),
+                                widget_states,
+                                path,
+                            );
+                            path.pop();
+                            return Some(match content_hit {
+                                Some(hit) => PopoverOverlayHit::Content(hit),
+                                None => PopoverOverlayHit::Consume,
+                            });
                         }
+                        return Some(PopoverOverlayHit::Consume);
                     }
                 }
             }
@@ -715,9 +725,7 @@ fn hit_test_impl<Msg: Clone>(
         }
         Widget::Popover { anchor, .. } => {
             let ids = taffy.children(node_id).unwrap();
-            let Some(anchor_node) = ids.first().copied() else {
-                return None;
-            };
+            let anchor_node = ids.first().copied()?;
             path.push(0);
             let result = hit_test_impl(
                 anchor,
@@ -1191,14 +1199,14 @@ fn collect_stateful_ids_impl<Msg>(
 pub fn find_input_callbacks<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
-) -> Option<(fn(String) -> Msg, Option<Msg>)> {
+) -> Option<InputCallbacks<Msg>> {
     find_input_props(widget, target_id).map(|(cb, submit, _, _)| (cb, submit))
 }
 
 pub fn find_input_props<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
-) -> Option<(fn(String) -> Msg, Option<Msg>, bool, bool)> {
+) -> Option<InputProperties<Msg>> {
     let mut path = Vec::new();
     find_input_props_impl(widget, target_id, &mut path)
 }
@@ -1207,7 +1215,7 @@ fn find_input_props_impl<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
     path: &mut Vec<usize>,
-) -> Option<(fn(String) -> Msg, Option<Msg>, bool, bool)> {
+) -> Option<InputProperties<Msg>> {
     match widget {
         Widget::TextInput {
             on_change,
@@ -1620,20 +1628,18 @@ fn find_input_geometry_impl<Msg>(
                     return result;
                 }
             }
-            if *open {
-                if let Some(popup_node) = ids.get(1).copied() {
-                    if let Some(content_node) = taffy
-                        .children(popup_node)
-                        .ok()
-                        .and_then(|ids| ids.first().copied())
-                    {
-                        path.push(1);
-                        let result =
-                            find_input_geometry_impl(content, taffy, content_node, target_id, path);
-                        path.pop();
-                        return result;
-                    }
-                }
+            if *open
+                && let Some(popup_node) = ids.get(1).copied()
+                && let Some(content_node) = taffy
+                    .children(popup_node)
+                    .ok()
+                    .and_then(|ids| ids.first().copied())
+            {
+                path.push(1);
+                let result =
+                    find_input_geometry_impl(content, taffy, content_node, target_id, path);
+                path.pop();
+                return result;
             }
             None
         }

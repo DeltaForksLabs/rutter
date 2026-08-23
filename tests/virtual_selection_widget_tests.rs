@@ -24,7 +24,7 @@ fn typed_selection_keeps_single_and_multiple_callback_contracts_distinct() {
     assert!(matches!(
         multiple,
         VirtualSelection::Multiple { selected, on_change }
-            if selected == &[3, 1] && on_change(vec![1, 3]) == Msg::Multiple(vec![1, 3])
+            if selected == [3, 1] && on_change(vec![1, 3]) == Msg::Multiple(vec![1, 3])
     ));
 }
 
@@ -76,7 +76,7 @@ fn configured_content_list_retains_multiselection_callback() {
     };
     assert!(matches!(
         selection,
-        VirtualSelection::Multiple { selected, .. } if selected == &[1, 2]
+        VirtualSelection::Multiple { selected, .. } if selected == [1, 2]
     ));
 }
 

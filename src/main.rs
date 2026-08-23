@@ -19,6 +19,7 @@
 //   cargo run -- vgrid
 //   cargo run -- popover
 //   cargo run -- calendar
+//   cargo run -- time
 //   cargo run -- carousel
 //   cargo run -- multi_window
 //   cargo run -- rich_text
@@ -47,6 +48,7 @@ fn main() {
         "modal_toast" => widget_examples::modal_toast_demo::run(),
         "popover" => widget_examples::popover_demo::run(),
         "calendar" => widget_examples::calendar_demo::run(),
+        "time" => widget_examples::time_demo::run(),
         "carousel" => widget_examples::carousel_demo::run(),
         "multi_window" => widget_examples::multi_window_demo::run(),
         "rich_text" => widget_examples::rich_text_demo::run(),

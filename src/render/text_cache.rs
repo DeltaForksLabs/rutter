@@ -184,6 +184,11 @@ impl TextBufferCache {
         self.entries.len()
     }
 
+    /// Returns whether the persistent cache has no shaped entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Returns the effective cache limits after hard-cap clamping.
     ///
     /// ```

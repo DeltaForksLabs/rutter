@@ -10,7 +10,8 @@ use super::{
     multi_window_demo::MultiWindowDemo, popover_demo::PopoverDemo, progress_demo::ProgressDemo,
     rich_text_demo::RichTextDemo, scroll_demo::ScrollDemo, search_bar_demo::SearchBarDemo,
     slider_demo::SliderDemo, tab_demo::TabDemo, text_area_demo::TextAreaDemo,
-    text_input_demo::TextInputDemo, vgrid_demo::VGridDemo, vlist_demo::VListDemo,
+    text_input_demo::TextInputDemo, time_demo::TimeDemo, vgrid_demo::VGridDemo,
+    vlist_demo::VListDemo,
 };
 
 #[test]
@@ -44,6 +45,7 @@ fn input_and_virtual_examples_start_dark_with_theme_selectors() {
     assert_single_window_theme::<TabDemo>();
     assert_single_window_theme::<TextAreaDemo>();
     assert_single_window_theme::<TextInputDemo>();
+    assert_single_window_theme::<TimeDemo>();
     assert_single_window_theme::<VGridDemo>();
     assert_single_window_theme::<VListDemo>();
 }

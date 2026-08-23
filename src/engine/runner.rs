@@ -7,7 +7,7 @@
 
 use std::{
     collections::HashMap,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use cosmic_text::{Action, Edit, FontSystem, Motion};
@@ -70,7 +70,7 @@ fn skip_ansi_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     match chars.peek().copied() {
         Some('[') => {
             chars.next();
-            while let Some(ch) = chars.next() {
+            for ch in chars.by_ref() {
                 if ('@'..='~').contains(&ch) {
                     break;
                 }
@@ -79,7 +79,7 @@ fn skip_ansi_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
         Some(']') => {
             chars.next();
             let mut saw_escape = false;
-            while let Some(ch) = chars.next() {
+            for ch in chars.by_ref() {
                 if ch == '\u{0007}' {
                     break;
                 }
@@ -324,7 +324,7 @@ fn input_copy_is_blocked<Msg: Clone>(
 
 pub fn snap_to_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
     if !value.is_finite() || !min.is_finite() || !max.is_finite() || min > max {
-        return min.is_finite().then_some(min).unwrap_or(0.0);
+        return if min.is_finite() { min } else { 0.0 };
     }
     if !step.is_finite() || step <= 0.0 {
         return value.clamp(min, max);
@@ -424,6 +424,18 @@ fn apply_scrollbar_drag_offset(widget_state: &mut WidgetState, offset: f32) {
     }
 }
 
+fn clock_tick_delay(nanoseconds: u32) -> Duration {
+    Duration::from_secs(1).saturating_sub(Duration::from_nanos(u64::from(nanoseconds)))
+}
+
+fn next_clock_tick_at() -> Instant {
+    let nanoseconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos())
+        .unwrap_or(0);
+    Instant::now() + clock_tick_delay(nanoseconds)
+}
+
 #[derive(Debug, Clone)]
 struct ScrollDrag {
     id: u64,
@@ -462,6 +474,7 @@ pub struct RutterRunner<A: AppLogic> {
     last_click_time: std::time::Instant,
     last_click_pos: Point,
     focused_input_rect: Option<SkiaRect>,
+    clock_redraw_at: Option<Instant>,
     fatal_error: Option<RutterRunError>,
 }
 
@@ -478,6 +491,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             last_click_time: Instant::now(),
             last_click_pos: Point::new(0.0, 0.0),
             focused_input_rect: None,
+            clock_redraw_at: None,
             fatal_error: None,
         }
     }
@@ -565,13 +579,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         }
         match event {
             WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::Resized(size) => {
-                if size.width > 0 && size.height > 0 {
-                    if let Err(error) = self.engine.handle_resize(size) {
-                        self.terminate_for_error(el, error.into());
-                    }
-                    self.redraw();
+            WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
+                if let Err(error) = self.engine.handle_resize(size) {
+                    self.terminate_for_error(el, error.into());
                 }
+                self.redraw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.engine.update_scale(scale_factor);
@@ -619,28 +631,28 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             return;
                         }
                     }
-                    if let Some(fid) = self.engine.focused_input_id() {
-                        if let Some(rect) = self.focused_input_rect {
-                            let local_x = self.cursor_pos.x / self.engine.scale_factor - rect.left;
-                            let local_y = self.cursor_pos.y / self.engine.scale_factor - rect.top;
-                            let theme = A::theme_for(&self.engine.app_state);
-                            let pad_x = theme.spacing * 2.0;
-                            let pad_y = theme.spacing;
-                            if let Some(ist) = self.engine.input_states.get_mut(&fid) {
-                                let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
-                                let click_y = ((local_y - pad_y) + ist.scroll_y).max(0.0);
-                                let mut fs = self.engine.font_system.borrow_mut();
-                                ist.editor.action(
-                                    &mut fs,
-                                    Action::Drag {
-                                        x: click_x as i32,
-                                        y: click_y as i32,
-                                    },
-                                );
-                                ist.normalize_cursor();
-                                ist.sync_selection();
-                                self.redraw();
-                            }
+                    if let Some(fid) = self.engine.focused_input_id()
+                        && let Some(rect) = self.focused_input_rect
+                    {
+                        let local_x = self.cursor_pos.x / self.engine.scale_factor - rect.left;
+                        let local_y = self.cursor_pos.y / self.engine.scale_factor - rect.top;
+                        let theme = A::theme_for(&self.engine.app_state);
+                        let pad_x = theme.spacing * 2.0;
+                        let pad_y = theme.spacing;
+                        if let Some(ist) = self.engine.input_states.get_mut(&fid) {
+                            let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
+                            let click_y = ((local_y - pad_y) + ist.scroll_y).max(0.0);
+                            let mut fs = self.engine.font_system.borrow_mut();
+                            ist.editor.action(
+                                &mut fs,
+                                Action::Drag {
+                                    x: click_x as i32,
+                                    y: click_y as i32,
+                                },
+                            );
+                            ist.normalize_cursor();
+                            ist.sync_selection();
+                            self.redraw();
                         }
                     }
                 }
@@ -911,12 +923,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     return;
                 }
 
-                if button == MouseButton::Left {
-                    if let Some(hit) = scroll_drag_hit {
-                        self.close_all_selects();
-                        self.begin_scroll_drag(hit);
-                        return;
-                    }
+                if button == MouseButton::Left
+                    && let Some(hit) = scroll_drag_hit
+                {
+                    self.close_all_selects();
+                    self.begin_scroll_drag(hit);
+                    return;
                 }
 
                 self.engine.active_scroll_id = active_scroll_id;
@@ -969,12 +981,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             if button == winit::event::MouseButton::Left {
                                 self.focus_widget(Some(id));
                                 self.engine.drag_slider_id = Some(id);
-                                if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                    if let Some(s) = ws.as_slider_mut() {
-                                        s.dragging = true;
-                                        s.track_abs_x = abs_track_x;
-                                        s.track_width = track_w;
-                                    }
+                                if let Some(ws) = self.engine.widget_states.get_mut(&id)
+                                    && let Some(s) = ws.as_slider_mut()
+                                {
+                                    s.dragging = true;
+                                    s.track_abs_x = abs_track_x;
+                                    s.track_width = track_w;
                                 }
                                 let norm = ((cursor_x - abs_track_x) / track_w).clamp(0.0, 1.0);
                                 let val = snap_to_step(min + norm * (max - min), min, max, step);
@@ -1009,10 +1021,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         HitResult::SelectToggle(id) => {
                             if button == winit::event::MouseButton::Left {
                                 self.focus_widget(Some(id));
-                                if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                    if let Some(s) = ws.as_select_mut() {
-                                        s.is_open = !select_was_open;
-                                    }
+                                if let Some(ws) = self.engine.widget_states.get_mut(&id)
+                                    && let Some(s) = ws.as_select_mut()
+                                {
+                                    s.is_open = !select_was_open;
                                 }
                                 self.engine.layout_dirty = true;
                             }
@@ -1025,10 +1037,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         HitResult::SelectOption { id, index } => {
                             if button == winit::event::MouseButton::Left {
                                 self.focus_widget(Some(id));
-                                if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                    if let Some(s) = ws.as_select_mut() {
-                                        s.is_open = false;
-                                    }
+                                if let Some(ws) = self.engine.widget_states.get_mut(&id)
+                                    && let Some(s) = ws.as_select_mut()
+                                {
+                                    s.is_open = false;
                                 }
                                 let select = self.engine.runtime_caches.selects.get(&id).cloned();
                                 if let Some(select) = select {
@@ -1056,10 +1068,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         }
                         HitResult::ModalDismiss(id) => {
                             if button == winit::event::MouseButton::Left {
-                                if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                    if let Some(m) = ws.as_modal_mut() {
-                                        m.close();
-                                    }
+                                if let Some(ws) = self.engine.widget_states.get_mut(&id)
+                                    && let Some(m) = ws.as_modal_mut()
+                                {
+                                    m.close();
                                 }
                                 self.engine.layout_dirty = true;
                             }
@@ -1075,10 +1087,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 if is_multi_selection {
                                     self.select_virtual_multi_item(id, index);
                                 } else {
-                                    if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                        if let Some(vl) = ws.as_vlist_mut() {
-                                            vl.selected_row = Some(index);
-                                        }
+                                    if let Some(ws) = self.engine.widget_states.get_mut(&id)
+                                        && let Some(vl) = ws.as_vlist_mut()
+                                    {
+                                        vl.selected_row = Some(index);
                                     }
                                     let cb = self
                                         .engine
@@ -1109,10 +1121,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 if is_multi_selection {
                                     self.select_virtual_multi_item(id, index);
                                 } else {
-                                    if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                                        if let Some(grid) = ws.as_vgrid_mut() {
-                                            grid.selected_item = Some(index);
-                                        }
+                                    if let Some(ws) = self.engine.widget_states.get_mut(&id)
+                                        && let Some(grid) = ws.as_vgrid_mut()
+                                    {
+                                        grid.selected_item = Some(index);
                                     }
                                     let cb = self
                                         .engine
@@ -1155,12 +1167,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 if self.scroll_drag.take().is_some() {
                     self.redraw();
                 }
-                if let Some(sid) = self.engine.drag_slider_id.take() {
-                    if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                        if let Some(s) = ws.as_slider_mut() {
-                            s.dragging = false;
-                        }
-                    }
+                if let Some(sid) = self.engine.drag_slider_id.take()
+                    && let Some(ws) = self.engine.widget_states.get_mut(&sid)
+                    && let Some(s) = ws.as_slider_mut()
+                {
+                    s.dragging = false;
                     self.redraw();
                 }
             }
@@ -1191,14 +1202,14 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.redraw();
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if !self.handle_text_commit(&event) {
-                    self.handle_key(&event.logical_key, event.repeat);
-                }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && !self.handle_text_commit(&event) =>
+            {
+                self.handle_key(&event.logical_key, event.repeat);
             }
             WindowEvent::RedrawRequested => {
                 if let Err(error) = self.engine.try_redraw(self.cursor_pos) {
-                    self.terminate_for_error(el, error.into());
+                    self.terminate_for_error(el, error);
                 }
             }
             _ => {}
@@ -1249,6 +1260,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.end_virtual_multi_pointer_capture();
         self.mouse_down = false;
         self.focused_input_rect = None;
+        self.clock_redraw_at = None;
         self.engine.release_surface();
     }
 
@@ -1282,7 +1294,27 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.redraw();
             return Some(Instant::now() + Duration::from_millis(16));
         }
-        self.focused_input_deadline()
+        let clock_deadline = self.live_clock_deadline();
+        clock_deadline
+            .into_iter()
+            .chain(self.focused_input_deadline())
+            .min()
+    }
+
+    fn live_clock_deadline(&mut self) -> Option<Instant> {
+        if !self.engine.has_live_clock {
+            self.clock_redraw_at = None;
+            return None;
+        }
+        let deadline = self.clock_redraw_at.unwrap_or_else(next_clock_tick_at);
+        if Instant::now() < deadline {
+            self.clock_redraw_at = Some(deadline);
+            return Some(deadline);
+        }
+        self.redraw();
+        let next_deadline = next_clock_tick_at();
+        self.clock_redraw_at = Some(next_deadline);
+        Some(next_deadline)
     }
 
     fn expire_timed_toasts(&mut self) -> bool {
@@ -1457,10 +1489,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.close_all_selects();
         }
 
-        if let Some(previous_input) = self.engine.focused_input_id() {
-            if let Some(state) = self.engine.input_states.get_mut(&previous_input) {
-                state.snapshot();
-            }
+        if let Some(previous_input) = self.engine.focused_input_id()
+            && let Some(state) = self.engine.input_states.get_mut(&previous_input)
+        {
+            state.snapshot();
         }
 
         self.engine.focused_widget_id = focus_id;
@@ -1816,61 +1848,61 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return true;
         }
 
-        if let Some(msg) = self.engine.runtime_caches.buttons.get(&fid).cloned() {
-            if is_activation_key(key) {
-                A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
-                self.engine.layout_dirty = true;
-                self.redraw();
-                return true;
-            }
+        if let Some(msg) = self.engine.runtime_caches.buttons.get(&fid).cloned()
+            && is_activation_key(key)
+        {
+            A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
+            self.engine.layout_dirty = true;
+            self.redraw();
+            return true;
         }
 
-        if let Some(toggle) = self.engine.runtime_caches.checkboxes.get(&fid).cloned() {
-            if is_activation_key(key) {
-                A::update(
-                    &mut self.engine.app_state,
-                    (toggle.on_change)(!toggle.checked),
-                    &mut self.engine.clipboard,
-                );
-                self.engine.layout_dirty = true;
-                self.redraw();
-                return true;
-            }
+        if let Some(toggle) = self.engine.runtime_caches.checkboxes.get(&fid).cloned()
+            && is_activation_key(key)
+        {
+            A::update(
+                &mut self.engine.app_state,
+                (toggle.on_change)(!toggle.checked),
+                &mut self.engine.clipboard,
+            );
+            self.engine.layout_dirty = true;
+            self.redraw();
+            return true;
         }
 
-        if let Some(toggle) = self.engine.runtime_caches.switches.get(&fid).cloned() {
-            if is_activation_key(key) {
-                A::update(
-                    &mut self.engine.app_state,
-                    (toggle.on_change)(!toggle.checked),
-                    &mut self.engine.clipboard,
-                );
-                self.engine.layout_dirty = true;
-                self.redraw();
-                return true;
-            }
+        if let Some(toggle) = self.engine.runtime_caches.switches.get(&fid).cloned()
+            && is_activation_key(key)
+        {
+            A::update(
+                &mut self.engine.app_state,
+                (toggle.on_change)(!toggle.checked),
+                &mut self.engine.clipboard,
+            );
+            self.engine.layout_dirty = true;
+            self.redraw();
+            return true;
         }
 
-        if let Some(on_select) = self.engine.runtime_caches.radios.get(&fid).copied() {
-            if is_activation_key(key) {
-                A::update(
-                    &mut self.engine.app_state,
-                    on_select(),
-                    &mut self.engine.clipboard,
-                );
-                self.engine.layout_dirty = true;
-                self.redraw();
-                return true;
-            }
+        if let Some(on_select) = self.engine.runtime_caches.radios.get(&fid).copied()
+            && is_activation_key(key)
+        {
+            A::update(
+                &mut self.engine.app_state,
+                on_select(),
+                &mut self.engine.clipboard,
+            );
+            self.engine.layout_dirty = true;
+            self.redraw();
+            return true;
         }
 
-        if let Some(msg) = self.engine.runtime_caches.accordions.get(&fid).cloned() {
-            if is_activation_key(key) {
-                A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
-                self.engine.layout_dirty = true;
-                self.redraw();
-                return true;
-            }
+        if let Some(msg) = self.engine.runtime_caches.accordions.get(&fid).cloned()
+            && is_activation_key(key)
+        {
+            A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
+            self.engine.layout_dirty = true;
+            self.redraw();
+            return true;
         }
 
         if let Some(slider) = self.engine.runtime_caches.sliders.get(&fid).cloned() {
@@ -1915,11 +1947,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     .and_then(WidgetState::as_select)
                     .is_some_and(|state| state.is_open);
                 self.close_all_selects();
-                if let Some(ws) = self.engine.widget_states.get_mut(&fid) {
-                    if let Some(state) = ws.as_select_mut() {
-                        state.is_open = !was_open;
-                        dirty = true;
-                    }
+                if let Some(ws) = self.engine.widget_states.get_mut(&fid)
+                    && let Some(state) = ws.as_select_mut()
+                {
+                    state.is_open = !was_open;
+                    dirty = true;
                 }
                 if dirty {
                     self.engine.layout_dirty = true;
@@ -1941,10 +1973,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     _ => None,
                 };
                 if let Some(next_index) = next_index {
-                    if let Some(ws) = self.engine.widget_states.get_mut(&fid) {
-                        if let Some(state) = ws.as_select_mut() {
-                            state.hovered_option = Some(next_index);
-                        }
+                    if let Some(ws) = self.engine.widget_states.get_mut(&fid)
+                        && let Some(state) = ws.as_select_mut()
+                    {
+                        state.hovered_option = Some(next_index);
                     }
                     A::update(
                         &mut self.engine.app_state,
@@ -1958,34 +1990,32 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             }
         }
 
-        if let Some(tab_item) = self.engine.runtime_caches.tab_items.get(&fid).cloned() {
-            if let Some(tab) = self
+        if let Some(tab_item) = self.engine.runtime_caches.tab_items.get(&fid).cloned()
+            && let Some(tab) = self
                 .engine
                 .runtime_caches
                 .tabs
                 .get(&tab_item.parent_id)
                 .cloned()
-            {
-                if tab.tab_count > 0 {
-                    let next_index = match key {
-                        Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
-                            Some(tab_item.index.saturating_sub(1))
-                        }
-                        Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => {
-                            Some((tab_item.index + 1).min(tab.tab_count - 1))
-                        }
-                        Key::Named(NamedKey::Home) => Some(0),
-                        Key::Named(NamedKey::End) => Some(tab.tab_count - 1),
-                        _ if is_activation_key(key) => Some(tab_item.index),
-                        _ => None,
-                    };
-                    if let Some(next_index) = next_index {
-                        let next_focus_id = tab.focus_ids.get(next_index).copied().unwrap_or(fid);
-                        self.activate_tab_item(tab_item.parent_id, next_index, next_focus_id);
-                        self.redraw();
-                        return true;
-                    }
+            && tab.tab_count > 0
+        {
+            let next_index = match key {
+                Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
+                    Some(tab_item.index.saturating_sub(1))
                 }
+                Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => {
+                    Some((tab_item.index + 1).min(tab.tab_count - 1))
+                }
+                Key::Named(NamedKey::Home) => Some(0),
+                Key::Named(NamedKey::End) => Some(tab.tab_count - 1),
+                _ if is_activation_key(key) => Some(tab_item.index),
+                _ => None,
+            };
+            if let Some(next_index) = next_index {
+                let next_focus_id = tab.focus_ids.get(next_index).copied().unwrap_or(fid);
+                self.activate_tab_item(tab_item.parent_id, next_index, next_focus_id);
+                self.redraw();
+                return true;
             }
         }
 
@@ -1996,25 +2026,25 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(vlist) = self.engine.runtime_caches.vlists.get(&fid).cloned() {
             match key {
                 Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
-                    if let Some(ws) = self.engine.widget_states.get_mut(&fid) {
-                        if let Some(state) = ws.as_vlist_mut() {
-                            let current = state.selected_row.unwrap_or(0);
-                            let next = if matches!(key, Key::Named(NamedKey::ArrowDown)) {
-                                (current + 1).min(vlist.item_count.saturating_sub(1))
-                            } else {
-                                current.saturating_sub(1)
-                            };
-                            state.selected_row = Some(next);
-                            state.scroll_to_index(next, vlist.item_height, vlist.item_count);
-                            A::update(
-                                &mut self.engine.app_state,
-                                (vlist.on_select)(next),
-                                &mut self.engine.clipboard,
-                            );
-                            self.engine.layout_dirty = true;
-                            self.redraw();
-                            return true;
-                        }
+                    if let Some(ws) = self.engine.widget_states.get_mut(&fid)
+                        && let Some(state) = ws.as_vlist_mut()
+                    {
+                        let current = state.selected_row.unwrap_or(0);
+                        let next = if matches!(key, Key::Named(NamedKey::ArrowDown)) {
+                            (current + 1).min(vlist.item_count.saturating_sub(1))
+                        } else {
+                            current.saturating_sub(1)
+                        };
+                        state.selected_row = Some(next);
+                        state.scroll_to_index(next, vlist.item_height, vlist.item_count);
+                        A::update(
+                            &mut self.engine.app_state,
+                            (vlist.on_select)(next),
+                            &mut self.engine.clipboard,
+                        );
+                        self.engine.layout_dirty = true;
+                        self.redraw();
+                        return true;
                     }
                 }
                 _ => {}
@@ -2071,16 +2101,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 _ => None,
             };
             if let Some(next_index) = next_index {
-                if let Some(ws) = self.engine.widget_states.get_mut(&fid) {
-                    if let Some(state) = ws.as_vgrid_mut() {
-                        state.selected_item = Some(next_index);
-                        state.scroll_to_index(
-                            next_index,
-                            vgrid.item_height,
-                            vgrid.item_count,
-                            vgrid.columns,
-                        );
-                    }
+                if let Some(ws) = self.engine.widget_states.get_mut(&fid)
+                    && let Some(state) = ws.as_vgrid_mut()
+                {
+                    state.selected_item = Some(next_index);
+                    state.scroll_to_index(
+                        next_index,
+                        vgrid.item_height,
+                        vgrid.item_count,
+                        vgrid.columns,
+                    );
                 }
                 A::update(
                     &mut self.engine.app_state,
@@ -2138,79 +2168,41 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn handle_key(&mut self, key: &Key, repeat: bool) {
-        if self.engine.focused_widget_id.is_none() {
-            if let Some(sid) = self.engine.active_scroll_id {
-                if self
-                    .engine
-                    .runtime_caches
-                    .virtual_multi_selections
-                    .contains_key(&sid)
-                    && self.handle_virtual_multi_selection_key(sid, key, repeat)
-                {
-                    return;
-                }
-                let vlist_props = self
-                    .engine
-                    .runtime_caches
-                    .vlists
-                    .get(&sid)
-                    .map(|v| (v.item_height, v.item_count, v.on_select));
-                let vgrid_props = self
-                    .engine
-                    .runtime_caches
-                    .vgrids
-                    .get(&sid)
-                    .map(|v| (v.item_height, v.item_count, v.columns, v.on_select));
-                match key {
-                    Key::Named(NamedKey::ArrowDown) => {
-                        if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                            if let Some(s) = ws.as_scroll_mut() {
-                                s.scroll_by(40.0);
-                                self.redraw();
-                                return;
-                            } else if let Some(s) = ws.as_vlist_mut() {
-                                if let Some((ih, ic, cb)) = vlist_props {
-                                    let new_sel = s.selected_row.unwrap_or(0) + 1;
-                                    if new_sel < ic {
-                                        s.selected_row = Some(new_sel);
-                                        s.scroll_to_index(new_sel, ih, ic);
-                                        A::update(
-                                            &mut self.engine.app_state,
-                                            cb(new_sel),
-                                            &mut self.engine.clipboard,
-                                        );
-                                        self.engine.layout_dirty = true;
-                                        self.redraw();
-                                        return;
-                                    }
-                                }
-                            } else if let Some(s) = ws.as_vgrid_mut() {
-                                if let Some((ih, ic, cols, cb)) = vgrid_props {
-                                    let new_sel = (s.selected_item.unwrap_or(0) + cols.max(1))
-                                        .min(ic.saturating_sub(1));
-                                    s.selected_item = Some(new_sel);
-                                    s.scroll_to_index(new_sel, ih, ic, cols);
-                                    A::update(
-                                        &mut self.engine.app_state,
-                                        cb(new_sel),
-                                        &mut self.engine.clipboard,
-                                    );
-                                    self.engine.layout_dirty = true;
-                                    self.redraw();
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                            if let Some(s) = ws.as_scroll_mut() {
-                                s.scroll_by(-40.0);
-                                self.redraw();
-                                return;
-                            } else if let Some(s) = ws.as_vlist_mut() {
-                                if let Some((ih, ic, cb)) = vlist_props {
-                                    let new_sel = s.selected_row.unwrap_or(0).saturating_sub(1);
+        if self.engine.focused_widget_id.is_none()
+            && let Some(sid) = self.engine.active_scroll_id
+        {
+            if self
+                .engine
+                .runtime_caches
+                .virtual_multi_selections
+                .contains_key(&sid)
+                && self.handle_virtual_multi_selection_key(sid, key, repeat)
+            {
+                return;
+            }
+            let vlist_props = self
+                .engine
+                .runtime_caches
+                .vlists
+                .get(&sid)
+                .map(|v| (v.item_height, v.item_count, v.on_select));
+            let vgrid_props = self
+                .engine
+                .runtime_caches
+                .vgrids
+                .get(&sid)
+                .map(|v| (v.item_height, v.item_count, v.columns, v.on_select));
+            match key {
+                Key::Named(NamedKey::ArrowDown) => {
+                    if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
+                        if let Some(s) = ws.as_scroll_mut() {
+                            s.scroll_by(40.0);
+                            self.redraw();
+                            return;
+                        } else if let Some(s) = ws.as_vlist_mut() {
+                            if let Some((ih, ic, cb)) = vlist_props {
+                                let new_sel = s.selected_row.unwrap_or(0) + 1;
+                                if new_sel < ic {
                                     s.selected_row = Some(new_sel);
                                     s.scroll_to_index(new_sel, ih, ic);
                                     A::update(
@@ -2222,69 +2214,106 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                     self.redraw();
                                     return;
                                 }
-                            } else if let Some(s) = ws.as_vgrid_mut() {
-                                if let Some((ih, ic, cols, cb)) = vgrid_props {
-                                    let _ = ic;
-                                    let new_sel =
-                                        s.selected_item.unwrap_or(0).saturating_sub(cols.max(1));
-                                    s.selected_item = Some(new_sel);
-                                    s.scroll_to_index(new_sel, ih, ic, cols);
-                                    A::update(
-                                        &mut self.engine.app_state,
-                                        cb(new_sel),
-                                        &mut self.engine.clipboard,
-                                    );
-                                    self.engine.layout_dirty = true;
-                                    self.redraw();
-                                    return;
-                                }
                             }
+                        } else if let Some(s) = ws.as_vgrid_mut()
+                            && let Some((ih, ic, cols, cb)) = vgrid_props
+                        {
+                            let new_sel = (s.selected_item.unwrap_or(0) + cols.max(1))
+                                .min(ic.saturating_sub(1));
+                            s.selected_item = Some(new_sel);
+                            s.scroll_to_index(new_sel, ih, ic, cols);
+                            A::update(
+                                &mut self.engine.app_state,
+                                cb(new_sel),
+                                &mut self.engine.clipboard,
+                            );
+                            self.engine.layout_dirty = true;
+                            self.redraw();
+                            return;
                         }
                     }
-                    Key::Named(NamedKey::PageDown) => {
-                        if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                            if let Some(s) = ws.as_scroll_mut() {
-                                s.scroll_by(s.viewport_h * 0.9);
-                                self.redraw();
-                                return;
-                            } else if let Some(s) = ws.as_vlist_mut() {
-                                if let Some((ih, ic, _)) = vlist_props {
-                                    s.scroll_by(s.viewport_h * 0.9, ih, ic);
-                                    self.redraw();
-                                    return;
-                                }
-                            } else if let Some(s) = ws.as_vgrid_mut() {
-                                if let Some((ih, ic, cols, _)) = vgrid_props {
-                                    s.scroll_by(s.viewport_h * 0.9, ih, ic, cols);
-                                    self.redraw();
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    Key::Named(NamedKey::PageUp) => {
-                        if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                            if let Some(s) = ws.as_scroll_mut() {
-                                s.scroll_by(-s.viewport_h * 0.9);
-                                self.redraw();
-                                return;
-                            } else if let Some(s) = ws.as_vlist_mut() {
-                                if let Some((ih, ic, _)) = vlist_props {
-                                    s.scroll_by(-s.viewport_h * 0.9, ih, ic);
-                                    self.redraw();
-                                    return;
-                                }
-                            } else if let Some(s) = ws.as_vgrid_mut() {
-                                if let Some((ih, ic, cols, _)) = vgrid_props {
-                                    s.scroll_by(-s.viewport_h * 0.9, ih, ic, cols);
-                                    self.redraw();
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
                 }
+                Key::Named(NamedKey::ArrowUp) => {
+                    if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
+                        if let Some(s) = ws.as_scroll_mut() {
+                            s.scroll_by(-40.0);
+                            self.redraw();
+                            return;
+                        } else if let Some(s) = ws.as_vlist_mut() {
+                            if let Some((ih, ic, cb)) = vlist_props {
+                                let new_sel = s.selected_row.unwrap_or(0).saturating_sub(1);
+                                s.selected_row = Some(new_sel);
+                                s.scroll_to_index(new_sel, ih, ic);
+                                A::update(
+                                    &mut self.engine.app_state,
+                                    cb(new_sel),
+                                    &mut self.engine.clipboard,
+                                );
+                                self.engine.layout_dirty = true;
+                                self.redraw();
+                                return;
+                            }
+                        } else if let Some(s) = ws.as_vgrid_mut()
+                            && let Some((ih, ic, cols, cb)) = vgrid_props
+                        {
+                            let _ = ic;
+                            let new_sel = s.selected_item.unwrap_or(0).saturating_sub(cols.max(1));
+                            s.selected_item = Some(new_sel);
+                            s.scroll_to_index(new_sel, ih, ic, cols);
+                            A::update(
+                                &mut self.engine.app_state,
+                                cb(new_sel),
+                                &mut self.engine.clipboard,
+                            );
+                            self.engine.layout_dirty = true;
+                            self.redraw();
+                            return;
+                        }
+                    }
+                }
+                Key::Named(NamedKey::PageDown) => {
+                    if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
+                        if let Some(s) = ws.as_scroll_mut() {
+                            s.scroll_by(s.viewport_h * 0.9);
+                            self.redraw();
+                            return;
+                        } else if let Some(s) = ws.as_vlist_mut() {
+                            if let Some((ih, ic, _)) = vlist_props {
+                                s.scroll_by(s.viewport_h * 0.9, ih, ic);
+                                self.redraw();
+                                return;
+                            }
+                        } else if let Some(s) = ws.as_vgrid_mut()
+                            && let Some((ih, ic, cols, _)) = vgrid_props
+                        {
+                            s.scroll_by(s.viewport_h * 0.9, ih, ic, cols);
+                            self.redraw();
+                            return;
+                        }
+                    }
+                }
+                Key::Named(NamedKey::PageUp) => {
+                    if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
+                        if let Some(s) = ws.as_scroll_mut() {
+                            s.scroll_by(-s.viewport_h * 0.9);
+                            self.redraw();
+                            return;
+                        } else if let Some(s) = ws.as_vlist_mut() {
+                            if let Some((ih, ic, _)) = vlist_props {
+                                s.scroll_by(-s.viewport_h * 0.9, ih, ic);
+                                self.redraw();
+                                return;
+                            }
+                        } else if let Some(s) = ws.as_vgrid_mut()
+                            && let Some((ih, ic, cols, _)) = vgrid_props
+                        {
+                            s.scroll_by(-s.viewport_h * 0.9, ih, ic, cols);
+                            self.redraw();
+                            return;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -2304,10 +2333,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.redraw();
             return;
         }
-        if let Some(focused_id) = self.engine.focused_widget_id {
-            if self.handle_virtual_multi_selection_key(focused_id, key, repeat) {
-                return;
-            }
+        if let Some(focused_id) = self.engine.focused_widget_id
+            && self.handle_virtual_multi_selection_key(focused_id, key, repeat)
+        {
+            return;
         }
         if self.engine.modifiers.state().control_key() {
             if self.engine.focused_input_id().is_none() {
@@ -2540,10 +2569,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 self.redraw();
                 return;
             }
-            if let (Some(input), Some(state)) = (runtime, state) {
-                if let Ok(text_to_copy) = copy_input_text(state, input.limits) {
-                    let _ = self.engine.clipboard.set_text(text_to_copy);
-                }
+            if let (Some(input), Some(state)) = (runtime, state)
+                && let Ok(text_to_copy) = copy_input_text(state, input.limits)
+            {
+                let _ = self.engine.clipboard.set_text(text_to_copy);
             }
         }
         self.redraw();
@@ -2743,9 +2772,10 @@ mod tests {
 
     use super::{
         WindowEventDestination, apply_scrollbar_drag_offset, carousel_key_index,
-        carousel_wheel_delta, classify_window_event, collect_open_popover_dismissals,
-        collect_toast_runtime_state, input_copy_is_blocked, sanitize_clipboard_text,
-        sanitize_input_text, virtual_multi_pointer_index, wheel_deltas, wheel_select_index,
+        carousel_wheel_delta, classify_window_event, clock_tick_delay,
+        collect_open_popover_dismissals, collect_toast_runtime_state, input_copy_is_blocked,
+        sanitize_clipboard_text, sanitize_input_text, virtual_multi_pointer_index, wheel_deltas,
+        wheel_select_index,
     };
     use crate::LayoutDirection;
     use crate::engine::widget_state::{
@@ -2798,6 +2828,13 @@ mod tests {
         assert_eq!(scroll.as_scroll().map(|state| state.offset_y), Some(120.0));
         assert_eq!(list.as_vlist().map(|state| state.scroll_y), Some(240.0));
         assert_eq!(grid.as_vgrid().map(|state| state.scroll_y), Some(360.0));
+    }
+
+    #[test]
+    fn clock_tick_delay_targets_the_next_second_boundary() {
+        assert_eq!(clock_tick_delay(0), Duration::from_secs(1));
+        assert_eq!(clock_tick_delay(250_000_000), Duration::from_millis(750));
+        assert_eq!(clock_tick_delay(999_999_999), Duration::from_nanos(1));
     }
 
     #[test]

@@ -50,16 +50,21 @@ pub use rich_text::{
     RichTextSpanStyle, RichTextStyle, RichTextWeight,
 };
 pub use theme::Theme;
+pub use time::{
+    ClockConfig, ClockError, ClockFormat, ClockTime, HourCycle, LocalTimeResolution, TimeOfDay,
+    TimeOfDayError, TimePickerConfig, TimePickerError, TimePickerLabels, TimeZone, TimeZoneError,
+};
 pub use widget::{
     AUTO_ID, ButtonVariant, ContextMenuEntry, CounterConfigError, DialogPosition, InputState,
     VirtualSelection, Widget, WidgetConfigError, validate_counter, validate_slider,
     validate_virtual_grid, validate_virtual_list,
 };
 pub use widget_id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
-pub use widgets::{calendar, carousel, dropdown_menu, rich_text};
+pub use widgets::{calendar, carousel, dropdown_menu, rich_text, time};
 
 // ── Re-exports de dependências públicas ──────────────────────
 pub use arboard;
+pub use chrono_tz;
 pub use cosmic_text;
 pub use skia_safe;
 pub use taffy;

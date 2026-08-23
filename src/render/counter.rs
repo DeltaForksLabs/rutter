@@ -8,7 +8,10 @@ use skia_safe::{
     paint,
 };
 
-use super::{draw_focus_outline, text::draw_text};
+use super::{
+    draw_focus_outline,
+    text::{TextDrawInput, draw_text_line},
+};
 use crate::theme::Theme;
 use crate::widgets::counter::counter_action_width;
 
@@ -182,16 +185,15 @@ fn draw_counter_label(
 ) {
     input.canvas.save();
     input.canvas.translate((rect.left, rect.top));
-    draw_text(
-        input.canvas,
-        label,
-        Point::new(0.0, 0.0),
-        (rect.width(), rect.height()),
-        counter_label_color(enabled, input.theme),
-        input.theme.font_body,
-        input.font_cache,
-        true,
-    );
+    draw_text_line(TextDrawInput {
+        canvas: input.canvas,
+        text: label,
+        size: (rect.width(), rect.height()),
+        color: counter_label_color(enabled, input.theme),
+        font_size: input.theme.font_body,
+        font_cache: input.font_cache,
+        center: true,
+    });
     input.canvas.restore();
 }
 

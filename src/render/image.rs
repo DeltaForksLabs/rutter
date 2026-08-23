@@ -152,10 +152,10 @@ fn decode_image_crate_data(
 }
 
 #[cfg(feature = "image-rs-decoder")]
-fn image_crate_reader<'a>(
-    data: &'a [u8],
+fn image_crate_reader(
+    data: &[u8],
     limits: ImageDecodeLimits,
-) -> Result<::image::ImageReader<std::io::Cursor<&'a [u8]>>, ImageDecodeError> {
+) -> Result<::image::ImageReader<std::io::Cursor<&[u8]>>, ImageDecodeError> {
     let mut reader = ::image::ImageReader::new(std::io::Cursor::new(data));
     reader.limits(image_crate_dimension_limits(limits));
     reader

@@ -30,17 +30,30 @@ struct SelectPopupLayout {
     visible_options: usize,
 }
 
-pub(crate) fn draw_select_overlays<'a, Msg>(
-    canvas: &Canvas,
-    taffy: &TaffyTree<RutterContext>,
-    root: NodeId,
-    widget: &Widget<'a, Msg>,
-    widget_states: &HashMap<u64, WidgetState>,
-    mouse: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-    scale: f32,
-) {
+pub(crate) struct SelectOverlayDrawInput<'render, 'widget, Msg> {
+    pub(crate) canvas: &'render Canvas,
+    pub(crate) taffy: &'render TaffyTree<RutterContext>,
+    pub(crate) root: NodeId,
+    pub(crate) widget: &'render Widget<'widget, Msg>,
+    pub(crate) widget_states: &'render HashMap<u64, WidgetState>,
+    pub(crate) mouse: Point,
+    pub(crate) font_cache: &'render mut HashMap<(String, u32), Font>,
+    pub(crate) theme: &'render Theme,
+    pub(crate) scale: f32,
+}
+
+pub(crate) fn draw_select_overlays<Msg>(input: SelectOverlayDrawInput<'_, '_, Msg>) {
+    let SelectOverlayDrawInput {
+        canvas,
+        taffy,
+        root,
+        widget,
+        widget_states,
+        mouse,
+        font_cache,
+        theme,
+        scale,
+    } = input;
     let viewport = logical_canvas_size(canvas, scale);
     let overlays = collect_open_select_overlays(widget, taffy, root, widget_states, viewport);
     if overlays.is_empty() {

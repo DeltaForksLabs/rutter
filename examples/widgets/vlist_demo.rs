@@ -23,9 +23,9 @@ pub struct VListDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    ThemeChanged(ExampleTheme),
-    SelectionChanged(Vec<usize>),
-    FilterChanged(String),
+    Theme(ExampleTheme),
+    Selection(Vec<usize>),
+    Filter(String),
 }
 
 pub struct VListDemo;
@@ -71,7 +71,7 @@ impl AppLogic for VListDemo {
         Widget::Column {
             style: root,
             children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
+                example_theme_selector(s.theme, Msg::Theme),
                 Widget::Text {
                     content: format!("{} itens — renderização lazy (VirtualList)", TOTAL_ITEMS),
                     color: None,
@@ -80,7 +80,7 @@ impl AppLogic for VListDemo {
                 },
                 Widget::TextInput {
                     id: 1,
-                    on_change: Msg::FilterChanged,
+                    on_change: Msg::Filter,
                     on_submit: None,
                     style: inp_s,
                     label: "",
@@ -105,7 +105,7 @@ impl AppLogic for VListDemo {
                             i * 7 + 1
                         ))
                     },
-                    VirtualSelection::multiple(&s.selected, Msg::SelectionChanged),
+                    VirtualSelection::multiple(&s.selected, Msg::Selection),
                     list_s,
                 )
                 .with_id(60),
@@ -122,9 +122,9 @@ impl AppLogic for VListDemo {
 
     fn update(s: &mut VListDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
-            Msg::ThemeChanged(theme) => s.theme = theme,
-            Msg::SelectionChanged(selected) => s.selected = selected,
-            Msg::FilterChanged(v) => s.filter = v,
+            Msg::Theme(theme) => s.theme = theme,
+            Msg::Selection(selected) => s.selected = selected,
+            Msg::Filter(v) => s.filter = v,
         }
     }
 

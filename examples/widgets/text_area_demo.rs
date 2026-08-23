@@ -20,10 +20,10 @@ pub struct TextAreaDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    ThemeChanged(ExampleTheme),
-    NotesChanged(String),
-    DescriptionChanged(String),
-    ValidationChanged(String),
+    Theme(ExampleTheme),
+    Notes(String),
+    Description(String),
+    Validation(String),
 }
 
 pub struct TextAreaDemo;
@@ -63,7 +63,7 @@ impl AppLogic for TextAreaDemo {
         Widget::Column {
             style: root,
             children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
+                example_theme_selector(s.theme, Msg::Theme),
                 Widget::Text {
                     content: "TextArea Demo".into(),
                     color: None,
@@ -80,7 +80,7 @@ impl AppLogic for TextAreaDemo {
                 },
                 Widget::TextArea {
                     id: 201,
-                    on_change: Msg::NotesChanged,
+                    on_change: Msg::Notes,
                     on_submit: None,
                     style: area_style(120.0),
                     label: "Observações",
@@ -90,7 +90,7 @@ impl AppLogic for TextAreaDemo {
                 },
                 Widget::TextArea {
                     id: 202,
-                    on_change: Msg::DescriptionChanged,
+                    on_change: Msg::Description,
                     on_submit: None,
                     style: area_style(160.0),
                     label: "Descrição técnica",
@@ -100,7 +100,7 @@ impl AppLogic for TextAreaDemo {
                 },
                 Widget::TextArea {
                     id: 203,
-                    on_change: Msg::ValidationChanged,
+                    on_change: Msg::Validation,
                     on_submit: None,
                     style: area_style(120.0),
                     label: "Resumo obrigatório",
@@ -145,10 +145,10 @@ impl AppLogic for TextAreaDemo {
 
     fn update(s: &mut TextAreaDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
-            Msg::ThemeChanged(theme) => s.theme = theme,
-            Msg::NotesChanged(v) => s.notes = v,
-            Msg::DescriptionChanged(v) => s.description = v,
-            Msg::ValidationChanged(v) => s.validation_text = v,
+            Msg::Theme(theme) => s.theme = theme,
+            Msg::Notes(v) => s.notes = v,
+            Msg::Description(v) => s.description = v,
+            Msg::Validation(v) => s.validation_text = v,
         }
     }
 

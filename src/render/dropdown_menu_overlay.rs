@@ -87,20 +87,20 @@ pub(crate) fn draw_dropdown_menu_trigger(
     theme: &Theme,
     direction: LayoutDirection,
 ) {
-    super::draw_select_trigger(
+    super::draw_select_trigger(super::SelectTriggerRenderInput {
         canvas,
-        &[label],
-        0,
+        options: &[label],
+        selected_index: 0,
         is_open,
-        "",
-        "",
+        label: "",
+        placeholder: "",
         is_focused,
         size,
         mouse,
-        fonts,
+        font_cache: fonts,
         theme,
         direction,
-    );
+    });
 }
 
 pub(crate) fn hit_test_dropdown_menu_overlay<Msg>(
@@ -132,10 +132,10 @@ fn surface_hit_stack<Msg>(
 ) -> Option<DropdownMenuOverlayHit> {
     for menu in overlays.iter().rev() {
         let surfaces = overlay_surfaces(menu, viewport, direction);
-        for surface in surfaces
+        if let Some(surface) = surfaces
             .iter()
             .rev()
-            .filter(|surface| surface.rect.contains(point))
+            .find(|surface| surface.rect.contains(point))
         {
             return Some(entry_hit(menu, surface, point).unwrap_or(
                 DropdownMenuOverlayHit::Surface {

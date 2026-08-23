@@ -67,7 +67,7 @@ fn counter_demo_children<'a>(state: &CounterDemoState) -> Vec<Widget<'a, Msg>> {
             "Quantity",
         )
         .with_id(1),
-        demo_text(&format!("Quantity: {}", state.quantity), 14.0),
+        demo_text(format!("Quantity: {}", state.quantity), 14.0),
         demo_text(
             "Use the buttons or Arrow keys, Home, End, Page Up, and Page Down.",
             12.0,

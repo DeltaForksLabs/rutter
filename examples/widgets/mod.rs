@@ -25,6 +25,7 @@ pub mod slider_demo;
 pub mod tab_demo;
 pub mod text_input_demo;
 pub mod theme_selector;
+pub mod time_demo;
 pub mod vgrid_demo;
 pub mod vlist_demo;
 

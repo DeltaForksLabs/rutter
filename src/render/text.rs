@@ -47,24 +47,58 @@ pub fn get_cached_font(cache: &mut HashMap<(String, u32), Font>, family: &str, s
 
 // ── Renderização de texto simples ────────────────────────────
 
-/// Desenha uma linha de texto no canvas dentro da bounding box `size`.
+/// Inputs used internally to draw one line of text inside a bounding box.
+pub(crate) struct TextDrawInput<'a> {
+    pub canvas: &'a Canvas,
+    pub text: &'a str,
+    pub size: (f32, f32),
+    pub color: SkiaColor,
+    pub font_size: f32,
+    pub font_cache: &'a mut HashMap<(String, u32), Font>,
+    pub center: bool,
+}
+
+/// Draws a line of text inside the supplied bounding box.
 ///
 /// - `center = true`  → centraliza horizontalmente e verticalmente
 /// - `center = false` → alinha à esquerda, centralizado verticalmente
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The stable public renderer API retains its original positional signature."
+)]
 pub fn draw_text(
     canvas: &Canvas,
     text: &str,
-    _pos: Point,
+    _position: Point,
     size: (f32, f32),
     color: SkiaColor,
     font_size: f32,
     font_cache: &mut HashMap<(String, u32), Font>,
     center: bool,
 ) {
-    draw_simple_text(canvas, text, size, color, font_size, font_cache, center);
+    draw_text_line(TextDrawInput {
+        canvas,
+        text,
+        size,
+        color,
+        font_size,
+        font_cache,
+        center,
+    });
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_text_line(input: TextDrawInput<'_>) {
+    draw_simple_text(
+        input.canvas,
+        input.text,
+        input.size,
+        input.color,
+        input.font_size,
+        input.font_cache,
+        input.center,
+    );
+}
+
 fn draw_simple_text(
     canvas: &Canvas,
     text: &str,

@@ -23,10 +23,10 @@ pub struct SliderDemoState {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    ThemeChanged(ExampleTheme),
-    VolumeChanged(f32),
-    BalanceChanged(f32),
-    BrightnessChanged(f32),
+    Theme(ExampleTheme),
+    Volume(f32),
+    Balance(f32),
+    Brightness(f32),
 }
 
 pub struct SliderDemo;
@@ -70,7 +70,7 @@ impl AppLogic for SliderDemo {
         Widget::Column {
             style: col,
             children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
+                example_theme_selector(s.theme, Msg::Theme),
                 // ── Volume: step 1.0 (linear, padrão correto — FIX-6) ──
                 Widget::Text {
                     content: format!("Volume: {:.0}%", s.volume),
@@ -84,7 +84,7 @@ impl AppLogic for SliderDemo {
                     min: 0.0,
                     max: 100.0,
                     step: 1.0, // FIX-6: era 5.0 no demo original
-                    on_change: Msg::VolumeChanged,
+                    on_change: Msg::Volume,
                     style: slider_s.clone(),
                     label: "",
                 },
@@ -101,7 +101,7 @@ impl AppLogic for SliderDemo {
                     min: -10.0,
                     max: 10.0,
                     step: 0.5,
-                    on_change: Msg::BalanceChanged,
+                    on_change: Msg::Balance,
                     style: slider_s.clone(),
                     label: "",
                 },
@@ -118,7 +118,7 @@ impl AppLogic for SliderDemo {
                     min: 0.0,
                     max: 100.0,
                     step: 5.0, // granular intencional
-                    on_change: Msg::BrightnessChanged,
+                    on_change: Msg::Brightness,
                     style: slider_s,
                     label: "",
                 },
@@ -134,10 +134,10 @@ impl AppLogic for SliderDemo {
 
     fn update(s: &mut SliderDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
-            Msg::ThemeChanged(theme) => s.theme = theme,
-            Msg::VolumeChanged(v) => s.volume = v,
-            Msg::BalanceChanged(v) => s.balance = v,
-            Msg::BrightnessChanged(v) => s.brightness = v,
+            Msg::Theme(theme) => s.theme = theme,
+            Msg::Volume(v) => s.volume = v,
+            Msg::Balance(v) => s.balance = v,
+            Msg::Brightness(v) => s.brightness = v,
         }
     }
 

@@ -11,7 +11,7 @@ use super::runtime::{
 const TYPEAHEAD_TIMEOUT: Duration = Duration::from_millis(700);
 
 /// Retained keyboard, submenu, scrolling, and typeahead state for one menu.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DropdownMenuState {
     is_open: bool,
     active_path: Option<Vec<usize>>,
@@ -20,20 +20,6 @@ pub struct DropdownMenuState {
     reveal_active: bool,
     typeahead_buffer: String,
     typeahead_timestamp: Option<Instant>,
-}
-
-impl Default for DropdownMenuState {
-    fn default() -> Self {
-        Self {
-            is_open: false,
-            active_path: None,
-            open_submenu_path: Vec::new(),
-            scroll_offsets: Vec::new(),
-            reveal_active: false,
-            typeahead_buffer: String::new(),
-            typeahead_timestamp: None,
-        }
-    }
 }
 
 impl DropdownMenuState {

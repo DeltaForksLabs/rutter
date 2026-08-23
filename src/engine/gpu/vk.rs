@@ -38,6 +38,16 @@ struct SwapchainBundle {
     image_layouts: Vec<avk::ImageLayout>,
 }
 
+struct SwapchainBuildContext<'a> {
+    surface_loader: &'a khr::surface::Instance,
+    surface: avk::SurfaceKHR,
+    physical_device: avk::PhysicalDevice,
+    swapchain_loader: &'a khr::swapchain::Device,
+    skia_context: &'a mut DirectContext,
+    queue_family_index: u32,
+    transparent: bool,
+}
+
 struct PendingSwapchain<'a> {
     loader: &'a khr::swapchain::Device,
     handle: avk::SwapchainKHR,
@@ -235,11 +245,11 @@ impl VkBackend {
         cleanup.surface = Some(surface);
 
         let (physical_device, queue_family_index) =
-            pick_physical_device(&instance, &surface_loader, surface, transparent)
+            pick_physical_device(instance, surface_loader, surface, transparent)
                 .map_err(Self::init_failure)?;
 
         let device_extensions =
-            device_extension_names(&instance, physical_device).map_err(Self::init_failure)?;
+            device_extension_names(instance, physical_device).map_err(Self::init_failure)?;
         let queue_priorities = [1.0_f32];
         let queue_create_info = avk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
@@ -253,7 +263,7 @@ impl VkBackend {
         let device = cleanup.device.as_ref().unwrap();
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
-        let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
+        let swapchain_loader = khr::swapchain::Device::new(instance, device);
         let command_pool_info = avk::CommandPoolCreateInfo::default()
             .flags(avk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(queue_family_index);
@@ -276,9 +286,9 @@ impl VkBackend {
 
         let skia_context = create_skia_context(
             cleanup.entry.as_ref().unwrap(),
-            &instance,
+            instance,
             physical_device,
-            &device,
+            device,
             queue,
             queue_family_index,
         )
@@ -288,13 +298,15 @@ impl VkBackend {
 
         let swapchain_bundle = Self::create_swapchain_bundle(
             window.inner_size(),
-            &surface_loader,
-            surface,
-            physical_device,
-            &swapchain_loader,
-            skia_context,
-            queue_family_index,
-            transparent,
+            SwapchainBuildContext {
+                surface_loader,
+                surface,
+                physical_device,
+                swapchain_loader: &swapchain_loader,
+                skia_context,
+                queue_family_index,
+                transparent,
+            },
             None,
         )
         .map_err(Self::init_failure)?;
@@ -353,15 +365,18 @@ impl VkBackend {
 
     fn create_swapchain_bundle(
         requested_size: PhysicalSize<u32>,
-        surface_loader: &khr::surface::Instance,
-        surface: avk::SurfaceKHR,
-        physical_device: avk::PhysicalDevice,
-        swapchain_loader: &khr::swapchain::Device,
-        skia_context: &mut DirectContext,
-        queue_family_index: u32,
-        transparent: bool,
+        context: SwapchainBuildContext<'_>,
         old_swapchain: Option<avk::SwapchainKHR>,
     ) -> Result<SwapchainBundle, String> {
+        let SwapchainBuildContext {
+            surface_loader,
+            surface,
+            physical_device,
+            swapchain_loader,
+            skia_context,
+            queue_family_index,
+            transparent,
+        } = context;
         let capabilities = unsafe {
             surface_loader
                 .get_physical_device_surface_capabilities(physical_device, surface)
@@ -457,13 +472,15 @@ impl VkBackend {
 
         let bundle = match Self::create_swapchain_bundle(
             size,
-            &self.surface_loader,
-            self.surface,
-            self.physical_device,
-            &self.swapchain_loader,
-            &mut self.skia_context,
-            self.queue_family_index,
-            self.transparent,
+            SwapchainBuildContext {
+                surface_loader: &self.surface_loader,
+                surface: self.surface,
+                physical_device: self.physical_device,
+                swapchain_loader: &self.swapchain_loader,
+                skia_context: &mut self.skia_context,
+                queue_family_index: self.queue_family_index,
+                transparent: self.transparent,
+            },
             Some(old_swapchain),
         ) {
             Ok(bundle) => bundle,

@@ -78,17 +78,17 @@ fn overlay_draws_popup_pixels_below_the_trigger() {
     surface.canvas().clear(Color::RED);
     let mut fonts = HashMap::new();
 
-    draw_select_overlays(
-        surface.canvas(),
-        &taffy,
+    draw_select_overlays(SelectOverlayDrawInput {
+        canvas: surface.canvas(),
+        taffy: &taffy,
         root,
-        &widget,
-        &states,
-        Point::new(0.0, 0.0),
-        &mut fonts,
-        &Theme::light(),
-        1.0,
-    );
+        widget: &widget,
+        widget_states: &states,
+        mouse: Point::new(0.0, 0.0),
+        font_cache: &mut fonts,
+        theme: &Theme::light(),
+        scale: 1.0,
+    });
 
     let pixel = surface.peek_pixels().unwrap().get_color((10, 88));
     assert_ne!(pixel, Color::RED);
@@ -191,7 +191,7 @@ fn layout_widget<Message: Clone>(
 ) -> (TaffyTree<RutterContext>, NodeId) {
     let fonts = Rc::new(RefCell::new(FontSystem::new()));
     let mut taffy = TaffyTree::new();
-    let root = build_taffy_tree(&mut taffy, &widget, fonts.clone(), &states);
+    let root = build_taffy_tree(&mut taffy, widget, fonts.clone(), states);
     compute_layout(
         &mut taffy,
         root,

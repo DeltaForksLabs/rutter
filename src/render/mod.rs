@@ -5,6 +5,7 @@
 // Rutter Framework — render/mod.rs
 // ============================================================
 
+pub(crate) mod clock;
 pub(crate) mod counter;
 pub(crate) mod dropdown_menu_overlay;
 pub mod hit_test;
@@ -35,11 +36,14 @@ use skia_safe::{
 use taffy::Direction;
 use taffy::prelude::{NodeId, TaffyTree};
 
+use self::clock::{ClockRenderInput, draw_clock};
 use self::counter::{CounterRenderInput, draw_counter};
 pub use self::image_cache::ImageRenderCache;
 use self::rich_text::RichTextDirection;
 pub use self::rich_text::RichTextRenderer;
-use self::text::{TextBufferCache, TextShapeRequest, draw_text, get_cached_font};
+use self::text::{
+    TextBufferCache, TextDrawInput, TextShapeRequest, draw_text_line, get_cached_font,
+};
 use self::{
     image::{MAX_ENCODED_IMAGE_BYTES, decode_rutter_image},
     image_cache::SvgImageCacheKey,
@@ -84,7 +88,6 @@ struct ToastOverlay<'a> {
 
 #[derive(Clone, Copy)]
 struct ContextMenuOverlay<'a, Msg> {
-    id: u64,
     entries: &'a [ContextMenuEntry<'a, Msg>],
     anchor: Point,
 }
@@ -248,17 +251,17 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         &mut path,
         Point::new(0.0, 0.0),
     );
-    select_overlay::draw_select_overlays(
+    select_overlay::draw_select_overlays(select_overlay::SelectOverlayDrawInput {
         canvas,
         taffy,
-        node,
+        root: node,
         widget,
         widget_states,
-        mouse_pos,
-        font_cache,
+        mouse: mouse_pos,
+        font_cache: &mut *font_cache,
         theme,
         scale,
-    );
+    });
     dropdown_menu_overlay::draw_dropdown_menu_overlays(
         canvas,
         taffy,
@@ -338,17 +341,17 @@ fn draw_toast_overlays<'w, Msg>(
                 index
             }
         };
-        draw_toast(
+        draw_toast(ToastRenderInput {
             canvas,
-            toast.message,
-            toast.kind,
-            toast.position,
-            toast.progress,
-            viewport_size,
+            message: toast.message,
+            kind: toast.kind,
+            position: toast.position,
+            progress: toast.progress,
+            size: viewport_size,
             index,
-            font_cache,
+            font_cache: &mut *font_cache,
             theme,
-        );
+        });
     }
     canvas.restore();
 }
@@ -672,7 +675,6 @@ fn draw_context_menu_overlays<'w, Msg>(
     for overlay in overlays {
         draw_context_menu(
             canvas,
-            overlay.id,
             overlay.entries,
             overlay.anchor,
             viewport_size,
@@ -746,20 +748,22 @@ fn collect_visible_toasts<'w, Msg>(
             }
         }
         Widget::Accordion {
-            expanded, child, ..
+            expanded: true,
+            child,
+            ..
         } => {
-            if *expanded {
-                path.push(0);
-                collect_visible_toasts(child, widget_states, path, out);
-                path.pop();
-            }
+            path.push(0);
+            collect_visible_toasts(child, widget_states, path, out);
+            path.pop();
         }
-        Widget::Modal { visible, child, .. } => {
-            if *visible {
-                path.push(0);
-                collect_visible_toasts(child, widget_states, path, out);
-                path.pop();
-            }
+        Widget::Modal {
+            visible: true,
+            child,
+            ..
+        } => {
+            path.push(0);
+            collect_visible_toasts(child, widget_states, path, out);
+            path.pop();
         }
         _ => {}
     }
@@ -777,14 +781,12 @@ fn collect_open_context_menus<'w, Msg>(
             if let Some(menu) = widget_states
                 .get(&resolved_id)
                 .and_then(|state| state.as_context_menu())
+                && menu.is_open
             {
-                if menu.is_open {
-                    out.push(ContextMenuOverlay {
-                        id: resolved_id,
-                        entries,
-                        anchor: Point::new(menu.anchor_x, menu.anchor_y),
-                    });
-                }
+                out.push(ContextMenuOverlay {
+                    entries,
+                    anchor: Point::new(menu.anchor_x, menu.anchor_y),
+                });
             }
             path.push(0);
             collect_open_context_menus(child, widget_states, path, out);
@@ -820,20 +822,27 @@ fn collect_open_context_menus<'w, Msg>(
             }
         }
         Widget::Accordion {
-            expanded, child, ..
+            expanded: true,
+            child,
+            ..
         } => {
-            if *expanded {
-                path.push(0);
-                collect_open_context_menus(child, widget_states, path, out);
-                path.pop();
-            }
+            path.push(0);
+            collect_open_context_menus(child, widget_states, path, out);
+            path.pop();
         }
-        Widget::Modal { visible, child, .. } | Widget::Dialog { visible, child, .. } => {
-            if *visible {
-                path.push(0);
-                collect_open_context_menus(child, widget_states, path, out);
-                path.pop();
-            }
+        Widget::Modal {
+            visible: true,
+            child,
+            ..
+        }
+        | Widget::Dialog {
+            visible: true,
+            child,
+            ..
+        } => {
+            path.push(0);
+            collect_open_context_menus(child, widget_states, path, out);
+            path.pop();
         }
         _ => {}
     }
@@ -1062,17 +1071,17 @@ fn draw_widgets_impl<'w, Msg>(
             color,
             variant,
             ..
-        } => draw_text_button(
+        } => draw_text_button(TextButtonRenderInput {
             canvas,
             text,
-            *color,
-            *variant,
+            color: *color,
+            variant: *variant,
             is_focused,
             size,
-            local_mouse,
+            mouse: local_mouse,
             font_cache,
             theme,
-        ),
+        }),
         Widget::ButtonContent {
             child,
             color,
@@ -1121,7 +1130,7 @@ fn draw_widgets_impl<'w, Msg>(
             error_msg,
             is_password,
             ..
-        } => draw_text_input(
+        } => draw_text_input(TextInputRenderInput {
             canvas,
             fs,
             swash,
@@ -1133,20 +1142,20 @@ fn draw_widgets_impl<'w, Msg>(
             is_focused,
             label,
             placeholder,
-            *state,
-            error_msg.as_deref(),
-            *is_password,
-            input_states.get(&resolved_id.unwrap()),
+            state: *state,
+            error_msg: error_msg.as_deref(),
+            is_password: *is_password,
+            input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
-            false,
-        ),
+            is_multiline: false,
+        }),
         Widget::TextArea {
             label,
             placeholder,
             state,
             error_msg,
             ..
-        } => draw_text_input(
+        } => draw_text_input(TextInputRenderInput {
             canvas,
             fs,
             swash,
@@ -1158,14 +1167,14 @@ fn draw_widgets_impl<'w, Msg>(
             is_focused,
             label,
             placeholder,
-            *state,
-            error_msg.as_deref(),
-            false,
-            input_states.get(&resolved_id.unwrap()),
+            state: *state,
+            error_msg: error_msg.as_deref(),
+            is_password: false,
+            input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
-            true,
-        ),
-        Widget::SearchBar { placeholder, .. } => draw_search_bar(
+            is_multiline: true,
+        }),
+        Widget::SearchBar { placeholder, .. } => draw_search_bar(TextInputRenderInput {
             canvas,
             fs,
             swash,
@@ -1175,19 +1184,26 @@ fn draw_widgets_impl<'w, Msg>(
             scale,
             size,
             is_focused,
+            label: "",
             placeholder,
-            input_states.get(&resolved_id.unwrap()),
+            state: InputState::Idle,
+            error_msg: None,
+            is_password: false,
+            input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
-        ),
+            is_multiline: false,
+        }),
         Widget::Checkbox { checked, label, .. } => draw_checkbox(
-            canvas,
             *checked,
-            label,
-            is_focused,
-            size,
-            local_mouse,
-            font_cache,
-            theme,
+            LabeledControlRenderInput {
+                canvas,
+                label,
+                is_focused,
+                size,
+                mouse: local_mouse,
+                font_cache,
+                theme,
+            },
         ),
         Widget::Switch { checked, .. } => {
             draw_switch(canvas, *checked, is_focused, size, local_mouse, theme)
@@ -1195,14 +1211,16 @@ fn draw_widgets_impl<'w, Msg>(
         Widget::Radio {
             selected, label, ..
         } => draw_radio(
-            canvas,
             *selected,
-            label,
-            is_focused,
-            size,
-            local_mouse,
-            font_cache,
-            theme,
+            LabeledControlRenderInput {
+                canvas,
+                label,
+                is_focused,
+                size,
+                mouse: local_mouse,
+                font_cache,
+                theme,
+            },
         ),
         Widget::Slider {
             value, min, max, ..
@@ -1213,17 +1231,17 @@ fn draw_widgets_impl<'w, Msg>(
                 .and_then(|s| s.as_slider())
                 .map(|s| s.dragging)
                 .unwrap_or(false);
-            draw_slider(
+            draw_slider(SliderRenderInput {
                 canvas,
-                *value,
-                *min,
-                *max,
+                value: *value,
+                min: *min,
+                max: *max,
                 is_focused,
                 size,
-                local_mouse,
-                dragging,
+                mouse: local_mouse,
+                is_dragging: dragging,
                 theme,
-            );
+            });
         }
         Widget::Counter {
             value, min, max, ..
@@ -1235,6 +1253,16 @@ fn draw_widgets_impl<'w, Msg>(
             is_focused,
             size,
             mouse: local_mouse,
+            font_cache,
+            theme,
+        }),
+        Widget::Clock {
+            time_zone, config, ..
+        } => draw_clock(ClockRenderInput {
+            canvas,
+            time_zone: *time_zone,
+            config: *config,
+            size,
             font_cache,
             theme,
         }),
@@ -1276,16 +1304,15 @@ fn draw_widgets_impl<'w, Msg>(
             ..
         } => {
             let c = color.unwrap_or(theme.on_surface);
-            draw_text(
+            draw_text_line(TextDrawInput {
                 canvas,
-                content,
-                (0.0, 0.0).into(),
+                text: content,
                 size,
-                c,
-                *font_size,
+                color: c,
+                font_size: *font_size,
                 font_cache,
-                false,
-            );
+                center: false,
+            });
         }
         Widget::RichText { .. } => {
             if let Some(RutterContext::RichText(content)) = taffy.get_node_context(node) {
@@ -1310,20 +1337,20 @@ fn draw_widgets_impl<'w, Msg>(
             let resolved_id = resolved_id.unwrap();
             let sel_state = widget_states.get(&resolved_id).and_then(|s| s.as_select());
             let is_open = sel_state.map(|s| s.is_open).unwrap_or(false);
-            draw_select_trigger(
+            draw_select_trigger(SelectTriggerRenderInput {
                 canvas,
                 options,
-                *selected_index,
+                selected_index: *selected_index,
                 is_open,
                 label,
                 placeholder,
                 is_focused,
                 size,
-                local_mouse,
+                mouse: local_mouse,
                 font_cache,
                 theme,
-                node_layout_direction(taffy, node),
-            );
+                direction: node_layout_direction(taffy, node),
+            });
         }
         Widget::DropdownMenu { label, .. } => {
             let resolved_id = resolved_id.unwrap();
@@ -1348,17 +1375,17 @@ fn draw_widgets_impl<'w, Msg>(
             let anim_x = *active as f32 * tab_w;
             let focused_tab =
                 (0..tabs.len()).find(|index| focused_id == widget.tab_focus_id(path, *index));
-            draw_tabbar(
+            draw_tabbar(TabbarRenderInput {
                 canvas,
                 tabs,
-                *active,
+                active: *active,
                 anim_x,
                 focused_tab,
                 size,
-                local_mouse,
+                mouse: local_mouse,
                 font_cache,
                 theme,
-            );
+            });
         }
         Widget::Accordion {
             title,
@@ -1366,16 +1393,16 @@ fn draw_widgets_impl<'w, Msg>(
             child,
             ..
         } => {
-            draw_accordion_header(
+            draw_accordion_header(AccordionHeaderRenderInput {
                 canvas,
                 title,
-                *expanded,
+                expanded: *expanded,
                 is_focused,
                 size,
-                local_mouse,
+                mouse: local_mouse,
                 font_cache,
                 theme,
-            );
+            });
             if *expanded {
                 let ids = taffy.children(node).unwrap();
                 canvas.save();
@@ -1452,24 +1479,24 @@ fn draw_widgets_impl<'w, Msg>(
                 canvas.restore();
                 return;
             }
-            draw_dialog(
+            draw_dialog(DialogRenderInput {
                 canvas,
                 title,
                 message,
                 confirm_label,
                 cancel_label,
-                *position,
+                position: *position,
                 size,
                 focused_id,
-                widget.dialog_action_focus_id(path, DialogAction::Confirm),
-                widget.dialog_action_focus_id(path, DialogAction::Cancel),
+                confirm_focus_id: widget.dialog_action_focus_id(path, DialogAction::Confirm),
+                cancel_focus_id: widget.dialog_action_focus_id(path, DialogAction::Cancel),
                 font_cache,
                 text_cache,
                 theme,
                 fs,
                 swash,
                 scale,
-            );
+            });
         }
         Widget::Toast { .. } => {}
         Widget::CarouselView {
@@ -1516,23 +1543,23 @@ fn draw_widgets_impl<'w, Msg>(
             let selected = vstate.and_then(|v| v.selected_row);
             let hovered = vstate.and_then(|v| v.hovered_row);
             let selected_rows = legacy_virtual_selection(selected);
-            draw_virtual_list(
+            draw_virtual_list(VirtualListRenderInput {
                 canvas,
-                item_height,
-                item_count,
-                items,
+                item_height: *item_height,
+                item_count: *item_count,
+                items: *items,
                 scroll_y,
-                VirtualSelectionPaint {
+                selection: VirtualSelectionPaint {
                     selected: &selected_rows,
                     active: selected,
                     focused: is_focused,
                 },
                 hovered,
                 size,
-                local_mouse,
+                mouse: local_mouse,
                 font_cache,
                 theme,
-            );
+            });
         }
         Widget::VirtualListContent {
             item_height,
@@ -1591,23 +1618,23 @@ fn draw_widgets_impl<'w, Msg>(
                 *item_count,
                 vstate.and_then(|state| state.selected_row),
             );
-            draw_virtual_list(
+            draw_virtual_list(VirtualListRenderInput {
                 canvas,
-                item_height,
-                item_count,
-                items,
-                vstate.map(|state| state.scroll_y).unwrap_or(0.0),
-                VirtualSelectionPaint {
+                item_height: *item_height,
+                item_count: *item_count,
+                items: *items,
+                scroll_y: vstate.map(|state| state.scroll_y).unwrap_or(0.0),
+                selection: VirtualSelectionPaint {
                     selected: &selected_rows,
                     active: vstate.and_then(|state| state.selected_row),
                     focused: is_focused,
                 },
-                vstate.and_then(|state| state.hovered_row),
+                hovered: vstate.and_then(|state| state.hovered_row),
                 size,
-                local_mouse,
+                mouse: local_mouse,
                 font_cache,
                 theme,
-            );
+            });
         }
         Widget::VirtualListContentWithSelection {
             item_height,
@@ -1830,17 +1857,30 @@ fn begin_rounded_container_clip(canvas: &Canvas, size: (f32, f32), radius: f32) 
     true
 }
 
-fn draw_tabbar(
-    canvas: &Canvas,
-    tabs: &[&str],
+struct TabbarRenderInput<'a> {
+    canvas: &'a Canvas,
+    tabs: &'a [&'a str],
     active: usize,
     anim_x: f32,
     focused_tab: Option<usize>,
     size: (f32, f32),
     mouse: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-) {
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    theme: &'a Theme,
+}
+
+fn draw_tabbar(input: TabbarRenderInput<'_>) {
+    let TabbarRenderInput {
+        canvas,
+        tabs,
+        active,
+        anim_x,
+        focused_tab,
+        size,
+        mouse,
+        font_cache,
+        theme,
+    } = input;
     if tabs.is_empty() {
         return;
     }
@@ -1904,25 +1944,46 @@ fn draw_tabbar(
     );
 }
 
-fn draw_text_input(
-    canvas: &Canvas,
-    fs: &mut FontSystem,
-    swash: &mut SwashCache,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    text_cache: &mut TextBufferCache,
-    theme: &Theme,
+struct TextInputRenderInput<'a> {
+    canvas: &'a Canvas,
+    fs: &'a mut FontSystem,
+    swash: &'a mut SwashCache,
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    text_cache: &'a mut TextBufferCache,
+    theme: &'a Theme,
     scale: f32,
     size: (f32, f32),
     is_focused: bool,
-    label: &str,
-    placeholder: &str,
+    label: &'a str,
+    placeholder: &'a str,
     state: InputState,
-    error_msg: Option<&str>,
+    error_msg: Option<&'a str>,
     is_password: bool,
-    istate: Option<&InputWidgetState>,
+    input_state: Option<&'a InputWidgetState>,
     cursor_visible: bool,
     is_multiline: bool,
-) {
+}
+
+fn draw_text_input(input: TextInputRenderInput<'_>) {
+    let TextInputRenderInput {
+        canvas,
+        fs,
+        swash,
+        font_cache,
+        text_cache,
+        theme,
+        scale,
+        size,
+        is_focused,
+        label,
+        placeholder,
+        state,
+        error_msg,
+        is_password,
+        input_state: istate,
+        cursor_visible,
+        is_multiline,
+    } = input;
     let line_height = theme.font_body * 1.3;
     let border_c = theme.input_border(state, is_focused);
     let mut bg = Paint::default();
@@ -2061,21 +2122,8 @@ fn draw_text_input(
     }
 }
 
-fn draw_search_bar(
-    canvas: &Canvas,
-    fs: &mut FontSystem,
-    swash: &mut SwashCache,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    text_cache: &mut TextBufferCache,
-    theme: &Theme,
-    scale: f32,
-    size: (f32, f32),
-    is_focused: bool,
-    placeholder: &str,
-    istate: Option<&InputWidgetState>,
-    cursor_visible: bool,
-) {
-    draw_text_input(
+fn draw_search_bar(input: TextInputRenderInput<'_>) {
+    let TextInputRenderInput {
         canvas,
         fs,
         swash,
@@ -2085,15 +2133,34 @@ fn draw_search_bar(
         scale,
         size,
         is_focused,
-        "",
+        label,
         placeholder,
-        InputState::Idle,
-        None,
-        false,
-        istate,
+        state,
+        error_msg,
+        is_password,
+        input_state,
         cursor_visible,
-        false,
-    );
+        is_multiline,
+    } = input;
+    draw_text_input(TextInputRenderInput {
+        canvas,
+        fs,
+        swash,
+        font_cache: &mut *font_cache,
+        text_cache,
+        theme,
+        scale,
+        size,
+        is_focused,
+        label,
+        placeholder,
+        state,
+        error_msg,
+        is_password,
+        input_state,
+        cursor_visible,
+        is_multiline,
+    });
     let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
     let mut p = Paint::default();
     p.set_color(Theme::alpha(theme.on_surface, 160));
@@ -2199,16 +2266,28 @@ fn draw_text_input_runs<'a>(
     );
 }
 
-fn draw_accordion_header(
-    canvas: &Canvas,
-    title: &str,
+struct AccordionHeaderRenderInput<'a> {
+    canvas: &'a Canvas,
+    title: &'a str,
     expanded: bool,
     is_focused: bool,
     size: (f32, f32),
     mouse: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-) {
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    theme: &'a Theme,
+}
+
+fn draw_accordion_header(input: AccordionHeaderRenderInput<'_>) {
+    let AccordionHeaderRenderInput {
+        canvas,
+        title,
+        expanded,
+        is_focused,
+        size,
+        mouse,
+        font_cache,
+        theme,
+    } = input;
     let header_h = ACCORDION_HEADER_H.min(size.1.max(ACCORDION_HEADER_H));
     let rect = SkiaRect::from_xywh(0.0, 0.0, size.0, header_h);
     let hovered = rect.contains(mouse);
@@ -2398,24 +2477,44 @@ fn draw_modal<Msg>(
     canvas.restore();
 }
 
-fn draw_dialog(
-    canvas: &Canvas,
-    title: &str,
-    message: &str,
-    confirm_label: &str,
-    cancel_label: &str,
+struct DialogRenderInput<'a> {
+    canvas: &'a Canvas,
+    title: &'a str,
+    message: &'a str,
+    confirm_label: &'a str,
+    cancel_label: &'a str,
     position: DialogPosition,
     size: (f32, f32),
     focused_id: Option<u64>,
     confirm_focus_id: Option<u64>,
     cancel_focus_id: Option<u64>,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    text_cache: &mut TextBufferCache,
-    theme: &Theme,
-    fs: &mut FontSystem,
-    swash: &mut SwashCache,
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    text_cache: &'a mut TextBufferCache,
+    theme: &'a Theme,
+    fs: &'a mut FontSystem,
+    swash: &'a mut SwashCache,
     scale: f32,
-) {
+}
+
+fn draw_dialog(input: DialogRenderInput<'_>) {
+    let DialogRenderInput {
+        canvas,
+        title,
+        message,
+        confirm_label,
+        cancel_label,
+        position,
+        size,
+        focused_id,
+        confirm_focus_id,
+        cancel_focus_id,
+        font_cache,
+        text_cache,
+        theme,
+        fs,
+        swash,
+        scale,
+    } = input;
     let mut bp = Paint::default();
     bp.set_color(Theme::alpha(SkiaColor::BLACK, 180));
     bp.set_anti_alias(true);
@@ -2541,17 +2640,30 @@ fn draw_dialog(
     }
 }
 
-fn draw_toast(
-    canvas: &Canvas,
-    message: &str,
+struct ToastRenderInput<'a> {
+    canvas: &'a Canvas,
+    message: &'a str,
     kind: ToastKind,
     position: crate::widget::ToastPosition,
     progress: f32,
     size: (f32, f32),
     index: usize,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-) {
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    theme: &'a Theme,
+}
+
+fn draw_toast(input: ToastRenderInput<'_>) {
+    let ToastRenderInput {
+        canvas,
+        message,
+        kind,
+        position,
+        progress,
+        size,
+        index,
+        font_cache,
+        theme,
+    } = input;
     let accent = match kind {
         ToastKind::Info => theme.primary,
         ToastKind::Success => theme.success,
@@ -2612,7 +2724,6 @@ fn draw_toast(
 
 fn draw_context_menu<Msg>(
     canvas: &Canvas,
-    _id: u64,
     entries: &[ContextMenuEntry<'_, Msg>],
     anchor: Point,
     viewport_size: (f32, f32),
@@ -2721,21 +2832,34 @@ fn draw_popover_surface(canvas: &Canvas, rect: SkiaRect, theme: &Theme) {
     );
 }
 
-fn draw_virtual_list(
-    canvas: &Canvas,
-    item_height: &f32,
-    item_count: &usize,
-    items: &dyn Fn(usize) -> Option<String>,
+struct VirtualListRenderInput<'a> {
+    canvas: &'a Canvas,
+    item_height: f32,
+    item_count: usize,
+    items: &'a dyn Fn(usize) -> Option<String>,
     scroll_y: f32,
-    selection: VirtualSelectionPaint<'_>,
+    selection: VirtualSelectionPaint<'a>,
     hovered: Option<usize>,
     size: (f32, f32),
     mouse: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-) {
-    let ih = *item_height;
-    let count = *item_count;
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    theme: &'a Theme,
+}
+
+fn draw_virtual_list(input: VirtualListRenderInput<'_>) {
+    let VirtualListRenderInput {
+        canvas,
+        item_height: ih,
+        item_count: count,
+        items,
+        scroll_y,
+        selection,
+        hovered,
+        size,
+        mouse,
+        font_cache,
+        theme,
+    } = input;
     let mut bg = Paint::default();
     bg.set_color(theme.surface);
     bg.set_anti_alias(true);
@@ -3626,30 +3750,42 @@ fn draw_virtual_scrollbar_thumb(
     );
 }
 
-fn draw_text_button(
-    canvas: &Canvas,
-    text: &str,
+struct TextButtonRenderInput<'a> {
+    canvas: &'a Canvas,
+    text: &'a str,
     color: Option<SkiaColor>,
     variant: ButtonVariant,
     is_focused: bool,
     size: (f32, f32),
     mouse: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-) {
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    theme: &'a Theme,
+}
+
+fn draw_text_button(input: TextButtonRenderInput<'_>) {
+    let TextButtonRenderInput {
+        canvas,
+        text,
+        color,
+        variant,
+        is_focused,
+        size,
+        mouse,
+        font_cache,
+        theme,
+    } = input;
     let hovered = button_hovered(size, mouse);
     let text_color = button_text_color(color, variant, hovered, theme);
     draw_button_frame(canvas, color, variant, is_focused, size, mouse, theme);
-    draw_text(
+    draw_text_line(TextDrawInput {
         canvas,
         text,
-        (0.0, 0.0).into(),
         size,
-        text_color,
-        theme.font_body,
+        color: text_color,
+        font_size: theme.font_body,
         font_cache,
-        true,
-    );
+        center: true,
+    });
 }
 
 fn draw_button_frame(
@@ -3771,16 +3907,26 @@ fn button_border_color(hovered: bool, accent: SkiaColor, theme: &Theme) -> SkiaC
     }
 }
 
-fn draw_checkbox(
-    canvas: &Canvas,
-    checked: bool,
-    label: &str,
+struct LabeledControlRenderInput<'a> {
+    canvas: &'a Canvas,
+    label: &'a str,
     is_focused: bool,
     size: (f32, f32),
     mouse: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-) {
+    font_cache: &'a mut HashMap<(String, u32), Font>,
+    theme: &'a Theme,
+}
+
+fn draw_checkbox(checked: bool, input: LabeledControlRenderInput<'_>) {
+    let LabeledControlRenderInput {
+        canvas,
+        label,
+        is_focused,
+        size,
+        mouse,
+        font_cache,
+        theme,
+    } = input;
     let box_size = 18.0_f32;
     let box_rect = SkiaRect::from_xywh(0.0, (size.1 - box_size) / 2.0, box_size, box_size);
     let hovered = SkiaRect::from_xywh(0.0, 0.0, size.0, size.1).contains(mouse);
@@ -3914,16 +4060,16 @@ fn draw_switch(
     }
 }
 
-fn draw_radio(
-    canvas: &Canvas,
-    selected: bool,
-    label: &str,
-    is_focused: bool,
-    size: (f32, f32),
-    mouse: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-) {
+fn draw_radio(selected: bool, input: LabeledControlRenderInput<'_>) {
+    let LabeledControlRenderInput {
+        canvas,
+        label,
+        is_focused,
+        size,
+        mouse,
+        font_cache,
+        theme,
+    } = input;
     let r = 9.0_f32;
     let cx = r;
     let cy = size.1 / 2.0;
@@ -3980,8 +4126,8 @@ fn draw_radio(
     }
 }
 
-fn draw_slider(
-    canvas: &Canvas,
+struct SliderRenderInput<'a> {
+    canvas: &'a Canvas,
     value: f32,
     min: f32,
     max: f32,
@@ -3989,8 +4135,21 @@ fn draw_slider(
     size: (f32, f32),
     mouse: Point,
     is_dragging: bool,
-    theme: &Theme,
-) {
+    theme: &'a Theme,
+}
+
+fn draw_slider(input: SliderRenderInput<'_>) {
+    let SliderRenderInput {
+        canvas,
+        value,
+        min,
+        max,
+        is_focused,
+        size,
+        mouse,
+        is_dragging,
+        theme,
+    } = input;
     let pad = 16.0_f32;
     let track_y = size.1 / 2.0;
     let track_h = 4.0_f32;
@@ -4284,20 +4443,36 @@ fn is_svg_image(data: &[u8]) -> bool {
     trimmed.starts_with("<svg") || trimmed.starts_with("<?xml") && trimmed.contains("<svg")
 }
 
-fn draw_select_trigger(
-    canvas: &Canvas,
-    options: &[&str],
-    selected_index: usize,
-    is_open: bool,
-    label: &str,
-    placeholder: &str,
-    is_focused: bool,
-    size: (f32, f32),
-    mouse: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-    direction: LayoutDirection,
-) {
+pub(crate) struct SelectTriggerRenderInput<'a> {
+    pub(crate) canvas: &'a Canvas,
+    pub(crate) options: &'a [&'a str],
+    pub(crate) selected_index: usize,
+    pub(crate) is_open: bool,
+    pub(crate) label: &'a str,
+    pub(crate) placeholder: &'a str,
+    pub(crate) is_focused: bool,
+    pub(crate) size: (f32, f32),
+    pub(crate) mouse: Point,
+    pub(crate) font_cache: &'a mut HashMap<(String, u32), Font>,
+    pub(crate) theme: &'a Theme,
+    pub(crate) direction: LayoutDirection,
+}
+
+pub(crate) fn draw_select_trigger(input: SelectTriggerRenderInput<'_>) {
+    let SelectTriggerRenderInput {
+        canvas,
+        options,
+        selected_index,
+        is_open,
+        label,
+        placeholder,
+        is_focused,
+        size,
+        mouse,
+        font_cache,
+        theme,
+        direction,
+    } = input;
     let closed_h = size.1;
     let hovered = SkiaRect::from_xywh(0.0, 0.0, size.0, closed_h).contains(mouse);
     let mut bg = Paint::default();

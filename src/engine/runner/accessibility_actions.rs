@@ -144,10 +144,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         {
             return false;
         }
-        if let Some(path) = path.as_ref() {
-            if !self.dropdown_submenu_can_expand(id, path) {
-                return false;
-            }
+        if let Some(path) = path.as_ref()
+            && !self.dropdown_submenu_can_expand(id, path)
+        {
+            return false;
         }
         match path {
             Some(path) => self.activate_dropdown_entry(id, path),

@@ -70,6 +70,39 @@ fn collect_toast_runtime_updates<Msg>(widget: &Widget<Msg>, out: &mut Vec<ToastR
     collect_toast_runtime_updates_impl(widget, out, &mut path);
 }
 
+fn contains_live_clock<Msg>(widget: &Widget<Msg>) -> bool {
+    match widget {
+        Widget::Clock { .. } => true,
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            children.iter().any(contains_live_clock)
+        }
+        _ => contains_live_clock_child(widget),
+    }
+}
+
+fn contains_live_clock_child<Msg>(widget: &Widget<Msg>) -> bool {
+    match widget {
+        Widget::Container { child, .. }
+        | Widget::ButtonContent { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
+        | Widget::ScrollView { child, .. } => contains_live_clock(child),
+        Widget::Accordion {
+            expanded, child, ..
+        } => *expanded && contains_live_clock(child),
+        Widget::Modal { visible, child, .. } | Widget::Dialog { visible, child, .. } => {
+            *visible && contains_live_clock(child)
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => contains_live_clock(anchor) || (*open && contains_live_clock(content)),
+        _ => false,
+    }
+}
+
 pub(crate) fn validate_runtime_reconstruction<Msg>(
     expected: Option<&WidgetIdSnapshot>,
     widget: &Widget<'_, Msg>,
@@ -312,12 +345,10 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
                 path.pop();
             }
         }
-        Widget::Modal { visible, child, .. } => {
-            if *visible {
-                path.push(0);
-                collect_focus_order_impl(child, out, path);
-                path.pop();
-            }
+        Widget::Modal { visible, child, .. } if *visible => {
+            path.push(0);
+            collect_focus_order_impl(child, out, path);
+            path.pop();
         }
         _ => {}
     }
@@ -433,6 +464,12 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     virtual_multi_selections: HashMap<u64, VirtualMultiSelectionRuntime<Msg>>,
     toast_dismiss: HashMap<u64, Msg>,
     popover_dismiss: HashMap<u64, Msg>,
+}
+
+struct RuntimeMetadataTraversal {
+    node: Option<NodeId>,
+    abs: Point,
+    spacing: f32,
 }
 
 impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
@@ -660,13 +697,12 @@ fn sync_carousel_runtime<Msg: Clone>(
     runtime: CarouselRuntime<Msg>,
 ) -> Result<(), WidgetIdError> {
     let resolved_id = widget.resolved_id(path).unwrap();
-    if let Some(width) = layout.map(|layout| layout.size.width) {
-        if let Some(state) = states
+    if let Some(width) = layout.map(|layout| layout.size.width)
+        && let Some(state) = states
             .get_mut(&resolved_id)
             .and_then(WidgetState::as_carousel_mut)
-        {
-            state.sync_viewport(width, &runtime.config, runtime.item_count);
-        }
+    {
+        state.sync_viewport(width, &runtime.config, runtime.item_count);
     }
     insert_runtime_entry(&mut caches.carousels, resolved_id, runtime, "carousels")
 }
@@ -820,6 +856,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub scale_factor: f32,
     pub last_mouse_pos: Point,
     pub has_animated: bool,
+    pub has_live_clock: bool,
     surface_config: SurfaceConfig,
 }
 
@@ -913,6 +950,7 @@ impl<A: AppLogic> RutterEngine<A> {
             scale_factor: 1.0,
             last_mouse_pos: Point::new(0.0, 0.0),
             has_animated: false,
+            has_live_clock: false,
             surface_config,
         })
     }
@@ -1032,10 +1070,10 @@ impl<A: AppLogic> RutterEngine<A> {
     }
     pub fn maybe_snapshot(&mut self) {
         if self.snapshot_scheduled && self.last_snapshot.elapsed().as_millis() > 500 {
-            if let Some(id) = self.focused_input_id() {
-                if let Some(s) = self.input_states.get_mut(&id) {
-                    s.snapshot();
-                }
+            if let Some(id) = self.focused_input_id()
+                && let Some(s) = self.input_states.get_mut(&id)
+            {
+                s.snapshot();
             }
             self.snapshot_scheduled = false;
         }
@@ -1070,7 +1108,7 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn try_ensure_widget_states(&mut self) -> Result<(), WidgetIdError> {
-        let (stateful, input_ids, toast_updates, next_snapshot) = {
+        let (stateful, input_ids, toast_updates, has_live_clock, next_snapshot) = {
             let widget_tree = A::view(&mut self.app_state);
             let next_snapshot = validate_widget_id_snapshot(&widget_tree)?;
             let mut stateful = Vec::new();
@@ -1079,7 +1117,14 @@ impl<A: AppLogic> RutterEngine<A> {
             collect_stateful_ids(&widget_tree, &mut stateful);
             collect_input_ids(&widget_tree, &mut input_ids);
             collect_toast_runtime_updates(&widget_tree, &mut toast_updates);
-            (stateful, input_ids, toast_updates, next_snapshot)
+            let has_live_clock = contains_live_clock(&widget_tree);
+            (
+                stateful,
+                input_ids,
+                toast_updates,
+                has_live_clock,
+                next_snapshot,
+            )
         };
         if let Some(previous) = &self.widget_id_snapshot {
             previous.validate_transition_to(&next_snapshot)?;
@@ -1139,6 +1184,7 @@ impl<A: AppLogic> RutterEngine<A> {
             }
         }
         self.has_animated = has_anim;
+        self.has_live_clock = has_live_clock;
         self.widget_id_snapshot = Some(next_snapshot);
         self.layout_dirty |= widget_tree_changed;
         Ok(())
@@ -1165,10 +1211,10 @@ impl<A: AppLogic> RutterEngine<A> {
                     }
                 }
                 ToastRuntimeUpdate::Dismiss { id } => {
-                    if let Some(ws) = self.widget_states.get_mut(&id) {
-                        if let Some(t) = ws.as_toast_mut() {
-                            t.dismiss();
-                        }
+                    if let Some(ws) = self.widget_states.get_mut(&id)
+                        && let Some(t) = ws.as_toast_mut()
+                    {
+                        t.dismiss();
                     }
                 }
             }
@@ -1219,11 +1265,11 @@ impl<A: AppLogic> RutterEngine<A> {
     pub fn close_all_context_menus(&mut self) -> bool {
         let mut changed = false;
         for state in self.widget_states.values_mut() {
-            if let Some(menu) = state.as_context_menu_mut() {
-                if menu.is_open {
-                    menu.close();
-                    changed = true;
-                }
+            if let Some(menu) = state.as_context_menu_mut()
+                && menu.is_open
+            {
+                menu.close();
+                changed = true;
             }
         }
         changed
@@ -1266,29 +1312,29 @@ impl<A: AppLogic> RutterEngine<A> {
     pub fn close_all_popovers(&mut self) -> bool {
         let mut changed = false;
         for state in self.widget_states.values_mut() {
-            if let Some(popover) = state.as_popover_mut() {
-                if popover.is_open {
-                    popover.close();
-                    changed = true;
-                }
+            if let Some(popover) = state.as_popover_mut()
+                && popover.is_open
+            {
+                popover.close();
+                changed = true;
             }
         }
         changed
     }
 
     pub fn open_modal(&mut self, id: u64) {
-        if let Some(ws) = self.widget_states.get_mut(&id) {
-            if let Some(m) = ws.as_modal_mut() {
-                m.open();
-            }
+        if let Some(ws) = self.widget_states.get_mut(&id)
+            && let Some(m) = ws.as_modal_mut()
+        {
+            m.open();
         }
         self.layout_dirty = true;
     }
     pub fn close_modal(&mut self, id: u64) {
-        if let Some(ws) = self.widget_states.get_mut(&id) {
-            if let Some(m) = ws.as_modal_mut() {
-                m.close();
-            }
+        if let Some(ws) = self.widget_states.get_mut(&id)
+            && let Some(m) = ws.as_modal_mut()
+        {
+            m.close();
         }
         self.layout_dirty = true;
     }
@@ -1296,10 +1342,10 @@ impl<A: AppLogic> RutterEngine<A> {
     pub fn tick_animations(&mut self) -> bool {
         let mut changed = false;
         for state in self.widget_states.values_mut() {
-            if let Some(a) = state.as_anim_mut() {
-                if a.tick() {
-                    changed = true;
-                }
+            if let Some(a) = state.as_anim_mut()
+                && a.tick()
+            {
+                changed = true;
             }
         }
         changed
@@ -1430,9 +1476,11 @@ impl<A: AppLogic> RutterEngine<A> {
             selection_states,
             taffy,
             widget,
-            node,
-            Point::new(0.0, 0.0),
-            spacing,
+            RuntimeMetadataTraversal {
+                node,
+                abs: Point::new(0.0, 0.0),
+                spacing,
+            },
             &mut path,
         )
     }
@@ -1443,15 +1491,18 @@ impl<A: AppLogic> RutterEngine<A> {
         selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
         taffy: &TaffyTree<RutterContext>,
         widget: &Widget<Msg>,
-        node: Option<NodeId>,
-        abs: Point,
-        spacing: f32,
+        traversal: RuntimeMetadataTraversal,
         path: &mut Vec<usize>,
     ) -> Result<(), WidgetIdError> {
-        let layout = node.and_then(|node| taffy.layout(node).ok());
+        let layout = traversal.node.and_then(|node| taffy.layout(node).ok());
         let abs_pos = layout
-            .map(|layout| Point::new(abs.x + layout.location.x, abs.y + layout.location.y))
-            .unwrap_or(abs);
+            .map(|layout| {
+                Point::new(
+                    traversal.abs.x + layout.location.x,
+                    traversal.abs.y + layout.location.y,
+                )
+            })
+            .unwrap_or(traversal.abs);
         match widget {
             Widget::Button { on_press, .. } | Widget::ButtonContent { on_press, .. } => {
                 insert_runtime_entry(
@@ -1477,8 +1528,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         on_submit: on_submit.clone(),
                         is_password: *is_password,
                         is_multiline: false,
-                        visible_w: Self::visible_input_width(layout, spacing),
-                        visible_h: Self::visible_input_height(layout, spacing),
+                        visible_w: Self::visible_input_width(layout, traversal.spacing),
+                        visible_h: Self::visible_input_height(layout, traversal.spacing),
                         limits: A::input_limits(resolved_id, InputKind::TextInput)
                             .clamp_to_hard_caps(),
                     },
@@ -1500,8 +1551,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         on_submit: on_submit.clone(),
                         is_password: false,
                         is_multiline: true,
-                        visible_w: Self::visible_input_width(layout, spacing),
-                        visible_h: Self::visible_input_height(layout, spacing),
+                        visible_w: Self::visible_input_width(layout, traversal.spacing),
+                        visible_h: Self::visible_input_height(layout, traversal.spacing),
                         limits: A::input_limits(resolved_id, InputKind::TextArea)
                             .clamp_to_hard_caps(),
                     },
@@ -1523,8 +1574,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         on_submit: on_submit.clone(),
                         is_password: false,
                         is_multiline: false,
-                        visible_w: Self::visible_input_width(layout, spacing),
-                        visible_h: Self::visible_input_height(layout, spacing),
+                        visible_w: Self::visible_input_width(layout, traversal.spacing),
+                        visible_h: Self::visible_input_height(layout, traversal.spacing),
                         limits: A::input_limits(resolved_id, InputKind::SearchBar)
                             .clamp_to_hard_caps(),
                     },
@@ -1661,9 +1712,11 @@ impl<A: AppLogic> RutterEngine<A> {
                     selection_states,
                     taffy,
                     child.as_ref(),
-                    Self::first_child(node, taffy),
-                    abs_pos,
-                    spacing,
+                    RuntimeMetadataTraversal {
+                        node: Self::first_child(traversal.node, taffy),
+                        abs: abs_pos,
+                        spacing: traversal.spacing,
+                    },
                     path,
                 )?;
                 path.pop();
@@ -1727,9 +1780,11 @@ impl<A: AppLogic> RutterEngine<A> {
                     selection_states,
                     taffy,
                     child.as_ref(),
-                    Self::first_child(node, taffy),
-                    abs_pos,
-                    spacing,
+                    RuntimeMetadataTraversal {
+                        node: Self::first_child(traversal.node, taffy),
+                        abs: abs_pos,
+                        spacing: traversal.spacing,
+                    },
                     path,
                 )?;
                 path.pop();
@@ -1747,16 +1802,15 @@ impl<A: AppLogic> RutterEngine<A> {
             }
             Widget::ScrollView { child, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
-                if let Some(layout) = layout {
-                    if let Some(ws) = widget_states.get_mut(&resolved_id) {
-                        if let Some(s) = ws.as_scroll_mut() {
-                            s.viewport_h = layout.size.height;
-                            if let Some(child_node) = Self::first_child(node, taffy) {
-                                if let Ok(child_layout) = taffy.layout(child_node) {
-                                    s.content_height = child_layout.size.height;
-                                }
-                            }
-                        }
+                if let Some(layout) = layout
+                    && let Some(ws) = widget_states.get_mut(&resolved_id)
+                    && let Some(s) = ws.as_scroll_mut()
+                {
+                    s.viewport_h = layout.size.height;
+                    if let Some(child_node) = Self::first_child(traversal.node, taffy)
+                        && let Ok(child_layout) = taffy.layout(child_node)
+                    {
+                        s.content_height = child_layout.size.height;
                     }
                 }
                 path.push(0);
@@ -1766,9 +1820,11 @@ impl<A: AppLogic> RutterEngine<A> {
                     selection_states,
                     taffy,
                     child.as_ref(),
-                    Self::first_child(node, taffy),
-                    abs_pos,
-                    spacing,
+                    RuntimeMetadataTraversal {
+                        node: Self::first_child(traversal.node, taffy),
+                        abs: abs_pos,
+                        spacing: traversal.spacing,
+                    },
                     path,
                 )?;
                 path.pop();
@@ -1954,20 +2010,20 @@ impl<A: AppLogic> RutterEngine<A> {
                         "popover dismiss callbacks",
                     )?;
                 }
-                let node_children = Self::children_for(node, taffy);
-                if let Some(ws) = widget_states.get_mut(&resolved_id) {
-                    if let Some(popover) = ws.as_popover_mut() {
-                        popover.set_open(*open);
-                        if let Some(anchor_node) = node_children.first().copied() {
-                            if let Ok(anchor_layout) = taffy.layout(anchor_node) {
-                                popover.set_anchor_rect(
-                                    abs_pos.x + anchor_layout.location.x,
-                                    abs_pos.y + anchor_layout.location.y,
-                                    anchor_layout.size.width,
-                                    anchor_layout.size.height,
-                                );
-                            }
-                        }
+                let node_children = Self::children_for(traversal.node, taffy);
+                if let Some(ws) = widget_states.get_mut(&resolved_id)
+                    && let Some(popover) = ws.as_popover_mut()
+                {
+                    popover.set_open(*open);
+                    if let Some(anchor_node) = node_children.first().copied()
+                        && let Ok(anchor_layout) = taffy.layout(anchor_node)
+                    {
+                        popover.set_anchor_rect(
+                            abs_pos.x + anchor_layout.location.x,
+                            abs_pos.y + anchor_layout.location.y,
+                            anchor_layout.size.width,
+                            anchor_layout.size.height,
+                        );
                     }
                 }
 
@@ -1979,36 +2035,39 @@ impl<A: AppLogic> RutterEngine<A> {
                         selection_states,
                         taffy,
                         anchor.as_ref(),
-                        Some(anchor_node),
-                        abs_pos,
-                        spacing,
+                        RuntimeMetadataTraversal {
+                            node: Some(anchor_node),
+                            abs: abs_pos,
+                            spacing: traversal.spacing,
+                        },
                         path,
                     )?;
                     path.pop();
                 }
 
-                if *open {
-                    if let Some(popup_node) = node_children.get(1).copied() {
-                        if let Some(content_node) = Self::first_child(Some(popup_node), taffy) {
-                            path.push(1);
-                            Self::sync_runtime_metadata_impl(
-                                runtime_caches,
-                                widget_states,
-                                selection_states,
-                                taffy,
-                                content.as_ref(),
-                                Some(content_node),
-                                Point::new(0.0, 0.0),
-                                spacing,
-                                path,
-                            )?;
-                            path.pop();
-                        }
-                    }
+                if *open
+                    && let Some(popup_node) = node_children.get(1).copied()
+                    && let Some(content_node) = Self::first_child(Some(popup_node), taffy)
+                {
+                    path.push(1);
+                    Self::sync_runtime_metadata_impl(
+                        runtime_caches,
+                        widget_states,
+                        selection_states,
+                        taffy,
+                        content.as_ref(),
+                        RuntimeMetadataTraversal {
+                            node: Some(content_node),
+                            abs: Point::new(0.0, 0.0),
+                            spacing: traversal.spacing,
+                        },
+                        path,
+                    )?;
+                    path.pop();
                 }
             }
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
-                let node_children = Self::children_for(node, taffy);
+                let node_children = Self::children_for(traversal.node, taffy);
                 for (i, child) in children.iter().enumerate() {
                     path.push(i);
                     Self::sync_runtime_metadata_impl(
@@ -2017,9 +2076,11 @@ impl<A: AppLogic> RutterEngine<A> {
                         selection_states,
                         taffy,
                         child,
-                        node_children.get(i).copied(),
-                        abs_pos,
-                        spacing,
+                        RuntimeMetadataTraversal {
+                            node: node_children.get(i).copied(),
+                            abs: abs_pos,
+                            spacing: traversal.spacing,
+                        },
                         path,
                     )?;
                     path.pop();
@@ -2036,9 +2097,11 @@ impl<A: AppLogic> RutterEngine<A> {
                     selection_states,
                     taffy,
                     child.as_ref(),
-                    Self::first_child(node, taffy),
-                    abs_pos,
-                    spacing,
+                    RuntimeMetadataTraversal {
+                        node: Self::first_child(traversal.node, taffy),
+                        abs: abs_pos,
+                        spacing: traversal.spacing,
+                    },
                     path,
                 )?;
                 path.pop();
@@ -2143,7 +2206,7 @@ impl<A: AppLogic> RutterEngine<A> {
         self.try_ensure_layout(phys)?;
 
         let theme = A::theme_for(&self.app_state);
-        let mut widget_tree = A::view(&mut self.app_state);
+        let widget_tree = A::view(&mut self.app_state);
         validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget_tree)?;
         let lc = Point::new(
             cursor_pos.x / self.scale_factor,
@@ -2186,7 +2249,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 canvas,
                 &self.taffy,
                 self.last_root_node,
-                &mut widget_tree,
+                &widget_tree,
                 &mut self.font_system.borrow_mut(),
                 &mut self.swash_cache,
                 lc,
@@ -2242,6 +2305,24 @@ mod tests {
             },
             ..Style::default()
         }
+    }
+
+    #[test]
+    fn live_clock_detection_traverses_button_content() {
+        let widget = Widget::ButtonContent {
+            label: "Live UTC time",
+            child: Box::new(Widget::clock(
+                crate::TimeZone::UTC,
+                base_style(240.0, 40.0),
+                "UTC clock",
+            )),
+            on_press: Msg::Submit,
+            style: base_style(240.0, 40.0),
+            color: None,
+            variant: crate::widget::ButtonVariant::Ghost,
+        };
+
+        assert!(contains_live_clock(&widget));
     }
 
     #[derive(Debug, Clone, PartialEq)]

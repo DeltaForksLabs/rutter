@@ -21,6 +21,7 @@ use crate::render::rich_text::{RichTextDirection, RichTextMetrics, RichTextWidth
 use crate::widget::Widget;
 use crate::widgets::counter::{COUNTER_DEFAULT_HEIGHT, counter_preferred_width};
 use crate::widgets::rich_text::OwnedRichTextSpec;
+use crate::widgets::time::clock_layout_text;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
 
@@ -110,20 +111,16 @@ impl LayoutBlueprint {
         }
     }
 
-    fn from_widget<'a, Msg>(
-        widget: &Widget<'a, Msg>,
-        widget_states: &HashMap<u64, WidgetState>,
-    ) -> Self {
+    fn from_widget<'a, Msg>(widget: &Widget<'a, Msg>) -> Self {
         let mut path = Vec::new();
-        Self::from_widget_with_path(widget, widget_states, &mut path)
+        Self::from_widget_with_path(widget, &mut path)
     }
 
     fn from_widget_with_direction<'a, Msg>(
         widget: &Widget<'a, Msg>,
-        widget_states: &HashMap<u64, WidgetState>,
         direction: LayoutDirection,
     ) -> Self {
-        let mut blueprint = Self::from_widget(widget, widget_states);
+        let mut blueprint = Self::from_widget(widget);
         blueprint.apply_direction(direction);
         blueprint
     }
@@ -135,11 +132,7 @@ impl LayoutBlueprint {
         }
     }
 
-    fn from_widget_with_path<'a, Msg>(
-        widget: &Widget<'a, Msg>,
-        widget_states: &HashMap<u64, WidgetState>,
-        path: &mut Vec<usize>,
-    ) -> Self {
+    fn from_widget_with_path<'a, Msg>(widget: &Widget<'a, Msg>, path: &mut Vec<usize>) -> Self {
         match widget {
             Widget::Column { children, style } => {
                 let style = Style {
@@ -151,7 +144,7 @@ impl LayoutBlueprint {
                     .enumerate()
                     .map(|(index, child)| {
                         path.push(index);
-                        let blueprint = Self::from_widget_with_path(child, widget_states, path);
+                        let blueprint = Self::from_widget_with_path(child, path);
                         path.pop();
                         blueprint
                     })
@@ -168,7 +161,7 @@ impl LayoutBlueprint {
                     .enumerate()
                     .map(|(index, child)| {
                         path.push(index);
-                        let blueprint = Self::from_widget_with_path(child, widget_states, path);
+                        let blueprint = Self::from_widget_with_path(child, path);
                         path.pop();
                         blueprint
                     })
@@ -177,26 +170,26 @@ impl LayoutBlueprint {
             }
             Widget::Container { child, style, .. } => {
                 path.push(0);
-                let child = Self::from_widget_with_path(child, widget_states, path);
+                let child = Self::from_widget_with_path(child, path);
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
             Widget::ScrollView { child, style, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 path.push(0);
-                let child = Self::from_widget_with_path(child, widget_states, path);
+                let child = Self::from_widget_with_path(child, path);
                 path.pop();
                 Self::with_children(Some(resolved_id), style.clone(), vec![child])
             }
             Widget::Tooltip { child, style, .. } => {
                 path.push(0);
-                let child = Self::from_widget_with_path(child, widget_states, path);
+                let child = Self::from_widget_with_path(child, path);
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
             Widget::ContextMenu { child, style, .. } => {
                 path.push(0);
-                let child = Self::from_widget_with_path(child, widget_states, path);
+                let child = Self::from_widget_with_path(child, path);
                 path.pop();
                 Self::with_children(
                     Some(widget.resolved_id(path).unwrap()),
@@ -213,12 +206,12 @@ impl LayoutBlueprint {
                 ..
             } => {
                 path.push(0);
-                let anchor = Self::from_widget_with_path(anchor, widget_states, path);
+                let anchor = Self::from_widget_with_path(anchor, path);
                 path.pop();
 
                 let popup = if *open {
                     path.push(1);
-                    let content = Self::from_widget_with_path(content, widget_states, path);
+                    let content = Self::from_widget_with_path(content, path);
                     path.pop();
                     Self::with_children(
                         None,
@@ -256,7 +249,7 @@ impl LayoutBlueprint {
                 style.padding.top = LengthPercentage::length(ACCORDION_HEADER_H);
                 if *expanded {
                     path.push(0);
-                    let child = Self::from_widget_with_path(child, widget_states, path);
+                    let child = Self::from_widget_with_path(child, path);
                     path.pop();
                     Self::with_children(Some(resolved_id), style, vec![child])
                 } else {
@@ -273,7 +266,7 @@ impl LayoutBlueprint {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 if *visible {
                     path.push(0);
-                    let child = Self::from_widget_with_path(child, widget_states, path);
+                    let child = Self::from_widget_with_path(child, path);
                     path.pop();
                     Self::with_children(Some(resolved_id), overlay_style(style), vec![child])
                 } else {
@@ -295,7 +288,7 @@ impl LayoutBlueprint {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 if *visible {
                     path.push(0);
-                    let child = Self::from_widget_with_path(child, widget_states, path);
+                    let child = Self::from_widget_with_path(child, path);
                     path.pop();
                     Self::with_children(Some(resolved_id), overlay_style(style), vec![child])
                 } else {
@@ -310,7 +303,7 @@ impl LayoutBlueprint {
             }
             Widget::ButtonContent { child, style, .. } => {
                 path.push(0);
-                let child = Self::from_widget_with_path(child, widget_states, path);
+                let child = Self::from_widget_with_path(child, path);
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
@@ -321,6 +314,19 @@ impl LayoutBlueprint {
                 Some(widget.resolved_id(path).unwrap()),
                 style.clone(),
                 RutterContext::Counter(CounterContext { value: *value }),
+            ),
+            Widget::Clock {
+                time_zone,
+                config,
+                style,
+                ..
+            } => Self::leaf_with_context(
+                Some(widget.resolved_id(path).unwrap()),
+                style.clone(),
+                RutterContext::Text(TextContext {
+                    content: clock_layout_text(*time_zone, config.format()),
+                    font_size: config.font_size(),
+                }),
             ),
             Widget::Text {
                 content,
@@ -420,10 +426,10 @@ pub fn build_taffy_tree_with_direction<'a, Msg>(
     taffy: &mut TaffyTree<RutterContext>,
     widget: &Widget<'a, Msg>,
     _fs: Rc<RefCell<FontSystem>>,
-    widget_states: &HashMap<u64, WidgetState>,
+    _widget_states: &HashMap<u64, WidgetState>,
     direction: LayoutDirection,
 ) -> NodeId {
-    let blueprint = LayoutBlueprint::from_widget_with_direction(widget, widget_states, direction);
+    let blueprint = LayoutBlueprint::from_widget_with_direction(widget, direction);
     mount_layout_blueprint(taffy, &blueprint).node_id
 }
 
@@ -463,10 +469,10 @@ pub fn sync_taffy_tree_with_direction<'a, Msg>(
     taffy: &mut TaffyTree<RutterContext>,
     tree: &mut SyncedLayoutTree,
     widget: &Widget<'a, Msg>,
-    widget_states: &HashMap<u64, WidgetState>,
+    _widget_states: &HashMap<u64, WidgetState>,
     direction: LayoutDirection,
 ) -> NodeId {
-    let blueprint = LayoutBlueprint::from_widget_with_direction(widget, widget_states, direction);
+    let blueprint = LayoutBlueprint::from_widget_with_direction(widget, direction);
     sync_layout_blueprint(taffy, tree, &blueprint);
     tree.node_id()
 }
@@ -850,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_menu_remains_a_keyed_leaf_when_open() {
+    fn dropdown_menu_is_a_keyed_leaf() {
         let menu = Widget::dropdown_menu(
             "File",
             vec![crate::DropdownMenuEntry::item("Save", ())],
@@ -863,19 +869,11 @@ mod tests {
             },
         )
         .with_id(77);
-        let mut state = crate::dropdown_menu::DropdownMenuState::default();
-        let Widget::DropdownMenu { entries, .. } = &menu else {
-            unreachable!();
-        };
-        state.open_at_first(entries);
-        let closed = LayoutBlueprint::from_widget(&menu, &empty_states());
-        let open_states = HashMap::from([(77, WidgetState::DropdownMenu(state))]);
-        let open = LayoutBlueprint::from_widget(&menu, &open_states);
+        let blueprint = LayoutBlueprint::from_widget(&menu);
 
-        assert_eq!(closed, open);
-        assert_eq!(open.key, Some(77));
-        assert!(open.children.is_empty());
-        assert_eq!(open.style.size.width, Dimension::length(96.0));
+        assert_eq!(blueprint.key, Some(77));
+        assert!(blueprint.children.is_empty());
+        assert_eq!(blueprint.style.size.width, Dimension::length(96.0));
     }
 
     #[test]
