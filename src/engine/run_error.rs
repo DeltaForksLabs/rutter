@@ -7,7 +7,7 @@ use std::fmt::{self, Display, Formatter};
 use winit::error::EventLoopError;
 
 use crate::engine::gpu::GraphicsError;
-use crate::widget_id::WidgetIdError;
+use crate::widget::id::WidgetIdError;
 
 /// Describes a controlled failure while starting or running a Rutter application.
 #[derive(Debug)]

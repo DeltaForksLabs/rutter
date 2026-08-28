@@ -4,10 +4,13 @@
 use std::collections::{HashMap, hash_map::Entry};
 use std::num::NonZeroU64;
 
-use crate::widget::{AUTO_ID, DialogAction, Widget, WidgetIdTag};
-pub use crate::widget_id_error::WidgetIdError;
-use crate::widget_structure::{WidgetStructureKind, widget_structure_kind};
+use super::{AUTO_ID, DialogAction, Widget, WidgetIdTag};
 use crate::widgets::dropdown_menu::{DropdownMenuEntryKind, entry_at_path};
+pub use error::WidgetIdError;
+use structure::{WidgetStructureKind, widget_structure_kind};
+
+mod error;
+mod structure;
 
 pub(crate) const AUTOMATIC_ID_NAMESPACE_BIT: u64 = 1 << 63;
 const ACCESSIBILITY_PATH_HASH_OFFSET: u64 = 0x6a09e667f3bcc909;
@@ -481,5 +484,5 @@ fn inconsistent_tree_error(
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/dropdown_menu_id_unit_tests.rs"]
+#[path = "../../../tests/unit/dropdown_menu_id_unit_tests.rs"]
 mod dropdown_menu_tests;

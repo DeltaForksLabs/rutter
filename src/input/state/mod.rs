@@ -2,7 +2,7 @@
 // Licensed under the MIT License OR Apache 2.0.
 
 // ============================================================
-// Rutter Framework — engine/input_state.rs
+// Rutter Framework — input/state/mod.rs
 // ============================================================
 
 use crate::input_limits::InputLimits;
@@ -11,12 +11,11 @@ use cosmic_text::{
     Wrap,
 };
 
-pub use crate::input_undo::UndoStack;
+mod buffer;
+mod edit;
+mod undo;
 
-#[path = "input_state_edit.rs"]
-mod input_state_edit;
-#[path = "input_state_edit_helpers.rs"]
-mod input_state_edit_helpers;
+pub use undo::UndoStack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TextSelection {
@@ -241,7 +240,7 @@ impl InputWidgetState {
     pub(crate) fn try_cursor_byte_index(
         &self,
     ) -> Result<usize, crate::input_limits::InputLimitError> {
-        input_state_edit_helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())
+        buffer::cursor_flattened_offset(&self.editor, self.editor.cursor())
     }
 
     pub fn select_all(&mut self, fs: &mut FontSystem) {
@@ -273,15 +272,11 @@ impl InputWidgetState {
         } else {
             start
         };
-        let Ok(cursor_offset) =
-            input_state_edit_helpers::cursor_flattened_offset(&self.editor, cursor)
-        else {
+        let Ok(cursor_offset) = buffer::cursor_flattened_offset(&self.editor, cursor) else {
             self.clear_selection();
             return;
         };
-        let Ok(anchor_offset) =
-            input_state_edit_helpers::cursor_flattened_offset(&self.editor, anchor)
-        else {
+        let Ok(anchor_offset) = buffer::cursor_flattened_offset(&self.editor, anchor) else {
             self.clear_selection();
             return;
         };

@@ -302,5 +302,5 @@ impl<NativeId: Copy + Eq + Hash> SurfaceRoutes<NativeId> {
     }
 }
 #[cfg(test)]
-#[path = "../tests/unit/multi_window_unit_tests.rs"]
+#[path = "../../tests/unit/multi_window_unit_tests.rs"]
 mod tests;

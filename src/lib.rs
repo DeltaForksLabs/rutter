@@ -11,18 +11,16 @@ pub(crate) mod accessibility;
 pub mod app;
 pub mod engine;
 pub mod i18n;
-pub mod input_limits;
-pub mod input_state;
-mod input_undo;
+mod input;
 pub mod layout;
 pub mod multi_window;
 pub mod render;
 pub mod theme;
 pub mod widget;
-mod widget_id;
-mod widget_id_error;
-mod widget_structure;
 mod widgets;
+
+// Keep established public paths while the implementation stays grouped by input domain.
+pub use input::{limits as input_limits, state as input_state};
 
 // ── Re-exports ergonômicos ───────────────────────────────────
 pub use app::{
@@ -54,12 +52,12 @@ pub use time::{
     ClockConfig, ClockError, ClockFormat, ClockTime, HourCycle, LocalTimeResolution, TimeOfDay,
     TimeOfDayError, TimePickerConfig, TimePickerError, TimePickerLabels, TimeZone, TimeZoneError,
 };
+pub use widget::id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
 pub use widget::{
     AUTO_ID, ButtonVariant, ContextMenuEntry, CounterConfigError, DialogPosition, InputState,
     VirtualSelection, Widget, WidgetConfigError, validate_counter, validate_slider,
     validate_virtual_grid, validate_virtual_list,
 };
-pub use widget_id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
 pub use widgets::{calendar, carousel, dropdown_menu, rich_text, time};
 
 // ── Re-exports de dependências públicas ──────────────────────

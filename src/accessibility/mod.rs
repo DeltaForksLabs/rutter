@@ -17,8 +17,8 @@ use crate::layout::RutterContext;
 use crate::render::select_overlay::collector::{
     collect_dropdown_triggers, collect_open_dropdown_overlays,
 };
+use crate::widget::id::resolve_accessibility_path_id;
 use crate::widget::{DialogAction, VirtualSelection, Widget};
-use crate::widget_id::resolve_accessibility_path_id;
 use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
 
 mod action_queue;
@@ -1098,7 +1098,7 @@ mod tests {
     #[test]
     fn accessibility_ids_preserve_manual_and_automatic_namespaces() {
         let manual_id = 42;
-        let automatic_id = crate::widget_id::AUTOMATIC_ID_NAMESPACE_BIT | manual_id;
+        let automatic_id = crate::widget::id::AUTOMATIC_ID_NAMESPACE_BIT | manual_id;
 
         assert_ne!(access_node_id(manual_id), access_node_id(automatic_id));
         assert_ne!(access_node_id(manual_id), NodeId(ROOT_ACCESSIBILITY_ID));

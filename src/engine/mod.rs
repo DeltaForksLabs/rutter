@@ -55,8 +55,8 @@ use crate::render::select_overlay::collector::{
 use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::theme::Theme;
+use crate::widget::id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 use crate::widget::{DialogAction, VirtualSelection, Widget};
-use crate::widget_id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
 
 #[derive(Debug, Clone, Copy)]

@@ -10,7 +10,7 @@ use crate::input_limits::{
     validate_text, validate_utf8_range,
 };
 
-use super::{InputWidgetState, TextSelection, UndoStack, input_state_edit_helpers as helpers};
+use super::{InputWidgetState, TextSelection, UndoStack, buffer};
 
 #[derive(Clone, Copy)]
 enum HistoryStep {
@@ -116,7 +116,7 @@ impl InputWidgetState {
         text: &str,
     ) -> Result<bool, InputLimitError> {
         validate_text(text, self.limits)?;
-        if helpers::buffer_matches_text(&self.editor, text) {
+        if buffer::buffer_matches_text(&self.editor, text) {
             return Ok(false);
         }
         self.replace_buffer_text(font_system, text, None);
@@ -152,10 +152,10 @@ impl InputWidgetState {
         if text.is_empty() {
             return Ok(false);
         }
-        let cursor_offset = helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())?;
+        let cursor_offset = buffer::cursor_flattened_offset(&self.editor, self.editor.cursor())?;
         validate_inserted_bytes(self.text_byte_len(), text.len(), self.limits)?;
         let projected =
-            helpers::buffer_metrics(&self.editor).insertion_upper_bound(text_metrics(text))?;
+            buffer::buffer_metrics(&self.editor).insertion_upper_bound(text_metrics(text))?;
         validate_bytes_and_lines(projected, self.limits)?;
         // Grapheme boundaries can change at insertion edges, unlike scalar counts.
         if projected.scalars > self.limits.max_graphemes {
@@ -217,7 +217,7 @@ impl InputWidgetState {
         &mut self,
         font_system: &mut FontSystem,
     ) -> Result<bool, InputLimitError> {
-        let end = helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())?;
+        let end = buffer::cursor_flattened_offset(&self.editor, self.editor.cursor())?;
         let mut text = self.text();
         let start = text[..end]
             .char_indices()
@@ -232,7 +232,7 @@ impl InputWidgetState {
         &mut self,
         font_system: &mut FontSystem,
     ) -> Result<bool, InputLimitError> {
-        let start = helpers::cursor_flattened_offset(&self.editor, self.editor.cursor())?;
+        let start = buffer::cursor_flattened_offset(&self.editor, self.editor.cursor())?;
         let mut text = self.text();
         let end = text[start..]
             .char_indices()
@@ -285,7 +285,7 @@ impl InputWidgetState {
     ) -> Result<bool, InputLimitError> {
         let (start, end) = selection.normalized();
         validate_utf8_range(current, start, end)?;
-        let cursor_offset = helpers::replacement_cursor_offset(start, replacement)?;
+        let cursor_offset = buffer::replacement_cursor_offset(start, replacement)?;
         let mut candidate =
             replacement_candidate(current, start, end, replacement, self.limits.max_bytes)?;
         let result =
@@ -304,7 +304,7 @@ impl InputWidgetState {
         validate_candidate(candidate, self.limits)?;
         if candidate == current {
             self.editor.action(font_system, Action::Escape);
-            let _ = helpers::set_cursor_at_flattened_offset(&mut self.editor, cursor_offset);
+            let _ = buffer::set_cursor_at_flattened_offset(&mut self.editor, cursor_offset);
             self.clear_selection();
             return Ok(false);
         }
@@ -439,7 +439,7 @@ impl InputWidgetState {
         self.editor.action(font_system, Action::Motion(Motion::End));
         self.editor.action(font_system, Action::Escape);
         if let Some(offset) = cursor_offset {
-            let _ = helpers::set_cursor_at_flattened_offset(&mut self.editor, offset);
+            let _ = buffer::set_cursor_at_flattened_offset(&mut self.editor, offset);
         }
         self.normalize_cursor();
         self.clear_selection();

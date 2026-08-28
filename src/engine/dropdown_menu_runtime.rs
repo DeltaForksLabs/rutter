@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::widget::Widget;
-use crate::widget_id_error::WidgetIdError;
+use crate::widget::id::WidgetIdError;
 use crate::widgets::dropdown_menu::{
     DropdownMenuEntry, DropdownMenuEntryKind, OwnedDropdownMenuEntry, entries_at_level,
     entry_at_path, first_focusable_index, flatten_entry_paths, last_focusable_index,

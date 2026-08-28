@@ -2,15 +2,17 @@
 // Licensed under the MIT License OR Apache 2.0.
 
 // ============================================================
-// Rutter Framework — widget.rs
+// Rutter Framework — widget/mod.rs
 // ============================================================
+
+pub(crate) mod id;
 
 use std::fmt;
 
 use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
 
-use crate::widget_id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
+use self::id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
 use crate::widgets::carousel::CarouselConfig;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
