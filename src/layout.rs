@@ -18,6 +18,7 @@ use crate::engine::widget_state::WidgetState;
 use crate::i18n::LayoutDirection;
 use crate::render::RichTextRenderer;
 use crate::render::rich_text::{RichTextDirection, RichTextMetrics, RichTextWidth};
+use crate::text_controls::{TextControlPolicy, normalize_text_controls};
 use crate::widget::Widget;
 use crate::widgets::counter::{COUNTER_DEFAULT_HEIGHT, counter_preferred_width};
 use crate::widgets::rich_text::OwnedRichTextSpec;
@@ -667,6 +668,7 @@ fn measure_plain_text(
     available: Size<AvailableSpace>,
     font_system: &Rc<RefCell<FontSystem>>,
 ) -> Size<f32> {
+    let content = normalize_text_controls(&text.content, TextControlPolicy::PreserveLineBreaks);
     let mut font_system = font_system.borrow_mut();
     let mut buffer = Buffer::new(
         &mut font_system,
@@ -675,17 +677,24 @@ fn measure_plain_text(
     configure_plain_text_width(&mut buffer, &mut font_system, available.width);
     buffer.set_text(
         &mut font_system,
-        &text.content,
+        content.as_ref(),
         &Attrs::new(),
         Shaping::Advanced,
         None,
     );
     buffer.shape_until_scroll(&mut font_system, true);
-    let (width, height) = buffer.size();
+    let measured = plain_text_layout_size(&buffer);
     Size {
-        width: known.width.unwrap_or(width.unwrap_or(0.0)),
-        height: known.height.unwrap_or(height.unwrap_or(0.0)),
+        width: known.width.unwrap_or(measured.width),
+        height: known.height.unwrap_or(measured.height),
     }
+}
+
+fn plain_text_layout_size(buffer: &Buffer) -> Size<f32> {
+    buffer.layout_runs().fold(Size::ZERO, |size, run| Size {
+        width: size.width.max(run.line_w),
+        height: size.height.max(run.line_top + run.line_height),
+    })
 }
 
 fn configure_plain_text_width(
@@ -790,6 +799,30 @@ mod tests {
             color: None,
             size,
         }
+    }
+
+    #[test]
+    fn plain_text_measurement_treats_carriage_return_as_a_line_break() {
+        let font_system = fs();
+        let raw = TextContext {
+            content: "first\r\nsecond".to_string(),
+            font_size: 16.0,
+        };
+        let canonical = TextContext {
+            content: "first\nsecond".to_string(),
+            font_size: 16.0,
+        };
+        let known = Size::NONE;
+        let available = Size {
+            width: AvailableSpace::MaxContent,
+            height: AvailableSpace::MaxContent,
+        };
+
+        let raw_size = measure_plain_text(&raw, known, available, &font_system);
+        let canonical_size = measure_plain_text(&canonical, known, available, &font_system);
+
+        assert_eq!(raw_size, canonical_size);
+        assert!(raw_size.height > raw.font_size * 1.2);
     }
 
     fn button(width: f32) -> Widget<'static, ()> {

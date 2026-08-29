@@ -10,6 +10,7 @@ pub use error::WidgetIdError;
 use structure::{WidgetStructureKind, widget_structure_kind};
 
 mod error;
+mod search;
 mod structure;
 
 pub(crate) const AUTOMATIC_ID_NAMESPACE_BIT: u64 = 1 << 63;
@@ -275,6 +276,10 @@ impl WidgetIdVisitor {
                 self.register_dialog(widget, DialogAction::Cancel, origin)
             }
             Widget::DropdownMenu { .. } => self.register_dropdown_menu(widget, origin),
+            Widget::SearchBar {
+                suggestions: Some(suggestions),
+                ..
+            } => self.register_search_suggestions(widget, suggestions.items.len(), origin),
             _ => Ok(()),
         }
     }

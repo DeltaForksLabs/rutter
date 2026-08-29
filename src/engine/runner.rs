@@ -41,19 +41,33 @@ use crate::render::hit_test::{
     find_scroll_focus, find_scrollbar_drag_hit, hit_test, hit_test_context_menu_overlay,
     hit_test_popover_overlay,
 };
+use crate::render::search_overlay::{
+    SearchOverlayHit, SearchOverlayHitInput, hit_test_search_overlay,
+};
+use crate::render::select_overlay::collector::collect_open_search_overlays;
 use crate::render::select_overlay::collector::{
     collect_open_dropdown_overlays, collect_open_select_overlays,
 };
 use crate::render::select_overlay::hit_test_select_overlay;
+use crate::text_controls::{TextControlNormalizer, TextControlPolicy};
 
 mod accessibility_actions;
 mod counter;
 mod dropdown_keyboard;
 mod dropdown_pointer;
+mod search;
 mod secondary_pointer;
 mod virtual_selection;
 
 use self::secondary_pointer::{SecondaryPointerBlockers, has_visible_blocking_overlay};
+
+/// Wheel-scroll target floating above the page: suggestions and Select
+/// popups scroll their own rows instead of the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WheelPopupTarget {
+    Select(u64),
+    Search(u64),
+}
 
 fn is_bidi_override_char(ch: char) -> bool {
     matches!(
@@ -132,6 +146,8 @@ fn reserve_clipboard_text(bytes: usize) -> Result<String, InputLimitError> {
 
 fn append_sanitized_clipboard(text: &str, allow_newlines: bool, sanitized: &mut String) {
     let mut chars = text.chars().peekable();
+    let policy = TextControlPolicy::from_allows_line_breaks(allow_newlines);
+    let mut normalizer = TextControlNormalizer::new(policy);
 
     while let Some(ch) = chars.next() {
         if ch == '\u{001B}' {
@@ -143,32 +159,7 @@ fn append_sanitized_clipboard(text: &str, allow_newlines: bool, sanitized: &mut 
             continue;
         }
 
-        if ch == '\r' && chars.peek() == Some(&'\n') {
-            chars.next();
-        }
-        append_sanitized_character(ch, allow_newlines, sanitized);
-    }
-}
-
-fn append_sanitized_character(ch: char, allow_newlines: bool, sanitized: &mut String) {
-    match ch {
-        '\r' => {
-            if allow_newlines {
-                sanitized.push('\n');
-            } else {
-                sanitized.push(' ');
-            }
-        }
-        '\n' => {
-            if allow_newlines {
-                sanitized.push('\n');
-            } else {
-                sanitized.push(' ');
-            }
-        }
-        '\t' => sanitized.push(' '),
-        _ if ch.is_control() => {}
-        _ => sanitized.push(ch),
+        normalizer.append_character(ch, sanitized);
     }
 }
 
@@ -470,6 +461,7 @@ pub struct RutterRunner<A: AppLogic> {
     cursor_physical: PhysicalPosition<f64>,
     scroll_drag: Option<ScrollDrag>,
     virtual_multi_pointer_capture: Option<u64>,
+    counter_hold_repeat: Option<counter::CounterHoldRepeat>,
     mouse_down: bool,
     last_click_time: std::time::Instant,
     last_click_pos: Point,
@@ -487,6 +479,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             cursor_physical: PhysicalPosition::new(0.0, 0.0),
             scroll_drag: None,
             virtual_multi_pointer_capture: None,
+            counter_hold_repeat: None,
             mouse_down: false,
             last_click_time: Instant::now(),
             last_click_pos: Point::new(0.0, 0.0),
@@ -639,8 +632,20 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         let theme = A::theme_for(&self.engine.app_state);
                         let pad_x = theme.spacing * 2.0;
                         let pad_y = theme.spacing;
+                        let leading_text_inset = self
+                            .engine
+                            .runtime_caches
+                            .inputs
+                            .get(&fid)
+                            .map(|input| input.leading_text_inset)
+                            .unwrap_or(0.0);
                         if let Some(ist) = self.engine.input_states.get_mut(&fid) {
-                            let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
+                            let click_x = mapped_input_pointer_x(
+                                local_x,
+                                pad_x,
+                                leading_text_inset,
+                                ist.scroll_x,
+                            );
                             let click_y = ((local_y - pad_y) + ist.scroll_y).max(0.0);
                             let mut fs = self.engine.font_system.borrow_mut();
                             ist.editor.action(
@@ -672,6 +677,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             ) =>
             {
                 self.mouse_down = button == winit::event::MouseButton::Left;
+                if button == winit::event::MouseButton::Left {
+                    self.counter_hold_repeat = None;
+                }
                 let now = std::time::Instant::now();
                 let is_double = now.duration_since(self.last_click_time)
                     < Duration::from_millis(300)
@@ -706,6 +714,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     context_menu_overlay_hit,
                     dropdown_menu_overlay_hit,
                     select_overlay_hit,
+                    search_overlay_hit,
                     popover_overlay_hit,
                     context_menu_target,
                     scroll_drag_hit,
@@ -775,6 +784,20 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     } else {
                         None
                     };
+                    let search_overlay_hit = if button == MouseButton::Left {
+                        hit_test_search_overlay(SearchOverlayHitInput {
+                            widget: &wt,
+                            taffy: &self.engine.taffy,
+                            root: self.engine.last_root_node,
+                            widget_states: &self.engine.widget_states,
+                            input_states: &self.engine.input_states,
+                            focused_id: self.engine.focused_widget_id,
+                            mouse: cursor,
+                            viewport: viewport_size,
+                        })
+                    } else {
+                        None
+                    };
                     let secondary_pointer_blockers = if button == MouseButton::Right {
                         let select_popup_open = !collect_open_select_overlays(
                             &wt,
@@ -784,8 +807,21 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             viewport_size,
                         )
                         .is_empty();
+                        let search_popup_open = !collect_open_search_overlays(
+                            &wt,
+                            &self.engine.taffy,
+                            self.engine.last_root_node,
+                            &self.engine.widget_states,
+                            &self.engine.input_states,
+                            self.engine.focused_widget_id,
+                            viewport_size,
+                        )
+                        .is_empty();
+                        // A suggestions popup is as much an interactive
+                        // overlay as a Select popup: right-clicks over it
+                        // must not leak into a context menu.
                         SecondaryPointerBlockers::new(
-                            select_popup_open,
+                            select_popup_open || search_popup_open,
                             context_menu_was_open,
                             popover_was_open,
                             has_visible_blocking_overlay(&wt),
@@ -804,19 +840,21 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     } else {
                         None
                     };
-                    let scroll_drag_hit =
-                        if button == MouseButton::Left && select_overlay_hit.is_none() {
-                            find_scrollbar_drag_hit(
-                                &wt,
-                                &self.engine.taffy,
-                                self.engine.last_root_node,
-                                cursor,
-                                Point::new(0.0, 0.0),
-                                &self.engine.widget_states,
-                            )
-                        } else {
-                            None
-                        };
+                    let scroll_drag_hit = if button == MouseButton::Left
+                        && select_overlay_hit.is_none()
+                        && search_overlay_hit.is_none()
+                    {
+                        find_scrollbar_drag_hit(
+                            &wt,
+                            &self.engine.taffy,
+                            self.engine.last_root_node,
+                            cursor,
+                            Point::new(0.0, 0.0),
+                            &self.engine.widget_states,
+                        )
+                    } else {
+                        None
+                    };
                     let active_scroll_id = find_scroll_focus(
                         &wt,
                         &self.engine.taffy,
@@ -837,6 +875,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         context_menu_overlay_hit,
                         dropdown_menu_overlay_hit,
                         select_overlay_hit,
+                        search_overlay_hit,
                         popover_overlay_hit,
                         context_menu_target,
                         scroll_drag_hit,
@@ -877,7 +916,17 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     }
                 }
 
-                if let Some(select_hit) = select_overlay_hit {
+                if let Some(search_hit) = search_overlay_hit {
+                    match search_hit {
+                        SearchOverlayHit::Suggestion { id, index } => {
+                            hit = Some(HitResult::SearchSuggestion { id, index });
+                        }
+                        SearchOverlayHit::Consume { .. } => {
+                            self.redraw();
+                            return;
+                        }
+                    }
+                } else if let Some(select_hit) = select_overlay_hit {
                     hit = Some(HitResult::SelectOption {
                         id: select_hit.id,
                         index: select_hit.index,
@@ -1010,7 +1059,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         HitResult::CounterAdjust { id, increment } => {
                             if button == winit::event::MouseButton::Left {
                                 self.focus_widget(Some(id));
-                                self.adjust_counter(id, increment);
+                                self.begin_counter_hold(id, increment);
                             }
                         }
                         HitResult::CounterFocus(id) => {
@@ -1052,6 +1101,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                     );
                                 }
                                 self.engine.layout_dirty = true;
+                            }
+                        }
+                        HitResult::SearchSuggestion { id, index } => {
+                            if button == winit::event::MouseButton::Left {
+                                self.focus_widget(Some(id));
+                                self.activate_search_original_index(id, index);
                             }
                         }
                         HitResult::ScrollFocus(id) => {
@@ -1163,6 +1218,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 ..
             } => {
                 self.mouse_down = false;
+                self.counter_hold_repeat = None;
                 self.end_virtual_multi_pointer_capture();
                 if self.scroll_drag.take().is_some() {
                     self.redraw();
@@ -1175,6 +1231,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.redraw();
                 }
             }
+            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
+                self.mouse_down = false;
+                self.counter_hold_repeat = None;
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dropdown_target = match self.refresh_dropdown_scroll_target() {
                     Ok(target) => target,
@@ -1183,8 +1243,8 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         return;
                     }
                 };
-                let select_popup = match self.refresh_scroll_target_at_cursor() {
-                    Ok(select_popup) => select_popup,
+                let popup_target = match self.refresh_scroll_target_at_cursor() {
+                    Ok(popup_target) => popup_target,
                     Err(error) => {
                         self.terminate_for_error(el, error);
                         return;
@@ -1196,8 +1256,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.redraw();
                     return;
                 }
-                let select_changed =
-                    select_popup.is_some_and(|id| self.scroll_open_select(id, delta_y));
+                let select_changed = match popup_target {
+                    Some(WheelPopupTarget::Search(id)) => self.scroll_open_search(id, delta_y),
+                    Some(WheelPopupTarget::Select(id)) => self.scroll_open_select(id, delta_y),
+                    None => false,
+                };
                 if select_changed || self.scroll_active_target(delta_x, delta_y) {
                     self.redraw();
                 }
@@ -1205,6 +1268,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !self.handle_text_commit(&event) =>
             {
+                if let Err(error) = self.refresh_layout_before_keyboard_input() {
+                    self.terminate_for_error(el, error);
+                    return;
+                }
                 self.handle_key(&event.logical_key, event.repeat);
             }
             WindowEvent::RedrawRequested => {
@@ -1218,6 +1285,20 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    fn refresh_layout_before_keyboard_input(&mut self) -> Result<(), RutterRunError> {
+        let Some(size) = self
+            .engine
+            .window
+            .as_ref()
+            .map(|window| window.inner_size())
+        else {
+            return Ok(());
+        };
+        self.engine.try_ensure_widget_states()?;
+        self.engine.try_ensure_layout(size)?;
+        Ok(())
+    }
+
     pub(crate) fn resume_surface(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1258,6 +1339,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.active_window_id = None;
         self.scroll_drag = None;
         self.end_virtual_multi_pointer_capture();
+        self.counter_hold_repeat = None;
         self.mouse_down = false;
         self.focused_input_rect = None;
         self.clock_redraw_at = None;
@@ -1289,14 +1371,19 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
     pub(crate) fn process_scheduled_work(&mut self) -> Option<Instant> {
         self.engine.maybe_snapshot();
+        let now = Instant::now();
+        let counter_deadline = self.counter_hold_deadline(now);
         let timed_toasts = self.expire_timed_toasts();
-        if self.tick_surface_animations() || timed_toasts {
+        let frame_deadline = if self.tick_surface_animations() || timed_toasts {
             self.redraw();
-            return Some(Instant::now() + Duration::from_millis(16));
-        }
-        let clock_deadline = self.live_clock_deadline();
-        clock_deadline
+            Some(now + Duration::from_millis(16))
+        } else {
+            None
+        };
+        counter_deadline
             .into_iter()
+            .chain(frame_deadline)
+            .chain(self.live_clock_deadline())
             .chain(self.focused_input_deadline())
             .min()
     }
@@ -1425,6 +1512,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         self.engine.cursor_blink.reset();
         self.engine.schedule_snapshot();
+        self.refresh_search_suggestions_after_edit(fid);
         A::update(
             &mut self.engine.app_state,
             on_change(full),
@@ -1583,7 +1671,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.end_virtual_multi_pointer_selection(id);
     }
 
-    fn refresh_scroll_target_at_cursor(&mut self) -> Result<Option<u64>, RutterRunError> {
+    fn refresh_scroll_target_at_cursor(
+        &mut self,
+    ) -> Result<Option<WheelPopupTarget>, RutterRunError> {
         let size = self.engine.window.as_ref().unwrap().inner_size();
         self.engine.try_ensure_widget_states()?;
         self.engine.try_ensure_layout(size)?;
@@ -1593,6 +1683,25 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             size.width as f32 / self.engine.scale_factor,
             size.height as f32 / self.engine.scale_factor,
         );
+        // Suggestions are drawn above Select popups, so they win the target.
+        let search_popup = hit_test_search_overlay(SearchOverlayHitInput {
+            widget: &widget,
+            taffy: &self.engine.taffy,
+            root: self.engine.last_root_node,
+            widget_states: &self.engine.widget_states,
+            input_states: &self.engine.input_states,
+            focused_id: self.engine.focused_widget_id,
+            mouse: self.engine.last_mouse_pos,
+            viewport,
+        })
+        .map(|hit| match hit {
+            SearchOverlayHit::Suggestion { id, .. } => WheelPopupTarget::Search(id),
+            SearchOverlayHit::Consume { id } => WheelPopupTarget::Search(id),
+        });
+        if search_popup.is_some() {
+            self.engine.active_scroll_id = None;
+            return Ok(search_popup);
+        }
         let select_popup = hit_test_select_overlay(
             &widget,
             &self.engine.taffy,
@@ -1601,21 +1710,20 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.engine.last_mouse_pos,
             viewport,
         )
-        .map(|hit| hit.id);
-        self.engine.active_scroll_id = select_popup
-            .is_none()
-            .then(|| {
-                find_scroll_focus(
-                    &widget,
-                    &self.engine.taffy,
-                    self.engine.last_root_node,
-                    self.engine.last_mouse_pos,
-                    Point::new(0.0, 0.0),
-                    &self.engine.widget_states,
-                )
-            })
-            .flatten();
-        Ok(select_popup)
+        .map(|hit| WheelPopupTarget::Select(hit.id));
+        if select_popup.is_some() {
+            self.engine.active_scroll_id = None;
+            return Ok(select_popup);
+        }
+        self.engine.active_scroll_id = find_scroll_focus(
+            &widget,
+            &self.engine.taffy,
+            self.engine.last_root_node,
+            self.engine.last_mouse_pos,
+            Point::new(0.0, 0.0),
+            &self.engine.widget_states,
+        );
+        Ok(None)
     }
 
     fn scroll_open_select(&mut self, id: u64, delta_y: f32) -> bool {
@@ -1693,12 +1801,22 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn close_all_selects(&mut self) {
+        // Search keeps a separate dismissal latch because clicking its own
+        // input must clear keyboard hover without suppressing the popup.
         for ws in self.engine.widget_states.values_mut() {
             if let Some(s) = ws.as_select_mut() {
                 s.is_open = false;
                 s.hovered_option = None;
             }
+            if let Some(s) = ws.as_search_mut() {
+                s.hovered_option = None;
+            }
         }
+        self.engine.layout_dirty = true;
+    }
+
+    fn dismiss_all_search_suggestions(&mut self) {
+        latch_search_suggestion_dismissals(&mut self.engine.widget_states);
         self.engine.layout_dirty = true;
     }
 
@@ -1774,6 +1892,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let pad_x = theme.spacing * 2.0;
         let pad_y = theme.spacing;
         let input = self.engine.runtime_caches.inputs.get(&id).cloned();
+        let leading_text_inset = input
+            .as_ref()
+            .map(|input| input.leading_text_inset)
+            .unwrap_or(0.0);
         if let Some(ist) = self.engine.input_states.get_mut(&id) {
             let mut fs = self.engine.font_system.borrow_mut();
             if let Some(input) = input.as_ref() {
@@ -1787,7 +1909,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 ist.set_metrics(&mut fs, theme.font_body);
             }
             ist.clear_selection();
-            let click_x = ((local_x - pad_x) + ist.scroll_x).max(0.0);
+            let click_x = mapped_input_pointer_x(local_x, pad_x, leading_text_inset, ist.scroll_x);
             let click_y = ((local_y - pad_y) + ist.scroll_y).max(0.0);
 
             if is_double {
@@ -1813,7 +1935,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             let visible_w = input
                 .as_ref()
                 .map(|input| input.visible_w)
-                .unwrap_or_else(|| (width - pad_x * 2.0).max(24.0));
+                .unwrap_or_else(|| (width - pad_x * 2.0 - leading_text_inset).max(24.0));
             let visible_h = input
                 .as_ref()
                 .map(|input| input.visible_h)
@@ -2322,6 +2444,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         }
         if let Key::Named(NamedKey::Escape) = key {
+            // A visible suggestions popup absorbs Escape first: it dismisses
+            // only its own popup instead of tearing down every overlay.
+            if self.dismiss_focused_search_suggestions() {
+                self.redraw();
+                return;
+            }
             if self.close_active_dropdown_menu() {
                 self.redraw();
                 return;
@@ -2430,6 +2558,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let visible_h = input.visible_h;
         let theme = A::theme_for(&self.engine.app_state);
 
+        // Suggestions capture navigation only while their popup is visible;
+        // Enter without a selectable hover falls through to normal submit.
+        if self.handle_search_input_key(fid, key) {
+            return;
+        }
+
         let mut content_changed = false;
         let mut visual_changed = false;
         let mut full = None;
@@ -2528,6 +2662,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
 
         if let Some(full) = deleted_selection {
+            self.refresh_search_suggestions_after_edit(fid);
             let msg = on_change(full);
             A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
             self.engine.cursor_blink.reset();
@@ -2548,6 +2683,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(full) = full {
             self.engine.cursor_blink.reset();
             self.engine.schedule_snapshot();
+            self.refresh_search_suggestions_after_edit(fid);
             let msg = on_change(full);
             A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
             self.engine.layout_dirty = true;
@@ -2642,6 +2778,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         };
 
         zeroize_sensitive_text(input.is_password, &mut txt);
+        self.refresh_search_suggestions_after_edit(fid);
         A::update(
             &mut self.engine.app_state,
             (input.on_change)(full),
@@ -2694,6 +2831,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let Some(full) = self.restore_input_history(fid, &input, InputWidgetState::try_undo) else {
             return;
         };
+        self.refresh_search_suggestions_after_edit(fid);
         A::update(
             &mut self.engine.app_state,
             (input.on_change)(full),
@@ -2715,6 +2853,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let Some(full) = self.restore_input_history(fid, &input, InputWidgetState::try_redo) else {
             return;
         };
+        self.refresh_search_suggestions_after_edit(fid);
         A::update(
             &mut self.engine.app_state,
             (input.on_change)(full),
@@ -2758,6 +2897,25 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 }
 
+fn latch_search_suggestion_dismissals(states: &mut HashMap<u64, WidgetState>) {
+    for state in states.values_mut() {
+        let Some(search) = state.as_search_mut() else {
+            continue;
+        };
+        search.dismissed = true;
+        search.hovered_option = None;
+    }
+}
+
+fn mapped_input_pointer_x(
+    local_x: f32,
+    horizontal_padding: f32,
+    leading_text_inset: f32,
+    scroll_x: f32,
+) -> f32 {
+    (local_x - horizontal_padding - leading_text_inset + scroll_x).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2774,12 +2932,13 @@ mod tests {
         WindowEventDestination, apply_scrollbar_drag_offset, carousel_key_index,
         carousel_wheel_delta, classify_window_event, clock_tick_delay,
         collect_open_popover_dismissals, collect_toast_runtime_state, input_copy_is_blocked,
-        sanitize_clipboard_text, sanitize_input_text, virtual_multi_pointer_index, wheel_deltas,
-        wheel_select_index,
+        latch_search_suggestion_dismissals, mapped_input_pointer_x, sanitize_clipboard_text,
+        sanitize_input_text, virtual_multi_pointer_index, wheel_deltas, wheel_select_index,
     };
     use crate::LayoutDirection;
     use crate::engine::widget_state::{
-        PopoverState, ScrollState, ToastState, VirtualGridState, VirtualListState, WidgetState,
+        PopoverState, ScrollState, SearchState, ToastState, VirtualGridState, VirtualListState,
+        WidgetState,
     };
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
@@ -2797,6 +2956,12 @@ mod tests {
             ))),
             (-12.0, 8.0)
         );
+    }
+
+    #[test]
+    fn input_pointer_mapping_accounts_for_leading_icon_spacing() {
+        assert_eq!(mapped_input_pointer_x(24.0, 16.0, 4.0, 3.0), 7.0);
+        assert_eq!(mapped_input_pointer_x(10.0, 16.0, 4.0, 0.0), 0.0);
     }
 
     #[test]
@@ -2843,6 +3008,23 @@ mod tests {
         assert_eq!(wheel_select_index(1, 4, -40.0), Some(0));
         assert_eq!(wheel_select_index(3, 4, 40.0), None);
         assert_eq!(wheel_select_index(0, 4, -40.0), None);
+    }
+
+    #[test]
+    fn secondary_dismissal_latches_search_popups_closed() {
+        let mut states = HashMap::from([(
+            7,
+            WidgetState::Search(SearchState {
+                hovered_option: Some(2),
+                dismissed: false,
+            }),
+        )]);
+
+        latch_search_suggestion_dismissals(&mut states);
+
+        let state = states.get(&7).and_then(WidgetState::as_search).unwrap();
+        assert!(state.dismissed);
+        assert_eq!(state.hovered_option, None);
     }
 
     #[test]
@@ -2931,6 +3113,16 @@ mod tests {
         assert_eq!(
             sanitize_clipboard_text(raw, false, InputKind::TextInput.limits()).unwrap(),
             "a b c d"
+        );
+    }
+
+    #[test]
+    fn sanitize_clipboard_text_collapses_only_crlf_line_endings() {
+        let raw = "first\r\nsecond\n\rthird";
+
+        assert_eq!(
+            sanitize_clipboard_text(raw, true, InputLimits::default()).unwrap(),
+            "first\nsecond\n\nthird"
         );
     }
 

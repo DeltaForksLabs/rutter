@@ -56,7 +56,7 @@ fn counter_demo_children<'a>(state: &CounterDemoState) -> Vec<Widget<'a, Msg>> {
     vec![
         example_theme_selector(state.theme, Msg::ThemeChanged),
         demo_text("Counter", 24.0),
-        demo_text("- 1 + with bounded integer updates", 14.0),
+        demo_text("- 1 + with bounded, accelerating hold updates", 14.0),
         Widget::counter(
             state.quantity,
             0,
@@ -69,7 +69,7 @@ fn counter_demo_children<'a>(state: &CounterDemoState) -> Vec<Widget<'a, Msg>> {
         .with_id(1),
         demo_text(format!("Quantity: {}", state.quantity), 14.0),
         demo_text(
-            "Use the buttons or Arrow keys, Home, End, Page Up, and Page Down.",
+            "Hold an on-screen - or + to accelerate, or use +/- keys, Arrows, Home, End, and Page keys.",
             12.0,
         ),
     ]

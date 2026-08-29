@@ -382,7 +382,7 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 
 - `TextInput`
 - `TextArea`
-- `SearchBar`
+- `SearchBar` (with optional integrated fuzzy/custom suggestions)
 - `Checkbox`
 - `Button`
 - `ButtonContent`
@@ -394,9 +394,49 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 
 An open `Select` keeps its trigger in normal layout and renders its options in a dedicated overlay pass. The popup therefore covers later content without moving siblings, opens on the side with more usable space, and constrains long option lists to a viewport-safe window that follows keyboard and mouse-wheel selection.
 
-`Counter` is a controlled signed-integer spin button rendered as `- value +`. It sends `on_change` only when decrement or increment produces a bounded value. With an automatic width, it measures its central value from its character count so the action buttons stay close as the number grows. Use `Widget::counter(value, min, max, step, on_change, style, label)` for direct construction or `Widget::try_counter` to validate the range, value, and step. Keyboard users can adjust it with Arrow keys, Home, End, Page Up, and Page Down; assistive technologies receive a `SpinButton` with increment, decrement, and numeric-range metadata.
+`Counter` is a controlled signed-integer spin button rendered as `- value +`. It sends `on_change` only when decrement or increment produces a bounded value. Holding an on-screen action starts repeating after a short delay and progressively accelerates until release or a range boundary. With an automatic width, it measures its central value from its character count so the action buttons stay close as the number grows. Use `Widget::counter(value, min, max, step, on_change, style, label)` for direct construction or `Widget::try_counter` to validate the range, value, and step. Keyboard users can adjust it with `+`, `-`, Arrow keys, Home, End, Page Up, and Page Down; assistive technologies receive a `SpinButton` with increment, decrement, and numeric-range metadata.
 
 `Select` chooses one value. `DropdownMenu` instead exposes commands and optional checkbox/radio state; it does not represent a selected form value.
+
+### Search Suggestions
+
+`SearchBar` gains an integrated suggestions popup when built through `Widget::search_bar_with_suggestions`. The popup opens while the field is focused and its text is non-empty, ranks a borrowed `&[&str]` item slice every frame, and closes on Escape until the text changes again. Keyboard users navigate with Arrow keys, Home, End, Page Up, and Page Down; Enter selects the highlighted row (falling back to the normal submit when nothing is highlighted), mouse clicks route to the original item index, and the wheel scrolls the row window. An empty result set renders an explicit no-matches label that consumes pointer input without activating a row or leaking clicks to covered widgets. Assistive technologies receive an editable combobox, list autocomplete metadata, a controlled listbox, active-option selection, and Focus/Expand/Collapse/Click actions.
+
+Two matching modes share one ranked contract — `None` for a non-match, otherwise a deterministic score:
+
+- `SearchMatcher::Fuzzy`: case- and accent-insensitive subsequence ranking (Portuguese diacritics fold onto their ASCII base) with bonuses for exact substrings, item starts, word boundaries, and consecutive runs.
+- `SearchMatcher::Custom(fn(&str, &str) -> Option<u32>)`: fully pluggable scoring owned by the application.
+
+The engine also exports the matcher standalone so lists outside the widget can reuse it: `SearchMatcher::score`, `filter_ranked(items, query, matcher, max_results)` returns `SearchMatch { index, score }` values ordered best-first, and `SearchSuggestions::new` validates `max_results >= 1` up front. Source positions are callback indices and accessibility identities; keep their order stable while a visible popup may have queued assistive-technology actions.
+
+```rust
+use rutter::{SearchMatcher, Widget};
+use rutter::search::SearchSuggestions;
+
+enum Msg { Query(String), Picked(usize) }
+
+let movies = ["Matrix", "O Senhor dos Anéis"];
+let suggestions = SearchSuggestions::new(
+    &movies,
+    SearchMatcher::Fuzzy,
+    6,
+    Some(Msg::Picked),
+)
+.unwrap();
+let bar: Widget<'_, Msg> = Widget::search_bar_with_suggestions(
+    Msg::Query,
+    None,
+    None,
+    None,
+    "Buscar...",
+    suggestions,
+    taffy::prelude::Style::default(),
+);
+```
+
+See `examples/widgets/search_bar_demo.rs` or run `cargo run -- search_bar` for side-by-side fuzzy and custom-mode fields with Portuguese labels.
+
+Migration note for `0.27.0`: `Widget::search_bar(...)` keeps its existing signature. Code that constructs the public `Widget::SearchBar` variant directly must add `suggestions: None` or provide a validated suggestion configuration.
 
 ### Display Widgets
 
@@ -598,16 +638,19 @@ Further performance work is expected as the framework matures.
 
 ```text
 src/
+  accessibility/          AccessKit tree construction and action routing
   widgets/calendar/       Gregorian date types and composed calendar widgets
   widgets/carousel/       Carousel configuration, geometry, and runtime state
   widgets/time/           Timezone-aware clock values and time-picker controls
+  widgets/search/         Search suggestion matching engine and popup config
   app.rs                  AppLogic trait and application contract
   engine/                 Runtime engine, runner, GPU backends, widget state
-  input_state.rs          Editable text state and cursor/selection helpers
+  input/                  Limits, editable state, history, and normalization
   layout.rs               Taffy layout tree construction and synchronization
+  multi_window/           Multi-surface lifecycle and window configuration
   render/                 Skia rendering, hit testing, text pipeline
   theme.rs                Theme values and visual defaults
-  widget.rs               Widget definitions and constructors
+  widget/                 Core widget definitions, IDs, and tree validation
 examples/
   apps/                   Future complete example applications
   widgets/                Widget-focused demo modules used by the demo runner

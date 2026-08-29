@@ -6,7 +6,6 @@ use std::fmt;
 
 mod owned;
 
-use owned::OwnedRichTextSpan;
 #[doc(hidden)]
 pub use owned::OwnedRichTextSpec;
 
@@ -473,21 +472,6 @@ impl<'a> RichText<'a> {
     /// Checks concatenated content. Example: `assert!(RichText::plain("").is_empty());`
     pub fn is_empty(&self) -> bool {
         self.spans.iter().all(|span| span.text().is_empty())
-    }
-
-    pub(crate) fn to_owned_spec(&self) -> OwnedRichTextSpec {
-        let spans = self
-            .spans
-            .iter()
-            .map(|span| OwnedRichTextSpan {
-                text: span.text().to_owned(),
-                style: *span.style(),
-            })
-            .collect();
-        OwnedRichTextSpec {
-            spans,
-            default_style: self.default_style,
-        }
     }
 }
 

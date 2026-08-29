@@ -36,8 +36,8 @@ use self::gpu::{
 use self::run_error::RutterRunError;
 use self::virtual_selection::{VirtualMultiSelectionLayout, VirtualMultiSelectionState};
 use self::widget_state::{
-    AnimState, ContextMenuState, ModalState, PopoverState, ScrollState, SelectState, SliderState,
-    TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
+    AnimState, ContextMenuState, ModalState, PopoverState, ScrollState, SearchState, SelectState,
+    SliderState, TabState, ToastState, VirtualGridState, VirtualListState, WidgetState,
 };
 use crate::accessibility::{
     AccessibilityActionInbox, AccessibilityInputs, IgnoredDeactivationHandler,
@@ -50,14 +50,17 @@ use crate::layout::{
 };
 use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
 use crate::render::select_overlay::collector::{
-    collect_dropdown_triggers, collect_open_dropdown_overlays,
+    collect_dropdown_triggers, collect_open_dropdown_overlays, collect_open_search_overlays,
 };
 use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::theme::Theme;
 use crate::widget::id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
-use crate::widget::{DialogAction, VirtualSelection, Widget};
+use crate::widget::{DialogAction, VirtualSelection, Widget, resolve_search_suggestion_id};
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
+use crate::widgets::search::{
+    SEARCH_BAR_LEADING_TEXT_INSET, SearchMatch, SearchMatcher, SearchSuggestions, filter_ranked,
+};
 
 #[derive(Debug, Clone, Copy)]
 enum ToastRuntimeUpdate {
@@ -360,6 +363,7 @@ struct InputRuntime<Msg: Clone> {
     on_submit: Option<Msg>,
     is_password: bool,
     is_multiline: bool,
+    leading_text_inset: f32,
     visible_w: f32,
     visible_h: f32,
     limits: InputLimits,
@@ -394,6 +398,64 @@ struct SelectRuntime<Msg> {
     on_change: fn(usize) -> Msg,
     selected_index: usize,
     option_count: usize,
+}
+
+/// Per-frame suggestion state of a [`Widget::SearchBar`](crate::Widget::SearchBar)
+/// with integrated suggestions.
+///
+/// `results` is recomputed during runtime-metadata sync from the field's
+/// current text so keyboard navigation follows the same deterministic ranking
+/// used by the overlay collector.
+#[derive(Debug, Clone)]
+struct SearchRuntime<Msg> {
+    on_select: Option<fn(usize) -> Msg>,
+    max_results: usize,
+    items: Vec<String>,
+    matcher: SearchMatcher,
+    results: Vec<SearchMatch>,
+}
+
+impl<Msg> SearchRuntime<Msg> {
+    fn new(suggestions: &SearchSuggestions<'_, Msg>, query: &str) -> Self {
+        let mut runtime = Self {
+            on_select: suggestions.on_select,
+            max_results: suggestions.max_results,
+            items: suggestions
+                .items
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect(),
+            matcher: suggestions.matcher,
+            results: Vec::new(),
+        };
+        runtime.refresh_results(query);
+        runtime
+    }
+
+    fn refresh_results(&mut self, query: &str) {
+        let item_refs: Vec<&str> = self.items.iter().map(String::as_str).collect();
+        self.results = if query.trim().is_empty() {
+            Vec::new()
+        } else {
+            filter_ranked(&item_refs, query, self.matcher, self.max_results)
+        };
+    }
+}
+
+fn normalize_search_hover(
+    widget_states: &mut HashMap<u64, WidgetState>,
+    search_id: u64,
+    result_count: usize,
+) {
+    let Some(state) = widget_states
+        .get_mut(&search_id)
+        .and_then(WidgetState::as_search_mut)
+    else {
+        return;
+    };
+    if state.hovered_option.is_some_and(|row| row >= result_count) {
+        state.hovered_option = None;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -452,10 +514,12 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     sliders: HashMap<u64, SliderRuntime<Msg>>,
     counters: HashMap<u64, CounterRuntime<Msg>>,
     selects: HashMap<u64, SelectRuntime<Msg>>,
+    searches: HashMap<u64, SearchRuntime<Msg>>,
     dropdown_menus: HashMap<u64, DropdownMenuRuntime<Msg>>,
     dropdown_menu_items: HashMap<u64, DropdownMenuItemRuntime>,
     visible_dropdown_menus: HashSet<u64>,
     visible_dropdown_triggers: HashSet<u64>,
+    visible_search_suggestion_ids: HashSet<u64>,
     tabs: HashMap<u64, TabRuntime<Msg>>,
     tab_items: HashMap<u64, TabFocusRuntime>,
     carousels: HashMap<u64, CarouselRuntime<Msg>>,
@@ -472,6 +536,12 @@ struct RuntimeMetadataTraversal {
     spacing: f32,
 }
 
+#[derive(Clone, Copy)]
+struct RuntimeMetadataSources<'a> {
+    input_states: &'a HashMap<u64, crate::input_state::InputWidgetState>,
+    taffy: &'a TaffyTree<RutterContext>,
+}
+
 impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
     fn default() -> Self {
         Self {
@@ -486,10 +556,12 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             sliders: HashMap::new(),
             counters: HashMap::new(),
             selects: HashMap::new(),
+            searches: HashMap::new(),
             dropdown_menus: HashMap::new(),
             dropdown_menu_items: HashMap::new(),
             visible_dropdown_menus: HashSet::new(),
             visible_dropdown_triggers: HashSet::new(),
+            visible_search_suggestion_ids: HashSet::new(),
             tabs: HashMap::new(),
             tab_items: HashMap::new(),
             carousels: HashMap::new(),
@@ -515,10 +587,12 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.sliders.clear();
         self.counters.clear();
         self.selects.clear();
+        self.searches.clear();
         self.dropdown_menus.clear();
         self.dropdown_menu_items.clear();
         self.visible_dropdown_menus.clear();
         self.visible_dropdown_triggers.clear();
+        self.visible_search_suggestion_ids.clear();
         self.tabs.clear();
         self.tab_items.clear();
         self.carousels.clear();
@@ -643,6 +717,7 @@ fn widget_state_matches_seed(state: &WidgetState, kind: &str) -> bool {
         (WidgetState::Slider(_), "slider")
             | (WidgetState::Scroll(_), "scroll")
             | (WidgetState::Select(_), "select")
+            | (WidgetState::Search(_), "search")
             | (WidgetState::DropdownMenu(_), "dropdown_menu")
             | (WidgetState::Anim(_), "anim")
             | (WidgetState::Tab(_), "tab")
@@ -1162,6 +1237,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     "slider" => WidgetState::Slider(SliderState::default()),
                     "scroll" => WidgetState::Scroll(ScrollState::default()),
                     "select" => WidgetState::Select(SelectState::default()),
+                    "search" => WidgetState::Search(SearchState::default()),
                     "dropdown_menu" => {
                         WidgetState::DropdownMenu(crate::dropdown_menu::DropdownMenuState::default())
                     }
@@ -1387,7 +1463,10 @@ impl<A: AppLogic> RutterEngine<A> {
             &mut self.runtime_cache_scratch,
             &mut self.widget_states,
             &mut self.virtual_multi_selection_states,
-            &self.taffy,
+            RuntimeMetadataSources {
+                input_states: &self.input_states,
+                taffy: &self.taffy,
+            },
             &widget_tree,
             Some(root),
             theme.spacing,
@@ -1447,6 +1526,23 @@ impl<A: AppLogic> RutterEngine<A> {
         ) {
             self.focused_widget_id = Some(parent_id);
         }
+        self.runtime_cache_scratch.visible_search_suggestion_ids = collect_open_search_overlays(
+            &widget_tree,
+            &self.taffy,
+            root,
+            &self.widget_states,
+            &self.input_states,
+            self.focused_widget_id,
+            (logical.width as f32, logical.height as f32),
+        )
+        .into_iter()
+        .flat_map(|overlay| {
+            overlay
+                .matches
+                .into_iter()
+                .map(move |matched| resolve_search_suggestion_id(overlay.id, matched.index))
+        })
+        .collect();
         std::mem::swap(&mut self.runtime_caches, &mut self.runtime_cache_scratch);
         drop(widget_tree);
         self.sync_input_buffers();
@@ -1464,7 +1560,7 @@ impl<A: AppLogic> RutterEngine<A> {
         runtime_caches: &mut WidgetRuntimeCaches<Msg>,
         widget_states: &mut HashMap<u64, WidgetState>,
         selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
-        taffy: &TaffyTree<RutterContext>,
+        sources: RuntimeMetadataSources<'_>,
         widget: &Widget<Msg>,
         node: Option<NodeId>,
         spacing: f32,
@@ -1474,7 +1570,7 @@ impl<A: AppLogic> RutterEngine<A> {
             runtime_caches,
             widget_states,
             selection_states,
-            taffy,
+            sources,
             widget,
             RuntimeMetadataTraversal {
                 node,
@@ -1489,12 +1585,14 @@ impl<A: AppLogic> RutterEngine<A> {
         runtime_caches: &mut WidgetRuntimeCaches<Msg>,
         widget_states: &mut HashMap<u64, WidgetState>,
         selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
-        taffy: &TaffyTree<RutterContext>,
+        sources: RuntimeMetadataSources<'_>,
         widget: &Widget<Msg>,
         traversal: RuntimeMetadataTraversal,
         path: &mut Vec<usize>,
     ) -> Result<(), WidgetIdError> {
-        let layout = traversal.node.and_then(|node| taffy.layout(node).ok());
+        let layout = traversal
+            .node
+            .and_then(|node| sources.taffy.layout(node).ok());
         let abs_pos = layout
             .map(|layout| {
                 Point::new(
@@ -1528,7 +1626,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         on_submit: on_submit.clone(),
                         is_password: *is_password,
                         is_multiline: false,
-                        visible_w: Self::visible_input_width(layout, traversal.spacing),
+                        leading_text_inset: 0.0,
+                        visible_w: Self::visible_input_width(layout, traversal.spacing, 0.0),
                         visible_h: Self::visible_input_height(layout, traversal.spacing),
                         limits: A::input_limits(resolved_id, InputKind::TextInput)
                             .clamp_to_hard_caps(),
@@ -1551,7 +1650,8 @@ impl<A: AppLogic> RutterEngine<A> {
                         on_submit: on_submit.clone(),
                         is_password: false,
                         is_multiline: true,
-                        visible_w: Self::visible_input_width(layout, traversal.spacing),
+                        leading_text_inset: 0.0,
+                        visible_w: Self::visible_input_width(layout, traversal.spacing, 0.0),
                         visible_h: Self::visible_input_height(layout, traversal.spacing),
                         limits: A::input_limits(resolved_id, InputKind::TextArea)
                             .clamp_to_hard_caps(),
@@ -1562,6 +1662,7 @@ impl<A: AppLogic> RutterEngine<A> {
             Widget::SearchBar {
                 on_change,
                 on_submit,
+                suggestions,
                 ..
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
@@ -1574,13 +1675,35 @@ impl<A: AppLogic> RutterEngine<A> {
                         on_submit: on_submit.clone(),
                         is_password: false,
                         is_multiline: false,
-                        visible_w: Self::visible_input_width(layout, traversal.spacing),
+                        leading_text_inset: SEARCH_BAR_LEADING_TEXT_INSET,
+                        visible_w: Self::visible_input_width(
+                            layout,
+                            traversal.spacing,
+                            SEARCH_BAR_LEADING_TEXT_INSET,
+                        ),
                         visible_h: Self::visible_input_height(layout, traversal.spacing),
                         limits: A::input_limits(resolved_id, InputKind::SearchBar)
                             .clamp_to_hard_caps(),
                     },
                     "inputs",
                 )?;
+                if let Some(suggestions) = suggestions {
+                    // The live query text lives in the input state; this cache
+                    // must follow the overlay collector's deterministic rank.
+                    let query = sources
+                        .input_states
+                        .get(&resolved_id)
+                        .map(crate::input_state::InputWidgetState::text)
+                        .unwrap_or_default();
+                    let runtime = SearchRuntime::new(suggestions, &query);
+                    normalize_search_hover(widget_states, resolved_id, runtime.results.len());
+                    insert_runtime_entry(
+                        &mut runtime_caches.searches,
+                        resolved_id,
+                        runtime,
+                        "searches",
+                    )?;
+                }
             }
             Widget::Checkbox {
                 checked, on_change, ..
@@ -1710,10 +1833,10 @@ impl<A: AppLogic> RutterEngine<A> {
                     runtime_caches,
                     widget_states,
                     selection_states,
-                    taffy,
+                    sources,
                     child.as_ref(),
                     RuntimeMetadataTraversal {
-                        node: Self::first_child(traversal.node, taffy),
+                        node: Self::first_child(traversal.node, sources.taffy),
                         abs: abs_pos,
                         spacing: traversal.spacing,
                     },
@@ -1778,10 +1901,10 @@ impl<A: AppLogic> RutterEngine<A> {
                     runtime_caches,
                     widget_states,
                     selection_states,
-                    taffy,
+                    sources,
                     child.as_ref(),
                     RuntimeMetadataTraversal {
-                        node: Self::first_child(traversal.node, taffy),
+                        node: Self::first_child(traversal.node, sources.taffy),
                         abs: abs_pos,
                         spacing: traversal.spacing,
                     },
@@ -1807,8 +1930,8 @@ impl<A: AppLogic> RutterEngine<A> {
                     && let Some(s) = ws.as_scroll_mut()
                 {
                     s.viewport_h = layout.size.height;
-                    if let Some(child_node) = Self::first_child(traversal.node, taffy)
-                        && let Ok(child_layout) = taffy.layout(child_node)
+                    if let Some(child_node) = Self::first_child(traversal.node, sources.taffy)
+                        && let Ok(child_layout) = sources.taffy.layout(child_node)
                     {
                         s.content_height = child_layout.size.height;
                     }
@@ -1818,10 +1941,10 @@ impl<A: AppLogic> RutterEngine<A> {
                     runtime_caches,
                     widget_states,
                     selection_states,
-                    taffy,
+                    sources,
                     child.as_ref(),
                     RuntimeMetadataTraversal {
-                        node: Self::first_child(traversal.node, taffy),
+                        node: Self::first_child(traversal.node, sources.taffy),
                         abs: abs_pos,
                         spacing: traversal.spacing,
                     },
@@ -2010,13 +2133,13 @@ impl<A: AppLogic> RutterEngine<A> {
                         "popover dismiss callbacks",
                     )?;
                 }
-                let node_children = Self::children_for(traversal.node, taffy);
+                let node_children = Self::children_for(traversal.node, sources.taffy);
                 if let Some(ws) = widget_states.get_mut(&resolved_id)
                     && let Some(popover) = ws.as_popover_mut()
                 {
                     popover.set_open(*open);
                     if let Some(anchor_node) = node_children.first().copied()
-                        && let Ok(anchor_layout) = taffy.layout(anchor_node)
+                        && let Ok(anchor_layout) = sources.taffy.layout(anchor_node)
                     {
                         popover.set_anchor_rect(
                             abs_pos.x + anchor_layout.location.x,
@@ -2033,7 +2156,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         runtime_caches,
                         widget_states,
                         selection_states,
-                        taffy,
+                        sources,
                         anchor.as_ref(),
                         RuntimeMetadataTraversal {
                             node: Some(anchor_node),
@@ -2047,14 +2170,14 @@ impl<A: AppLogic> RutterEngine<A> {
 
                 if *open
                     && let Some(popup_node) = node_children.get(1).copied()
-                    && let Some(content_node) = Self::first_child(Some(popup_node), taffy)
+                    && let Some(content_node) = Self::first_child(Some(popup_node), sources.taffy)
                 {
                     path.push(1);
                     Self::sync_runtime_metadata_impl(
                         runtime_caches,
                         widget_states,
                         selection_states,
-                        taffy,
+                        sources,
                         content.as_ref(),
                         RuntimeMetadataTraversal {
                             node: Some(content_node),
@@ -2067,14 +2190,14 @@ impl<A: AppLogic> RutterEngine<A> {
                 }
             }
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
-                let node_children = Self::children_for(traversal.node, taffy);
+                let node_children = Self::children_for(traversal.node, sources.taffy);
                 for (i, child) in children.iter().enumerate() {
                     path.push(i);
                     Self::sync_runtime_metadata_impl(
                         runtime_caches,
                         widget_states,
                         selection_states,
-                        taffy,
+                        sources,
                         child,
                         RuntimeMetadataTraversal {
                             node: node_children.get(i).copied(),
@@ -2095,10 +2218,10 @@ impl<A: AppLogic> RutterEngine<A> {
                     runtime_caches,
                     widget_states,
                     selection_states,
-                    taffy,
+                    sources,
                     child.as_ref(),
                     RuntimeMetadataTraversal {
-                        node: Self::first_child(traversal.node, taffy),
+                        node: Self::first_child(traversal.node, sources.taffy),
                         abs: abs_pos,
                         spacing: traversal.spacing,
                     },
@@ -2111,10 +2234,14 @@ impl<A: AppLogic> RutterEngine<A> {
         Ok(())
     }
 
-    fn visible_input_width(layout: Option<&taffy::tree::Layout>, spacing: f32) -> f32 {
+    fn visible_input_width(
+        layout: Option<&taffy::tree::Layout>,
+        spacing: f32,
+        leading_text_inset: f32,
+    ) -> f32 {
         layout
-            .map(|layout| (layout.size.width - spacing * 4.0).max(24.0))
-            .unwrap_or(260.0)
+            .map(|layout| (layout.size.width - spacing * 4.0 - leading_text_inset).max(24.0))
+            .unwrap_or((260.0 - leading_text_inset).max(24.0))
     }
 
     fn visible_input_height(layout: Option<&taffy::tree::Layout>, spacing: f32) -> f32 {
@@ -2168,6 +2295,7 @@ impl<A: AppLogic> RutterEngine<A> {
     fn sync_runtime_metadata_for_test<Msg: Clone>(
         runtime_caches: &mut WidgetRuntimeCaches<Msg>,
         widget_states: &mut HashMap<u64, WidgetState>,
+        input_states: &HashMap<u64, crate::input_state::InputWidgetState>,
         taffy: &TaffyTree<RutterContext>,
         widget: &Widget<Msg>,
         root: NodeId,
@@ -2179,7 +2307,10 @@ impl<A: AppLogic> RutterEngine<A> {
             runtime_caches,
             widget_states,
             &mut selection_states,
-            taffy,
+            RuntimeMetadataSources {
+                input_states,
+                taffy,
+            },
             widget,
             Some(root),
             spacing,
@@ -2323,6 +2454,49 @@ mod tests {
         };
 
         assert!(contains_live_clock(&widget));
+    }
+
+    #[test]
+    fn search_runtime_refreshes_ranked_results_after_text_changes() {
+        let items = ["Matrix", "O Senhor dos Anéis", "Star Wars"];
+        let suggestions =
+            SearchSuggestions::new(&items, SearchMatcher::Fuzzy, 5, Some(Msg::Usize)).unwrap();
+        let mut runtime = SearchRuntime::new(&suggestions, "matrix");
+
+        assert_eq!(runtime.results[0].index, 0);
+        runtime.refresh_results("senhor");
+        assert_eq!(runtime.results[0].index, 1);
+        runtime.refresh_results("");
+        assert!(runtime.results.is_empty());
+    }
+
+    #[test]
+    fn search_input_width_reserves_the_leading_icon_inset() {
+        let regular = RutterEngine::<DummyApp>::visible_input_width(None, 8.0, 0.0);
+        let search =
+            RutterEngine::<DummyApp>::visible_input_width(None, 8.0, SEARCH_BAR_LEADING_TEXT_INSET);
+
+        assert_eq!(regular - search, SEARCH_BAR_LEADING_TEXT_INSET);
+    }
+
+    #[test]
+    fn search_hover_is_cleared_when_results_shrink() {
+        let search_id = 31;
+        let mut states = HashMap::from([(
+            search_id,
+            WidgetState::Search(SearchState {
+                hovered_option: Some(4),
+                dismissed: false,
+            }),
+        )]);
+
+        normalize_search_hover(&mut states, search_id, 2);
+
+        let state = states
+            .get(&search_id)
+            .and_then(WidgetState::as_search)
+            .unwrap();
+        assert_eq!(state.hovered_option, None);
     }
 
     #[derive(Debug, Clone, PartialEq)]
@@ -2478,6 +2652,7 @@ mod tests {
         RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
             &mut runtime_caches,
             &mut widget_states,
+            &HashMap::new(),
             &taffy,
             &widget,
             root,
@@ -2494,6 +2669,7 @@ mod tests {
         assert_eq!((input.on_change)("abc".into()), Msg::Str("abc".into()));
         assert_eq!(input.on_submit, Some(Msg::Submit));
         assert!(input.is_password);
+        assert_eq!(input.leading_text_inset, 0.0);
         assert!((input.visible_w - 168.0).abs() < f32::EPSILON);
         assert!((input.visible_h - expected_h).abs() < f32::EPSILON);
 
@@ -2604,6 +2780,7 @@ mod tests {
         RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
             &mut runtime_caches,
             &mut widget_states,
+            &HashMap::new(),
             &taffy,
             &widget,
             root,
@@ -2670,6 +2847,7 @@ mod tests {
         RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
             &mut runtime_caches,
             &mut widget_states,
+            &HashMap::new(),
             &taffy,
             &widget,
             root,

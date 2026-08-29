@@ -12,6 +12,7 @@ use super::{
     draw_focus_outline,
     text::{TextDrawInput, draw_text_line},
 };
+use crate::text_controls::TextControlPolicy;
 use crate::theme::Theme;
 use crate::widgets::counter::counter_action_width;
 
@@ -193,6 +194,7 @@ fn draw_counter_label(
         font_size: input.theme.font_body,
         font_cache: input.font_cache,
         center: true,
+        control_policy: TextControlPolicy::FlattenLineBreaks,
     });
     input.canvas.restore();
 }

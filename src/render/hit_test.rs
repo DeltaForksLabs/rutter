@@ -59,6 +59,11 @@ pub enum HitResult<Msg> {
         id: u64,
         index: usize,
     },
+    SearchSuggestion {
+        id: u64,
+        /// Original position inside the suggestions item slice.
+        index: usize,
+    },
     ScrollFocus(u64),
     TabPress {
         id: u64,
@@ -763,15 +768,9 @@ fn hit_test_impl<Msg: Clone>(
                     return None;
                 }
                 path.push(0);
-                let result = hit_test_impl(
-                    child,
-                    taffy,
-                    ids[0],
-                    mouse,
-                    Point::new(abs_pos.x, abs_pos.y + ACCORDION_HEADER_H),
-                    widget_states,
-                    path,
-                );
+                // The child node already includes the Accordion header padding in its Taffy location.
+                let result =
+                    hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
                 path.pop();
                 return result;
             }
@@ -1119,6 +1118,14 @@ fn collect_stateful_ids_impl<Msg>(
     match widget {
         Widget::Slider { .. } => out.push((widget.resolved_id(path).unwrap(), "slider")),
         Widget::Select { .. } => out.push((widget.resolved_id(path).unwrap(), "select")),
+        Widget::SearchBar {
+            suggestions: Some(_),
+            ..
+        } => {
+            // Only bars with an attached suggestion source own runtime state;
+            // the plain input needs none.
+            out.push((widget.resolved_id(path).unwrap(), "search"))
+        }
         Widget::DropdownMenu { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "dropdown_menu"))
         }
@@ -1742,14 +1749,7 @@ fn find_context_menu_target_impl<Msg>(
                 return None;
             }
             path.push(0);
-            let hit = find_context_menu_target_impl(
-                child,
-                taffy,
-                ids[0],
-                mouse,
-                Point::new(abs_pos.x, abs_pos.y + ACCORDION_HEADER_H),
-                path,
-            );
+            let hit = find_context_menu_target_impl(child, taffy, ids[0], mouse, abs_pos, path);
             path.pop();
             hit
         }
@@ -2227,6 +2227,29 @@ mod tests {
         )
     }
 
+    fn expanded_accordion_with_body_button() -> Widget<'static, Msg> {
+        Widget::Accordion {
+            id: 64,
+            title: "Details",
+            expanded: true,
+            on_toggle: Msg::Toggle,
+            child: Box::new(Widget::Button {
+                text: "Body action",
+                on_press: Msg::Usize(42),
+                style: fixed_size_style(100.0, 40.0),
+                color: None,
+                variant: ButtonVariant::Primary,
+            }),
+            style: Style {
+                size: Size {
+                    width: Dimension::length(100.0),
+                    height: Dimension::auto(),
+                },
+                ..Style::default()
+            },
+        }
+    }
+
     #[test]
     fn auto_input_ids_are_stable_and_distinct_by_path() {
         let widget = Widget::Column {
@@ -2604,6 +2627,30 @@ mod tests {
             hit,
             Some(HitResult::Message {
                 msg: Msg::Toggle,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn expanded_accordion_body_hit_uses_its_taffy_header_offset_once() {
+        let widget = expanded_accordion_with_body_button();
+        let states = HashMap::new();
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(100, 100));
+
+        let hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(50.0, 64.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+
+        assert!(matches!(
+            hit,
+            Some(HitResult::Message {
+                msg: Msg::Usize(42),
                 ..
             })
         ));

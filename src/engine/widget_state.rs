@@ -86,6 +86,21 @@ pub struct SelectState {
     pub hovered_option: Option<usize>,
 }
 
+/// Runtime interaction state of a [`Widget::SearchBar`](crate::Widget::SearchBar)
+/// with integrated suggestions.
+///
+/// Popup visibility is derived (focused + non-empty query + not dismissed);
+/// only the keyboard-driven hover and the Escape dismissal latch live here.
+#[derive(Debug, Clone, Default)]
+pub struct SearchState {
+    /// Row highlighted through arrow keys, as a position into the ranked
+    /// results list.
+    pub hovered_option: Option<usize>,
+    /// Set when the user dismisses the popup with Escape; cleared again on
+    /// the next content change so typing reopens the suggestions.
+    pub dismissed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AnimState {
     pub angle: f32,
@@ -457,6 +472,7 @@ pub enum WidgetState {
     Slider(SliderState),
     Scroll(ScrollState),
     Select(SelectState),
+    Search(SearchState),
     Anim(AnimState),
     Toast(ToastState),
     Modal(ModalState),
@@ -507,6 +523,20 @@ impl WidgetState {
     }
     pub fn as_select_mut(&mut self) -> Option<&mut SelectState> {
         if let Self::Select(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_search(&self) -> Option<&SearchState> {
+        if let Self::Search(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn as_search_mut(&mut self) -> Option<&mut SearchState> {
+        if let Self::Search(s) = self {
             Some(s)
         } else {
             None

@@ -6,9 +6,10 @@ use std::collections::HashMap;
 use skia_safe::{Contains, Font, Paint, Point, RRect, Rect as SkiaRect, canvas::Canvas, paint};
 use taffy::prelude::{NodeId, TaffyTree};
 
+use super::control_icons::{ControlChevronDirection, draw_control_chevron};
 use super::overlay_canvas::logical_canvas_size;
 use super::select_overlay::collector::{DropdownOverlay, collect_open_dropdown_overlays};
-use super::text::get_cached_font;
+use super::text::{draw_single_line_text, get_cached_font, measure_single_line_text};
 use crate::engine::widget_state::WidgetState;
 use crate::i18n::LayoutDirection;
 use crate::layout::RutterContext;
@@ -20,6 +21,9 @@ use crate::widgets::dropdown_menu::{
 };
 
 type FontCache = HashMap<(String, u32), Font>;
+const MENU_LABEL_START_PADDING: f32 = 30.0;
+const MENU_LABEL_END_PADDING: f32 = 10.0;
+const SUBMENU_LABEL_END_PADDING: f32 = 24.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DropdownMenuOverlayHit {
@@ -353,13 +357,21 @@ impl<'a> MenuPainter<'a> {
     ) {
         let Some(label) = entry.label() else { return };
         let paint = filled_paint(self.entry_color(entry.is_disabled()));
-        let width = font.measure_str(label, Some(&paint)).0;
+        let width = measure_single_line_text(font, label, &paint);
         let x = match self.direction {
-            LayoutDirection::Ltr => rect.left + 30.0,
-            LayoutDirection::Rtl => rect.right - 30.0 - width,
+            LayoutDirection::Ltr => rect.left + MENU_LABEL_START_PADDING,
+            LayoutDirection::Rtl => rect.right - MENU_LABEL_START_PADDING - width,
         };
         let baseline = rect.center_y() + self.theme.font_body / 3.0;
-        self.canvas.draw_str(label, (x, baseline), font, &paint);
+        let clip = dropdown_entry_label_clip(
+            rect,
+            self.direction,
+            entry.kind() == DropdownMenuEntryKind::Submenu,
+        );
+        self.canvas.save();
+        self.canvas.clip_rect(clip, None, true);
+        draw_single_line_text(self.canvas, label, (x, baseline), font, &paint);
+        self.canvas.restore();
     }
 
     fn draw_entry_mark<Msg>(&self, rect: SkiaRect, entry: &DropdownMenuEntry<'_, Msg>) {
@@ -389,26 +401,22 @@ impl<'a> MenuPainter<'a> {
     }
 
     fn draw_submenu_arrow(&self, rect: SkiaRect, disabled: bool) {
-        let sign = if self.direction == LayoutDirection::Ltr {
-            1.0
+        let direction = if self.direction == LayoutDirection::Ltr {
+            ControlChevronDirection::Right
         } else {
-            -1.0
+            ControlChevronDirection::Left
         };
         let x = if self.direction == LayoutDirection::Ltr {
-            rect.right - 12.0
+            rect.right - 14.0
         } else {
-            rect.left + 12.0
+            rect.left + 14.0
         };
-        let center = Point::new(x, rect.center_y());
-        let first = (center.x - sign * 2.0, center.y - 4.0);
-        let tip = (center.x + sign * 2.0, center.y);
-        let last = (center.x - sign * 2.0, center.y + 4.0);
-        draw_segments(
+        draw_control_chevron(
             self.canvas,
-            first,
-            tip,
-            last,
-            &stroked_paint(self.entry_color(disabled), 1.5),
+            Point::new(x, rect.center_y()),
+            4.0,
+            direction,
+            self.entry_color(disabled),
         );
     }
 
@@ -449,6 +457,28 @@ impl<'a> MenuPainter<'a> {
             self.theme.on_surface
         }
     }
+}
+
+fn dropdown_entry_label_clip(
+    rect: SkiaRect,
+    direction: LayoutDirection,
+    has_submenu: bool,
+) -> SkiaRect {
+    let end_padding = if has_submenu {
+        SUBMENU_LABEL_END_PADDING
+    } else {
+        MENU_LABEL_END_PADDING
+    };
+    let (left_padding, right_padding) = match direction {
+        LayoutDirection::Ltr => (MENU_LABEL_START_PADDING, end_padding),
+        LayoutDirection::Rtl => (end_padding, MENU_LABEL_START_PADDING),
+    };
+    SkiaRect::from_ltrb(
+        rect.left + left_padding,
+        rect.top,
+        rect.right - right_padding,
+        rect.bottom,
+    )
 }
 
 fn hover_path<Msg>(

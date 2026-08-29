@@ -13,6 +13,7 @@ use cosmic_text::{
 
 mod buffer;
 mod edit;
+mod normalization;
 mod undo;
 
 pub use undo::UndoStack;
@@ -607,5 +608,25 @@ mod tests {
         assert!(state.try_delete_before_cursor(&mut fs).unwrap());
         assert_eq!(state.text(), "é");
         assert!(!state.undo.can_undo());
+    }
+
+    #[test]
+    fn programmatic_edits_preserve_line_limit_validation_after_normalization() {
+        let raw = "first\r\nsecond\tthird\u{0000}";
+        let mut fs = fs();
+        let mut multiline = InputWidgetState::new(&mut fs);
+        let mut single_line = InputWidgetState::new_with_limits(
+            &mut fs,
+            crate::input_limits::InputKind::TextInput.limits(),
+        );
+
+        assert!(multiline.try_set_text(&mut fs, raw).unwrap());
+        let error = single_line.try_insert_text(&mut fs, raw).unwrap_err();
+        assert_eq!(multiline.text(), "first\nsecond third");
+        assert!(matches!(
+            error,
+            crate::input_limits::InputLimitError::LinesExceeded { .. }
+        ));
+        assert!(single_line.text().is_empty());
     }
 }

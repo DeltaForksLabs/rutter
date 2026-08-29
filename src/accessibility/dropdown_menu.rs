@@ -6,7 +6,7 @@ use accesskit::{
 };
 use skia_safe::Rect as SkiaRect;
 
-use super::{AccessibilityBuilder, LayoutFrame, access_node_id};
+use super::{AccessibilityBuilder, LayoutFrame, access_node_id, access_rect};
 use crate::widget::Widget;
 use crate::widgets::dropdown_menu::{
     DropdownMenuEntry, DropdownMenuEntryKind, DropdownMenuState, DropdownMenuSurface,
@@ -401,15 +401,6 @@ fn skia_rect(rect: Rect) -> SkiaRect {
         rect.y0 as f32,
         rect.x1 as f32,
         rect.y1 as f32,
-    )
-}
-
-fn access_rect(rect: SkiaRect) -> Rect {
-    Rect::new(
-        rect.left as f64,
-        rect.top as f64,
-        rect.right as f64,
-        rect.bottom as f64,
     )
 }
 

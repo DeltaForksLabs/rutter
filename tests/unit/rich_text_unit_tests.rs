@@ -253,6 +253,24 @@ fn owned_spec_detaches_all_content_from_borrowed_input() {
 }
 
 #[test]
+fn owned_spec_canonicalizes_controls_without_mutating_public_spans() {
+    let rich_text = RichText::from_spans([
+        RichTextSpan::new("first\r"),
+        RichTextSpan::new("\nsecond\t\u{0000}"),
+        RichTextSpan::new("\u{2028}last"),
+    ]);
+    let owned = rich_text.to_owned_spec();
+
+    assert_eq!(
+        rich_text.plain_text(),
+        "first\r\nsecond\t\u{0000}\u{2028}last"
+    );
+    assert_eq!(owned.spans()[0].text(), "first\n");
+    assert_eq!(owned.spans()[1].text(), "second ");
+    assert_eq!(owned.spans()[2].text(), "\nlast");
+}
+
+#[test]
 fn public_owned_conversion_detaches_borrowed_spans() {
     let source = String::from("borrowed");
     let rich = RichText::from_span(RichTextSpan::borrowed(&source));

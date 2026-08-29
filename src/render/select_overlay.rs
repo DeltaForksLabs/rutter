@@ -7,7 +7,7 @@ use skia_safe::{Contains, Font, Paint, Point, RRect, Rect as SkiaRect, canvas::C
 use taffy::prelude::{NodeId, TaffyTree};
 
 use super::overlay_canvas::logical_canvas_size;
-use super::text::get_cached_font;
+use super::text::{draw_single_line_text, get_cached_font};
 use crate::engine::widget_state::WidgetState;
 use crate::layout::{OPTION_HEIGHT, RutterContext};
 use crate::theme::Theme;
@@ -24,10 +24,10 @@ pub(crate) struct SelectOptionOverlayHit {
 }
 
 #[derive(Clone, Copy)]
-struct SelectPopupLayout {
-    rect: SkiaRect,
-    first_option: usize,
-    visible_options: usize,
+pub(crate) struct SelectPopupLayout {
+    pub(crate) rect: SkiaRect,
+    pub(crate) first_option: usize,
+    pub(crate) visible_options: usize,
 }
 
 pub(crate) struct SelectOverlayDrawInput<'render, 'widget, Msg> {
@@ -98,7 +98,7 @@ fn select_popup_layout(overlay: SelectOverlay<'_>, viewport: (f32, f32)) -> Sele
     popup_layout_for_focus(overlay.anchor, overlay.options.len(), focus, viewport)
 }
 
-fn popup_layout_for_focus(
+pub(crate) fn popup_layout_for_focus(
     anchor: SkiaRect,
     option_count: usize,
     focus: usize,
@@ -142,7 +142,7 @@ fn first_visible_option(option_count: usize, visible_options: usize, focus: usiz
     focus.saturating_sub(visible_options / 2).min(maximum)
 }
 
-fn select_option_at(rect: SkiaRect, mouse: Point, option_count: usize) -> Option<usize> {
+pub(crate) fn select_option_at(rect: SkiaRect, mouse: Point, option_count: usize) -> Option<usize> {
     if option_count == 0 || !rect.contains(mouse) {
         return None;
     }
@@ -195,14 +195,14 @@ fn draw_select_popup(
     draw_select_popup_border(canvas, popup.rect, theme);
 }
 
-fn draw_select_popup_surface(canvas: &Canvas, rect: SkiaRect, theme: &Theme) {
+pub(crate) fn draw_select_popup_surface(canvas: &Canvas, rect: SkiaRect, theme: &Theme) {
     let mut background = Paint::default();
     background.set_color(theme.surface);
     background.set_anti_alias(true);
     canvas.draw_rrect(RRect::new_rect_xy(rect, 0.0, theme.radius_sm), &background);
 }
 
-fn draw_select_popup_border(canvas: &Canvas, rect: SkiaRect, theme: &Theme) {
+pub(crate) fn draw_select_popup_border(canvas: &Canvas, rect: SkiaRect, theme: &Theme) {
     let mut border = Paint::default();
     border.set_style(paint::Style::Stroke);
     border.set_stroke_width(1.0);
@@ -233,7 +233,7 @@ fn draw_select_popup_option(
     });
     text.set_anti_alias(true);
     let baseline = rect.top + OPTION_HEIGHT / 2.0 + theme.font_body / 3.0;
-    canvas.draw_str(option, (rect.left + 8.0, baseline), font, &text);
+    draw_single_line_text(canvas, option, (rect.left + 8.0, baseline), font, &text);
 }
 
 fn select_option_rect(popup: SkiaRect, index: usize) -> SkiaRect {

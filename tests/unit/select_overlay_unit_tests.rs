@@ -173,6 +173,34 @@ fn automatic_select_id_inside_popover_uses_content_path() {
     assert_eq!(overlays[0].id, select_id);
 }
 
+#[test]
+fn select_inside_expanded_accordion_uses_the_body_layout_position() {
+    let widget = Widget::Accordion {
+        id: 82,
+        title: "Details",
+        expanded: true,
+        on_toggle: TestMessage::Action,
+        child: Box::new(open_select_widget()),
+        style: Style {
+            size: Size {
+                width: Dimension::length(120.0),
+                height: Dimension::auto(),
+            },
+            ..Style::default()
+        },
+    };
+    let states = open_select_states();
+    let (taffy, root) = layout_widget(&widget, &states);
+
+    let overlays = collect_open_select_overlays(&widget, &taffy, root, &states, (320.0, 240.0));
+
+    assert_eq!(overlays.len(), 1);
+    assert_eq!(
+        overlays[0].anchor,
+        SkiaRect::from_xywh(0.0, 44.0, 120.0, 40.0)
+    );
+}
+
 fn laid_out_open_select() -> (
     Widget<'static, TestMessage>,
     HashMap<u64, WidgetState>,

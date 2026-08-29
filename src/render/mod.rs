@@ -6,6 +6,7 @@
 // ============================================================
 
 pub(crate) mod clock;
+mod control_icons;
 pub(crate) mod counter;
 pub(crate) mod dropdown_menu_overlay;
 pub mod hit_test;
@@ -15,6 +16,7 @@ mod image_headers;
 mod overlay_canvas;
 pub mod pipeline;
 pub(crate) mod rich_text;
+pub(crate) mod search_overlay;
 pub(crate) mod select_overlay;
 mod svg;
 pub mod text;
@@ -30,19 +32,21 @@ use std::{
 
 use cosmic_text::{Cursor, Edit, FontSystem, LayoutRun, SwashCache, Wrap};
 use skia_safe::{
-    Color as SkiaColor, Contains, Font, Paint, Point, RRect, Rect as SkiaRect, canvas::Canvas,
-    paint,
+    ClipOp, Color as SkiaColor, Contains, Font, Paint, Point, RRect, Rect as SkiaRect, Vector,
+    canvas::Canvas, paint,
 };
 use taffy::Direction;
 use taffy::prelude::{NodeId, TaffyTree};
 
 use self::clock::{ClockRenderInput, draw_clock};
+use self::control_icons::{ControlChevronDirection, draw_control_chevron, draw_search_magnifier};
 use self::counter::{CounterRenderInput, draw_counter};
 pub use self::image_cache::ImageRenderCache;
 use self::rich_text::RichTextDirection;
 pub use self::rich_text::RichTextRenderer;
 use self::text::{
-    TextBufferCache, TextDrawInput, TextShapeRequest, draw_text_line, get_cached_font,
+    TextBufferCache, TextDrawInput, TextShapeRequest, draw_single_line_text, draw_text_line,
+    get_cached_font, measure_single_line_text,
 };
 use self::{
     image::{MAX_ENCODED_IMAGE_BYTES, decode_rutter_image},
@@ -59,6 +63,7 @@ use crate::layout::{
     RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction, compute_layout,
 };
 use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
+use crate::text_controls::TextControlPolicy;
 use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
@@ -67,9 +72,11 @@ use crate::widget::{
 };
 use crate::widgets::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
 use crate::widgets::rich_text::OwnedRichTextSpec;
+use crate::widgets::search::SEARCH_BAR_LEADING_TEXT_INSET;
 use winit::dpi::PhysicalSize;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
+const CONTROL_ICON_TEXT_GAP: f32 = 6.0;
 
 fn stable_bytes_hash(data: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -257,6 +264,21 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         root: node,
         widget,
         widget_states,
+        mouse: mouse_pos,
+        font_cache: &mut *font_cache,
+        theme,
+        scale,
+    });
+    // Suggestions stay above Select/popover content but below command
+    // dropdowns, matching the pointer-routing priority in the runner.
+    search_overlay::draw_search_overlays(search_overlay::SearchOverlayDrawInput {
+        canvas,
+        taffy,
+        root: node,
+        widget,
+        widget_states,
+        input_states,
+        focused_id,
         mouse: mouse_pos,
         font_cache: &mut *font_cache,
         theme,
@@ -1148,6 +1170,7 @@ fn draw_widgets_impl<'w, Msg>(
             input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
             is_multiline: false,
+            leading_text_inset: 0.0,
         }),
         Widget::TextArea {
             label,
@@ -1173,6 +1196,7 @@ fn draw_widgets_impl<'w, Msg>(
             input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
             is_multiline: true,
+            leading_text_inset: 0.0,
         }),
         Widget::SearchBar { placeholder, .. } => draw_search_bar(TextInputRenderInput {
             canvas,
@@ -1192,6 +1216,7 @@ fn draw_widgets_impl<'w, Msg>(
             input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
             is_multiline: false,
+            leading_text_inset: SEARCH_BAR_LEADING_TEXT_INSET,
         }),
         Widget::Checkbox { checked, label, .. } => draw_checkbox(
             *checked,
@@ -1312,6 +1337,7 @@ fn draw_widgets_impl<'w, Msg>(
                 font_size: *font_size,
                 font_cache,
                 center: false,
+                control_policy: TextControlPolicy::PreserveLineBreaks,
             });
         }
         Widget::RichText { .. } => {
@@ -1405,8 +1431,7 @@ fn draw_widgets_impl<'w, Msg>(
             });
             if *expanded {
                 let ids = taffy.children(node).unwrap();
-                canvas.save();
-                canvas.translate((0.0, ACCORDION_HEADER_H));
+                // Taffy reserves the header as padding, so the child location already starts below it.
                 path.push(0);
                 draw_widgets_impl(
                     canvas,
@@ -1415,7 +1440,7 @@ fn draw_widgets_impl<'w, Msg>(
                     child,
                     fs,
                     swash,
-                    Point::new(local_mouse.x, local_mouse.y - ACCORDION_HEADER_H),
+                    local_mouse,
                     focused_id,
                     input_states,
                     widget_states,
@@ -1429,7 +1454,9 @@ fn draw_widgets_impl<'w, Msg>(
                     path,
                 );
                 path.pop();
-                canvas.restore();
+                if let Some(fill) = accordion_body_corner_fill(taffy, ids[0], child) {
+                    draw_accordion_body_top_corners(canvas, fill);
+                }
             }
         }
         Widget::Modal { visible, child, .. } => {
@@ -1925,10 +1952,10 @@ fn draw_tabbar(input: TabbarRenderInput<'_>) {
         let mut p = Paint::default();
         p.set_color(tc);
         p.set_anti_alias(true);
-        let tw = f.measure_str(tab, Some(&p)).0;
+        let tw = measure_single_line_text(&f, tab, &p);
         let x = tx + (tab_w - tw) / 2.0;
         let y = size.1 / 2.0 + theme.font_body / 3.0;
-        canvas.draw_str(tab, (x, y), &f, &p);
+        draw_single_line_text(canvas, tab, (x, y), &f, &p);
     }
 
     let mut up = Paint::default();
@@ -1962,6 +1989,7 @@ struct TextInputRenderInput<'a> {
     input_state: Option<&'a InputWidgetState>,
     cursor_visible: bool,
     is_multiline: bool,
+    leading_text_inset: f32,
 }
 
 fn draw_text_input(input: TextInputRenderInput<'_>) {
@@ -1983,6 +2011,7 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
         input_state: istate,
         cursor_visible,
         is_multiline,
+        leading_text_inset,
     } = input;
     let line_height = theme.font_body * 1.3;
     let border_c = theme.input_border(state, is_focused);
@@ -2006,20 +2035,21 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
             Theme::alpha(theme.on_surface, 180)
         });
         p.set_anti_alias(true);
-        canvas.draw_str(label, (4.0, -4.0), &lf, &p);
+        draw_single_line_text(canvas, label, (4.0, -4.0), &lf, &p);
     }
 
     let pad_x = theme.spacing * 2.0;
     let pad_y = theme.spacing;
+    let content_width = (size.0 - pad_x * 2.0 - leading_text_inset).max(1.0);
     let text_width = if is_multiline {
-        (size.0 - pad_x * 2.0).max(1.0)
+        content_width
     } else {
         10_000.0
     };
     canvas.save();
-    canvas.translate((pad_x, pad_y));
+    canvas.translate((pad_x + leading_text_inset, pad_y));
     canvas.clip_rect(
-        SkiaRect::from_xywh(0.0, 0.0, size.0 - pad_x * 2.0, size.1 - pad_y * 2.0),
+        SkiaRect::from_xywh(0.0, 0.0, content_width, size.1 - pad_y * 2.0),
         None,
         true,
     );
@@ -2035,7 +2065,7 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
             } else {
                 size.1 / 2.0 + theme.font_body / 3.0 - pad_y
             };
-            canvas.draw_str(placeholder, (0.0, y), &f, &p);
+            draw_single_line_text(canvas, placeholder, (0.0, y), &f, &p);
         }
         canvas.restore();
         return;
@@ -2053,14 +2083,14 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
         } else {
             size.1 / 2.0 + theme.font_body / 3.0 - pad_y
         };
-        canvas.draw_str(placeholder, (0.0, y), &f, &p);
+        draw_single_line_text(canvas, placeholder, (0.0, y), &f, &p);
         canvas.restore();
         if let Some(msg) = error_msg {
             let ef = get_cached_font(font_cache, "sans-serif", theme.font_small);
             let mut p = Paint::default();
             p.set_color(theme.error);
             p.set_anti_alias(true);
-            canvas.draw_str(msg, (4.0, size.1 + theme.spacing * 3.0), &ef, &p);
+            draw_single_line_text(canvas, msg, (4.0, size.1 + theme.spacing * 3.0), &ef, &p);
         }
         return;
     }
@@ -2118,7 +2148,7 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
         let mut p = Paint::default();
         p.set_color(theme.error);
         p.set_anti_alias(true);
-        canvas.draw_str(msg, (4.0, size.1 + theme.spacing * 3.0), &ef, &p);
+        draw_single_line_text(canvas, msg, (4.0, size.1 + theme.spacing * 3.0), &ef, &p);
     }
 }
 
@@ -2141,6 +2171,7 @@ fn draw_search_bar(input: TextInputRenderInput<'_>) {
         input_state,
         cursor_visible,
         is_multiline,
+        leading_text_inset,
     } = input;
     draw_text_input(TextInputRenderInput {
         canvas,
@@ -2160,12 +2191,12 @@ fn draw_search_bar(input: TextInputRenderInput<'_>) {
         input_state,
         cursor_visible,
         is_multiline,
+        leading_text_inset,
     });
-    let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
-    let mut p = Paint::default();
-    p.set_color(Theme::alpha(theme.on_surface, 160));
-    p.set_anti_alias(true);
-    canvas.draw_str("⌕", (10.0, size.1 / 2.0 + theme.font_body / 3.0), &f, &p);
+    let radius = (theme.font_body * 0.2).clamp(3.0, 3.5);
+    let horizontal_padding = theme.spacing * 2.0;
+    let center = Point::new(horizontal_padding / 2.0, size.1 / 2.0 - radius * 0.325);
+    draw_search_magnifier(canvas, center, radius, Theme::alpha(theme.on_surface, 160));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2277,6 +2308,70 @@ struct AccordionHeaderRenderInput<'a> {
     theme: &'a Theme,
 }
 
+#[derive(Clone, Copy)]
+struct AccordionBodyCornerFill {
+    body_shape: RRect,
+    top_strip: SkiaRect,
+    color: SkiaColor,
+}
+
+fn accordion_body_corner_fill<Msg>(
+    taffy: &TaffyTree<RutterContext>,
+    node: NodeId,
+    child: &Widget<Msg>,
+) -> Option<AccordionBodyCornerFill> {
+    let Widget::Container {
+        color: Some(color),
+        radius,
+        ..
+    } = child
+    else {
+        return None;
+    };
+    let layout = taffy.layout(node).ok()?;
+    let radius = (*radius)
+        .min(layout.size.width / 2.0)
+        .min(layout.size.height / 2.0);
+    (radius.is_finite() && radius > 0.0).then(|| {
+        let body = SkiaRect::from_xywh(
+            layout.location.x,
+            layout.location.y,
+            layout.size.width,
+            layout.size.height,
+        );
+        AccordionBodyCornerFill {
+            body_shape: RRect::new_rect_xy(body, radius, radius),
+            top_strip: SkiaRect::from_xywh(body.left, body.top, body.width(), radius),
+            color: *color,
+        }
+    })
+}
+
+fn draw_accordion_body_top_corners(canvas: &Canvas, fill: AccordionBodyCornerFill) {
+    // Fill only the body's transparent upper corners after its rounded Container is drawn.
+    canvas.save();
+    canvas.clip_rect(fill.top_strip, None, false);
+    canvas.clip_rrect(fill.body_shape, Some(ClipOp::Difference), true);
+    let mut paint = Paint::default();
+    paint.set_color(fill.color);
+    paint.set_anti_alias(true);
+    canvas.draw_rect(fill.top_strip, &paint);
+    canvas.restore();
+}
+
+fn accordion_header_shape(rect: SkiaRect, radius: f32, expanded: bool) -> RRect {
+    let lower_radius = if expanded { 0.0 } else { radius };
+    RRect::new_rect_radii(
+        rect,
+        &[
+            Vector::new(radius, radius),
+            Vector::new(radius, radius),
+            Vector::new(lower_radius, lower_radius),
+            Vector::new(lower_radius, lower_radius),
+        ],
+    )
+}
+
 fn draw_accordion_header(input: AccordionHeaderRenderInput<'_>) {
     let AccordionHeaderRenderInput {
         canvas,
@@ -2290,6 +2385,7 @@ fn draw_accordion_header(input: AccordionHeaderRenderInput<'_>) {
     } = input;
     let header_h = ACCORDION_HEADER_H.min(size.1.max(ACCORDION_HEADER_H));
     let rect = SkiaRect::from_xywh(0.0, 0.0, size.0, header_h);
+    let header_shape = accordion_header_shape(rect, theme.radius_sm, expanded);
     let hovered = rect.contains(mouse);
 
     let mut bg = Paint::default();
@@ -2299,20 +2395,14 @@ fn draw_accordion_header(input: AccordionHeaderRenderInput<'_>) {
         Theme::alpha(theme.on_surface, 8)
     });
     bg.set_anti_alias(true);
-    canvas.draw_rrect(
-        RRect::new_rect_xy(rect, theme.radius_sm, theme.radius_sm),
-        &bg,
-    );
+    canvas.draw_rrect(header_shape, &bg);
 
     let mut border = Paint::default();
     border.set_style(paint::Style::Stroke);
     border.set_stroke_width(1.0);
     border.set_color(Theme::alpha(theme.on_surface, 28));
     border.set_anti_alias(true);
-    canvas.draw_rrect(
-        RRect::new_rect_xy(rect, theme.radius_sm, theme.radius_sm),
-        &border,
-    );
+    canvas.draw_rrect(header_shape, &border);
     if is_focused {
         draw_focus_outline(
             canvas,
@@ -2326,20 +2416,37 @@ fn draw_accordion_header(input: AccordionHeaderRenderInput<'_>) {
     let mut tp = Paint::default();
     tp.set_color(theme.on_surface);
     tp.set_anti_alias(true);
-    canvas.draw_str(
+    let caret_direction = if expanded {
+        ControlChevronDirection::Down
+    } else {
+        ControlChevronDirection::Right
+    };
+    let caret_bounds = draw_control_chevron(
+        canvas,
+        Point::new(size.0 - 16.0, header_h / 2.0),
+        4.0,
+        caret_direction,
+        theme.on_surface,
+    );
+    canvas.save();
+    canvas.clip_rect(
+        SkiaRect::from_ltrb(
+            16.0,
+            0.0,
+            (caret_bounds.left - CONTROL_ICON_TEXT_GAP).max(16.0),
+            header_h,
+        ),
+        None,
+        true,
+    );
+    draw_single_line_text(
+        canvas,
         title,
         (16.0, header_h / 2.0 + theme.font_body / 3.0),
         &f,
         &tp,
     );
-
-    let caret = if expanded { "▾" } else { "▸" };
-    canvas.draw_str(
-        caret,
-        (size.0 - 20.0, header_h / 2.0 + theme.font_body / 3.0),
-        &f,
-        &tp,
-    );
+    canvas.restore();
 }
 
 fn draw_progress_bar(
@@ -2542,7 +2649,7 @@ fn draw_dialog(input: DialogRenderInput<'_>) {
     let mut tp = Paint::default();
     tp.set_color(theme.on_surface);
     tp.set_anti_alias(true);
-    canvas.draw_str(title, (card_x + 24.0, card_y + 40.0), &tf, &tp);
+    draw_single_line_text(canvas, title, (card_x + 24.0, card_y + 40.0), &tf, &tp);
 
     text_cache.with_shaped(
         fs,
@@ -2583,8 +2690,9 @@ fn draw_dialog(input: DialogRenderInput<'_>) {
     let mut cancel_tp = Paint::default();
     cancel_tp.set_color(theme.on_surface);
     cancel_tp.set_anti_alias(true);
-    let cw = mf.measure_str(cancel_label, Some(&cancel_tp)).0;
-    canvas.draw_str(
+    let cw = measure_single_line_text(&mf, cancel_label, &cancel_tp);
+    draw_single_line_text(
+        canvas,
         cancel_label,
         (
             cancel_rect.left + (cancel_w - cw) / 2.0,
@@ -2619,8 +2727,9 @@ fn draw_dialog(input: DialogRenderInput<'_>) {
     let mut confirm_tp = Paint::default();
     confirm_tp.set_color(theme.on_primary);
     confirm_tp.set_anti_alias(true);
-    let cw2 = mf.measure_str(confirm_label, Some(&confirm_tp)).0;
-    canvas.draw_str(
+    let cw2 = measure_single_line_text(&mf, confirm_label, &confirm_tp);
+    draw_single_line_text(
+        canvas,
         confirm_label,
         (
             confirm_rect.left + (confirm_w - cw2) / 2.0,
@@ -2711,7 +2820,7 @@ fn draw_toast(input: ToastRenderInput<'_>) {
     tp.set_color(SkiaColor::from_rgb(230, 230, 230));
     tp.set_anti_alias(true);
     let ty = y + h / 2.0 + theme.font_body / 3.0;
-    canvas.draw_str(message, (x + 16.0, ty), &f, &tp);
+    draw_single_line_text(canvas, message, (x + 16.0, ty), &f, &tp);
 
     if progress > 0.0 && progress < 1.0 {
         let bar_w = toast_w * progress;
@@ -2796,7 +2905,7 @@ fn draw_context_menu<Msg>(
                 });
                 tp.set_anti_alias(true);
                 let text_y = item_rect.top + item_rect.height() / 2.0 + theme.font_body / 3.0;
-                canvas.draw_str(label, (rect.left + 12.0, text_y), &f, &tp);
+                draw_single_line_text(canvas, label, (rect.left + 12.0, text_y), &f, &tp);
                 y += CONTEXT_MENU_ITEM_H;
             }
         }
@@ -2901,7 +3010,7 @@ fn draw_virtual_list(input: VirtualListRenderInput<'_>) {
             tp.set_color(tc);
             tp.set_anti_alias(true);
             let ty = y + ih / 2.0 + theme.font_body / 3.0;
-            canvas.draw_str(&text, (12.0, ty), &f, &tp);
+            draw_single_line_text(canvas, &text, (12.0, ty), &f, &tp);
         }
 
         draw_virtual_item_focus(canvas, rect, selection.is_active(i), 0.0, theme);
@@ -3340,7 +3449,7 @@ fn draw_virtual_grid(
                 tp.set_anti_alias(true);
                 let text_x = rect.left + 12.0;
                 let text_y = rect.top + rect.height() / 2.0 + theme.font_body / 3.0;
-                canvas.draw_str(&text, (text_x, text_y), &f, &tp);
+                draw_single_line_text(canvas, &text, (text_x, text_y), &f, &tp);
             }
         }
     }
@@ -3785,6 +3894,7 @@ fn draw_text_button(input: TextButtonRenderInput<'_>) {
         font_size: theme.font_body,
         font_cache,
         center: true,
+        control_policy: TextControlPolicy::FlattenLineBreaks,
     });
 }
 
@@ -3971,7 +4081,8 @@ fn draw_checkbox(checked: bool, input: LabeledControlRenderInput<'_>) {
         let mut p = Paint::default();
         p.set_color(Theme::alpha(theme.on_surface, 220));
         p.set_anti_alias(true);
-        canvas.draw_str(
+        draw_single_line_text(
+            canvas,
             label,
             (box_size + 8.0, size.1 / 2.0 + theme.font_body / 3.0),
             &f,
@@ -3985,7 +4096,7 @@ fn draw_checkbox(checked: bool, input: LabeledControlRenderInput<'_>) {
             let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
             let mut p = Paint::default();
             p.set_anti_alias(true);
-            box_size + 8.0 + f.measure_str(label, Some(&p)).0
+            box_size + 8.0 + measure_single_line_text(&f, label, &p)
         };
         let focus_h = box_size.max(theme.font_body);
         draw_focus_outline(
@@ -4100,7 +4211,13 @@ fn draw_radio(selected: bool, input: LabeledControlRenderInput<'_>) {
         let mut p = Paint::default();
         p.set_color(theme.on_surface);
         p.set_anti_alias(true);
-        canvas.draw_str(label, (r * 2.0 + 8.0, cy + theme.font_body / 3.0), &f, &p);
+        draw_single_line_text(
+            canvas,
+            label,
+            (r * 2.0 + 8.0, cy + theme.font_body / 3.0),
+            &f,
+            &p,
+        );
     }
     if is_focused {
         let focus_w = if label.is_empty() {
@@ -4109,7 +4226,7 @@ fn draw_radio(selected: bool, input: LabeledControlRenderInput<'_>) {
             let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
             let mut p = Paint::default();
             p.set_anti_alias(true);
-            r * 2.0 + 8.0 + f.measure_str(label, Some(&p)).0
+            r * 2.0 + 8.0 + measure_single_line_text(&f, label, &p)
         };
         let focus_h = (r * 2.0).max(theme.font_body);
         draw_focus_outline(
@@ -4502,50 +4619,69 @@ pub(crate) fn draw_select_trigger(input: SelectTriggerRenderInput<'_>) {
             Theme::alpha(theme.on_surface, 160)
         });
         p.set_anti_alias(true);
-        let width = f.measure_str(label, Some(&p)).0;
-        canvas.draw_str(
+        let width = measure_single_line_text(&f, label, &p);
+        draw_single_line_text(
+            canvas,
             label,
             (inline_text_x(direction, size.0, width, 6.0), -4.0),
             &f,
             &p,
         );
     }
+    let chevron_direction = if is_open {
+        ControlChevronDirection::Up
+    } else {
+        ControlChevronDirection::Down
+    };
+    let chevron_x = match direction {
+        LayoutDirection::Ltr => size.0 - 15.0,
+        LayoutDirection::Rtl => 15.0,
+    };
+    let chevron_bounds = draw_control_chevron(
+        canvas,
+        Point::new(chevron_x, closed_h / 2.0),
+        4.0,
+        chevron_direction,
+        Theme::alpha(theme.on_surface, 160),
+    );
     let display = options.get(selected_index).copied().unwrap_or(placeholder);
-    let tc = if display == placeholder {
+    let text_color = if display == placeholder {
         Theme::alpha(theme.on_surface, 100)
     } else {
         theme.on_surface
     };
-    let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
-    let mut tp = Paint::default();
-    tp.set_color(tc);
-    tp.set_anti_alias(true);
-    let display_width = f.measure_str(display, Some(&tp)).0;
-    canvas.draw_str(
+    let font = get_cached_font(font_cache, "sans-serif", theme.font_body);
+    let mut text_paint = Paint::default();
+    text_paint.set_color(text_color);
+    text_paint.set_anti_alias(true);
+    let display_width = measure_single_line_text(&font, display, &text_paint);
+    let text_clip = match direction {
+        LayoutDirection::Ltr => SkiaRect::from_ltrb(
+            8.0,
+            0.0,
+            (chevron_bounds.left - CONTROL_ICON_TEXT_GAP).max(8.0),
+            closed_h,
+        ),
+        LayoutDirection::Rtl => SkiaRect::from_ltrb(
+            (chevron_bounds.right + CONTROL_ICON_TEXT_GAP).min(size.0 - 8.0),
+            0.0,
+            size.0 - 8.0,
+            closed_h,
+        ),
+    };
+    canvas.save();
+    canvas.clip_rect(text_clip, None, true);
+    draw_single_line_text(
+        canvas,
         display,
         (
             inline_text_x(direction, size.0, display_width, 8.0),
             closed_h / 2.0 + theme.font_body / 3.0,
         ),
-        &f,
-        &tp,
+        &font,
+        &text_paint,
     );
-    let chevron = if is_open { "▲" } else { "▼" };
-    let cf = get_cached_font(font_cache, "sans-serif", 11.0);
-    let mut cp = Paint::default();
-    cp.set_color(Theme::alpha(theme.on_surface, 160));
-    cp.set_anti_alias(true);
-    let cw = cf.measure_str(chevron, Some(&cp)).0;
-    let chevron_x = match direction {
-        LayoutDirection::Ltr => size.0 - cw - 8.0,
-        LayoutDirection::Rtl => 8.0,
-    };
-    canvas.draw_str(
-        chevron,
-        (chevron_x, closed_h / 2.0 + theme.font_body / 3.0),
-        &cf,
-        &cp,
-    );
+    canvas.restore();
     if is_focused {
         draw_focus_outline(
             canvas,
@@ -4574,7 +4710,7 @@ fn draw_tooltip_popup(
     let mut tp = Paint::default();
     tp.set_color(theme.on_primary);
     tp.set_anti_alias(true);
-    let tw = f.measure_str(text, Some(&tp)).0;
+    let tw = measure_single_line_text(&f, text, &tp);
     let pad = 6.0_f32;
     let tt_w = tw + pad * 2.0;
     let tt_h = theme.font_small + pad * 2.0;
@@ -4589,7 +4725,13 @@ fn draw_tooltip_popup(
         ),
         &bg,
     );
-    canvas.draw_str(text, (mouse.x + 12.0 + pad, mouse.y - 4.0 - pad), &f, &tp);
+    draw_single_line_text(
+        canvas,
+        text,
+        (mouse.x + 12.0 + pad, mouse.y - 4.0 - pad),
+        &f,
+        &tp,
+    );
 }
 
 fn draw_scrollbar(
@@ -4644,14 +4786,16 @@ mod tests {
     };
 
     use cosmic_text::{FontSystem, SwashCache};
-    use skia_safe::{Canvas, Color, Font, Point, Surface, surfaces};
+    use skia_safe::{
+        Canvas, Color, Font, Point, Rect as SkiaRect, Surface, Vector, rrect::Corner, surfaces,
+    };
     use taffy::prelude::{Dimension, NodeId, Size, Style, TaffyTree};
     use winit::dpi::PhysicalSize;
 
     use super::{
-        ImageRenderCache, RichTextRenderer, VirtualSelectionPaint, draw_image, draw_virtual_grid,
-        draw_widgets, is_svg_image, svg_cache_key, virtual_grid_scrollbar_metrics,
-        visible_carousel_selection,
+        ImageRenderCache, RichTextRenderer, VirtualSelectionPaint, accordion_header_shape,
+        draw_image, draw_virtual_grid, draw_widgets, is_svg_image, svg_cache_key,
+        virtual_grid_scrollbar_metrics, visible_carousel_selection,
     };
     use crate::engine::widget_state::VirtualGridState;
     use crate::layout::{SCROLLBAR_W, build_taffy_tree, compute_layout};
@@ -4744,10 +4888,43 @@ mod tests {
         );
         let mut surface = surfaces::raster_n32_premul((20, 20)).unwrap();
         surface.canvas().clear(Color::TRANSPARENT);
-        draw_container_test_tree(surface.canvas(), &taffy, root, &widget, &widget_states);
+        draw_test_widget_tree(surface.canvas(), &taffy, root, &widget, &widget_states);
 
         assert_eq!(pixel_at(&mut surface, 0, 0), Color::TRANSPARENT);
         assert_eq!(pixel_at(&mut surface, 10, 10), Color::BLUE);
+    }
+
+    #[test]
+    fn expanded_accordion_body_uses_its_taffy_header_offset_once() {
+        let mut surface = rendered_expanded_colored_accordion(0.0);
+
+        assert_eq!(pixel_at(&mut surface, 50, 50), Color::BLUE);
+        assert_eq!(pixel_at(&mut surface, 50, 94), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn expanded_accordion_body_squares_only_top_container_corners() {
+        let mut surface = rendered_expanded_colored_accordion(8.0);
+
+        assert_eq!(pixel_at(&mut surface, 1, 45), Color::BLUE);
+        assert_eq!(pixel_at(&mut surface, 98, 45), Color::BLUE);
+        assert_eq!(pixel_at(&mut surface, 1, 62), Color::TRANSPARENT);
+        assert_eq!(pixel_at(&mut surface, 98, 62), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn expanded_accordion_header_squares_only_lower_corners() {
+        let expanded =
+            accordion_header_shape(SkiaRect::from_xywh(0.0, 0.0, 100.0, 44.0), 8.0, true);
+        let collapsed =
+            accordion_header_shape(SkiaRect::from_xywh(0.0, 0.0, 100.0, 44.0), 8.0, false);
+
+        assert_eq!(expanded.radii(Corner::UpperLeft), Vector::new(8.0, 8.0));
+        assert_eq!(expanded.radii(Corner::UpperRight), Vector::new(8.0, 8.0));
+        assert_eq!(expanded.radii(Corner::LowerRight), Vector::new(0.0, 0.0));
+        assert_eq!(expanded.radii(Corner::LowerLeft), Vector::new(0.0, 0.0));
+        assert_eq!(collapsed.radii(Corner::LowerRight), Vector::new(8.0, 8.0));
+        assert_eq!(collapsed.radii(Corner::LowerLeft), Vector::new(8.0, 8.0));
     }
 
     fn rounded_container_widget() -> Widget<'static, ()> {
@@ -4766,6 +4943,53 @@ mod tests {
         }
     }
 
+    fn expanded_colored_accordion(radius: f32) -> Widget<'static, ()> {
+        let body_style = Style {
+            size: Size::from_lengths(100.0, 20.0),
+            ..Style::default()
+        };
+        Widget::Accordion {
+            id: 17,
+            title: "Details",
+            expanded: true,
+            on_toggle: (),
+            child: Box::new(Widget::Container {
+                child: Box::new(Widget::Spacer {
+                    style: body_style.clone(),
+                }),
+                style: body_style,
+                color: Some(Color::BLUE),
+                radius,
+            }),
+            style: Style {
+                size: Size {
+                    width: Dimension::length(100.0),
+                    height: Dimension::auto(),
+                },
+                ..Style::default()
+            },
+        }
+    }
+
+    fn rendered_expanded_colored_accordion(radius: f32) -> Surface {
+        let widget = expanded_colored_accordion(radius);
+        let widget_states = HashMap::new();
+        let layout_fonts = Rc::new(RefCell::new(FontSystem::new()));
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &widget, layout_fonts.clone(), &widget_states);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(100, 120),
+            layout_fonts,
+            &RichTextRenderer::default(),
+        );
+        let mut surface = surfaces::raster_n32_premul((100, 120)).unwrap();
+        surface.canvas().clear(Color::TRANSPARENT);
+        draw_test_widget_tree(surface.canvas(), &taffy, root, &widget, &widget_states);
+        surface
+    }
+
     fn fixed_style() -> Style {
         Style {
             size: Size {
@@ -4776,7 +5000,7 @@ mod tests {
         }
     }
 
-    fn draw_container_test_tree(
+    fn draw_test_widget_tree(
         canvas: &Canvas,
         taffy: &TaffyTree<crate::layout::RutterContext>,
         root: NodeId,

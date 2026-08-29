@@ -6,12 +6,16 @@ use std::collections::HashMap;
 use skia_safe::{Point, Rect as SkiaRect};
 use taffy::prelude::{NodeId, TaffyTree};
 
-use super::super::ACCORDION_HEADER_H;
 use super::super::hit_test::{modal_card_rect, popover_rect};
 use crate::engine::widget_state::{PopoverState, WidgetState};
+use crate::input_state::InputWidgetState;
 use crate::layout::RutterContext;
 use crate::widget::Widget;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, DropdownMenuState};
+
+mod search;
+
+pub(crate) use search::{SearchOverlay, collect_open_search_overlays};
 
 #[derive(Clone, Copy)]
 pub(crate) struct SelectOverlay<'a> {
@@ -95,6 +99,8 @@ struct SelectOverlayCollector<'tree, 'widget, 'entry, Msg> {
     overlays: Vec<SelectOverlay<'entry>>,
     dropdowns: Vec<DropdownOverlay<'widget, Msg>>,
     dropdown_triggers: Vec<DropdownTrigger>,
+    searches: Vec<SearchOverlay<'entry>>,
+    search_context: Option<(&'tree HashMap<u64, InputWidgetState>, Option<u64>)>,
     path: Vec<usize>,
     clip: Option<SkiaRect>,
     active_owner: OverlayOwner,
@@ -115,6 +121,8 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             overlays: Vec::new(),
             dropdowns: Vec::new(),
             dropdown_triggers: Vec::new(),
+            searches: Vec::new(),
+            search_context: None,
             path: Vec::new(),
             clip: Some(SkiaRect::from_xywh(0.0, 0.0, viewport.0, viewport.1)),
             active_owner: OverlayOwner::default(),
@@ -151,6 +159,10 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
                 selected_index,
                 ..
             } => self.capture_select(widget, options, *selected_index, absolute, size),
+            Widget::SearchBar {
+                suggestions: Some(suggestions),
+                ..
+            } => self.capture_search(widget, suggestions, absolute, size),
             Widget::DropdownMenu { entries, .. } => {
                 self.capture_dropdown(widget, entries, absolute, size)
             }
@@ -324,8 +336,8 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
         if !expanded {
             return;
         }
-        let parent = Point::new(absolute.x, absolute.y + ACCORDION_HEADER_H);
-        self.visit_first(child, node, parent, 0);
+        // The child node's layout location already accounts for the Accordion header padding.
+        self.visit_first(child, node, absolute, 0);
     }
 
     fn visit_modal(

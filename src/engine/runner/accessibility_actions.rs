@@ -57,6 +57,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn focus_accessibility_target(&mut self, target: u64) -> bool {
+        if self.focus_search_accessibility_target(target) {
+            return true;
+        }
         if let Some((id, Some(path))) = self.dropdown_focus_target(target) {
             let reachable = self
                 .engine
@@ -106,6 +109,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn click_accessibility_target(&mut self, target: u64) -> bool {
+        if self.click_search_accessibility_target(target) {
+            return true;
+        }
         if let Some((id, path)) = self.dropdown_focus_target(target) {
             if path.is_none()
                 && !self
@@ -132,6 +138,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn expand_accessibility_target(&mut self, target: u64) -> bool {
+        if self.is_search_accessibility_control(target) {
+            return self.expand_search_accessibility_target(target);
+        }
         let Some((id, path)) = self.dropdown_focus_target(target) else {
             return self.click_accessibility_target(target);
         };
@@ -177,6 +186,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn collapse_accessibility_target(&mut self, target: u64) -> bool {
+        if self.is_search_accessibility_control(target) {
+            return self.collapse_search_accessibility_target(target);
+        }
         let Some((id, path)) = self.dropdown_focus_target(target) else {
             return self.click_accessibility_target(target);
         };

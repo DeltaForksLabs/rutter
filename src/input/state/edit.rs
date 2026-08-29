@@ -4,13 +4,15 @@
 use cosmic_text::{Action, Attrs, Buffer, Edit, Editor, FontSystem, Metrics, Motion, Shaping};
 use zeroize::Zeroize;
 
+use super::{
+    InputWidgetState, TextSelection, UndoStack, buffer,
+    normalization::{normalized_input_text, zeroize_normalized_input_text},
+};
 use crate::input_limits::{
     InputKind, InputLimitError, InputLimits, copy_text_with_reserve, replacement_candidate,
     text_metrics, validate_bytes_and_lines, validate_candidate, validate_inserted_bytes,
     validate_text, validate_utf8_range,
 };
-
-use super::{InputWidgetState, TextSelection, UndoStack, buffer};
 
 #[derive(Clone, Copy)]
 enum HistoryStep {
@@ -115,6 +117,17 @@ impl InputWidgetState {
         font_system: &mut FontSystem,
         text: &str,
     ) -> Result<bool, InputLimitError> {
+        let mut normalized = normalized_input_text(text);
+        let result = self.try_set_normalized_text(font_system, normalized.as_ref());
+        zeroize_normalized_input_text(self.sensitive, &mut normalized);
+        result
+    }
+
+    fn try_set_normalized_text(
+        &mut self,
+        font_system: &mut FontSystem,
+        text: &str,
+    ) -> Result<bool, InputLimitError> {
         validate_text(text, self.limits)?;
         if buffer::buffer_matches_text(&self.editor, text) {
             return Ok(false);
@@ -134,6 +147,17 @@ impl InputWidgetState {
     /// assert!(state.try_insert_text(&mut fonts, "text").unwrap());
     /// ```
     pub fn try_insert_text(
+        &mut self,
+        font_system: &mut FontSystem,
+        text: &str,
+    ) -> Result<bool, InputLimitError> {
+        let mut normalized = normalized_input_text(text);
+        let result = self.try_insert_normalized_text(font_system, normalized.as_ref());
+        zeroize_normalized_input_text(self.sensitive, &mut normalized);
+        result
+    }
+
+    fn try_insert_normalized_text(
         &mut self,
         font_system: &mut FontSystem,
         text: &str,
@@ -258,6 +282,19 @@ impl InputWidgetState {
     }
 
     fn try_replace_selection(
+        &mut self,
+        font_system: &mut FontSystem,
+        selection: TextSelection,
+        replacement: &str,
+    ) -> Result<bool, InputLimitError> {
+        let mut normalized = normalized_input_text(replacement);
+        let result =
+            self.try_replace_normalized_selection(font_system, selection, normalized.as_ref());
+        zeroize_normalized_input_text(self.sensitive, &mut normalized);
+        result
+    }
+
+    fn try_replace_normalized_selection(
         &mut self,
         font_system: &mut FontSystem,
         selection: TextSelection,

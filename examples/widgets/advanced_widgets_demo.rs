@@ -75,10 +75,25 @@ impl AppLogic for AdvancedWidgetsDemo {
             },
             ..Default::default()
         };
+        let accordion_style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: Dimension::length(460.0),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        };
 
         let accordion_body = Widget::Column {
             style: Style {
                 flex_direction: FlexDirection::Column,
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
                 padding: Rect::length(16.0_f32),
                 gap: Size {
                     width: LengthPercentage::length(0.0),
@@ -186,6 +201,7 @@ impl AppLogic for AdvancedWidgetsDemo {
                     on_clear: Some(Msg::SearchChanged(String::new())),
                     style: field.clone(),
                     placeholder: "Buscar widgets...",
+                    suggestions: None,
                 },
                 Widget::TextArea {
                     id: 121,
@@ -202,13 +218,7 @@ impl AppLogic for AdvancedWidgetsDemo {
                     title: "Accordion component",
                     expanded: s.accordion_open,
                     on_toggle: Msg::ToggleAccordion,
-                    style: Style {
-                        size: Size {
-                            width: Dimension::length(460.0),
-                            height: Dimension::length(if s.accordion_open { 180.0 } else { 44.0 }),
-                        },
-                        ..Default::default()
-                    },
+                    style: accordion_style,
                     child: Box::new(accordion_body),
                 },
                 Widget::Row {

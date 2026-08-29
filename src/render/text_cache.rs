@@ -5,6 +5,8 @@ use std::collections::{HashMap, hash_map::Entry};
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, Wrap};
 
+use crate::text_controls::{TextControlPolicy, normalize_text_controls};
+
 const DEFAULT_TEXT_SHAPE_CACHE_ENTRIES: usize = 128;
 const DEFAULT_TEXT_SHAPE_CACHE_ENTRY_BYTES: usize = 16 * 1024;
 const DEFAULT_TEXT_SHAPE_CACHE_TOTAL_TEXT_BYTES: usize = 512 * 1024;
@@ -89,8 +91,9 @@ struct TextShapeKey {
 
 impl TextShapeKey {
     fn from_request(request: &TextShapeRequest<'_>) -> Self {
+        let text = normalize_text_controls(request.text, TextControlPolicy::PreserveLineBreaks);
         Self {
-            text: request.text.to_string(),
+            text: text.into_owned(),
             font_size_bits: request.font_size.to_bits(),
             line_height_bits: request.line_height.to_bits(),
             width_bits: request.width.map(f32::to_bits),
@@ -425,10 +428,11 @@ fn consume_uncached_shape<T>(
 }
 
 fn shape_text_buffer(fs: &mut FontSystem, request: TextShapeRequest<'_>) -> Buffer {
+    let text = normalize_text_controls(request.text, TextControlPolicy::PreserveLineBreaks);
     let mut buffer = Buffer::new(fs, Metrics::new(request.font_size, request.line_height));
     buffer.set_wrap(fs, request.wrap);
     buffer.set_size(fs, request.width, request.height);
-    buffer.set_text(fs, request.text, &Attrs::new(), Shaping::Advanced, None);
+    buffer.set_text(fs, text.as_ref(), &Attrs::new(), Shaping::Advanced, None);
     buffer
 }
 
@@ -443,4 +447,20 @@ const fn wrap_key(wrap: Wrap) -> u8 {
 
 const fn cap_text_cache_limit(value: usize, maximum: usize) -> usize {
     if value > maximum { maximum } else { value }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TextShapeKey, TextShapeRequest};
+
+    #[test]
+    fn cache_key_uses_canonical_text_controls() {
+        let raw = TextShapeRequest::new("first\r\nsecond\tthird\u{0000}", 14.0, 18.0);
+        let canonical = TextShapeRequest::new("first\nsecond third", 14.0, 18.0);
+
+        assert_eq!(
+            TextShapeKey::from_request(&raw),
+            TextShapeKey::from_request(&canonical)
+        );
+    }
 }

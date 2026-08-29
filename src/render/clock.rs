@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use skia_safe::{Font, canvas::Canvas};
 
 use super::{TextDrawInput, draw_text_line};
+use crate::text_controls::TextControlPolicy;
 use crate::theme::Theme;
 use crate::widgets::time::{ClockConfig, TimeZone, current_clock_text};
 
@@ -29,5 +30,6 @@ pub(crate) fn draw_clock(input: ClockRenderInput<'_>) {
         font_size: input.config.font_size(),
         font_cache: input.font_cache,
         center: false,
+        control_policy: TextControlPolicy::FlattenLineBreaks,
     });
 }

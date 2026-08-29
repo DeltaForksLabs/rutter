@@ -16,6 +16,7 @@ use self::id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
 use crate::widgets::carousel::CarouselConfig;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
+use crate::widgets::search::SearchSuggestions;
 use crate::widgets::time::{ClockConfig, TimeZone};
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
@@ -288,6 +289,10 @@ pub(crate) fn estimate_context_menu_width<Msg>(
     let mut max_w = CONTEXT_MENU_MIN_W;
     for entry in entries {
         if let Some(label) = entry.label() {
+            let label = crate::text_controls::normalize_text_controls(
+                label,
+                crate::text_controls::TextControlPolicy::FlattenLineBreaks,
+            );
             let estimate =
                 label.chars().count() as f32 * font_size * 0.62 + CONTEXT_MENU_PAD_X * 2.0 + 24.0;
             max_w = max_w.max(estimate);
@@ -339,6 +344,8 @@ pub(crate) enum WidgetIdTag {
     DropdownMenuItem = 29,
     Counter = 30,
     Clock = 31,
+    SearchPopup = 32,
+    SearchSuggestion = 33,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,6 +377,14 @@ pub(crate) fn resolve_subwidget_path_id(base_id: u64, tag: WidgetIdTag, path: &[
         hash = hash_widget_id_segment(hash, (segment as u64).wrapping_add(1));
     }
     hash | AUTOMATIC_ID_NAMESPACE_BIT
+}
+
+pub(crate) fn resolve_search_popup_id(search_id: u64) -> u64 {
+    resolve_subwidget_path_id(search_id, WidgetIdTag::SearchPopup, &[])
+}
+
+pub(crate) fn resolve_search_suggestion_id(search_id: u64, item_index: usize) -> u64 {
+    resolve_subwidget_id(search_id, WidgetIdTag::SearchSuggestion, item_index)
 }
 
 fn hash_widget_id_segment(hash: u64, segment: u64) -> u64 {
@@ -460,6 +475,9 @@ pub enum Widget<'a, Msg> {
         on_clear: Option<Msg>,
         placeholder: &'a str,
         style: Style,
+        /// Integrated suggestion source; `None` keeps the plain input
+        /// behavior. Constructed via [`Widget::search_bar_with_suggestions`].
+        suggestions: Option<SearchSuggestions<'a, Msg>>,
     },
     Checkbox {
         checked: bool,
@@ -794,6 +812,64 @@ impl<'a, Msg> Widget<'a, Msg> {
             on_clear,
             placeholder,
             style,
+            suggestions: None,
+        }
+    }
+
+    /// Search input with an integrated suggestions popup.
+    ///
+    /// The popup opens while the field is focused and its text is non-empty;
+    /// it ranks `suggestions` items with the configured matcher. Selecting a
+    /// row dispatches `on_select(original_index)`; keyboard navigation
+    /// (arrows/Home/End/PageUp/PageDown to move, Enter to select, Escape to
+    /// dismiss) mirrors the [`Widget::Select`] behavior.
+    ///
+    /// ```
+    /// use rutter::{SearchMatcher, Widget};
+    /// use rutter::search::SearchSuggestions;
+    /// use taffy::prelude::Style;
+    ///
+    /// enum Msg {
+    ///     Query(String),
+    ///     Picked(usize),
+    /// }
+    ///
+    /// let movies = ["Matrix", "Interestelar"];
+    /// let suggestions = SearchSuggestions::new(
+    ///     &movies,
+    ///     SearchMatcher::Fuzzy,
+    ///     5,
+    ///     Some(Msg::Picked),
+    /// )
+    /// .unwrap();
+    /// let bar: Widget<'_, Msg> = Widget::search_bar_with_suggestions(
+    ///     Msg::Query,
+    ///     None,
+    ///     None,
+    ///     None,
+    ///     "Buscar...",
+    ///     suggestions,
+    ///     Style::default(),
+    /// );
+    /// ```
+    pub fn search_bar_with_suggestions(
+        on_change: fn(String) -> Msg,
+        on_submit: Option<Msg>,
+        on_search: Option<Msg>,
+        on_clear: Option<Msg>,
+        placeholder: &'a str,
+        suggestions: SearchSuggestions<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::SearchBar {
+            id: AUTO_ID,
+            on_change,
+            on_submit,
+            on_search,
+            on_clear,
+            placeholder,
+            style,
+            suggestions: Some(suggestions),
         }
     }
 
@@ -1604,6 +1680,29 @@ impl<'a, Msg> Widget<'a, Msg> {
             )),
             _ => None,
         }
+    }
+
+    pub(crate) fn search_popup_id(&self, path: &[usize]) -> Option<u64> {
+        let Self::SearchBar {
+            suggestions: Some(_),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(resolve_search_popup_id(self.resolved_id(path)?))
+    }
+
+    pub(crate) fn search_suggestion_id(&self, path: &[usize], index: usize) -> Option<u64> {
+        let Self::SearchBar {
+            suggestions: Some(suggestions),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let search_id = self.resolved_id(path)?;
+        (index < suggestions.items.len()).then(|| resolve_search_suggestion_id(search_id, index))
     }
 
     pub(crate) fn dropdown_menu_popup_id(&self, widget_path: &[usize]) -> Option<u64> {

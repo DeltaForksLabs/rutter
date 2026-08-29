@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 
 use super::{RichText, RichTextSpan, RichTextSpanStyle, RichTextStyle};
+use crate::text_controls::{TextControlNormalizer, TextControlPolicy};
 
 impl<'a> RichText<'a> {
     /// Converts every span to owned storage. Example: `RichText::plain("Hi").into_owned()`.
@@ -20,6 +21,34 @@ impl<'a> RichText<'a> {
             spans,
             default_style: self.default_style,
         }
+    }
+
+    pub(crate) fn to_owned_spec(&self) -> OwnedRichTextSpec {
+        OwnedRichTextSpec {
+            spans: self.normalized_owned_spans(),
+            default_style: self.default_style,
+        }
+    }
+
+    fn normalized_owned_spans(&self) -> Vec<OwnedRichTextSpan> {
+        // A CRLF pair can cross a style boundary, so fragment-local cleanup would duplicate it.
+        let mut normalizer = TextControlNormalizer::new(TextControlPolicy::PreserveLineBreaks);
+        self.spans
+            .iter()
+            .map(|span| normalized_owned_span(span, &mut normalizer))
+            .collect()
+    }
+}
+
+fn normalized_owned_span(
+    span: &RichTextSpan<'_>,
+    normalizer: &mut TextControlNormalizer,
+) -> OwnedRichTextSpan {
+    let mut text = String::with_capacity(span.text().len());
+    normalizer.append_text(span.text(), &mut text);
+    OwnedRichTextSpan {
+        text,
+        style: *span.style(),
     }
 }
 

@@ -6,6 +6,7 @@ use skia_safe::{Contains, Point, Rect};
 use super::DropdownMenuState;
 use super::runtime::{DropdownMenuEntryAccess, entries_at_level};
 use crate::i18n::LayoutDirection;
+use crate::text_controls::{TextControlPolicy, normalize_text_controls};
 
 pub(crate) const ITEM_ROW_HEIGHT: f32 = 32.0;
 pub(crate) const SEPARATOR_HEIGHT: f32 = 9.0;
@@ -38,6 +39,7 @@ pub(crate) fn estimate_level_width<Entry: DropdownMenuEntryAccess>(entries: &[En
 }
 
 fn estimated_label_width(label: &str) -> f32 {
+    let label = normalize_text_controls(label, TextControlPolicy::FlattenLineBreaks);
     label.chars().count() as f32 * LABEL_GLYPH_WIDTH
 }
 

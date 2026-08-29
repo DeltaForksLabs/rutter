@@ -24,6 +24,20 @@ fn overlay<'a>(
 }
 
 #[test]
+fn submenu_label_clip_reserves_inline_icon_spacing_in_both_directions() {
+    let row = SkiaRect::from_xywh(0.0, 0.0, 100.0, 32.0);
+
+    assert_eq!(
+        dropdown_entry_label_clip(row, LayoutDirection::Ltr, true),
+        SkiaRect::from_ltrb(30.0, 0.0, 76.0, 32.0)
+    );
+    assert_eq!(
+        dropdown_entry_label_clip(row, LayoutDirection::Rtl, true),
+        SkiaRect::from_ltrb(24.0, 0.0, 70.0, 32.0)
+    );
+}
+
+#[test]
 fn root_and_submenu_are_independent_top_level_surfaces() {
     let entries = vec![DropdownMenuEntry::submenu(
         "More",

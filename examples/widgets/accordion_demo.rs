@@ -76,6 +76,10 @@ impl AppLogic for AccordionDemo {
         };
         let item_style = Style {
             size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
                 width: Dimension::length(560.0),
                 height: Dimension::auto(),
             },
@@ -85,6 +89,10 @@ impl AppLogic for AccordionDemo {
         let content_style = Style {
             flex_direction: FlexDirection::Column,
             align_items: Some(AlignItems::FlexStart),
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
             padding: Rect {
                 top: LengthPercentage::length(16.0),
                 bottom: LengthPercentage::length(16.0),

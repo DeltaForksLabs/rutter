@@ -23,6 +23,7 @@ use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
 
 mod action_queue;
 mod dropdown_menu;
+mod search;
 
 pub(crate) use action_queue::AccessibilityActionInbox;
 
@@ -93,8 +94,22 @@ pub(crate) fn build_accessibility_update<Msg>(
     .into_iter()
     .map(|overlay| overlay.id)
     .collect();
-    let mut builder =
-        AccessibilityBuilder::new(taffy, inputs, dropdown_geometries, visible_dropdowns);
+    let search_popups = search::collect_search_accessibility_popups(
+        widget,
+        taffy,
+        root_node,
+        inputs.widget_states,
+        inputs.input_states,
+        inputs.focused_widget_id,
+        inputs.viewport,
+    );
+    let mut builder = AccessibilityBuilder::new(
+        taffy,
+        inputs,
+        dropdown_geometries,
+        visible_dropdowns,
+        search_popups,
+    );
     let children = builder.collect(
         widget,
         Some(root_node),
@@ -110,6 +125,7 @@ struct AccessibilityBuilder<'a> {
     nodes: Vec<(NodeId, Node)>,
     dropdown_geometries: HashMap<u64, DropdownAccessibilityGeometry>,
     visible_dropdowns: HashSet<u64>,
+    search_popups: HashMap<u64, search::SearchAccessibilityPopup>,
 }
 
 impl<'a> AccessibilityBuilder<'a> {
@@ -118,6 +134,7 @@ impl<'a> AccessibilityBuilder<'a> {
         inputs: AccessibilityInputs<'a>,
         dropdown_geometries: HashMap<u64, DropdownAccessibilityGeometry>,
         visible_dropdowns: HashSet<u64>,
+        search_popups: HashMap<u64, search::SearchAccessibilityPopup>,
     ) -> Self {
         Self {
             taffy,
@@ -125,6 +142,7 @@ impl<'a> AccessibilityBuilder<'a> {
             nodes: Vec::new(),
             dropdown_geometries,
             visible_dropdowns,
+            search_popups,
         }
     }
 
@@ -191,6 +209,10 @@ impl<'a> AccessibilityBuilder<'a> {
             Widget::DropdownMenu { label, entries, .. } => {
                 dropdown_menu::collect(self, widget, label, entries, frame, path)
             }
+            Widget::SearchBar {
+                suggestions: Some(_),
+                ..
+            } => self.collect_search_bar(widget, frame, path),
             _ => self.collect_leaf(widget, frame, path),
         }
     }
@@ -355,6 +377,30 @@ impl<'a> AccessibilityBuilder<'a> {
         vec![id]
     }
 
+    fn collect_search_bar<Msg>(
+        &mut self,
+        widget: &Widget<Msg>,
+        frame: LayoutFrame,
+        path: &[usize],
+    ) -> Vec<NodeId> {
+        let Some(search_id) = widget.resolved_id(path) else {
+            return Vec::new();
+        };
+        let mut node = self.widget_node(widget, Role::EditableComboBox, frame.rect, path);
+        apply_leaf_props(&mut node, widget, self.inputs, path);
+        let popup = self.search_popups.get(&search_id);
+        let popup_id = popup.map(|popup| popup.listbox_id);
+        self.nodes
+            .extend(search::configure_search_combobox(&mut node, popup));
+        let node_id = access_node_id(search_id);
+        self.nodes.push((node_id, node));
+        let mut ids = vec![node_id];
+        if let Some(id) = popup_id {
+            ids.push(id);
+        }
+        ids
+    }
+
     fn leaf_node<Msg>(
         &self,
         widget: &Widget<Msg>,
@@ -440,6 +486,15 @@ fn rect_from_layout(origin: Point, width: f32, height: f32) -> Rect {
         origin.y as f64,
         (origin.x + width.max(0.0)) as f64,
         (origin.y + height.max(0.0)) as f64,
+    )
+}
+
+fn access_rect(rect: skia_safe::Rect) -> Rect {
+    Rect::new(
+        rect.left as f64,
+        rect.top as f64,
+        rect.right as f64,
+        rect.bottom as f64,
     )
 }
 
@@ -874,6 +929,86 @@ mod tests {
         build_update_with_inputs(widget, &HashMap::new())
     }
 
+    const SEARCH_ID: u64 = 91;
+    const SEARCH_ITEMS: &[&str] = &["The Matrix", "O Senhor dos Anéis", "Star Wars"];
+
+    fn suggestion_search_widget() -> Widget<'static, ()> {
+        let suggestions = crate::SearchSuggestions::new(
+            SEARCH_ITEMS,
+            crate::SearchMatcher::Fuzzy,
+            5,
+            Some(|_| ()),
+        )
+        .unwrap();
+        Widget::search_bar_with_suggestions(
+            |_| (),
+            None,
+            None,
+            None,
+            "Search movies",
+            suggestions,
+            base_style(240.0, 40.0),
+        )
+        .with_id(SEARCH_ID)
+    }
+
+    fn build_search_accessibility_update(
+        query: &str,
+        hovered: Option<usize>,
+        focused: bool,
+    ) -> TreeUpdate {
+        let widget = suggestion_search_widget();
+        let mut font_system = FontSystem::new();
+        let mut input = InputWidgetState::new(&mut font_system);
+        input.set_text(&mut font_system, query);
+        let inputs = HashMap::from([(SEARCH_ID, input)]);
+        let states = HashMap::from([(
+            SEARCH_ID,
+            WidgetState::Search(crate::engine::widget_state::SearchState {
+                hovered_option: hovered,
+                dismissed: false,
+            }),
+        )]);
+        build_search_update(&widget, &inputs, &states, focused.then_some(SEARCH_ID))
+    }
+
+    fn build_search_update(
+        widget: &Widget<'_, ()>,
+        inputs: &HashMap<u64, InputWidgetState>,
+        states: &HashMap<u64, WidgetState>,
+        focused_widget_id: Option<u64>,
+    ) -> TreeUpdate {
+        let (taffy, root) = layout_search_widget(widget, states);
+        build_accessibility_update(
+            &taffy,
+            widget,
+            root,
+            AccessibilityInputs {
+                input_states: inputs,
+                widget_states: states,
+                focused_widget_id,
+                viewport: (300.0, 120.0),
+                direction: LayoutDirection::Ltr,
+            },
+        )
+    }
+
+    fn layout_search_widget(
+        widget: &Widget<'_, ()>,
+        states: &HashMap<u64, WidgetState>,
+    ) -> (TaffyTree<RutterContext>, TaffyNodeId) {
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, widget, fs(), states);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(300, 120),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
+        (taffy, root)
+    }
+
     fn node_for(update: &TreeUpdate, role: Role) -> &Node {
         update
             .nodes
@@ -954,6 +1089,58 @@ mod tests {
         assert_eq!(counter.numeric_value_step(), Some(1.0));
         assert!(counter.supports_action(Action::Increment));
         assert!(counter.supports_action(Action::Decrement));
+    }
+
+    #[test]
+    fn accessibility_update_exposes_search_suggestions_as_an_editable_combobox() {
+        let update = build_search_accessibility_update("r", Some(2), true);
+        let combo = node_for(&update, Role::EditableComboBox);
+        let listbox = node_for(&update, Role::ListBox);
+        let options: Vec<&Node> = update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| (node.role() == Role::ListBoxOption).then_some(node))
+            .collect();
+
+        assert_eq!(combo.is_expanded(), Some(true));
+        assert_eq!(combo.has_popup(), Some(accesskit::HasPopup::Listbox));
+        assert_eq!(combo.auto_complete(), Some(accesskit::AutoComplete::List));
+        assert!(combo.supports_action(Action::Focus));
+        assert!(combo.supports_action(Action::Collapse));
+        assert_eq!(combo.controls().len(), 1);
+        assert_eq!(listbox.size_of_set(), Some(3));
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[2].label(), Some("Star Wars"));
+        assert_eq!(options[2].position_in_set(), Some(2));
+        assert_eq!(options[2].is_selected(), Some(true));
+        assert!(options[2].supports_action(Action::Focus));
+        assert!(options[2].supports_action(Action::Click));
+        assert!(combo.active_descendant().is_some());
+    }
+
+    #[test]
+    fn accessibility_update_labels_an_empty_search_result_list() {
+        let update = build_search_accessibility_update("zzz", None, true);
+        let listbox = node_for(&update, Role::ListBox);
+
+        assert_eq!(listbox.label(), Some("No matches"));
+        assert_eq!(listbox.size_of_set(), Some(0));
+        assert!(listbox.children().is_empty());
+    }
+
+    #[test]
+    fn accessibility_update_collapses_an_unfocused_search_popup() {
+        let update = build_search_accessibility_update("r", Some(0), false);
+        let combo = node_for(&update, Role::EditableComboBox);
+
+        assert_eq!(combo.is_expanded(), Some(false));
+        assert!(combo.supports_action(Action::Expand));
+        assert!(
+            update
+                .nodes
+                .iter()
+                .all(|(_, node)| { !matches!(node.role(), Role::ListBox | Role::ListBoxOption) })
+        );
     }
 
     #[test]

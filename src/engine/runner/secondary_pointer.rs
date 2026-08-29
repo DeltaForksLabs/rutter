@@ -52,7 +52,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     ) {
         let destination = secondary_pointer_destination(blockers, context_menu_target);
         match destination {
-            SecondaryPointerDestination::DismissSelect => self.close_all_selects(),
+            SecondaryPointerDestination::DismissSelect => {
+                self.close_all_selects();
+                self.dismiss_all_search_suggestions();
+            }
             SecondaryPointerDestination::DismissContextMenu => {
                 self.engine.close_all_context_menus();
             }
