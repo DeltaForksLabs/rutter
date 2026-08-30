@@ -11,7 +11,10 @@ use rutter::{
     SurfaceRequest, Theme, Widget, WindowConfig, WindowLevel,
 };
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 const SECOND_WINDOW: SurfaceId = SurfaceId::new(1);
 
@@ -113,9 +116,11 @@ fn open_second_window_commands(state: &mut MultiWindowState) -> Vec<SurfaceComma
 fn main_window_request() -> SurfaceRequest {
     let window = WindowConfig::default()
         .with_title("Rutter Multi-Window Demo")
-        .with_resizable(false)
+        .with_resizable(true)
         .with_inner_size(520, 320)
         .expect("main window size 520x320 must contain positive dimensions")
+        .with_min_inner_size(320, 220)
+        .expect("main window minimum size 320x220 must contain positive dimensions")
         .with_close_behavior(CloseBehavior::ExitApplication);
     SurfaceRequest::new(SurfaceId::PRIMARY, window)
 }
@@ -123,11 +128,11 @@ fn main_window_request() -> SurfaceRequest {
 fn second_window_request() -> SurfaceRequest {
     let window = WindowConfig::default()
         .with_title("Temporary Inspector")
-        .with_resizable(false)
+        .with_resizable(true)
         .with_inner_size(560, 260)
         .expect("temporary window size 560x260 must contain positive dimensions")
-        .with_min_inner_size(480, 220)
-        .expect("temporary minimum size 480x220 must contain positive dimensions")
+        .with_min_inner_size(320, 220)
+        .expect("temporary minimum size 320x220 must contain positive dimensions")
         .with_max_inner_size(720, 420)
         .expect("temporary maximum size 720x420 must contain positive dimensions")
         .with_position(160, 140)
@@ -223,23 +228,11 @@ fn centered_surface_column<'a>(children: Vec<Widget<'a, Message>>) -> Widget<'a,
 }
 
 fn centered_button_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::length(220.0),
-            height: Dimension::length(52.0),
-        },
-        ..Style::default()
-    }
+    responsive_width(220.0, Dimension::length(52.0))
 }
 
 fn rich_text_layout_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::auto(),
-            height: Dimension::length(72.0),
-        },
-        ..Style::default()
-    }
+    responsive_width(480.0, Dimension::auto())
 }
 
 pub fn run() {

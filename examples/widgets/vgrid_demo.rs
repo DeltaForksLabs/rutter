@@ -10,7 +10,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, VirtualSelection, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 const TOTAL_ITEMS: usize = 1_200;
 
@@ -39,7 +42,7 @@ impl AppLogic for VGridDemo {
     fn view<'a>(s: &'a mut VGridDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -51,13 +54,7 @@ impl AppLogic for VGridDemo {
             },
             ..Default::default()
         };
-        let grid_s = Style {
-            size: Size {
-                width: Dimension::length(720.0),
-                height: Dimension::length(420.0),
-            },
-            ..Default::default()
-        };
+        let grid_s = responsive_width(720.0, Dimension::length(420.0));
 
         Widget::Column {
             style: root,

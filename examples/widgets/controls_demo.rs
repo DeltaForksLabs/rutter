@@ -9,7 +9,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 const LANGUAGES: &[&str] = &["Rust", "Python", "TypeScript", "Go", "Zig", "C++"];
 
@@ -47,7 +50,7 @@ impl AppLogic for ControlsDemo {
     fn view<'a>(s: &'a mut ControlsDemoState) -> Widget<'a, Msg> {
         let col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -62,15 +65,11 @@ impl AppLogic for ControlsDemo {
         let item_row = Style {
             flex_direction: FlexDirection::Row,
             align_items: Some(AlignItems::FlexStart),
-            size: Size {
-                width: Dimension::length(320.0),
-                height: Dimension::length(32.0),
-            },
             gap: Size {
                 width: LengthPercentage::length(12.0),
                 height: LengthPercentage::length(0.0),
             },
-            ..Default::default()
+            ..responsive_width(320.0, Dimension::length(32.0))
         };
         let checkbox_row = Style {
             flex_direction: FlexDirection::Row,
@@ -90,10 +89,7 @@ impl AppLogic for ControlsDemo {
             },
             ..Default::default()
         };
-        let check_s = Style {
-            size: Size::from_lengths(180.0, 28.0),
-            ..Default::default()
-        };
+        let check_s = responsive_width(180.0, Dimension::length(28.0));
         let switch_s = Style {
             size: Size {
                 width: Dimension::length(50.0),
@@ -101,20 +97,8 @@ impl AppLogic for ControlsDemo {
             },
             ..Default::default()
         };
-        let select_s = Style {
-            size: Size {
-                width: Dimension::length(320.0),
-                height: Dimension::length(44.0),
-            },
-            ..Default::default()
-        };
-        let radio_s = Style {
-            size: Size {
-                width: Dimension::length(160.0),
-                height: Dimension::length(28.0),
-            },
-            ..Default::default()
-        };
+        let select_s = responsive_width(320.0, Dimension::length(44.0));
+        let radio_s = responsive_width(160.0, Dimension::length(28.0));
 
         Widget::Column {
             style: col,

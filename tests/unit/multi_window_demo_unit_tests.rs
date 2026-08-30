@@ -7,6 +7,8 @@ fn demo_starts_with_only_the_centered_primary_window() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].surface, SurfaceId::PRIMARY);
     assert_eq!(requests[0].window.title(), "Rutter Multi-Window Demo");
+    assert!(requests[0].window.is_resizable());
+    assert_eq!(requests[0].window.min_inner_size().unwrap().width(), 320);
 
     let Widget::Column { children, style } = main_window_view() else {
         panic!("main demo view must be a centered Column")
@@ -67,7 +69,8 @@ fn temporary_window_uses_constrained_topmost_hidden_configuration() {
         request.window.position(),
         Some(WindowPosition::new(160, 140))
     );
-    assert_eq!(request.window.min_inner_size().unwrap().width(), 480);
+    assert!(request.window.is_resizable());
+    assert_eq!(request.window.min_inner_size().unwrap().width(), 320);
     assert_eq!(request.window.max_inner_size().unwrap().height(), 420);
     assert_eq!(request.window.window_level(), WindowLevel::AlwaysOnTop);
     assert!(!request.window.is_visible());
@@ -102,7 +105,9 @@ fn second_and_unknown_windows_render_rich_text() {
         content.spans()[1].style().weight(),
         Some(RichTextWeight::BOLD)
     );
-    assert_eq!(style.size.height, Dimension::length(72.0));
+    assert_eq!(style.size.width, Dimension::percent(1.0));
+    assert_eq!(style.max_size.width, Dimension::length(480.0));
+    assert_eq!(style.size.height, Dimension::auto());
 
     let Widget::Column { children, .. } = unknown_window_view(SurfaceId::new(99)) else {
         panic!("unknown window view must be a centered Column")

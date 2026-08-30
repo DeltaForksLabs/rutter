@@ -10,11 +10,14 @@ use cosmic_text::FontSystem;
 use taffy::prelude::*;
 
 use rutter::{
-    AppLogic, ButtonVariant, InputState, RutterRunner, Theme, Widget,
+    AppLogic, ButtonVariant, InputState, RutterRunner, Theme, VirtualSelection, Widget,
     widget::{Orientation, ToastKind, ToastPosition},
 };
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 // ── Estado ───────────────────────────────────────────────────
 
@@ -28,7 +31,7 @@ pub struct AppState {
     pub modal_confirmed: bool,
     pub toast_visible: bool,
     pub toast_msg: String,
-    pub list_selected: Option<usize>,
+    pub list_selected: Vec<usize>,
     pub volume: f32,
     pub language: usize,
     pub remember: bool,
@@ -56,7 +59,7 @@ pub enum Msg {
     ConfirmModal,
     CloseModal,
     DismissToast,
-    ListSelected(usize),
+    ListSelected(Vec<usize>),
     SimulateProgress,
     ClearPressed,
 }
@@ -94,7 +97,7 @@ impl AppLogic for MyApp {
         };
         let content_col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             padding: Rect {
                 top: LengthPercentage::length(32.0),
                 left: LengthPercentage::length(0.0),
@@ -114,15 +117,11 @@ impl AppLogic for MyApp {
         };
         let card_col = Style {
             flex_direction: FlexDirection::Column,
-            size: Size {
-                width: Dimension::length(320.0),
-                height: Dimension::auto(),
-            },
             gap: Size {
                 width: LengthPercentage::length(0.0),
                 height: LengthPercentage::length(14.0),
             },
-            ..Default::default()
+            ..responsive_width(320.0, Dimension::auto())
         };
         let input_s = Style {
             size: Size {
@@ -140,6 +139,11 @@ impl AppLogic for MyApp {
         };
         let row_s = Style {
             flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
             gap: Size {
                 width: LengthPercentage::length(12.0),
                 height: LengthPercentage::length(0.0),
@@ -439,21 +443,26 @@ impl AppLogic for MyApp {
                         style: Style::default(),
                     },
                     Widget::Text {
-                        content: s
-                            .list_selected
-                            .map(|i| format!("Selected: item #{i}"))
-                            .unwrap_or_default(),
+                        content: log_selection_caption(&s.list_selected),
                         color: None,
                         size: 12.0,
                         style: Style::default(),
                     },
-                    Widget::VirtualList {
-                        id: 60,
-                        item_height: 30.0,
-                        item_count: LOG_ITEMS,
-                        items: &|i| Some(format!("Log #{:03} — framework event fired", i + 1)),
-                        on_select: Msg::ListSelected,
-                        style: vlist_s,
+                    Widget::virtual_list_with_selection(
+                        30.0,
+                        LOG_ITEMS,
+                        &|index| Some(format!("Log #{:03} — framework event fired", index + 1)),
+                        VirtualSelection::multiple(&s.list_selected, Msg::ListSelected),
+                        vlist_s,
+                    )
+                    .with_id(60),
+                    Widget::Text {
+                        content:
+                            "Drag to select a range. Ctrl/Command toggles rows; Shift extends it."
+                                .into(),
+                        color: None,
+                        size: 11.0,
+                        style: Style::default(),
                     },
                 ],
             },
@@ -480,11 +489,7 @@ impl AppLogic for MyApp {
                         width: LengthPercentage::length(0.0),
                         height: LengthPercentage::length(16.0),
                     },
-                    size: Size {
-                        width: Dimension::length(320.0),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
+                    ..responsive_width(320.0, Dimension::auto())
                 },
                 children: vec![
                     Widget::Text {
@@ -502,6 +507,11 @@ impl AppLogic for MyApp {
                     Widget::Row {
                         style: Style {
                             flex_direction: FlexDirection::Row,
+                            flex_wrap: FlexWrap::Wrap,
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::auto(),
+                            },
                             gap: Size {
                                 width: LengthPercentage::length(8.0),
                                 height: LengthPercentage::length(0.0),
@@ -596,7 +606,7 @@ impl AppLogic for MyApp {
             Msg::VolumeChanged(v) => s.volume = v,
             Msg::LanguageChanged(i) => s.language = i,
             Msg::TabChanged(i) => s.active_tab = i,
-            Msg::ListSelected(i) => s.list_selected = Some(i),
+            Msg::ListSelected(indices) => s.list_selected = indices,
             Msg::LoginPressed => {
                 if s.username.is_empty() {
                     s.username_state = InputState::Error;
@@ -628,6 +638,7 @@ impl AppLogic for MyApp {
                 s.upload_progress = 0.0;
                 s.is_loading = false;
                 s.modal_confirmed = false;
+                s.list_selected.clear();
             }
         }
     }
@@ -637,6 +648,26 @@ impl AppLogic for MyApp {
     }
 }
 
+fn log_selection_caption(selected: &[usize]) -> String {
+    match selected {
+        [] => "No log entries selected".into(),
+        [index] => format!("Selected: log #{:03}", index + 1),
+        indices => format!("{} log entries selected", indices.len()),
+    }
+}
+
 pub fn run() {
     RutterRunner::<MyApp>::run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::log_selection_caption;
+
+    #[test]
+    fn log_selection_caption_describes_single_and_multiple_rows() {
+        assert_eq!(log_selection_caption(&[]), "No log entries selected");
+        assert_eq!(log_selection_caption(&[4]), "Selected: log #005");
+        assert_eq!(log_selection_caption(&[1, 3]), "2 log entries selected");
+    }
 }

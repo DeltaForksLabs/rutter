@@ -11,7 +11,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, InputState, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 // ── Estado ───────────────────────────────────────────────────
 
@@ -46,7 +49,7 @@ impl AppLogic for TextInputDemo {
     fn view<'a>(s: &'a mut TextInputDemoState) -> Widget<'a, Msg> {
         let col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -58,18 +61,19 @@ impl AppLogic for TextInputDemo {
             },
             ..Default::default()
         };
-        let inp = Style {
-            size: Size {
-                width: Dimension::length(320.0),
-                height: Dimension::length(44.0),
-            },
-            ..Default::default()
-        };
+        let inp = responsive_width(320.0, Dimension::length(44.0));
 
         Widget::Column {
             style: col,
             children: vec![
                 example_theme_selector(s.theme, Msg::ThemeChanged),
+                Widget::Text {
+                    content: "Campos de uma linha convertem quebras de linha e tabs coladas em texto seguro."
+                        .into(),
+                    color: None,
+                    size: 13.0,
+                    style: Style::default(),
+                },
                 // Campo normal
                 Widget::TextInput {
                     id: 1,

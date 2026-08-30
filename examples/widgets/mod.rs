@@ -34,6 +34,7 @@ pub mod advanced_widgets_demo;
 pub mod button_content_demo;
 pub mod dialog_demo;
 pub mod image_viewer_demo;
+mod layout;
 pub mod search_bar_demo;
 pub mod text_area_demo;
 

@@ -8,7 +8,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 #[derive(Default)]
 pub struct AccordionDemoState {
@@ -46,7 +49,7 @@ impl AppLogic for AccordionDemo {
     fn view<'a>(s: &'a mut AccordionDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -61,19 +64,14 @@ impl AppLogic for AccordionDemo {
 
         let row = Style {
             flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
             gap: Size {
                 width: LengthPercentage::length(10.0),
                 height: LengthPercentage::length(0.0),
             },
-            ..Default::default()
+            ..responsive_width(560.0, Dimension::auto())
         };
-        let btn = |w: f32| Style {
-            size: Size {
-                width: Dimension::length(w),
-                height: Dimension::length(38.0),
-            },
-            ..Default::default()
-        };
+        let btn = |w: f32| responsive_width(w, Dimension::length(38.0));
         let item_style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -88,7 +86,7 @@ impl AppLogic for AccordionDemo {
 
         let content_style = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),

@@ -10,7 +10,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, DialogPosition, InputState, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 #[derive(Default)]
 pub struct AdvancedWidgetsState {
@@ -47,7 +50,7 @@ impl AppLogic for AdvancedWidgetsDemo {
     fn view<'a>(s: &'a mut AdvancedWidgetsState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -60,21 +63,9 @@ impl AppLogic for AdvancedWidgetsDemo {
             ..Default::default()
         };
 
-        let field = Style {
-            size: Size {
-                width: Dimension::length(460.0),
-                height: Dimension::length(44.0),
-            },
-            ..Default::default()
-        };
+        let field = responsive_width(460.0, Dimension::length(44.0));
 
-        let text_area_style = Style {
-            size: Size {
-                width: Dimension::length(460.0),
-                height: Dimension::length(132.0),
-            },
-            ..Default::default()
-        };
+        let text_area_style = responsive_width(460.0, Dimension::length(132.0));
         let accordion_style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -111,13 +102,7 @@ impl AppLogic for AdvancedWidgetsDemo {
                 Widget::Button {
                     text: "Abrir Dialog",
                     on_press: Msg::ToggleDialog,
-                    style: Style {
-                        size: Size {
-                            width: Dimension::length(160.0),
-                            height: Dimension::length(36.0),
-                        },
-                        ..Default::default()
-                    },
+                    style: responsive_width(160.0, Dimension::length(36.0)),
                     color: None,
                     variant: ButtonVariant::Ghost,
                 },
@@ -145,13 +130,13 @@ impl AppLogic for AdvancedWidgetsDemo {
             child: Box::new(Widget::Column {
                 style: Style {
                     flex_direction: FlexDirection::Column,
-                    align_items: Some(AlignItems::FlexStart),
+                    align_items: Some(AlignItems::Stretch),
                     padding: Rect::length(24.0_f32),
                     gap: Size {
                         width: LengthPercentage::length(0.0),
                         height: LengthPercentage::length(16.0),
                     },
-                    ..Default::default()
+                    ..responsive_width(460.0, Dimension::auto())
                 },
                 children: vec![
                     Widget::Text {
@@ -169,13 +154,7 @@ impl AppLogic for AdvancedWidgetsDemo {
                     Widget::Button {
                         text: "Fechar",
                         on_press: Msg::ToggleDialog,
-                        style: Style {
-                            size: Size {
-                                width: Dimension::length(120.0),
-                                height: Dimension::length(36.0),
-                            },
-                            ..Default::default()
-                        },
+                        style: responsive_width(120.0, Dimension::length(36.0)),
                         color: None,
                         variant: ButtonVariant::Primary,
                     },
@@ -224,6 +203,11 @@ impl AppLogic for AdvancedWidgetsDemo {
                 Widget::Row {
                     style: Style {
                         flex_direction: FlexDirection::Row,
+                        flex_wrap: FlexWrap::Wrap,
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
                         gap: Size {
                             width: LengthPercentage::length(12.0),
                             height: LengthPercentage::length(0.0),
@@ -234,26 +218,14 @@ impl AppLogic for AdvancedWidgetsDemo {
                         Widget::Button {
                             text: "Toggle Accordion",
                             on_press: Msg::ToggleAccordion,
-                            style: Style {
-                                size: Size {
-                                    width: Dimension::length(160.0),
-                                    height: Dimension::length(36.0),
-                                },
-                                ..Default::default()
-                            },
+                            style: responsive_width(160.0, Dimension::length(36.0)),
                             color: None,
                             variant: ButtonVariant::Ghost,
                         },
                         Widget::Button {
                             text: "Toggle Dialog",
                             on_press: Msg::ToggleDialog,
-                            style: Style {
-                                size: Size {
-                                    width: Dimension::length(160.0),
-                                    height: Dimension::length(36.0),
-                                },
-                                ..Default::default()
-                            },
+                            style: responsive_width(160.0, Dimension::length(36.0)),
                             color: None,
                             variant: ButtonVariant::Primary,
                         },

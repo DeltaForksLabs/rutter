@@ -41,6 +41,7 @@ impl AppLogic for RichTextDemo {
                 Widget::rich_text(emphasis_content(), line_style()),
                 Widget::rich_text(inherited_content(), line_style()),
                 Widget::rich_text(multilingual_content(), wrapping_style()),
+                Widget::rich_text(control_normalization_content(), line_style()),
             ],
         }
     }
@@ -95,6 +96,13 @@ fn multilingual_content() -> RichText<'static> {
         RichTextSpan::new("مرحبا بالعالم ").with_color(RichTextColor::rgb(120, 220, 170)),
         RichTextSpan::new("— hello world — "),
         RichTextSpan::new("こんにちは世界 👋").italic(),
+    ])
+}
+
+fn control_normalization_content() -> RichText<'static> {
+    RichText::from_spans([
+        RichTextSpan::new("CRLF across spans\r").bold(),
+        RichTextSpan::new("\nbecomes one line break; tabs\tbecome spaces."),
     ])
 }
 

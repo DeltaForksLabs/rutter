@@ -10,7 +10,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 pub struct PopoverDemoState {
     pub theme: ExampleTheme,
@@ -46,7 +49,7 @@ impl AppLogic for PopoverDemo {
     fn view<'a>(s: &'a mut PopoverDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -59,27 +62,17 @@ impl AppLogic for PopoverDemo {
             ..Default::default()
         };
 
-        let anchor_style = Style {
-            size: Size {
-                width: Dimension::length(190.0),
-                height: Dimension::length(40.0),
-            },
-            ..Default::default()
-        };
+        let anchor_style = responsive_width(190.0, Dimension::length(40.0));
 
-        let popup_style = Style {
-            size: Size {
-                width: Dimension::length(320.0),
-                height: Dimension::length(190.0),
-            },
-            ..Default::default()
-        };
+        let popup_style = responsive_width(320.0, Dimension::auto());
+
+        let popover_style = responsive_width(320.0, Dimension::auto());
 
         let popup_content_style = Style {
             flex_direction: FlexDirection::Column,
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
+                height: Dimension::auto(),
             },
             padding: Rect::length(16.0_f32),
             gap: Size {
@@ -91,6 +84,11 @@ impl AppLogic for PopoverDemo {
 
         let row_style = Style {
             flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
             gap: Size {
                 width: LengthPercentage::length(10.0),
                 height: LengthPercentage::length(0.0),
@@ -101,13 +99,7 @@ impl AppLogic for PopoverDemo {
         let option_button = |label: &'static str| Widget::Button {
             text: label,
             on_press: Msg::Pick(label),
-            style: Style {
-                size: Size {
-                    width: Dimension::length(88.0),
-                    height: Dimension::length(36.0),
-                },
-                ..Default::default()
-            },
+            style: responsive_width(88.0, Dimension::length(36.0)),
             color: None,
             variant: ButtonVariant::Ghost,
         };
@@ -150,13 +142,7 @@ impl AppLogic for PopoverDemo {
                 Widget::Button {
                     text: "Apply selection",
                     on_press: Msg::Apply,
-                    style: Style {
-                        size: Size {
-                            width: Dimension::length(160.0),
-                            height: Dimension::length(36.0),
-                        },
-                        ..Default::default()
-                    },
+                    style: responsive_width(160.0, Dimension::length(36.0)),
                     color: None,
                     variant: ButtonVariant::Primary,
                 },
@@ -185,7 +171,7 @@ impl AppLogic for PopoverDemo {
                     anchor,
                     content,
                     Some(Msg::Close),
-                    anchor_style,
+                    popover_style,
                     popup_style,
                 )
                 .with_id(910),

@@ -11,7 +11,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 #[derive(Default)]
 pub struct ProgressDemoState {
@@ -48,7 +51,7 @@ impl AppLogic for ProgressDemo {
     fn view<'a>(s: &'a mut ProgressDemoState) -> Widget<'a, Msg> {
         let col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -60,22 +63,19 @@ impl AppLogic for ProgressDemo {
             },
             ..Default::default()
         };
-        let bar_s = Style {
-            size: Size {
-                width: Dimension::length(360.0),
-                height: Dimension::length(20.0),
-            },
-            ..Default::default()
-        };
-        let btn_s = Style {
-            size: Size {
-                width: Dimension::length(160.0),
-                height: Dimension::length(36.0),
-            },
-            ..Default::default()
-        };
+        let bar_s = responsive_width(360.0, Dimension::length(20.0));
+        let btn_s = responsive_width(160.0, Dimension::length(36.0));
         let row_s = Style {
             flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: Dimension::length(688.0),
+                height: Dimension::auto(),
+            },
             gap: Size {
                 width: LengthPercentage::length(12.0),
                 height: LengthPercentage::length(0.0),

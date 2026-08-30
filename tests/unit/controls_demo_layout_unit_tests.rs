@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn checkbox_row_uses_explicit_widths_and_horizontal_spacing() {
+fn checkbox_row_wraps_and_uses_bounded_fluid_widths() {
     let mut state = ControlsDemoState::default();
     let view = ControlsDemo::view(&mut state);
     let Widget::Column { children, .. } = view else {
@@ -12,13 +12,15 @@ fn checkbox_row_uses_explicit_widths_and_horizontal_spacing() {
     assert_eq!(style.flex_wrap, FlexWrap::Wrap);
     assert_eq!(style.gap.width, LengthPercentage::length(24.0));
     assert_eq!(style.gap.height, LengthPercentage::length(12.0));
+    assert_eq!(style.size.width, Dimension::percent(1.0));
     assert_eq!(style.max_size.width, Dimension::length(384.0));
     assert_eq!(checkboxes.len(), 2);
     for checkbox in checkboxes {
         let Widget::Checkbox { style, .. } = checkbox else {
             unreachable!()
         };
-        assert_eq!(style.size.width, Dimension::length(180.0));
+        assert_eq!(style.size.width, Dimension::percent(1.0));
+        assert_eq!(style.max_size.width, Dimension::length(180.0));
     }
 }
 

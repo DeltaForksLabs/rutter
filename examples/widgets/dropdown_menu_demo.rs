@@ -6,7 +6,10 @@ use cosmic_text::FontSystem;
 use rutter::{AppLogic, DropdownMenuEntry, RutterRunner, Theme, Widget};
 use taffy::prelude::*;
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 pub struct DropdownMenuDemoState {
     pub theme: ExampleTheme,
@@ -179,7 +182,7 @@ fn heading<'a>(content: &str, size: f32) -> Widget<'a, Msg> {
 fn root_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
-        align_items: Some(AlignItems::FlexStart),
+        align_items: Some(AlignItems::Stretch),
         size: Size::percent(1.0_f32),
         padding: Rect::length(32.0_f32),
         gap: Size {
@@ -191,13 +194,7 @@ fn root_style() -> Style {
 }
 
 fn trigger_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::length(240.0),
-            height: Dimension::length(42.0),
-        },
-        ..Style::default()
-    }
+    responsive_width(240.0, Dimension::length(42.0))
 }
 
 pub fn run() {

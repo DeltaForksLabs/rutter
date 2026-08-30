@@ -8,7 +8,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, InputState, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 #[derive(Default)]
 pub struct TextAreaDemoState {
@@ -39,7 +42,7 @@ impl AppLogic for TextAreaDemo {
     fn view<'a>(s: &'a mut TextAreaDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -52,13 +55,7 @@ impl AppLogic for TextAreaDemo {
             ..Default::default()
         };
 
-        let area_style = |height: f32| Style {
-            size: Size {
-                width: Dimension::length(560.0),
-                height: Dimension::length(height),
-            },
-            ..Default::default()
-        };
+        let area_style = |height: f32| responsive_width(560.0, Dimension::length(height));
 
         Widget::Column {
             style: root,
@@ -72,7 +69,7 @@ impl AppLogic for TextAreaDemo {
                 },
                 Widget::Text {
                     content:
-                        "Exercita edição multilinha, placeholder, estado visual e validação básica."
+                        "Preserva quebras de linha normalizadas, converte tabs em espaços e remove controles não imprimíveis."
                             .into(),
                     color: None,
                     size: 13.0,
@@ -119,11 +116,7 @@ impl AppLogic for TextAreaDemo {
                 Widget::Container {
                     style: Style {
                         padding: Rect::length(16.0_f32),
-                        size: Size {
-                            width: Dimension::length(560.0),
-                            height: Dimension::auto(),
-                        },
-                        ..Default::default()
+                        ..responsive_width(560.0, Dimension::auto())
                     },
                     color: Some(skia_safe::Color::from_argb(32, 255, 255, 255)),
                     radius: 10.0,

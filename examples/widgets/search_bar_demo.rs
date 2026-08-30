@@ -15,7 +15,10 @@ use rutter::{
     Widget,
 };
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 const MOVIES: &[&str] = &[
     "Matrix",
@@ -98,7 +101,7 @@ impl AppLogic for SearchBarDemo {
     fn view<'a>(s: &'a mut SearchBarDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -111,13 +114,7 @@ impl AppLogic for SearchBarDemo {
             ..Default::default()
         };
 
-        let field = |width: f32| Style {
-            size: Size {
-                width: Dimension::length(width),
-                height: Dimension::length(44.0),
-            },
-            ..Default::default()
-        };
+        let field = |width: f32| responsive_width(width, Dimension::length(44.0));
 
         let movie_suggestions =
             SearchSuggestions::new(MOVIES, SearchMatcher::Fuzzy, 6, Some(Msg::PickMovie))
@@ -170,24 +167,14 @@ impl AppLogic for SearchBarDemo {
                 Widget::Button {
                     text: "Limpar buscas",
                     on_press: Msg::ClearSearches,
-                    style: Style {
-                        size: Size {
-                            width: Dimension::length(140.0),
-                            height: Dimension::length(38.0),
-                        },
-                        ..Default::default()
-                    },
+                    style: responsive_width(140.0, Dimension::length(38.0)),
                     color: None,
                     variant: ButtonVariant::Ghost,
                 },
                 Widget::Container {
                     style: Style {
                         padding: Rect::length(16.0_f32),
-                        size: Size {
-                            width: Dimension::length(560.0),
-                            height: Dimension::auto(),
-                        },
-                        ..Default::default()
+                        ..responsive_width(560.0, Dimension::auto())
                     },
                     color: Some(skia_safe::Color::from_argb(32, 255, 255, 255)),
                     radius: 10.0,

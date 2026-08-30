@@ -11,7 +11,10 @@ use rutter::{
 };
 use taffy::prelude::*;
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 const TIME_ZONES: &[&str] = &["UTC", "America/Sao_Paulo", "Europe/Lisbon", "Asia/Tokyo"];
 
@@ -192,7 +195,7 @@ fn demo_text<'a>(content: impl Into<String>, size: f32) -> Widget<'a, Msg> {
 fn time_demo_root_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
-        align_items: Some(AlignItems::FlexStart),
+        align_items: Some(AlignItems::Stretch),
         size: Size::percent(1.0_f32),
         padding: Rect::length(32.0_f32),
         gap: Size::length(14.0_f32),
@@ -211,23 +214,11 @@ fn live_clock_style() -> Style {
 }
 
 fn time_picker_anchor_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::length(260.0),
-            height: Dimension::length(44.0),
-        },
-        ..Style::default()
-    }
+    responsive_width(360.0, Dimension::length(44.0))
 }
 
 fn time_picker_popup_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::length(360.0),
-            height: Dimension::length(210.0),
-        },
-        ..Style::default()
-    }
+    responsive_width(360.0, Dimension::length(210.0))
 }
 
 /// Runs the standalone clock and time-picker demonstration.

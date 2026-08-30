@@ -6,7 +6,10 @@ use cosmic_text::FontSystem;
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 use taffy::prelude::*;
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 #[derive(Default)]
 pub struct CounterDemoState {
@@ -99,7 +102,7 @@ fn counter_demo_style() -> Style {
 fn demo_text<'a>(content: impl Into<String>, size: f32) -> Widget<'a, Msg> {
     Widget::Text {
         content: content.into(),
-        style: Style::default(),
+        style: responsive_width(560.0, Dimension::auto()),
         color: None,
         size,
     }

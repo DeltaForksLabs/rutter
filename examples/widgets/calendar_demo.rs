@@ -12,7 +12,10 @@ use rutter::{
 };
 use taffy::prelude::*;
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 pub struct CalendarDemoState {
     theme: ExampleTheme,
@@ -207,7 +210,12 @@ fn root_style() -> Style {
 fn showcase_style() -> Style {
     Style {
         flex_direction: FlexDirection::Row,
+        flex_wrap: FlexWrap::Wrap,
         align_items: Some(AlignItems::FlexStart),
+        size: Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::auto(),
+        },
         gap: Size {
             width: LengthPercentage::length(28.0),
             height: LengthPercentage::length(0.0),
@@ -217,48 +225,26 @@ fn showcase_style() -> Style {
 }
 
 fn calendar_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::length(340.0),
-            height: Dimension::length(330.0),
-        },
-        ..Style::default()
-    }
+    responsive_width(340.0, Dimension::length(330.0))
 }
 
 fn picker_column_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
-        size: Size {
-            width: Dimension::length(300.0),
-            height: Dimension::auto(),
-        },
         gap: Size {
             width: LengthPercentage::length(0.0),
             height: LengthPercentage::length(14.0),
         },
-        ..Style::default()
+        ..responsive_width(340.0, Dimension::auto())
     }
 }
 
 fn picker_anchor_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::length(230.0),
-            height: Dimension::length(44.0),
-        },
-        ..Style::default()
-    }
+    responsive_width(340.0, Dimension::length(44.0))
 }
 
 fn picker_popup_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::length(340.0),
-            height: Dimension::length(330.0),
-        },
-        ..Style::default()
-    }
+    responsive_width(340.0, Dimension::length(330.0))
 }
 
 pub fn run() {

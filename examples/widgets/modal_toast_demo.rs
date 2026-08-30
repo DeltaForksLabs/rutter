@@ -9,7 +9,10 @@ use taffy::prelude::*;
 use rutter::widget::{ToastKind, ToastPosition};
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 #[derive(Default)]
 pub struct ModalToastDemoState {
@@ -48,7 +51,7 @@ impl AppLogic for ModalToastDemo {
     fn view<'a>(s: &'a mut ModalToastDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -57,24 +60,23 @@ impl AppLogic for ModalToastDemo {
         };
         let col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             padding: Rect::length(32.0_f32),
             gap: Size {
                 width: LengthPercentage::length(0.0),
                 height: LengthPercentage::length(16.0),
             },
             flex_grow: 1.0,
-            ..Default::default()
+            ..responsive_width(560.0, Dimension::auto())
         };
-        let btn_s = |w: f32| Style {
-            size: Size {
-                width: Dimension::length(w),
-                height: Dimension::length(38.0),
-            },
-            ..Default::default()
-        };
+        let btn_s = |w: f32| responsive_width(w, Dimension::length(38.0));
         let row_s = Style {
             flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
             gap: Size {
                 width: LengthPercentage::length(10.0),
                 height: LengthPercentage::length(0.0),
@@ -96,14 +98,18 @@ impl AppLogic for ModalToastDemo {
             child: Box::new(Widget::Column {
                 style: Style {
                     flex_direction: FlexDirection::Column,
-                    align_items: Some(AlignItems::FlexStart),
+                    align_items: Some(AlignItems::Stretch),
                     padding: Rect::length(24.0_f32),
                     gap: Size {
                         width: LengthPercentage::length(0.0),
                         height: LengthPercentage::length(16.0),
                     },
                     size: Size {
-                        width: Dimension::auto(),
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    max_size: Size {
+                        width: Dimension::length(320.0),
                         height: Dimension::auto(),
                     },
                     ..Default::default()

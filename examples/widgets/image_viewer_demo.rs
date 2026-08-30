@@ -9,7 +9,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 const RED_PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -135,7 +138,10 @@ fn title<'a>(name: &'a str) -> Widget<'a, Msg> {
 fn large_image<'a>(data: &'a [u8]) -> Widget<'a, Msg> {
     Widget::Image {
         data,
-        style: fixed_size(240.0, 240.0),
+        style: Style {
+            aspect_ratio: Some(1.0),
+            ..responsive_width(240.0, Dimension::auto())
+        },
         radius: 12.0,
     }
 }
@@ -186,7 +192,7 @@ fn button<'a>(text: &'a str, msg: Msg) -> Widget<'a, Msg> {
 fn page_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
-        align_items: Some(AlignItems::FlexStart),
+        align_items: Some(AlignItems::Stretch),
         size: Size::from_percent(1.0, 1.0),
         padding: Rect::length(40.0_f32),
         gap: gap_size(18.0, 18.0),
@@ -197,6 +203,7 @@ fn page_style() -> Style {
 fn row_style() -> Style {
     Style {
         flex_direction: FlexDirection::Row,
+        flex_wrap: FlexWrap::Wrap,
         align_items: Some(AlignItems::Center),
         gap: gap_size(12.0, 0.0),
         ..Default::default()
@@ -204,18 +211,14 @@ fn row_style() -> Style {
 }
 
 fn button_style() -> Style {
-    Style {
-        size: Size::from_lengths(120.0, 36.0),
-        ..Default::default()
-    }
+    responsive_width(120.0, Dimension::length(36.0))
 }
 
 fn thumbnail_style() -> Style {
     Style {
         justify_content: Some(JustifyContent::Center),
         align_items: Some(AlignItems::Center),
-        size: Size::from_lengths(68.0, 68.0),
-        ..Default::default()
+        ..responsive_width(68.0, Dimension::length(68.0))
     }
 }
 

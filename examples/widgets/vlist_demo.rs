@@ -10,7 +10,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, VirtualSelection, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 const TOTAL_ITEMS: usize = 1_000;
 
@@ -41,7 +44,7 @@ impl AppLogic for VListDemo {
     fn view<'a>(s: &'a mut VListDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -53,20 +56,8 @@ impl AppLogic for VListDemo {
             },
             ..Default::default()
         };
-        let list_s = Style {
-            size: Size {
-                width: Dimension::length(420.0),
-                height: Dimension::length(400.0),
-            },
-            ..Default::default()
-        };
-        let inp_s = Style {
-            size: Size {
-                width: Dimension::length(420.0),
-                height: Dimension::length(40.0),
-            },
-            ..Default::default()
-        };
+        let list_s = responsive_width(420.0, Dimension::length(400.0));
+        let inp_s = responsive_width(420.0, Dimension::length(40.0));
 
         Widget::Column {
             style: root,

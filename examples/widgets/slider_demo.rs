@@ -11,7 +11,10 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 #[derive(Default)]
 pub struct SliderDemoState {
@@ -47,7 +50,7 @@ impl AppLogic for SliderDemo {
     fn view<'a>(s: &'a mut SliderDemoState) -> Widget<'a, Msg> {
         let col = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -59,13 +62,7 @@ impl AppLogic for SliderDemo {
             },
             ..Default::default()
         };
-        let slider_s = Style {
-            size: Size {
-                width: Dimension::length(360.0),
-                height: Dimension::length(36.0),
-            },
-            ..Default::default()
-        };
+        let slider_s = responsive_width(360.0, Dimension::length(36.0));
 
         Widget::Column {
             style: col,

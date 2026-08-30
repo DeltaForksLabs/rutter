@@ -13,20 +13,23 @@ use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
 
-use super::theme_selector::{ExampleTheme, example_theme_selector};
+use super::{
+    layout::responsive_width,
+    theme_selector::{ExampleTheme, example_theme_selector},
+};
 
 const ITEM_COUNT: usize = 60;
 
 #[derive(Default)]
 pub struct ScrollDemoState {
     pub theme: ExampleTheme,
-    pub selected: Option<usize>,
+    pub selected: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     ThemeChanged(ExampleTheme),
-    ItemSelected(usize),
+    ItemToggled(usize),
 }
 
 pub struct ScrollDemo;
@@ -42,7 +45,7 @@ impl AppLogic for ScrollDemo {
     fn view<'a>(s: &'a mut ScrollDemoState) -> Widget<'a, Msg> {
         let root = Style {
             flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::FlexStart),
+            align_items: Some(AlignItems::Stretch),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -55,13 +58,7 @@ impl AppLogic for ScrollDemo {
             ..Default::default()
         };
         // ScrollView de altura fixa com conteúdo longo
-        let scroll_s = Style {
-            size: Size {
-                width: Dimension::length(400.0),
-                height: Dimension::length(300.0),
-            },
-            ..Default::default()
-        };
+        let scroll_s = responsive_width(400.0, Dimension::length(300.0));
         // Coluna interna — mais alta que o viewport para forçar scroll
         let inner_col = Style {
             flex_direction: FlexDirection::Column,
@@ -72,28 +69,31 @@ impl AppLogic for ScrollDemo {
             ..Default::default()
         };
 
-        // Gera itens como botões clicáveis dentro do scroll
+        // Generate independently toggleable items inside the scroll view.
         let items: Vec<Widget<Msg>> = (0..ITEM_COUNT)
-            .map(|i| Widget::Button {
-                text: if Some(i) == s.selected {
-                    "✓ Item selecionado"
-                } else {
-                    "Item da lista"
-                },
-                on_press: Msg::ItemSelected(i),
-                style: Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(40.0),
+            .map(|index| {
+                let selected = s.selected.binary_search(&index).is_ok();
+                Widget::Button {
+                    text: if selected {
+                        "✓ Item selecionado"
+                    } else {
+                        "Item da lista"
                     },
-                    ..Default::default()
-                },
-                color: None,
-                variant: if Some(i) == s.selected {
-                    rutter::ButtonVariant::Primary
-                } else {
-                    rutter::ButtonVariant::Ghost
-                },
+                    on_press: Msg::ItemToggled(index),
+                    style: Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::length(40.0),
+                        },
+                        ..Default::default()
+                    },
+                    color: None,
+                    variant: if selected {
+                        rutter::ButtonVariant::Primary
+                    } else {
+                        rutter::ButtonVariant::Ghost
+                    },
+                }
             })
             .collect();
 
@@ -102,16 +102,14 @@ impl AppLogic for ScrollDemo {
             children: vec![
                 example_theme_selector(s.theme, Msg::ThemeChanged),
                 Widget::Text {
-                    content: "ScrollView — roda do mouse, ↑↓, arrastar scrollbar (FIX-4)".into(),
+                    content: "ScrollView — roda do mouse, foco pelo teclado e seleção múltipla"
+                        .into(),
                     color: None,
                     size: 13.0,
                     style: Style::default(),
                 },
                 Widget::Text {
-                    content: s
-                        .selected
-                        .map(|i| format!("Selecionado: item #{}", i))
-                        .unwrap_or_else(|| "Nenhum selecionado".into()),
+                    content: scroll_selection_caption(&s.selected),
                     color: None,
                     size: 14.0,
                     style: Style::default(),
@@ -125,7 +123,8 @@ impl AppLogic for ScrollDemo {
                     }),
                 },
                 Widget::Text {
-                    content: "Clique na área de scroll para ativar o foco, depois use ↑↓".into(),
+                    content: "Clique em itens para alternar a seleção; clique na área para usar ↑↓ e PageUp/PageDown."
+                        .into(),
                     color: None,
                     size: 11.0,
                     style: Style::default(),
@@ -137,7 +136,7 @@ impl AppLogic for ScrollDemo {
     fn update(s: &mut ScrollDemoState, msg: Msg, _: &mut Clipboard) {
         match msg {
             Msg::ThemeChanged(theme) => s.theme = theme,
-            Msg::ItemSelected(i) => s.selected = Some(i),
+            Msg::ItemToggled(index) => toggle_scroll_selection(&mut s.selected, index),
         }
     }
 
@@ -146,6 +145,39 @@ impl AppLogic for ScrollDemo {
     }
 }
 
+fn toggle_scroll_selection(selected: &mut Vec<usize>, index: usize) {
+    match selected.binary_search(&index) {
+        Ok(position) => {
+            selected.remove(position);
+        }
+        Err(position) => selected.insert(position, index),
+    }
+}
+
+fn scroll_selection_caption(selected: &[usize]) -> String {
+    match selected {
+        [] => "Nenhum item selecionado".into(),
+        [index] => format!("Selecionado: item #{}", index + 1),
+        indices => format!("{} itens selecionados", indices.len()),
+    }
+}
+
 pub fn run() {
     RutterRunner::<ScrollDemo>::run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{scroll_selection_caption, toggle_scroll_selection};
+
+    #[test]
+    fn scroll_selection_toggles_and_stays_sorted() {
+        let mut selected = vec![1, 4];
+
+        toggle_scroll_selection(&mut selected, 3);
+        toggle_scroll_selection(&mut selected, 4);
+
+        assert_eq!(selected, vec![1, 3]);
+        assert_eq!(scroll_selection_caption(&selected), "2 itens selecionados");
+    }
 }
