@@ -6,7 +6,8 @@ use winit::window::Window;
 
 use super::RutterRunner;
 use crate::app::{
-    AppLogic, LogicalPointerPosition, PhysicalDesktopPosition, SecondaryPointerContext,
+    AppLogic, ContextMenuTarget, LogicalPointerPosition, PhysicalDesktopPosition,
+    SecondaryPointerContext,
 };
 use crate::widget::Widget;
 
@@ -64,6 +65,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             }
             SecondaryPointerDestination::ConsumeBlockingOverlay => return,
             SecondaryPointerDestination::OpenContextMenu(id) => {
+                self.dispatch_context_menu_open_message(id);
                 self.engine
                     .open_context_menu(id, self.engine.last_mouse_pos);
             }
@@ -79,6 +81,19 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         A::secondary_pointer_pressed_with_context(&mut self.engine.app_state, context);
         self.engine.layout_dirty = true;
         self.redraw();
+    }
+
+    fn dispatch_context_menu_open_message(&mut self, context_menu_id: u64) {
+        let Some(message) = context_menu_open_message::<A>(&self.engine.app_state, context_menu_id)
+        else {
+            return;
+        };
+        A::update(
+            &mut self.engine.app_state,
+            message,
+            &mut self.engine.clipboard,
+        );
+        self.engine.layout_dirty = true;
     }
 
     fn resolved_secondary_pointer_context(&self) -> SecondaryPointerContext {
@@ -125,6 +140,13 @@ fn secondary_pointer_destination(
         SecondaryPointerDestination::DispatchApplication,
         SecondaryPointerDestination::OpenContextMenu,
     )
+}
+
+fn context_menu_open_message<A: AppLogic>(
+    state: &A::State,
+    context_menu_id: u64,
+) -> Option<A::Message> {
+    A::context_menu_opening(state, ContextMenuTarget::from_resolved_id(context_menu_id))
 }
 
 pub(super) fn has_visible_blocking_overlay<Msg>(widget: &Widget<'_, Msg>) -> bool {
@@ -174,6 +196,40 @@ mod tests {
     use super::*;
     use crate::widget::DialogPosition;
 
+    #[derive(Clone, Debug, PartialEq)]
+    enum ContextMenuMessage {
+        Select(u64),
+    }
+
+    #[derive(Default)]
+    struct ContextMenuSelectionState;
+
+    struct ContextMenuSelectionApp;
+
+    impl AppLogic for ContextMenuSelectionApp {
+        type State = ContextMenuSelectionState;
+        type Message = ContextMenuMessage;
+
+        fn new(_: &mut cosmic_text::FontSystem) -> Self::State {
+            ContextMenuSelectionState
+        }
+
+        fn view<'a>(_: &'a mut Self::State) -> Widget<'a, Self::Message> {
+            Widget::Spacer {
+                style: Default::default(),
+            }
+        }
+
+        fn update(_: &mut Self::State, _: Self::Message, _: &mut arboard::Clipboard) {}
+
+        fn context_menu_opening(
+            _: &Self::State,
+            target: ContextMenuTarget,
+        ) -> Option<Self::Message> {
+            Some(ContextMenuMessage::Select(target.id()))
+        }
+    }
+
     #[test]
     fn overlay_destination_precedes_context_target_and_application_callback() {
         let context_target = Some(9);
@@ -218,6 +274,15 @@ mod tests {
             secondary_pointer_destination(unblocked, None),
             SecondaryPointerDestination::DispatchApplication
         );
+    }
+
+    #[test]
+    fn context_menu_open_message_receives_the_targeted_menu_id() {
+        let state = ContextMenuSelectionState;
+
+        let message = context_menu_open_message::<ContextMenuSelectionApp>(&state, 73);
+
+        assert_eq!(message, Some(ContextMenuMessage::Select(73)));
     }
 
     #[test]

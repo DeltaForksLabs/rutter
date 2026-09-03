@@ -1,6 +1,6 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
-use crate::app::{LogicalPointerPosition, SecondaryPointerContext};
+use crate::app::{ContextMenuTarget, LogicalPointerPosition, SecondaryPointerContext};
 use crate::engine::run_error::RutterRunError;
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
@@ -155,6 +155,32 @@ pub trait MultiWindowAppLogic {
         context: SecondaryPointerContext,
     ) -> Vec<SurfaceCommand> {
         Self::secondary_pointer_pressed(state, surface, context.client_position())
+    }
+    /// Produces a message to process before an in-surface context menu opens on one surface.
+    ///
+    /// Return a selection message for the targeted menu so [`Self::update`] applies the state
+    /// transition before the menu overlay is rendered. Use stable manual context-menu IDs when
+    /// mapping a target to shared application data.
+    ///
+    /// ```rust
+    /// use rutter::{ContextMenuTarget, SurfaceId};
+    ///
+    /// #[derive(Clone, Debug, PartialEq)]
+    /// enum FileMessage { Select(u64) }
+    ///
+    /// fn context_menu_message(
+    ///     _surface: SurfaceId,
+    ///     target: ContextMenuTarget,
+    /// ) -> Option<FileMessage> {
+    ///     Some(FileMessage::Select(target.id()))
+    /// }
+    /// ```
+    fn context_menu_opening(
+        _state: &Self::State,
+        _surface: SurfaceId,
+        _target: ContextMenuTarget,
+    ) -> Option<Self::Message> {
+        None
     }
     /// Returns the application theme.
     fn theme() -> crate::theme::Theme {

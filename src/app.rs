@@ -165,6 +165,35 @@ impl SecondaryPointerContext {
     }
 }
 
+/// Identifies the context-menu widget targeted by a secondary-button press.
+///
+/// The runtime resolves automatic widget IDs before invoking the application
+/// callback. Assign a stable manual ID to a context menu when application
+/// state must map this target to a domain item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ContextMenuTarget {
+    id: u64,
+}
+
+impl ContextMenuTarget {
+    pub(crate) const fn from_resolved_id(id: u64) -> Self {
+        Self { id }
+    }
+
+    /// Returns the runtime-resolved ID of the targeted context-menu widget.
+    ///
+    /// ```rust
+    /// use rutter::ContextMenuTarget;
+    ///
+    /// fn selected_target_id(target: ContextMenuTarget) -> u64 {
+    ///     target.id()
+    /// }
+    /// ```
+    pub const fn id(self) -> u64 {
+        self.id
+    }
+}
+
 /// Configures the compositor-facing top-level drawing surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SurfaceConfig {
@@ -267,6 +296,29 @@ pub trait AppLogic {
         Self::secondary_pointer_pressed(state, context.client_position());
     }
 
+    /// Produces a message to process before an in-surface context menu opens.
+    ///
+    /// Return a selection message for the targeted menu to keep selection transitions in
+    /// [`Self::update`]. The runtime dispatches that message before rendering the menu overlay.
+    /// Use a stable manual context-menu ID when the target must map to application-owned data.
+    ///
+    /// ```rust
+    /// use rutter::ContextMenuTarget;
+    ///
+    /// #[derive(Clone, Debug, PartialEq)]
+    /// enum FileMessage { Select(u64) }
+    ///
+    /// fn context_menu_message(target: ContextMenuTarget) -> Option<FileMessage> {
+    ///     Some(FileMessage::Select(target.id()))
+    /// }
+    /// ```
+    fn context_menu_opening(
+        _state: &Self::State,
+        _target: ContextMenuTarget,
+    ) -> Option<Self::Message> {
+        None
+    }
+
     /// Retorna o tema da aplicação.
     fn theme() -> crate::theme::Theme {
         crate::theme::Theme::default()
@@ -367,5 +419,20 @@ mod tests {
         LegacyPointerApp::secondary_pointer_pressed_with_context(&mut state, context);
 
         assert_eq!(state.0, Some(logical));
+    }
+
+    #[test]
+    fn context_menu_target_preserves_the_resolved_menu_id() {
+        let target = ContextMenuTarget::from_resolved_id(91);
+
+        assert_eq!(target.id(), 91);
+    }
+
+    #[test]
+    fn default_context_menu_opening_emits_no_message() {
+        let state = LegacyPointerState::default();
+        let target = ContextMenuTarget::from_resolved_id(91);
+
+        assert_eq!(LegacyPointerApp::context_menu_opening(&state, target), None);
     }
 }

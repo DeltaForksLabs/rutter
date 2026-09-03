@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
 
-use crate::app::{AppLogic, LogicalPointerPosition, SecondaryPointerContext};
+use crate::app::{AppLogic, ContextMenuTarget, LogicalPointerPosition, SecondaryPointerContext};
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
 use crate::multi_window::{MultiWindowAppLogic, SurfaceCommand, SurfaceId};
@@ -66,6 +66,13 @@ impl<A: MultiWindowAppLogic> AppLogic for SurfaceAppAdapter<A> {
         let commands =
             A::secondary_pointer_pressed_with_context(&mut state.model, state.surface, context);
         retain_secondary_pointer_commands(state, commands);
+    }
+
+    fn context_menu_opening(
+        state: &Self::State,
+        target: ContextMenuTarget,
+    ) -> Option<Self::Message> {
+        A::context_menu_opening(&state.model, state.surface, target)
     }
 
     fn theme() -> Theme {
@@ -179,6 +186,51 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, Default)]
+    struct ContextMenuState;
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum ContextMenuMessage {
+        Select { surface: SurfaceId, target_id: u64 },
+    }
+
+    struct ContextMenuApp;
+
+    impl MultiWindowAppLogic for ContextMenuApp {
+        type State = ContextMenuState;
+        type Message = ContextMenuMessage;
+
+        fn new(_: &mut FontSystem) -> Self::State {
+            ContextMenuState
+        }
+
+        fn view<'a>(_: &'a mut Self::State, _: SurfaceId) -> Widget<'a, Self::Message> {
+            Widget::Spacer {
+                style: Default::default(),
+            }
+        }
+
+        fn update(
+            _: &mut Self::State,
+            _: SurfaceId,
+            _: Self::Message,
+            _: &mut Clipboard,
+        ) -> Vec<SurfaceCommand> {
+            Vec::new()
+        }
+
+        fn context_menu_opening(
+            _: &Self::State,
+            surface: SurfaceId,
+            target: ContextMenuTarget,
+        ) -> Option<Self::Message> {
+            Some(ContextMenuMessage::Select {
+                surface,
+                target_id: target.id(),
+            })
+        }
+    }
+
     #[test]
     fn secondary_pointer_event_retains_source_position_and_commands() {
         let surface = SurfaceId::new(7);
@@ -212,5 +264,22 @@ mod tests {
         assert_eq!(state.model.0, Some((surface, logical)));
         assert_eq!(state.revision, 5);
         assert_eq!(state.commands, [SurfaceCommand::RequestRedraw(surface)]);
+    }
+
+    #[test]
+    fn context_menu_opening_forwards_surface_and_target() {
+        let surface = SurfaceId::new(12);
+        let state = SurfaceAppState::new(surface, ContextMenuState, 0);
+        let target = ContextMenuTarget::from_resolved_id(48);
+
+        let message = SurfaceAppAdapter::<ContextMenuApp>::context_menu_opening(&state, target);
+
+        assert_eq!(
+            message,
+            Some(ContextMenuMessage::Select {
+                surface,
+                target_id: 48,
+            })
+        );
     }
 }

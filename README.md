@@ -323,7 +323,7 @@ Each committed surface has independent title, initial position, inner/minimum/ma
 
 `SurfaceEvent::FocusChanged` reaches application logic after the matching native event is forwarded to AccessKit and the surface engine. `SurfaceCommand::SetVisible` changes native visibility and persists the desired value across suspension/resume. `SurfaceCommand::RequestRedraw` asks the compositor for an asynchronous frame without invalidating layout; redraw requests can be coalesced. Both commands reject unknown logical surface IDs, while redraw is a safe no-op for a registered surface during suspension.
 
-Unclaimed right-button presses reach `secondary_pointer_pressed_with_context` only after open select, dropdown, context-menu, and popover overlays have had dismissal priority; visible modals and dialogs consume the press. `SecondaryPointerContext` contains logical client coordinates, the source scale factor, and optional physical desktop coordinates. Absolute coordinates are unavailable on Wayland, Android, iOS, and Web, where `desktop_position()` returns `None` and applications should retain an in-surface overlay fallback. The original `secondary_pointer_pressed` callback remains supported through the default compatibility bridge. Track a fixed popup surface's lifecycle—as in the example—to avoid opening a duplicate `SurfaceId`.
+An in-surface context-menu target first reaches `AppLogic::context_menu_opening` (or `MultiWindowAppLogic::context_menu_opening`), which can return a typed selection message for `update` before the overlay opens. `ContextMenuTarget::id()` is the resolved menu ID; assign stable manual IDs when mapping a target to application-owned items. Unclaimed right-button presses reach `secondary_pointer_pressed_with_context` only after open select, dropdown, context-menu, and popover overlays have had dismissal priority; visible modals and dialogs consume the press. `SecondaryPointerContext` contains logical client coordinates, the source scale factor, and optional physical desktop coordinates. Absolute coordinates are unavailable on Wayland, Android, iOS, and Web, where `desktop_position()` returns `None` and applications should retain an in-surface overlay fallback. The original `secondary_pointer_pressed` callback remains supported through the default compatibility bridge. Track a fixed popup surface's lifecycle—as in the example—to avoid opening a duplicate `SurfaceId`.
 
 Temporary panels can use `WindowConfig::with_close_on_focus_loss(true)`. The runtime waits until that window has gained focus at least once before closing it on focus loss, which avoids treating an initial unfocused notification as dismissal. Closing a normal secondary surface removes only that surface; the event loop exits when no surfaces remain or when an `ExitApplication` close policy/`SurfaceCommand::Exit` requests it.
 
@@ -336,6 +336,7 @@ Applications implement `AppLogic`. The framework owns the native event loop and 
 - `new` to initialize state.
 - `view` to build the widget tree.
 - `update` to process messages.
+- `context_menu_opening` to emit a selection message for a right-clicked context-menu target before its overlay opens.
 - `theme` for a static palette or `theme_for` for state-selected colors, spacing, typography, and shape values.
 
 ### Password input security
