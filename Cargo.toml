@@ -1,6 +1,6 @@
 [package]
 name    = "rutter"
-version = "0.30.0"
+version = "0.30.1"
 edition = "2024"
 # Let-chains used by the engine and hit-testing require Rust 1.88 (stabilized
 # there); declared so older toolchains fail with a clear message instead of a

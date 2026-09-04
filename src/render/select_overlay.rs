@@ -98,6 +98,15 @@ fn select_popup_layout(overlay: SelectOverlay<'_>, viewport: (f32, f32)) -> Sele
     popup_layout_for_focus(overlay.anchor, overlay.options.len(), focus, viewport)
 }
 
+/// Returns whether a pointer lies within the painted Select popup surface.
+pub(crate) fn select_popup_surface_contains(
+    overlay: SelectOverlay<'_>,
+    mouse: Point,
+    viewport: (f32, f32),
+) -> bool {
+    select_popup_layout(overlay, viewport).rect.contains(mouse)
+}
+
 pub(crate) fn popup_layout_for_focus(
     anchor: SkiaRect,
     option_count: usize,

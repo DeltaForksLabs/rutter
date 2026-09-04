@@ -14,6 +14,7 @@ pub mod image;
 mod image_cache;
 mod image_headers;
 mod overlay_canvas;
+mod overlay_hover;
 pub mod pipeline;
 pub(crate) mod rich_text;
 pub(crate) mod search_overlay;
@@ -42,6 +43,7 @@ use self::clock::{ClockRenderInput, draw_clock};
 use self::control_icons::{ControlChevronDirection, draw_control_chevron, draw_search_magnifier};
 use self::counter::{CounterRenderInput, draw_counter};
 pub use self::image_cache::ImageRenderCache;
+use self::overlay_hover::{OverlayHoverInput, overlay_hover_routes};
 use self::rich_text::RichTextDirection;
 pub use self::rich_text::RichTextRenderer;
 use self::text::{
@@ -94,7 +96,7 @@ struct ToastOverlay<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct ContextMenuOverlay<'a, Msg> {
+pub(super) struct ContextMenuOverlay<'a, Msg> {
     entries: &'a [ContextMenuEntry<'a, Msg>],
     anchor: Point,
 }
@@ -214,6 +216,18 @@ pub fn draw_widgets_with_cache<'w, Msg>(
     theme: &Theme,
     scale: f32,
 ) {
+    let hover_routes = overlay_hover_routes(OverlayHoverInput {
+        taffy,
+        root: node,
+        widget,
+        widget_states,
+        input_states,
+        focused_id,
+        mouse: mouse_pos,
+        viewport: overlay_canvas::logical_canvas_size(canvas, scale),
+        font_size: theme.font_body,
+        direction: node_layout_direction(taffy, node),
+    });
     let mut path = Vec::new();
     let layout_fs = image_cache.layout_font_system();
     draw_widgets_impl(
@@ -223,7 +237,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         widget,
         fs,
         swash,
-        mouse_pos,
+        hover_routes.base,
         focused_id,
         input_states,
         widget_states,
@@ -244,7 +258,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         widget,
         fs,
         swash,
-        mouse_pos,
+        hover_routes.popover,
         focused_id,
         input_states,
         widget_states,
@@ -264,7 +278,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         root: node,
         widget,
         widget_states,
-        mouse: mouse_pos,
+        mouse: hover_routes.select,
         font_cache: &mut *font_cache,
         theme,
         scale,
@@ -279,7 +293,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         widget_states,
         input_states,
         focused_id,
-        mouse: mouse_pos,
+        mouse: hover_routes.search,
         font_cache: &mut *font_cache,
         theme,
         scale,
@@ -290,7 +304,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         node,
         widget,
         widget_states,
-        mouse_pos,
+        hover_routes.dropdown,
         font_cache,
         theme,
         scale,
@@ -301,7 +315,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         canvas,
         widget,
         widget_states,
-        mouse_pos,
+        hover_routes.context_menu,
         font_cache,
         theme,
         scale,
@@ -791,7 +805,7 @@ fn collect_visible_toasts<'w, Msg>(
     }
 }
 
-fn collect_open_context_menus<'w, Msg>(
+pub(super) fn collect_open_context_menus<'w, Msg>(
     widget: &Widget<'w, Msg>,
     widget_states: &HashMap<u64, WidgetState>,
     path: &mut Vec<usize>,
