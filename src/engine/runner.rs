@@ -37,7 +37,7 @@ use crate::render::dropdown_menu_overlay::{
     DropdownMenuOverlayHit, hit_test_dropdown_menu_overlay,
 };
 use crate::render::hit_test::{
-    ContextMenuOverlayHit, HitResult, PopoverOverlayHit, find_context_menu_target,
+    ContextMenuOverlayHit, HitResult, PopoverOverlayHit, find_context_menu_target_with_metadata,
     find_scroll_focus, find_scrollbar_drag_hit, hit_test, hit_test_context_menu_overlay,
     hit_test_popover_overlay,
 };
@@ -830,12 +830,13 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         SecondaryPointerBlockers::default()
                     };
                     let context_menu_target = if button == MouseButton::Right {
-                        find_context_menu_target(
+                        find_context_menu_target_with_metadata(
                             &wt,
                             &self.engine.taffy,
                             self.engine.last_root_node,
                             cursor,
                             Point::new(0.0, 0.0),
+                            &self.engine.widget_states,
                         )
                     } else {
                         None

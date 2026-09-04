@@ -1308,7 +1308,9 @@ impl<'a, Msg> Widget<'a, Msg> {
 
     /// Creates a virtualized list whose visible rows are rendered from widgets.
     /// Item widgets are visual-only and receive isolated runtime-state maps so
-    /// on-demand IDs cannot alias controls in the application tree.
+    /// on-demand IDs cannot alias controls in the application tree. A surrounding
+    /// [`Widget::context_menu`] exposes the pressed row through
+    /// [`crate::ContextMenuTarget::virtual_item`].
     ///
     /// Example:
     ///
@@ -1437,7 +1439,9 @@ impl<'a, Msg> Widget<'a, Msg> {
 
     /// Creates a virtualized grid whose visible cells are rendered from widgets.
     /// Cell widgets are visual-only and receive isolated runtime-state maps so
-    /// on-demand IDs cannot alias controls in the application tree.
+    /// on-demand IDs cannot alias controls in the application tree. A surrounding
+    /// [`Widget::context_menu`] exposes the pressed cell through
+    /// [`crate::ContextMenuTarget::virtual_item`].
     ///
     /// Example:
     ///

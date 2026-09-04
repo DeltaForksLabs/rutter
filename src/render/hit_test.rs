@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use taffy::Direction;
 use taffy::prelude::{NodeId, TaffyTree};
 
-use crate::engine::widget_state::{WidgetState, virtual_grid_row_count};
+use crate::app::{ContextMenuTarget, ContextMenuVirtualItem};
+use crate::engine::widget_state::{VirtualGridState, WidgetState, virtual_grid_row_count};
 use crate::i18n::LayoutDirection;
 use crate::layout::{RutterContext, SCROLLBAR_W};
 use crate::render::counter::{CounterSegment, counter_segment_at};
@@ -938,16 +939,11 @@ fn hit_test_impl<Msg: Clone>(
                 .and_then(|s| s.as_vlist())
                 .map(|v| v.scroll_y)
                 .unwrap_or(0.0);
-            let rel_y = mouse.y - abs_pos.y + scroll_y;
-            let idx = (rel_y / item_height).floor() as usize;
-            if idx < *item_count {
-                Some(HitResult::VListSelect {
+            virtual_list_item_index_at(mouse.y - abs_pos.y, *item_height, *item_count, scroll_y)
+                .map(|index| HitResult::VListSelect {
                     id: resolved_id,
-                    index: idx,
+                    index,
                 })
-            } else {
-                None
-            }
         }
         Widget::VirtualGrid {
             columns,
@@ -974,27 +970,21 @@ fn hit_test_impl<Msg: Clone>(
             ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
-            let fallback_state = crate::engine::widget_state::VirtualGridState {
-                viewport_w: layout.size.width,
-                viewport_h: layout.size.height,
-                ..Default::default()
-            };
             let grid_state = widget_states
                 .get(&resolved_id)
-                .and_then(|s| s.as_vgrid())
-                .unwrap_or(&fallback_state);
-            grid_state
-                .index_at(
-                    mouse.x - abs_pos.x,
-                    mouse.y - abs_pos.y,
-                    *item_height,
-                    *item_count,
-                    *columns,
-                )
-                .map(|index| HitResult::VGridSelect {
-                    id: resolved_id,
-                    index,
-                })
+                .and_then(WidgetState::as_vgrid);
+            virtual_grid_item_index_at(
+                grid_state,
+                Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y),
+                (layout.size.width, layout.size.height),
+                *item_height,
+                *item_count,
+                *columns,
+            )
+            .map(|index| HitResult::VGridSelect {
+                id: resolved_id,
+                index,
+            })
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).unwrap();
@@ -1666,6 +1656,46 @@ pub fn find_scroll_focus<Msg>(
     find_scroll_focus_impl(widget, taffy, node_id, mouse, abs, widget_states, &mut path)
 }
 
+fn virtual_list_item_index_at(
+    local_y: f32,
+    item_height: f32,
+    item_count: usize,
+    scroll_y: f32,
+) -> Option<usize> {
+    if item_height <= 0.0 || item_count == 0 {
+        return None;
+    }
+    let index = ((local_y + scroll_y) / item_height).floor() as usize;
+    (index < item_count).then_some(index)
+}
+
+fn virtual_grid_item_index_at(
+    state: Option<&VirtualGridState>,
+    local_mouse: Point,
+    viewport_size: (f32, f32),
+    item_height: f32,
+    item_count: usize,
+    columns: usize,
+) -> Option<usize> {
+    let fallback = VirtualGridState {
+        viewport_w: viewport_size.0,
+        viewport_h: viewport_size.1,
+        ..Default::default()
+    };
+    state.unwrap_or(&fallback).index_at(
+        local_mouse.x,
+        local_mouse.y,
+        item_height,
+        item_count,
+        columns,
+    )
+}
+
+enum ContextMenuTargetSearchResult {
+    Menu(ContextMenuTarget),
+    VirtualItem(ContextMenuVirtualItem),
+}
+
 pub fn find_context_menu_target<Msg>(
     widget: &Widget<Msg>,
     taffy: &TaffyTree<RutterContext>,
@@ -1673,8 +1703,47 @@ pub fn find_context_menu_target<Msg>(
     mouse: Point,
     abs: Point,
 ) -> Option<u64> {
+    let widget_states = HashMap::new();
+    find_context_menu_target_with_metadata(widget, taffy, node_id, mouse, abs, &widget_states)
+        .map(ContextMenuTarget::id)
+}
+
+pub(crate) fn find_context_menu_target_with_metadata<Msg>(
+    widget: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+) -> Option<ContextMenuTarget> {
     let mut path = Vec::new();
-    find_context_menu_target_impl(widget, taffy, node_id, mouse, abs, &mut path)
+    match find_context_menu_target_impl(
+        widget,
+        taffy,
+        node_id,
+        mouse,
+        abs,
+        widget_states,
+        &mut path,
+    )? {
+        ContextMenuTargetSearchResult::Menu(target) => Some(target),
+        ContextMenuTargetSearchResult::VirtualItem(_) => None,
+    }
+}
+
+fn context_menu_target_from_child(
+    menu_id: u64,
+    child_result: Option<ContextMenuTargetSearchResult>,
+) -> ContextMenuTargetSearchResult {
+    match child_result {
+        Some(ContextMenuTargetSearchResult::Menu(target)) => {
+            ContextMenuTargetSearchResult::Menu(target)
+        }
+        Some(ContextMenuTargetSearchResult::VirtualItem(item)) => {
+            ContextMenuTargetSearchResult::Menu(ContextMenuTarget::from_virtual_item(menu_id, item))
+        }
+        None => ContextMenuTargetSearchResult::Menu(ContextMenuTarget::from_resolved_id(menu_id)),
+    }
 }
 
 fn find_context_menu_target_impl<Msg>(
@@ -1683,8 +1752,9 @@ fn find_context_menu_target_impl<Msg>(
     node_id: NodeId,
     mouse: Point,
     abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
     path: &mut Vec<usize>,
-) -> Option<u64> {
+) -> Option<ContextMenuTargetSearchResult> {
     let layout = taffy.layout(node_id).ok()?;
     let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
     let rect = SkiaRect::from_xywh(abs_pos.x, abs_pos.y, layout.size.width, layout.size.height);
@@ -1695,22 +1765,36 @@ fn find_context_menu_target_impl<Msg>(
     match widget {
         Widget::ContextMenu { child, .. } => {
             let ids = taffy.children(node_id).ok()?;
+            let menu_id = widget.resolved_id(path).unwrap();
+            let mut child_result = None;
             if !ids.is_empty() {
                 path.push(0);
-                let hit = find_context_menu_target_impl(child, taffy, ids[0], mouse, abs_pos, path);
+                child_result = find_context_menu_target_impl(
+                    child,
+                    taffy,
+                    ids[0],
+                    mouse,
+                    abs_pos,
+                    widget_states,
+                    path,
+                );
                 path.pop();
-                if hit.is_some() {
-                    return hit;
-                }
             }
-            Some(widget.resolved_id(path).unwrap())
+            Some(context_menu_target_from_child(menu_id, child_result))
         }
         Widget::Popover { anchor, .. } => {
             let ids = taffy.children(node_id).ok()?;
             let anchor_node = ids.first().copied()?;
             path.push(0);
-            let hit =
-                find_context_menu_target_impl(anchor, taffy, anchor_node, mouse, abs_pos, path);
+            let hit = find_context_menu_target_impl(
+                anchor,
+                taffy,
+                anchor_node,
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
             path.pop();
             hit
         }
@@ -1718,7 +1802,15 @@ fn find_context_menu_target_impl<Msg>(
             let ids = taffy.children(node_id).ok()?;
             for (i, child) in children.iter().enumerate().rev() {
                 path.push(i);
-                let hit = find_context_menu_target_impl(child, taffy, ids[i], mouse, abs_pos, path);
+                let hit = find_context_menu_target_impl(
+                    child,
+                    taffy,
+                    ids[i],
+                    mouse,
+                    abs_pos,
+                    widget_states,
+                    path,
+                );
                 path.pop();
                 if hit.is_some() {
                     return hit;
@@ -1734,7 +1826,15 @@ fn find_context_menu_target_impl<Msg>(
                 return None;
             }
             path.push(0);
-            let hit = find_context_menu_target_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            let hit = find_context_menu_target_impl(
+                child,
+                taffy,
+                ids[0],
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
             path.pop();
             hit
         }
@@ -1749,7 +1849,15 @@ fn find_context_menu_target_impl<Msg>(
                 return None;
             }
             path.push(0);
-            let hit = find_context_menu_target_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            let hit = find_context_menu_target_impl(
+                child,
+                taffy,
+                ids[0],
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
             path.pop();
             hit
         }
@@ -1762,9 +1870,94 @@ fn find_context_menu_target_impl<Msg>(
                 return None;
             }
             path.push(0);
-            let hit = find_context_menu_target_impl(child, taffy, ids[0], mouse, abs_pos, path);
+            let hit = find_context_menu_target_impl(
+                child,
+                taffy,
+                ids[0],
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
             path.pop();
             hit
+        }
+        Widget::VirtualList {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContent {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListWithSelection {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContentWithSelection {
+            item_height,
+            item_count,
+            ..
+        } => {
+            let collection_id = widget.resolved_id(path).unwrap();
+            let scroll_y = widget_states
+                .get(&collection_id)
+                .and_then(WidgetState::as_vlist)
+                .map(|state| state.scroll_y)
+                .unwrap_or(0.0);
+            virtual_list_item_index_at(mouse.y - abs_pos.y, *item_height, *item_count, scroll_y)
+                .map(|index| {
+                    ContextMenuTargetSearchResult::VirtualItem(ContextMenuVirtualItem::List {
+                        collection_id,
+                        index,
+                    })
+                })
+        }
+        Widget::VirtualGrid {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridContent {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridWithSelection {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridContentWithSelection {
+            columns,
+            item_height,
+            item_count,
+            ..
+        } => {
+            let collection_id = widget.resolved_id(path).unwrap();
+            let grid_state = widget_states
+                .get(&collection_id)
+                .and_then(WidgetState::as_vgrid);
+            virtual_grid_item_index_at(
+                grid_state,
+                Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y),
+                (layout.size.width, layout.size.height),
+                *item_height,
+                *item_count,
+                *columns,
+            )
+            .map(|index| {
+                ContextMenuTargetSearchResult::VirtualItem(ContextMenuVirtualItem::Grid {
+                    collection_id,
+                    index,
+                })
+            })
         }
         _ => None,
     }
@@ -2156,14 +2349,17 @@ mod tests {
 
     use super::{
         HitResult, ScrollbarMetrics, collect_input_ids, collect_stateful_ids, dialog_card_rect,
-        find_scroll_focus, find_scrollbar_drag_hit, hit_test, rounded_rect_contains,
-        scrollbar_drag_hit,
+        find_context_menu_target, find_context_menu_target_with_metadata, find_scroll_focus,
+        find_scrollbar_drag_hit, hit_test, rounded_rect_contains, scrollbar_drag_hit,
     };
+    use crate::app::ContextMenuVirtualItem;
     use crate::engine::widget_state::{
         ScrollState, VirtualGridState, VirtualListState, WidgetState,
     };
     use crate::layout::{build_taffy_tree, compute_layout};
-    use crate::widget::{AUTO_ID, ButtonVariant, DialogPosition, InputState, Widget};
+    use crate::widget::{
+        AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget,
+    };
     use crate::widgets::carousel::CarouselState;
 
     #[derive(Debug, Clone, PartialEq)]
@@ -2389,6 +2585,104 @@ mod tests {
     }
 
     #[test]
+    fn context_menu_target_captures_scrolled_virtual_list_content_item() {
+        let entries = [ContextMenuEntry::item("Open", Msg::Toggle)];
+        let collection = Widget::virtual_list_content(
+            20.0,
+            10,
+            &virtual_widget_item,
+            usize_msg,
+            fixed_size_style(160.0, 80.0),
+        )
+        .with_id(71);
+        let widget =
+            Widget::context_menu(collection, &entries, fixed_size_style(160.0, 80.0)).with_id(72);
+        let states = HashMap::from([(
+            71,
+            WidgetState::VList(VirtualListState {
+                scroll_y: 40.0,
+                viewport_h: 80.0,
+                ..VirtualListState::default()
+            }),
+        )]);
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(160, 80));
+
+        let target = find_context_menu_target_with_metadata(
+            &widget,
+            &taffy,
+            root,
+            Point::new(20.0, 10.0),
+            Point::new(0.0, 0.0),
+            &states,
+        )
+        .expect("a press at (20, 10) must target the virtual-list context menu");
+
+        assert_eq!(target.id(), 72);
+        assert_eq!(
+            target.virtual_item(),
+            Some(ContextMenuVirtualItem::List {
+                collection_id: 71,
+                index: 2,
+            })
+        );
+        assert_eq!(
+            find_context_menu_target(
+                &widget,
+                &taffy,
+                root,
+                Point::new(20.0, 10.0),
+                Point::new(0.0, 0.0),
+            ),
+            Some(72)
+        );
+    }
+
+    #[test]
+    fn context_menu_target_captures_scrolled_virtual_grid_content_item() {
+        let entries = [ContextMenuEntry::item("Open", Msg::Toggle)];
+        let collection = Widget::virtual_grid_content(
+            2,
+            30.0,
+            10,
+            &virtual_widget_item,
+            usize_msg,
+            fixed_size_style(160.0, 90.0),
+        )
+        .with_id(81);
+        let widget =
+            Widget::context_menu(collection, &entries, fixed_size_style(160.0, 90.0)).with_id(82);
+        let states = HashMap::from([(
+            81,
+            WidgetState::VGrid(VirtualGridState {
+                scroll_y: 60.0,
+                viewport_w: 160.0,
+                viewport_h: 90.0,
+                ..VirtualGridState::default()
+            }),
+        )]);
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(160, 90));
+
+        let target = find_context_menu_target_with_metadata(
+            &widget,
+            &taffy,
+            root,
+            Point::new(100.0, 15.0),
+            Point::new(0.0, 0.0),
+            &states,
+        )
+        .expect("a press at (100, 15) must target the virtual-grid context menu");
+
+        assert_eq!(target.id(), 82);
+        assert_eq!(
+            target.virtual_item(),
+            Some(ContextMenuVirtualItem::Grid {
+                collection_id: 81,
+                index: 5,
+            })
+        );
+    }
+
+    #[test]
     fn scrollbar_track_click_maps_all_scrollable_widgets_to_the_clicked_position() {
         let (scroll_view, scroll_view_states) = scrollable_view();
         let (virtual_list, virtual_list_states) = scrollable_list();
@@ -2522,6 +2816,12 @@ mod tests {
 
     fn virtual_text_item(_: usize) -> Option<String> {
         Some(String::from("item"))
+    }
+
+    fn virtual_widget_item<'a>(_: usize) -> Option<Widget<'a, Msg>> {
+        Some(Widget::Spacer {
+            style: Style::default(),
+        })
     }
 
     fn fixed_size_style(width: f32, height: f32) -> Style {

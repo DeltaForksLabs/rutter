@@ -41,7 +41,7 @@ enum SecondaryPointerDestination {
     DismissContextMenu,
     DismissPopover,
     ConsumeBlockingOverlay,
-    OpenContextMenu(u64),
+    OpenContextMenu(ContextMenuTarget),
     DispatchApplication,
 }
 
@@ -49,7 +49,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     pub(super) fn route_secondary_pointer_press(
         &mut self,
         blockers: SecondaryPointerBlockers,
-        context_menu_target: Option<u64>,
+        context_menu_target: Option<ContextMenuTarget>,
     ) {
         let destination = secondary_pointer_destination(blockers, context_menu_target);
         match destination {
@@ -64,10 +64,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 self.engine.close_all_popovers();
             }
             SecondaryPointerDestination::ConsumeBlockingOverlay => return,
-            SecondaryPointerDestination::OpenContextMenu(id) => {
-                self.dispatch_context_menu_open_message(id);
+            SecondaryPointerDestination::OpenContextMenu(target) => {
+                self.dispatch_context_menu_open_message(target);
                 self.engine
-                    .open_context_menu(id, self.engine.last_mouse_pos);
+                    .open_context_menu(target.id(), self.engine.last_mouse_pos);
             }
             SecondaryPointerDestination::DispatchApplication => {
                 return self.dispatch_secondary_pointer_pressed();
@@ -83,9 +83,8 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.redraw();
     }
 
-    fn dispatch_context_menu_open_message(&mut self, context_menu_id: u64) {
-        let Some(message) = context_menu_open_message::<A>(&self.engine.app_state, context_menu_id)
-        else {
+    fn dispatch_context_menu_open_message(&mut self, target: ContextMenuTarget) {
+        let Some(message) = context_menu_open_message::<A>(&self.engine.app_state, target) else {
             return;
         };
         A::update(
@@ -122,7 +121,7 @@ fn desktop_client_origin(window: &Window) -> Option<PhysicalPosition<i32>> {
 
 fn secondary_pointer_destination(
     blockers: SecondaryPointerBlockers,
-    context_menu_target: Option<u64>,
+    context_menu_target: Option<ContextMenuTarget>,
 ) -> SecondaryPointerDestination {
     if blockers.select_popup_open {
         return SecondaryPointerDestination::DismissSelect;
@@ -144,9 +143,9 @@ fn secondary_pointer_destination(
 
 fn context_menu_open_message<A: AppLogic>(
     state: &A::State,
-    context_menu_id: u64,
+    target: ContextMenuTarget,
 ) -> Option<A::Message> {
-    A::context_menu_opening(state, ContextMenuTarget::from_resolved_id(context_menu_id))
+    A::context_menu_opening(state, target)
 }
 
 pub(super) fn has_visible_blocking_overlay<Msg>(widget: &Widget<'_, Msg>) -> bool {
@@ -194,11 +193,12 @@ pub(super) fn resolve_secondary_pointer_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ContextMenuVirtualItem;
     use crate::widget::DialogPosition;
 
     #[derive(Clone, Debug, PartialEq)]
     enum ContextMenuMessage {
-        Select(u64),
+        Opening(ContextMenuTarget),
     }
 
     #[derive(Default)]
@@ -226,13 +226,13 @@ mod tests {
             _: &Self::State,
             target: ContextMenuTarget,
         ) -> Option<Self::Message> {
-            Some(ContextMenuMessage::Select(target.id()))
+            Some(ContextMenuMessage::Opening(target))
         }
     }
 
     #[test]
     fn overlay_destination_precedes_context_target_and_application_callback() {
-        let context_target = Some(9);
+        let context_target = Some(ContextMenuTarget::from_resolved_id(9));
         assert_eq!(
             secondary_pointer_destination(
                 SecondaryPointerBlockers::new(true, false, false, false),
@@ -266,9 +266,10 @@ mod tests {
     #[test]
     fn context_target_precedes_unclaimed_application_callback() {
         let unblocked = SecondaryPointerBlockers::default();
+        let target = ContextMenuTarget::from_resolved_id(7);
         assert_eq!(
-            secondary_pointer_destination(unblocked, Some(7)),
-            SecondaryPointerDestination::OpenContextMenu(7)
+            secondary_pointer_destination(unblocked, Some(target)),
+            SecondaryPointerDestination::OpenContextMenu(target)
         );
         assert_eq!(
             secondary_pointer_destination(unblocked, None),
@@ -279,10 +280,27 @@ mod tests {
     #[test]
     fn context_menu_open_message_receives_the_targeted_menu_id() {
         let state = ContextMenuSelectionState;
+        let target = ContextMenuTarget::from_resolved_id(73);
 
-        let message = context_menu_open_message::<ContextMenuSelectionApp>(&state, 73);
+        let message = context_menu_open_message::<ContextMenuSelectionApp>(&state, target);
 
-        assert_eq!(message, Some(ContextMenuMessage::Select(73)));
+        assert_eq!(message, Some(ContextMenuMessage::Opening(target)));
+    }
+
+    #[test]
+    fn context_menu_open_message_preserves_virtual_item_metadata() {
+        let state = ContextMenuSelectionState;
+        let target = ContextMenuTarget::from_virtual_item(
+            73,
+            ContextMenuVirtualItem::Grid {
+                collection_id: 31,
+                index: 4,
+            },
+        );
+
+        let message = context_menu_open_message::<ContextMenuSelectionApp>(&state, target);
+
+        assert_eq!(message, Some(ContextMenuMessage::Opening(target)));
     }
 
     #[test]

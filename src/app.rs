@@ -165,19 +165,53 @@ impl SecondaryPointerContext {
     }
 }
 
+/// Identifies a virtual collection item beneath a context-menu secondary-button press.
+///
+/// `collection_id` is the runtime-resolved ID of the virtual collection and
+/// `index` identifies the row or cell in its current item sequence.
+///
+/// ```rust
+/// use rutter::ContextMenuVirtualItem;
+///
+/// let item = ContextMenuVirtualItem::List {
+///     collection_id: 12,
+///     index: 3,
+/// };
+/// assert!(matches!(item, ContextMenuVirtualItem::List { index: 3, .. }));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ContextMenuVirtualItem {
+    /// A row in a virtual list.
+    List { collection_id: u64, index: usize },
+    /// A cell in a virtual grid.
+    Grid { collection_id: u64, index: usize },
+}
+
 /// Identifies the context-menu widget targeted by a secondary-button press.
 ///
 /// The runtime resolves automatic widget IDs before invoking the application
 /// callback. Assign a stable manual ID to a context menu when application
-/// state must map this target to a domain item.
+/// state must map this target to a domain item. A menu wrapping a virtual
+/// collection also exposes the pressed row or cell through [`Self::virtual_item`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ContextMenuTarget {
     id: u64,
+    virtual_item: Option<ContextMenuVirtualItem>,
 }
 
 impl ContextMenuTarget {
     pub(crate) const fn from_resolved_id(id: u64) -> Self {
-        Self { id }
+        Self {
+            id,
+            virtual_item: None,
+        }
+    }
+
+    pub(crate) const fn from_virtual_item(id: u64, virtual_item: ContextMenuVirtualItem) -> Self {
+        Self {
+            id,
+            virtual_item: Some(virtual_item),
+        }
     }
 
     /// Returns the runtime-resolved ID of the targeted context-menu widget.
@@ -191,6 +225,23 @@ impl ContextMenuTarget {
     /// ```
     pub const fn id(self) -> u64 {
         self.id
+    }
+
+    /// Returns the virtual row or cell under the press when the menu wraps a virtual collection.
+    ///
+    /// ```rust
+    /// use rutter::{ContextMenuTarget, ContextMenuVirtualItem};
+    ///
+    /// fn selected_index(target: ContextMenuTarget) -> Option<usize> {
+    ///     match target.virtual_item() {
+    ///         Some(ContextMenuVirtualItem::List { index, .. }) => Some(index),
+    ///         Some(ContextMenuVirtualItem::Grid { index, .. }) => Some(index),
+    ///         None => None,
+    ///     }
+    /// }
+    /// ```
+    pub const fn virtual_item(self) -> Option<ContextMenuVirtualItem> {
+        self.virtual_item
     }
 }
 
@@ -301,15 +352,20 @@ pub trait AppLogic {
     /// Return a selection message for the targeted menu to keep selection transitions in
     /// [`Self::update`]. The runtime dispatches that message before rendering the menu overlay.
     /// Use a stable manual context-menu ID when the target must map to application-owned data.
+    /// [`ContextMenuTarget::virtual_item`] identifies the pressed row or cell when a menu wraps
+    /// a virtual list or grid.
     ///
     /// ```rust
-    /// use rutter::ContextMenuTarget;
+    /// use rutter::{ContextMenuTarget, ContextMenuVirtualItem};
     ///
     /// #[derive(Clone, Debug, PartialEq)]
-    /// enum FileMessage { Select(u64) }
+    /// enum FileMessage { Select(usize) }
     ///
     /// fn context_menu_message(target: ContextMenuTarget) -> Option<FileMessage> {
-    ///     Some(FileMessage::Select(target.id()))
+    ///     match target.virtual_item() {
+    ///         Some(ContextMenuVirtualItem::List { index, .. }) => Some(FileMessage::Select(index)),
+    ///         _ => None,
+    ///     }
     /// }
     /// ```
     fn context_menu_opening(
@@ -426,6 +482,19 @@ mod tests {
         let target = ContextMenuTarget::from_resolved_id(91);
 
         assert_eq!(target.id(), 91);
+        assert_eq!(target.virtual_item(), None);
+    }
+
+    #[test]
+    fn context_menu_target_exposes_the_virtual_list_item() {
+        let item = ContextMenuVirtualItem::List {
+            collection_id: 92,
+            index: 3,
+        };
+        let target = ContextMenuTarget::from_virtual_item(91, item);
+
+        assert_eq!(target.id(), 91);
+        assert_eq!(target.virtual_item(), Some(item));
     }
 
     #[test]

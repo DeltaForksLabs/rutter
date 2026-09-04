@@ -160,7 +160,8 @@ pub trait MultiWindowAppLogic {
     ///
     /// Return a selection message for the targeted menu so [`Self::update`] applies the state
     /// transition before the menu overlay is rendered. Use stable manual context-menu IDs when
-    /// mapping a target to shared application data.
+    /// mapping a target to shared application data. [`ContextMenuTarget::virtual_item`] identifies
+    /// the pressed row or cell when a menu wraps a virtual list or grid.
     ///
     /// ```rust
     /// use rutter::{ContextMenuTarget, SurfaceId};

@@ -107,6 +107,7 @@ fn retain_secondary_pointer_commands<A: MultiWindowAppLogic>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ContextMenuVirtualItem;
 
     fn pointer_test_view<'a, State>(_: &'a mut State, _: SurfaceId) -> Widget<'a, ()> {
         Widget::Spacer {
@@ -191,7 +192,10 @@ mod tests {
 
     #[derive(Clone, Debug, PartialEq)]
     enum ContextMenuMessage {
-        Select { surface: SurfaceId, target_id: u64 },
+        Select {
+            surface: SurfaceId,
+            target: ContextMenuTarget,
+        },
     }
 
     struct ContextMenuApp;
@@ -224,10 +228,7 @@ mod tests {
             surface: SurfaceId,
             target: ContextMenuTarget,
         ) -> Option<Self::Message> {
-            Some(ContextMenuMessage::Select {
-                surface,
-                target_id: target.id(),
-            })
+            Some(ContextMenuMessage::Select { surface, target })
         }
     }
 
@@ -270,16 +271,19 @@ mod tests {
     fn context_menu_opening_forwards_surface_and_target() {
         let surface = SurfaceId::new(12);
         let state = SurfaceAppState::new(surface, ContextMenuState, 0);
-        let target = ContextMenuTarget::from_resolved_id(48);
+        let target = ContextMenuTarget::from_virtual_item(
+            48,
+            ContextMenuVirtualItem::List {
+                collection_id: 24,
+                index: 6,
+            },
+        );
 
         let message = SurfaceAppAdapter::<ContextMenuApp>::context_menu_opening(&state, target);
 
         assert_eq!(
             message,
-            Some(ContextMenuMessage::Select {
-                surface,
-                target_id: 48,
-            })
+            Some(ContextMenuMessage::Select { surface, target })
         );
     }
 }
