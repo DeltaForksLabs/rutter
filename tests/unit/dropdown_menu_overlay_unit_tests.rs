@@ -171,6 +171,7 @@ fn raster_draw_changes_pixels_inside_menu_surface() {
         &[overlay],
         viewport(),
         Point::new(0.0, 0.0),
+        true,
         &mut fonts,
         &Theme::light(),
         LayoutDirection::Ltr,
@@ -178,4 +179,42 @@ fn raster_draw_changes_pixels_inside_menu_surface() {
 
     let point = (menu_rect.left as i32 + 2, menu_rect.top as i32 + 2);
     assert_ne!(surface.peek_pixels().unwrap().get_color(point), Color::RED);
+}
+
+#[test]
+fn covered_menu_hides_retained_active_entry() {
+    let idle = dropdown_entry_pixel(false, true);
+    let highlighted = dropdown_entry_pixel(true, true);
+    let masked = dropdown_entry_pixel(true, false);
+
+    assert_ne!(highlighted, idle);
+    assert_eq!(masked, idle);
+}
+
+fn dropdown_entry_pixel(active: bool, shows_interaction_effects: bool) -> Color {
+    let entries = vec![DropdownMenuEntry::item("Run", NonClone)];
+    let mut state = DropdownMenuState::default();
+    state.open_at_index(active.then_some(0));
+    let overlay = overlay(&entries, state);
+    let row = row_rect(
+        &overlay_surfaces(&overlay, viewport(), LayoutDirection::Ltr)[0],
+        &entries,
+        0,
+    )
+    .unwrap();
+    let mut surface = surfaces::raster_n32_premul((500, 400)).unwrap();
+    draw_collected_overlays(
+        surface.canvas(),
+        &[overlay],
+        viewport(),
+        Point::new(-10.0, -10.0),
+        shows_interaction_effects,
+        &mut HashMap::new(),
+        &Theme::light(),
+        LayoutDirection::Ltr,
+    );
+    surface
+        .peek_pixels()
+        .unwrap()
+        .get_color((row.left as i32 + 5, row.center_y() as i32))
 }

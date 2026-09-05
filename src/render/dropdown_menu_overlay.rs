@@ -62,6 +62,7 @@ pub(crate) fn draw_dropdown_menu_overlays<'a, Msg>(
     widget: &Widget<'a, Msg>,
     states: &HashMap<u64, WidgetState>,
     mouse: Point,
+    shows_interaction_effects: bool,
     fonts: &mut FontCache,
     theme: &Theme,
     scale: f32,
@@ -75,7 +76,16 @@ pub(crate) fn draw_dropdown_menu_overlays<'a, Msg>(
     canvas.save();
     canvas.reset_matrix();
     canvas.scale((scale, scale));
-    draw_collected_overlays(canvas, &overlays, viewport, mouse, fonts, theme, direction);
+    draw_collected_overlays(
+        canvas,
+        &overlays,
+        viewport,
+        mouse,
+        shows_interaction_effects,
+        fonts,
+        theme,
+        direction,
+    );
     canvas.restore();
 }
 
@@ -220,11 +230,12 @@ fn draw_collected_overlays<Msg>(
     overlays: &[DropdownOverlay<'_, Msg>],
     viewport: (f32, f32),
     mouse: Point,
+    shows_interaction_effects: bool,
     fonts: &mut FontCache,
     theme: &Theme,
     direction: LayoutDirection,
 ) {
-    let mut painter = MenuPainter::new(canvas, fonts, theme, direction);
+    let mut painter = MenuPainter::new(canvas, fonts, theme, direction, shows_interaction_effects);
     for menu in overlays {
         painter.draw_menu(menu, viewport, mouse);
     }
@@ -235,6 +246,7 @@ struct MenuPainter<'a> {
     fonts: &'a mut FontCache,
     theme: &'a Theme,
     direction: LayoutDirection,
+    shows_interaction_effects: bool,
 }
 
 impl<'a> MenuPainter<'a> {
@@ -243,12 +255,14 @@ impl<'a> MenuPainter<'a> {
         fonts: &'a mut FontCache,
         theme: &'a Theme,
         direction: LayoutDirection,
+        shows_interaction_effects: bool,
     ) -> Self {
         Self {
             canvas,
             fonts,
             theme,
             direction,
+            shows_interaction_effects,
         }
     }
 
@@ -333,9 +347,9 @@ impl<'a> MenuPainter<'a> {
         hover: Option<&[usize]>,
         state: &DropdownMenuState,
     ) {
-        let color = if state.active_path() == Some(path) {
+        let color = if self.shows_interaction_effects && state.active_path() == Some(path) {
             Some(Theme::alpha(self.theme.primary, 34))
-        } else if state.open_submenu_path().starts_with(path) {
+        } else if self.shows_interaction_effects && state.open_submenu_path().starts_with(path) {
             Some(Theme::alpha(self.theme.primary, 22))
         } else if hover == Some(path) {
             Some(Theme::alpha(self.theme.on_surface, 14))

@@ -43,6 +43,7 @@ pub(crate) struct SearchOverlayDrawInput<'render, 'widget, Msg> {
     pub(crate) input_states: &'render HashMap<u64, InputWidgetState>,
     pub(crate) focused_id: Option<u64>,
     pub(crate) mouse: Point,
+    pub(crate) shows_interaction_effects: bool,
     pub(crate) font_cache: &'render mut HashMap<(String, u32), Font>,
     pub(crate) theme: &'render Theme,
     pub(crate) scale: f32,
@@ -71,6 +72,7 @@ pub(crate) fn draw_search_overlays<'render, 'widget, Msg>(
         input_states,
         focused_id,
         mouse,
+        shows_interaction_effects,
         font_cache,
         theme,
         scale,
@@ -93,7 +95,15 @@ pub(crate) fn draw_search_overlays<'render, 'widget, Msg>(
     canvas.scale((scale, scale));
     let font = get_cached_font(font_cache, "sans-serif", theme.font_body);
     for overlay in overlays {
-        draw_search_popup(canvas, &overlay, viewport, mouse, &font, theme);
+        draw_search_popup(
+            canvas,
+            &overlay,
+            viewport,
+            mouse,
+            shows_interaction_effects,
+            &font,
+            theme,
+        );
     }
     canvas.restore();
 }
@@ -161,6 +171,7 @@ fn draw_search_popup(
     overlay: &SearchOverlay<'_>,
     viewport: (f32, f32),
     mouse: Point,
+    shows_interaction_effects: bool,
     font: &Font,
     theme: &Theme,
 ) {
@@ -176,9 +187,13 @@ fn draw_search_popup(
         draw_no_results_row(canvas, popup.rect, overlay.empty_label, font, theme);
     } else {
         let mouse_row = select_option_at(popup.rect, mouse, popup.visible_options);
-        let hovered = mouse_row.map(|row| popup.first_option + row).or(overlay
-            .hovered_option
-            .filter(|hovered| hovered < &overlay.matches.len()));
+        let retained_hover = shows_interaction_effects
+            .then_some(overlay.hovered_option)
+            .flatten()
+            .filter(|hovered| hovered < &overlay.matches.len());
+        let hovered = mouse_row
+            .map(|row| popup.first_option + row)
+            .or(retained_hover);
         for (row, matched) in overlay
             .matches
             .iter()

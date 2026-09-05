@@ -221,6 +221,7 @@ fn popup_draws_pixels_below_the_trigger() {
         input_states: &inputs,
         focused_id: Some(SEARCH_ID),
         mouse: Point::new(0.0, 0.0),
+        shows_interaction_effects: true,
         font_cache: &mut HashMap::new(),
         theme: &Theme::light(),
         scale: 1.0,
@@ -228,4 +229,46 @@ fn popup_draws_pixels_below_the_trigger() {
 
     let pixel = surface.peek_pixels().unwrap().get_color((10, 50));
     assert_ne!(pixel, Color::RED);
+}
+
+#[test]
+fn covered_popup_hides_retained_option_hover() {
+    let idle = search_popup_option_pixel(None, true);
+    let highlighted = search_popup_option_pixel(Some(0), true);
+    let masked = search_popup_option_pixel(Some(0), false);
+
+    assert_ne!(highlighted, idle);
+    assert_eq!(masked, idle);
+}
+
+fn search_popup_option_pixel(
+    hovered_option: Option<usize>,
+    shows_interaction_effects: bool,
+) -> Color {
+    let widget = search_bar(suggestions());
+    let states = HashMap::from([(
+        SEARCH_ID,
+        WidgetState::Search(SearchState {
+            hovered_option,
+            dismissed: false,
+        }),
+    )]);
+    let inputs = HashMap::from([(SEARCH_ID, typed_input("star"))]);
+    let (taffy, root) = layout_widget(&widget, &states);
+    let mut surface = surfaces::raster_n32_premul((320, 240)).unwrap();
+    draw_search_overlays(SearchOverlayDrawInput {
+        canvas: surface.canvas(),
+        taffy: &taffy,
+        root,
+        widget: &widget,
+        widget_states: &states,
+        input_states: &inputs,
+        focused_id: Some(SEARCH_ID),
+        mouse: Point::new(-10.0, -10.0),
+        shows_interaction_effects,
+        font_cache: &mut HashMap::new(),
+        theme: &Theme::light(),
+        scale: 1.0,
+    });
+    surface.peek_pixels().unwrap().get_color((110, 50))
 }

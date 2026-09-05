@@ -13,6 +13,7 @@ use crate::render::dropdown_menu_overlay::{
     DropdownMenuOverlayHit, DropdownMenuScrollTarget, dropdown_menu_entry_hover_at,
     dropdown_menu_scroll_target_at,
 };
+use crate::render::hit_test::{ContextMenuOverlayHit, hit_test_context_menu_overlay};
 use crate::render::select_overlay::collector::collect_open_dropdown_overlays;
 use crate::widgets::dropdown_menu::DropdownMenuEntryKind;
 
@@ -307,8 +308,18 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let viewport = self.logical_viewport(size);
         let point = self.engine.last_mouse_pos;
         let direction = A::locale().direction();
+        let font_size = A::theme_for(&self.engine.app_state).font_body;
         let widget = A::view(&mut self.engine.app_state);
         validate_runtime_reconstruction(self.engine.widget_id_snapshot.as_ref(), &widget)?;
+        if context_menu_captures_dropdown_hover(hit_test_context_menu_overlay(
+            &widget,
+            point,
+            viewport,
+            &self.engine.widget_states,
+            font_size,
+        )) {
+            return Ok(DropdownCursorTargets::default());
+        }
         let overlays = collect_open_dropdown_overlays(
             &widget,
             &self.engine.taffy,
@@ -351,6 +362,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 }
 
+fn context_menu_captures_dropdown_hover<Msg>(hit: Option<ContextMenuOverlayHit<Msg>>) -> bool {
+    matches!(
+        hit,
+        Some(ContextMenuOverlayHit::Item { .. } | ContextMenuOverlayHit::Consume)
+    )
+}
+
 fn dropdown_right_click_consumes(_: &DropdownMenuOverlayHit) -> bool {
     true
 }
@@ -375,5 +393,15 @@ mod tests {
                 disabled: false,
             }
         ));
+    }
+
+    #[test]
+    fn context_menu_surface_blocks_dropdown_hover_refresh() {
+        assert!(context_menu_captures_dropdown_hover(Some(
+            ContextMenuOverlayHit::<()>::Consume
+        )));
+        assert!(!context_menu_captures_dropdown_hover(Some(
+            ContextMenuOverlayHit::<()>::Dismiss
+        )));
     }
 }

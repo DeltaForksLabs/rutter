@@ -85,6 +85,7 @@ fn overlay_draws_popup_pixels_below_the_trigger() {
         widget: &widget,
         widget_states: &states,
         mouse: Point::new(0.0, 0.0),
+        shows_interaction_effects: true,
         font_cache: &mut fonts,
         theme: &Theme::light(),
         scale: 1.0,
@@ -92,6 +93,16 @@ fn overlay_draws_popup_pixels_below_the_trigger() {
 
     let pixel = surface.peek_pixels().unwrap().get_color((10, 88));
     assert_ne!(pixel, Color::RED);
+}
+
+#[test]
+fn covered_popup_hides_retained_option_hover() {
+    let idle = select_popup_option_pixel(None, true);
+    let highlighted = select_popup_option_pixel(Some(1), true);
+    let masked = select_popup_option_pixel(Some(1), false);
+
+    assert_ne!(highlighted, idle);
+    assert_eq!(masked, idle);
 }
 
 #[test]
@@ -211,6 +222,40 @@ fn laid_out_open_select() -> (
     let states = open_select_states();
     let (taffy, root) = layout_widget(&widget, &states);
     (widget, states, taffy, root)
+}
+
+fn select_popup_option_pixel(
+    hovered_option: Option<usize>,
+    shows_interaction_effects: bool,
+) -> Color {
+    let widget = open_select_widget();
+    let states = hovered_select_states(hovered_option);
+    let (taffy, root) = layout_widget(&widget, &states);
+    let mut surface = surfaces::raster_n32_premul((320, 240)).unwrap();
+    let mut fonts = HashMap::new();
+    draw_select_overlays(SelectOverlayDrawInput {
+        canvas: surface.canvas(),
+        taffy: &taffy,
+        root,
+        widget: &widget,
+        widget_states: &states,
+        mouse: Point::new(-10.0, -10.0),
+        shows_interaction_effects,
+        font_cache: &mut fonts,
+        theme: &Theme::light(),
+        scale: 1.0,
+    });
+    surface.peek_pixels().unwrap().get_color((110, 88))
+}
+
+fn hovered_select_states(hovered_option: Option<usize>) -> HashMap<u64, WidgetState> {
+    HashMap::from([(
+        55,
+        WidgetState::Select(SelectState {
+            is_open: true,
+            hovered_option,
+        }),
+    )])
 }
 
 fn layout_widget<Message: Clone>(

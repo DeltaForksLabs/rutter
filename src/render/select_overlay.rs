@@ -37,6 +37,7 @@ pub(crate) struct SelectOverlayDrawInput<'render, 'widget, Msg> {
     pub(crate) widget: &'render Widget<'widget, Msg>,
     pub(crate) widget_states: &'render HashMap<u64, WidgetState>,
     pub(crate) mouse: Point,
+    pub(crate) shows_interaction_effects: bool,
     pub(crate) font_cache: &'render mut HashMap<(String, u32), Font>,
     pub(crate) theme: &'render Theme,
     pub(crate) scale: f32,
@@ -50,6 +51,7 @@ pub(crate) fn draw_select_overlays<Msg>(input: SelectOverlayDrawInput<'_, '_, Ms
         widget,
         widget_states,
         mouse,
+        shows_interaction_effects,
         font_cache,
         theme,
         scale,
@@ -63,7 +65,15 @@ pub(crate) fn draw_select_overlays<Msg>(input: SelectOverlayDrawInput<'_, '_, Ms
     canvas.reset_matrix();
     canvas.scale((scale, scale));
     for overlay in overlays {
-        draw_select_popup(canvas, overlay, viewport, mouse, font_cache, theme);
+        draw_select_popup(
+            canvas,
+            overlay,
+            viewport,
+            mouse,
+            shows_interaction_effects,
+            font_cache,
+            theme,
+        );
     }
     canvas.restore();
 }
@@ -164,6 +174,7 @@ fn draw_select_popup(
     overlay: SelectOverlay<'_>,
     viewport: (f32, f32),
     mouse: Point,
+    shows_interaction_effects: bool,
     font_cache: &mut HashMap<(String, u32), Font>,
     theme: &Theme,
 ) {
@@ -176,9 +187,12 @@ fn draw_select_popup(
         true,
     );
     let mouse_row = select_option_at(popup.rect, mouse, popup.visible_options);
+    let retained_hover = shows_interaction_effects
+        .then_some(overlay.hovered_option)
+        .flatten();
     let hovered = mouse_row
         .map(|row| popup.first_option + row)
-        .or(overlay.hovered_option);
+        .or(retained_hover);
     let font = get_cached_font(font_cache, "sans-serif", theme.font_body);
     for (row, (index, option)) in overlay
         .options

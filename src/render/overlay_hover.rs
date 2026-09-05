@@ -26,12 +26,20 @@ const HIDDEN_HOVER_COORDINATE: f32 = -1.0e20;
 
 #[derive(Clone, Copy)]
 pub(crate) struct OverlayHoverRoutes {
-    pub(crate) base: Point,
-    pub(crate) popover: Point,
-    pub(crate) select: Point,
-    pub(crate) search: Point,
-    pub(crate) dropdown: Point,
-    pub(crate) context_menu: Point,
+    pub(crate) base: OverlayVisualRoute,
+    pub(crate) popover: OverlayVisualRoute,
+    pub(crate) select: OverlayVisualRoute,
+    pub(crate) search: OverlayVisualRoute,
+    pub(crate) dropdown: OverlayVisualRoute,
+    pub(crate) context_menu: OverlayVisualRoute,
+}
+
+/// Rendering inputs allowed for one visual layer.
+#[derive(Clone, Copy)]
+pub(crate) struct OverlayVisualRoute {
+    pub(crate) mouse: Point,
+    pub(crate) focused_id: Option<u64>,
+    pub(crate) shows_interaction_effects: bool,
 }
 
 pub(crate) struct OverlayHoverInput<'render, 'widget, Msg>
@@ -64,23 +72,37 @@ pub(crate) fn overlay_hover_routes<Msg>(
     input: OverlayHoverInput<'_, '_, Msg>,
 ) -> OverlayHoverRoutes {
     let coverage = OverlayHoverCoverage::collect(&input);
-    OverlayHoverRoutes::from_coverage(input.mouse, coverage)
+    OverlayHoverRoutes::from_coverage(input.mouse, input.focused_id, coverage)
 }
 
 impl OverlayHoverRoutes {
-    fn from_coverage(mouse: Point, coverage: OverlayHoverCoverage) -> Self {
+    fn from_coverage(
+        mouse: Point,
+        focused_id: Option<u64>,
+        coverage: OverlayHoverCoverage,
+    ) -> Self {
         let context_menu = coverage.context_menu;
         let dropdown = context_menu;
         let search = dropdown || coverage.dropdown;
         let select = search || coverage.search;
         let popover = select || coverage.select;
         Self {
-            base: hover_point(mouse, coverage.any()),
-            popover: hover_point(mouse, popover),
-            select: hover_point(mouse, select),
-            search: hover_point(mouse, search),
-            dropdown: hover_point(mouse, dropdown),
-            context_menu: mouse,
+            base: OverlayVisualRoute::new(mouse, focused_id, coverage.any()),
+            popover: OverlayVisualRoute::new(mouse, focused_id, popover),
+            select: OverlayVisualRoute::new(mouse, focused_id, select),
+            search: OverlayVisualRoute::new(mouse, focused_id, search),
+            dropdown: OverlayVisualRoute::new(mouse, focused_id, dropdown),
+            context_menu: OverlayVisualRoute::new(mouse, focused_id, context_menu),
+        }
+    }
+}
+
+impl OverlayVisualRoute {
+    fn new(mouse: Point, focused_id: Option<u64>, covered: bool) -> Self {
+        Self {
+            mouse: hover_point(mouse, covered),
+            focused_id: (!covered).then_some(focused_id).flatten(),
+            shows_interaction_effects: !covered,
         }
     }
 }

@@ -237,8 +237,9 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         widget,
         fs,
         swash,
-        hover_routes.base,
-        focused_id,
+        hover_routes.base.mouse,
+        hover_routes.base.focused_id,
+        hover_routes.base.shows_interaction_effects,
         input_states,
         widget_states,
         font_cache,
@@ -258,8 +259,9 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         widget,
         fs,
         swash,
-        hover_routes.popover,
-        focused_id,
+        hover_routes.popover.mouse,
+        hover_routes.popover.focused_id,
+        hover_routes.popover.shows_interaction_effects,
         input_states,
         widget_states,
         font_cache,
@@ -278,7 +280,8 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         root: node,
         widget,
         widget_states,
-        mouse: hover_routes.select,
+        mouse: hover_routes.select.mouse,
+        shows_interaction_effects: hover_routes.select.shows_interaction_effects,
         font_cache: &mut *font_cache,
         theme,
         scale,
@@ -293,7 +296,8 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         widget_states,
         input_states,
         focused_id,
-        mouse: hover_routes.search,
+        mouse: hover_routes.search.mouse,
+        shows_interaction_effects: hover_routes.search.shows_interaction_effects,
         font_cache: &mut *font_cache,
         theme,
         scale,
@@ -304,7 +308,8 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         node,
         widget,
         widget_states,
-        hover_routes.dropdown,
+        hover_routes.dropdown.mouse,
+        hover_routes.dropdown.shows_interaction_effects,
         font_cache,
         theme,
         scale,
@@ -315,7 +320,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         canvas,
         widget,
         widget_states,
-        hover_routes.context_menu,
+        hover_routes.context_menu.mouse,
         font_cache,
         theme,
         scale,
@@ -402,6 +407,7 @@ fn draw_popover_overlays<'w, Msg>(
     swash: &mut SwashCache,
     mouse_pos: Point,
     focused_id: Option<u64>,
+    shows_interaction_effects: bool,
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -438,6 +444,7 @@ fn draw_popover_overlays<'w, Msg>(
                     swash,
                     mouse_pos,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -508,6 +515,7 @@ fn draw_popover_overlays<'w, Msg>(
                 swash,
                 Point::new(mouse_pos.x - rect.left, mouse_pos.y - rect.top),
                 focused_id,
+                shows_interaction_effects,
                 input_states,
                 widget_states,
                 font_cache,
@@ -528,6 +536,7 @@ fn draw_popover_overlays<'w, Msg>(
                 swash,
                 Point::new(mouse_pos.x - rect.left, mouse_pos.y - rect.top),
                 focused_id,
+                shows_interaction_effects,
                 input_states,
                 widget_states,
                 font_cache,
@@ -559,6 +568,7 @@ fn draw_popover_overlays<'w, Msg>(
                         swash,
                         mouse_pos,
                         focused_id,
+                        shows_interaction_effects,
                         input_states,
                         widget_states,
                         font_cache,
@@ -594,6 +604,7 @@ fn draw_popover_overlays<'w, Msg>(
                     swash,
                     mouse_pos,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -630,6 +641,7 @@ fn draw_popover_overlays<'w, Msg>(
                     swash,
                     mouse_pos,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -664,6 +676,7 @@ fn draw_popover_overlays<'w, Msg>(
                     swash,
                     mouse_pos,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -894,6 +907,7 @@ fn draw_widgets_impl<'w, Msg>(
     swash: &mut SwashCache,
     mouse_pos: Point,
     focused_id: Option<u64>,
+    shows_interaction_effects: bool,
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -929,6 +943,7 @@ fn draw_widgets_impl<'w, Msg>(
                     swash,
                     local_mouse,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -967,6 +982,7 @@ fn draw_widgets_impl<'w, Msg>(
                 swash,
                 local_mouse,
                 focused_id,
+                shows_interaction_effects,
                 input_states,
                 widget_states,
                 font_cache,
@@ -1002,6 +1018,7 @@ fn draw_widgets_impl<'w, Msg>(
                 swash,
                 Point::new(local_mouse.x, local_mouse.y + offset_y),
                 focused_id,
+                shows_interaction_effects,
                 input_states,
                 widget_states,
                 font_cache,
@@ -1031,6 +1048,7 @@ fn draw_widgets_impl<'w, Msg>(
                 swash,
                 local_mouse,
                 focused_id,
+                shows_interaction_effects,
                 input_states,
                 widget_states,
                 font_cache,
@@ -1061,6 +1079,7 @@ fn draw_widgets_impl<'w, Msg>(
                     swash,
                     local_mouse,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -1088,6 +1107,7 @@ fn draw_widgets_impl<'w, Msg>(
                     swash,
                     local_mouse,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -1145,6 +1165,7 @@ fn draw_widgets_impl<'w, Msg>(
                     swash,
                     local_mouse,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -1183,6 +1204,7 @@ fn draw_widgets_impl<'w, Msg>(
             is_password: *is_password,
             input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
+            shows_interaction_effects,
             is_multiline: false,
             leading_text_inset: 0.0,
         }),
@@ -1209,6 +1231,7 @@ fn draw_widgets_impl<'w, Msg>(
             is_password: false,
             input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
+            shows_interaction_effects,
             is_multiline: true,
             leading_text_inset: 0.0,
         }),
@@ -1229,6 +1252,7 @@ fn draw_widgets_impl<'w, Msg>(
             is_password: false,
             input_state: input_states.get(&resolved_id.unwrap()),
             cursor_visible,
+            shows_interaction_effects,
             is_multiline: false,
             leading_text_inset: SEARCH_BAR_LEADING_TEXT_INSET,
         }),
@@ -1265,11 +1289,11 @@ fn draw_widgets_impl<'w, Msg>(
             value, min, max, ..
         } => {
             let resolved_id = resolved_id.unwrap();
-            let dragging = widget_states
-                .get(&resolved_id)
-                .and_then(|s| s.as_slider())
-                .map(|s| s.dragging)
-                .unwrap_or(false);
+            let dragging = shows_interaction_effects
+                && widget_states
+                    .get(&resolved_id)
+                    .and_then(|state| state.as_slider())
+                    .is_some_and(|state| state.dragging);
             draw_slider(SliderRenderInput {
                 canvas,
                 value: *value,
@@ -1456,6 +1480,7 @@ fn draw_widgets_impl<'w, Msg>(
                     swash,
                     local_mouse,
                     focused_id,
+                    shows_interaction_effects,
                     input_states,
                     widget_states,
                     font_cache,
@@ -1493,6 +1518,7 @@ fn draw_widgets_impl<'w, Msg>(
                 swash,
                 mouse_pos,
                 focused_id,
+                shows_interaction_effects,
                 input_states,
                 widget_states,
                 font_cache,
@@ -1567,6 +1593,7 @@ fn draw_widgets_impl<'w, Msg>(
                     layout_fs: layout_fs.clone(),
                     layout_direction: direction,
                     cursor_visible,
+                    shows_interaction_effects,
                     scale,
                 },
                 path,
@@ -1582,7 +1609,9 @@ fn draw_widgets_impl<'w, Msg>(
             let vstate = widget_states.get(&resolved_id).and_then(|s| s.as_vlist());
             let scroll_y = vstate.map(|v| v.scroll_y).unwrap_or(0.0);
             let selected = vstate.and_then(|v| v.selected_row);
-            let hovered = vstate.and_then(|v| v.hovered_row);
+            let hovered = vstate
+                .and_then(|state| state.hovered_row)
+                .filter(|_| shows_interaction_effects);
             let selected_rows = legacy_virtual_selection(selected);
             draw_virtual_list(VirtualListRenderInput {
                 canvas,
@@ -1612,7 +1641,9 @@ fn draw_widgets_impl<'w, Msg>(
             let vstate = widget_states.get(&resolved_id).and_then(|s| s.as_vlist());
             let scroll_y = vstate.map(|v| v.scroll_y).unwrap_or(0.0);
             let selected = vstate.and_then(|v| v.selected_row);
-            let hovered = vstate.and_then(|v| v.hovered_row);
+            let hovered = vstate
+                .and_then(|state| state.hovered_row)
+                .filter(|_| shows_interaction_effects);
             let selected_rows = legacy_virtual_selection(selected);
             draw_virtual_list_content(
                 canvas,
@@ -1638,6 +1669,7 @@ fn draw_widgets_impl<'w, Msg>(
                     layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
+                    shows_interaction_effects,
                     scale,
                 },
                 path,
@@ -1670,7 +1702,9 @@ fn draw_widgets_impl<'w, Msg>(
                     active: vstate.and_then(|state| state.selected_row),
                     focused: is_focused,
                 },
-                hovered: vstate.and_then(|state| state.hovered_row),
+                hovered: vstate
+                    .and_then(|state| state.hovered_row)
+                    .filter(|_| shows_interaction_effects),
                 size,
                 mouse: local_mouse,
                 font_cache,
@@ -1704,7 +1738,9 @@ fn draw_widgets_impl<'w, Msg>(
                     active: vstate.and_then(|state| state.selected_row),
                     focused: is_focused,
                 },
-                vstate.and_then(|state| state.hovered_row),
+                vstate
+                    .and_then(|state| state.hovered_row)
+                    .filter(|_| shows_interaction_effects),
                 size,
                 local_mouse,
                 theme,
@@ -1717,6 +1753,7 @@ fn draw_widgets_impl<'w, Msg>(
                     layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
+                    shows_interaction_effects,
                     scale,
                 },
                 path,
@@ -1733,7 +1770,9 @@ fn draw_widgets_impl<'w, Msg>(
             let gstate = widget_states.get(&resolved_id).and_then(|s| s.as_vgrid());
             let scroll_y = gstate.map(|g| g.scroll_y).unwrap_or(0.0);
             let selected = gstate.and_then(|g| g.selected_item);
-            let hovered = gstate.and_then(|g| g.hovered_item);
+            let hovered = gstate
+                .and_then(|state| state.hovered_item)
+                .filter(|_| shows_interaction_effects);
             let selected_cells = legacy_virtual_selection(selected);
             draw_virtual_grid(
                 canvas,
@@ -1766,7 +1805,9 @@ fn draw_widgets_impl<'w, Msg>(
             let gstate = widget_states.get(&resolved_id).and_then(|s| s.as_vgrid());
             let scroll_y = gstate.map(|g| g.scroll_y).unwrap_or(0.0);
             let selected = gstate.and_then(|g| g.selected_item);
-            let hovered = gstate.and_then(|g| g.hovered_item);
+            let hovered = gstate
+                .and_then(|state| state.hovered_item)
+                .filter(|_| shows_interaction_effects);
             let selected_cells = legacy_virtual_selection(selected);
             draw_virtual_grid_content(
                 canvas,
@@ -1794,6 +1835,7 @@ fn draw_widgets_impl<'w, Msg>(
                     layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
+                    shows_interaction_effects,
                     scale,
                 },
                 path,
@@ -1829,7 +1871,9 @@ fn draw_widgets_impl<'w, Msg>(
                     active: gstate.and_then(|state| state.selected_item),
                     focused: is_focused,
                 },
-                gstate.and_then(|state| state.hovered_item),
+                gstate
+                    .and_then(|state| state.hovered_item)
+                    .filter(|_| shows_interaction_effects),
                 size,
                 local_mouse,
                 font_cache,
@@ -1866,7 +1910,9 @@ fn draw_widgets_impl<'w, Msg>(
                     active: gstate.and_then(|state| state.selected_item),
                     focused: is_focused,
                 },
-                gstate.and_then(|state| state.hovered_item),
+                gstate
+                    .and_then(|state| state.hovered_item)
+                    .filter(|_| shows_interaction_effects),
                 size,
                 local_mouse,
                 theme,
@@ -1879,6 +1925,7 @@ fn draw_widgets_impl<'w, Msg>(
                     layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
+                    shows_interaction_effects,
                     scale,
                 },
                 path,
@@ -2002,6 +2049,7 @@ struct TextInputRenderInput<'a> {
     is_password: bool,
     input_state: Option<&'a InputWidgetState>,
     cursor_visible: bool,
+    shows_interaction_effects: bool,
     is_multiline: bool,
     leading_text_inset: f32,
 }
@@ -2024,6 +2072,7 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
         is_password,
         input_state: istate,
         cursor_visible,
+        shows_interaction_effects,
         is_multiline,
         leading_text_inset,
     } = input;
@@ -2146,6 +2195,7 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
                 line_height,
                 is_focused,
                 cursor_visible,
+                shows_interaction_effects,
                 is_multiline,
                 mapped_cursor,
                 s,
@@ -2184,6 +2234,7 @@ fn draw_search_bar(input: TextInputRenderInput<'_>) {
         is_password,
         input_state,
         cursor_visible,
+        shows_interaction_effects,
         is_multiline,
         leading_text_inset,
     } = input;
@@ -2204,6 +2255,7 @@ fn draw_search_bar(input: TextInputRenderInput<'_>) {
         is_password,
         input_state,
         cursor_visible,
+        shows_interaction_effects,
         is_multiline,
         leading_text_inset,
     });
@@ -2225,6 +2277,7 @@ fn draw_text_input_runs<'a>(
     line_height: f32,
     is_focused: bool,
     cursor_visible: bool,
+    shows_interaction_effects: bool,
     is_multiline: bool,
     cursor: Cursor,
     selection_state: &InputWidgetState,
@@ -2255,9 +2308,10 @@ fn draw_text_input_runs<'a>(
         }
     }
 
-    if let Some(selection) = selection_state
-        .selection
-        .filter(|selection| !selection.is_empty())
+    if shows_interaction_effects
+        && let Some(selection) = selection_state
+            .selection
+            .filter(|selection| !selection.is_empty())
     {
         for run in runs.iter() {
             let Some(selection) =
@@ -2520,6 +2574,7 @@ fn draw_modal<Msg>(
     swash: &mut SwashCache,
     mouse_pos: Point,
     focused_id: Option<u64>,
+    shows_interaction_effects: bool,
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
@@ -2583,6 +2638,7 @@ fn draw_modal<Msg>(
         swash,
         Point::new(mouse_pos.x - card_x, mouse_pos.y - card_y),
         focused_id,
+        shows_interaction_effects,
         input_states,
         widget_states,
         font_cache,
@@ -3055,6 +3111,7 @@ struct VirtualItemDrawContext<'a> {
     layout_fs: Rc<RefCell<FontSystem>>,
     layout_direction: LayoutDirection,
     cursor_visible: bool,
+    shows_interaction_effects: bool,
     scale: f32,
 }
 
@@ -3668,6 +3725,7 @@ fn draw_virtual_item_widget<'w, Msg>(
         ctx.swash,
         Point::new(mouse.x - origin.0, mouse.y - origin.1),
         None,
+        ctx.shows_interaction_effects,
         &isolated_input_states,
         &isolated_widget_states,
         ctx.font_cache,
