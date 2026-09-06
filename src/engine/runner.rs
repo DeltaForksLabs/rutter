@@ -69,6 +69,8 @@ enum WheelPopupTarget {
     Search(u64),
 }
 
+const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
 fn is_bidi_override_char(ch: char) -> bool {
     matches!(
         ch,
@@ -419,6 +421,16 @@ fn clock_tick_delay(nanoseconds: u32) -> Duration {
     Duration::from_secs(1).saturating_sub(Duration::from_nanos(u64::from(nanoseconds)))
 }
 
+fn animation_frame_deadline(
+    now: Instant,
+    animation_changed: bool,
+    timed_toasts: bool,
+    smooth_scroll_pending: bool,
+) -> Option<Instant> {
+    (animation_changed || timed_toasts || smooth_scroll_pending)
+        .then_some(now + ANIMATION_FRAME_INTERVAL)
+}
+
 fn next_clock_tick_at() -> Instant {
     let nanoseconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -550,6 +562,14 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         match self.process_scheduled_work() {
             Some(deadline) => el.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => el.set_control_flow(ControlFlow::Wait),
+        }
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        // Input handlers run after `new_events`, so this schedules a newly started scroll.
+        let deadline = self.next_smooth_scroll_deadline(Instant::now());
+        if let Some(deadline) = deadline {
+            el.set_control_flow(ControlFlow::WaitUntil(deadline));
         }
     }
 
@@ -1205,6 +1225,16 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 self.activate_carousel_item(id, index);
                             }
                         }
+                        HitResult::TableOfContentsActivate {
+                            id,
+                            focus_id,
+                            target_y,
+                            ..
+                        } => {
+                            if button == winit::event::MouseButton::Left {
+                                self.activate_table_of_contents_entry(id, focus_id, target_y);
+                            }
+                        }
                     }
                     self.redraw();
                 } else {
@@ -1375,18 +1405,25 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let now = Instant::now();
         let counter_deadline = self.counter_hold_deadline(now);
         let timed_toasts = self.expire_timed_toasts();
-        let frame_deadline = if self.tick_surface_animations() || timed_toasts {
+        let frame_deadline = animation_frame_deadline(
+            now,
+            self.tick_surface_animations(),
+            timed_toasts,
+            self.engine.has_pending_smooth_scroll(),
+        );
+        if frame_deadline.is_some() {
             self.redraw();
-            Some(now + Duration::from_millis(16))
-        } else {
-            None
-        };
+        }
         counter_deadline
             .into_iter()
             .chain(frame_deadline)
             .chain(self.live_clock_deadline())
             .chain(self.focused_input_deadline())
             .min()
+    }
+
+    pub(crate) fn next_smooth_scroll_deadline(&self, now: Instant) -> Option<Instant> {
+        animation_frame_deadline(now, false, false, self.engine.has_pending_smooth_scroll())
     }
 
     fn live_clock_deadline(&mut self) -> Option<Instant> {
@@ -1436,13 +1473,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn tick_surface_animations(&mut self) -> bool {
-        if !self.engine.has_animated {
-            return false;
-        }
-        if self.engine.tick_animations() {
+        let changed = self.engine.tick_animations();
+        if changed {
             self.redraw();
         }
-        true
+        changed
     }
 
     fn focused_input_deadline(&mut self) -> Option<Instant> {
@@ -1592,6 +1627,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             } else {
                 self.focused_input_rect = None;
             }
+            self.engine.reveal_table_of_contents_entry(id);
         } else {
             self.focused_input_rect = None;
         }
@@ -1781,6 +1817,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if self.scroll_virtual_multi_target(id, delta_y) {
             return true;
         }
+        self.engine.cancel_smooth_scroll(id);
         let list = self.engine.runtime_caches.vlists.get(&id).cloned();
         let grid = self.engine.runtime_caches.vgrids.get(&id).cloned();
         let Some(state) = self.engine.widget_states.get_mut(&id) else {
@@ -1863,6 +1900,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn begin_scroll_drag(&mut self, hit: crate::render::hit_test::ScrollbarDragHit) {
+        self.engine.cancel_smooth_scroll(hit.id);
         if let Some(widget_state) = self.engine.widget_states.get_mut(&hit.id) {
             apply_scrollbar_drag_offset(widget_state, hit.start_offset);
         }
@@ -1875,6 +1913,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         });
         self.engine.active_scroll_id = Some(hit.id);
         self.redraw();
+    }
+
+    fn activate_table_of_contents_entry(&mut self, table_id: u64, focus_id: u64, target_y: f32) {
+        self.focus_widget(Some(focus_id));
+        self.engine.active_scroll_id = Some(table_id);
+        self.engine
+            .start_smooth_scroll(table_id, target_y, Instant::now());
     }
 
     fn focus_input_at(
@@ -1968,6 +2013,19 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return false;
         }
         if self.handle_dropdown_key(fid, key) {
+            return true;
+        }
+
+        if is_activation_key(key)
+            && let Some(entry) = self
+                .engine
+                .runtime_caches
+                .table_of_contents_entries
+                .get(&fid)
+                .copied()
+        {
+            self.activate_table_of_contents_entry(entry.parent_id, fid, entry.target_y);
+            self.redraw();
             return true;
         }
 
@@ -2930,8 +2988,8 @@ mod tests {
     use winit::keyboard::{Key, NamedKey};
 
     use super::{
-        WindowEventDestination, apply_scrollbar_drag_offset, carousel_key_index,
-        carousel_wheel_delta, classify_window_event, clock_tick_delay,
+        WindowEventDestination, animation_frame_deadline, apply_scrollbar_drag_offset,
+        carousel_key_index, carousel_wheel_delta, classify_window_event, clock_tick_delay,
         collect_open_popover_dismissals, collect_toast_runtime_state, input_copy_is_blocked,
         latch_search_suggestion_dismissals, mapped_input_pointer_x, sanitize_clipboard_text,
         sanitize_input_text, virtual_multi_pointer_index, wheel_deltas, wheel_select_index,
@@ -3001,6 +3059,17 @@ mod tests {
         assert_eq!(clock_tick_delay(0), Duration::from_secs(1));
         assert_eq!(clock_tick_delay(250_000_000), Duration::from_millis(750));
         assert_eq!(clock_tick_delay(999_999_999), Duration::from_nanos(1));
+    }
+
+    #[test]
+    fn pending_smooth_scroll_schedules_the_next_animation_frame() {
+        let now = Instant::now();
+
+        assert_eq!(
+            animation_frame_deadline(now, false, false, true),
+            Some(now + Duration::from_millis(16))
+        );
+        assert_eq!(animation_frame_deadline(now, false, false, false), None);
     }
 
     #[test]

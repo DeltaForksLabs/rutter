@@ -64,7 +64,16 @@ impl ScrollState {
         (self.content_height - self.viewport_h).max(0.0)
     }
     pub fn scroll_by(&mut self, delta_y: f32) {
-        self.offset_y = (self.offset_y + delta_y).clamp(0.0, self.max_offset());
+        self.set_offset(delta_y + self.offset_y);
+    }
+    pub(crate) fn set_geometry(&mut self, content_height: f32, viewport_h: f32) {
+        self.content_height = content_height.max(0.0);
+        self.viewport_h = viewport_h.max(0.0);
+        let max_offset = self.max_offset();
+        self.offset_y = self.offset_y.clamp(0.0, max_offset);
+    }
+    pub(crate) fn set_offset(&mut self, offset_y: f32) {
+        self.offset_y = offset_y.clamp(0.0, self.max_offset());
     }
     pub fn thumb_ratio(&self) -> f32 {
         if self.content_height <= 0.0 {

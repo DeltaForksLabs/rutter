@@ -19,6 +19,10 @@ use crate::widget::{
     CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     CONTEXT_MENU_VIEWPORT_MARGIN, ContextMenuEntry, DialogAction, DialogPosition, POPOVER_GAP,
     POPOVER_VIEWPORT_MARGIN, Widget, estimate_context_menu_height, estimate_context_menu_width,
+    resolve_table_of_contents_navigation_id,
+};
+use crate::widgets::table_of_contents::{
+    collect_entries, entry_offset_y, entry_rect, layout_nodes,
 };
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -83,6 +87,12 @@ pub enum HitResult<Msg> {
     CarouselSelect {
         id: u64,
         index: usize,
+    },
+    TableOfContentsActivate {
+        id: u64,
+        index: usize,
+        focus_id: u64,
+        target_y: f32,
     },
 }
 
@@ -320,7 +330,8 @@ fn hit_test_context_menu_overlay_impl<Msg: Clone>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
-        | Widget::ScrollView { child, .. } => {
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. } => {
             path.push(0);
             let hit = hit_test_context_menu_overlay_impl(
                 child,
@@ -559,6 +570,33 @@ fn hit_test_popover_overlay_impl<Msg: Clone>(
             path.pop();
             hit
         }
+        Widget::TableOfContents { child, .. } => {
+            let nodes = layout_nodes(taffy, node_id)?;
+            let viewport = taffy.layout(nodes.viewport).ok()?;
+            let table_id = widget.resolved_id(path)?;
+            let offset_y = widget_states
+                .get(&table_id)
+                .and_then(WidgetState::as_scroll)
+                .map(|state| state.offset_y)
+                .unwrap_or(0.0);
+            path.push(0);
+            let hit = hit_test_popover_overlay_impl(
+                child,
+                taffy,
+                nodes.content,
+                mouse,
+                Point::new(
+                    abs_pos.x + viewport.location.x,
+                    abs_pos.y + viewport.location.y - offset_y,
+                ),
+                viewport_size,
+                widget_states,
+                path,
+                any_open,
+            );
+            path.pop();
+            hit
+        }
         Widget::Accordion {
             expanded, child, ..
         } => {
@@ -712,6 +750,16 @@ fn hit_test_impl<Msg: Clone>(
             }
             Some(HitResult::ScrollFocus(widget.resolved_id(path).unwrap()))
         }
+        Widget::TableOfContents { child, .. } => table_of_contents_hit(
+            widget,
+            child,
+            taffy,
+            node_id,
+            mouse,
+            abs_pos,
+            widget_states,
+            path,
+        ),
         Widget::Tooltip { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
             path.push(0);
@@ -1013,6 +1061,144 @@ fn hit_test_impl<Msg: Clone>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn table_of_contents_hit<Msg: Clone>(
+    widget: &Widget<Msg>,
+    child: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    table_abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<HitResult<Msg>> {
+    let table_id = widget.resolved_id(path)?;
+    if let Some(index) = table_of_contents_entry_index(
+        child,
+        taffy,
+        node_id,
+        table_abs,
+        table_id,
+        widget_states,
+        mouse,
+    ) {
+        let target_y = layout_nodes(taffy, node_id)
+            .and_then(|nodes| entry_offset_y(child, taffy, nodes.content, index))
+            .unwrap_or(0.0);
+        return Some(HitResult::TableOfContentsActivate {
+            id: table_id,
+            index,
+            focus_id: widget.table_of_contents_entry_focus_id(path, index)?,
+            target_y,
+        });
+    }
+    table_of_contents_content_hit(
+        child,
+        taffy,
+        node_id,
+        mouse,
+        table_abs,
+        table_id,
+        widget_states,
+        path,
+    )
+}
+
+fn table_of_contents_entry_index<Msg>(
+    child: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    table_abs: Point,
+    table_id: u64,
+    widget_states: &HashMap<u64, WidgetState>,
+    mouse: Point,
+) -> Option<usize> {
+    let nodes = layout_nodes(taffy, node_id)?;
+    let navigation = taffy.layout(nodes.navigation).ok()?;
+    let navigation_rect = SkiaRect::from_xywh(
+        table_abs.x + navigation.location.x,
+        table_abs.y + navigation.location.y,
+        navigation.size.width,
+        navigation.size.height,
+    );
+    if !navigation_rect.contains(mouse) {
+        return None;
+    }
+    let offset_y = widget_states
+        .get(&resolve_table_of_contents_navigation_id(table_id))
+        .and_then(WidgetState::as_scroll)
+        .map(|state| state.offset_y)
+        .unwrap_or(0.0);
+    collect_entries(child)
+        .iter()
+        .enumerate()
+        .find_map(|(index, _)| {
+            entry_rect(taffy, node_id, index)
+                .map(|rect| offset_table_of_contents_navigation_rect(rect, offset_y))
+                .filter(|rect| table_entry_contains(*rect, table_abs, mouse))
+                .map(|_| index)
+        })
+}
+
+fn offset_table_of_contents_navigation_rect(rect: SkiaRect, offset_y: f32) -> SkiaRect {
+    SkiaRect::from_xywh(rect.left, rect.top - offset_y, rect.width(), rect.height())
+}
+
+fn table_entry_contains(rect: SkiaRect, table_abs: Point, mouse: Point) -> bool {
+    SkiaRect::from_xywh(
+        rect.left + table_abs.x,
+        rect.top + table_abs.y,
+        rect.width(),
+        rect.height(),
+    )
+    .contains(mouse)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn table_of_contents_content_hit<Msg: Clone>(
+    child: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    table_abs: Point,
+    table_id: u64,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<HitResult<Msg>> {
+    let nodes = layout_nodes(taffy, node_id)?;
+    let viewport = taffy.layout(nodes.viewport).ok()?;
+    let viewport_abs = Point::new(
+        table_abs.x + viewport.location.x,
+        table_abs.y + viewport.location.y,
+    );
+    let viewport_rect = SkiaRect::from_xywh(
+        viewport_abs.x,
+        viewport_abs.y,
+        viewport.size.width,
+        viewport.size.height,
+    );
+    if !viewport_rect.contains(mouse) {
+        return None;
+    }
+    let offset_y = widget_states
+        .get(&table_id)
+        .and_then(WidgetState::as_scroll)
+        .map(|state| state.offset_y)
+        .unwrap_or(0.0);
+    path.push(0);
+    let hit = hit_test_impl(
+        child,
+        taffy,
+        nodes.content,
+        mouse,
+        Point::new(viewport_abs.x, viewport_abs.y - offset_y),
+        widget_states,
+        path,
+    );
+    path.pop();
+    hit.or(Some(HitResult::ScrollFocus(table_id)))
+}
+
 fn carousel_node_direction(taffy: &TaffyTree<RutterContext>, node_id: NodeId) -> LayoutDirection {
     match taffy.style(node_id).map(|style| style.direction) {
         Ok(Direction::Rtl) => LayoutDirection::Rtl,
@@ -1069,6 +1255,7 @@ fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -1122,6 +1309,14 @@ fn collect_stateful_ids_impl<Msg>(
         Widget::Spinner { .. } => out.push((widget.resolved_id(path).unwrap(), "anim")),
         Widget::ScrollView { child, .. } => {
             out.push((widget.resolved_id(path).unwrap(), "scroll"));
+            path.push(0);
+            collect_stateful_ids_impl(child, out, path);
+            path.pop();
+        }
+        Widget::TableOfContents { child, .. } => {
+            let table_id = widget.resolved_id(path).unwrap();
+            out.push((table_id, "scroll"));
+            out.push((resolve_table_of_contents_navigation_id(table_id), "scroll"));
             path.push(0);
             collect_stateful_ids_impl(child, out, path);
             path.pop();
@@ -1251,6 +1446,7 @@ fn find_input_props_impl<Msg: Clone>(
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -1316,6 +1512,7 @@ fn find_select_callback_impl<Msg: Clone>(
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -1381,6 +1578,7 @@ fn find_slider_callback_impl<Msg: Clone>(
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -1460,6 +1658,7 @@ fn find_vlist_props_impl<Msg>(
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -1522,6 +1721,7 @@ fn find_toast_dismiss_msg_impl<Msg: Clone>(
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -1593,6 +1793,13 @@ fn find_input_geometry_impl<Msg>(
                 }
             }
             None
+        }
+        Widget::TableOfContents { child, .. } => {
+            let nodes = layout_nodes(taffy, node_id)?;
+            path.push(0);
+            let result = find_input_geometry_impl(child, taffy, nodes.content, target_id, path);
+            path.pop();
+            result
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
@@ -1838,6 +2045,42 @@ fn find_context_menu_target_impl<Msg>(
             path.pop();
             hit
         }
+        Widget::TableOfContents { child, .. } => {
+            let table_id = widget.resolved_id(path)?;
+            let nodes = layout_nodes(taffy, node_id)?;
+            let viewport = taffy.layout(nodes.viewport).ok()?;
+            let viewport_abs = Point::new(
+                abs_pos.x + viewport.location.x,
+                abs_pos.y + viewport.location.y,
+            );
+            if !SkiaRect::from_xywh(
+                viewport_abs.x,
+                viewport_abs.y,
+                viewport.size.width,
+                viewport.size.height,
+            )
+            .contains(mouse)
+            {
+                return None;
+            }
+            let offset_y = widget_states
+                .get(&table_id)
+                .and_then(WidgetState::as_scroll)
+                .map(|state| state.offset_y)
+                .unwrap_or(0.0);
+            path.push(0);
+            let hit = find_context_menu_target_impl(
+                child,
+                taffy,
+                nodes.content,
+                mouse,
+                Point::new(viewport_abs.x, viewport_abs.y - offset_y),
+                widget_states,
+                path,
+            );
+            path.pop();
+            hit
+        }
         Widget::Accordion {
             expanded, child, ..
         } => {
@@ -1995,6 +2238,16 @@ fn find_scroll_focus_impl<Msg>(
             path.pop();
             result.or(Some(resolved_id))
         }
+        Widget::TableOfContents { child, .. } => table_of_contents_scroll_focus(
+            widget,
+            child,
+            taffy,
+            node_id,
+            mouse,
+            abs_pos,
+            widget_states,
+            path,
+        ),
         Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
         | Widget::VirtualListWithSelection { .. }
@@ -2058,6 +2311,76 @@ fn find_scroll_focus_impl<Msg>(
         }
         _ => None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn table_of_contents_scroll_focus<Msg>(
+    widget: &Widget<Msg>,
+    child: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    table_abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<u64> {
+    let table_id = widget.resolved_id(path)?;
+    let nodes = layout_nodes(taffy, node_id)?;
+    let navigation = taffy.layout(nodes.navigation).ok()?;
+    let navigation_abs = Point::new(
+        table_abs.x + navigation.location.x,
+        table_abs.y + navigation.location.y,
+    );
+    if SkiaRect::from_xywh(
+        navigation_abs.x,
+        navigation_abs.y,
+        navigation.size.width,
+        navigation.size.height,
+    )
+    .contains(mouse)
+    {
+        let navigation_id = resolve_table_of_contents_navigation_id(table_id);
+        if widget_states
+            .get(&navigation_id)
+            .and_then(WidgetState::as_scroll)
+            .is_some_and(|state| state.content_height > state.viewport_h)
+        {
+            return Some(navigation_id);
+        }
+        return Some(table_id);
+    }
+    let viewport = taffy.layout(nodes.viewport).ok()?;
+    let viewport_abs = Point::new(
+        table_abs.x + viewport.location.x,
+        table_abs.y + viewport.location.y,
+    );
+    if !SkiaRect::from_xywh(
+        viewport_abs.x,
+        viewport_abs.y,
+        viewport.size.width,
+        viewport.size.height,
+    )
+    .contains(mouse)
+    {
+        return None;
+    }
+    let offset_y = widget_states
+        .get(&table_id)
+        .and_then(WidgetState::as_scroll)
+        .map(|state| state.offset_y)
+        .unwrap_or(0.0);
+    path.push(0);
+    let result = find_scroll_focus_impl(
+        child,
+        taffy,
+        nodes.content,
+        mouse,
+        Point::new(viewport_abs.x, viewport_abs.y - offset_y),
+        widget_states,
+        path,
+    );
+    path.pop();
+    result.or(Some(table_id))
 }
 
 pub fn find_scrollbar_drag_hit<Msg>(
@@ -2189,6 +2512,16 @@ fn find_scrollbar_drag_hit_impl<Msg>(
                 mouse,
             )
         }
+        Widget::TableOfContents { child, .. } => table_of_contents_scrollbar_hit(
+            widget,
+            child,
+            taffy,
+            node_id,
+            mouse,
+            abs_pos,
+            widget_states,
+            path,
+        ),
         Widget::VirtualList {
             item_count,
             item_height,
@@ -2339,6 +2672,127 @@ fn find_scrollbar_drag_hit_impl<Msg>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn table_of_contents_scrollbar_hit<Msg>(
+    widget: &Widget<Msg>,
+    child: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    table_abs: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<ScrollbarDragHit> {
+    let table_id = widget.resolved_id(path)?;
+    let nodes = layout_nodes(taffy, node_id)?;
+    let navigation = taffy.layout(nodes.navigation).ok()?;
+    let navigation_abs = Point::new(
+        table_abs.x + navigation.location.x,
+        table_abs.y + navigation.location.y,
+    );
+    if SkiaRect::from_xywh(
+        navigation_abs.x,
+        navigation_abs.y,
+        navigation.size.width,
+        navigation.size.height,
+    )
+    .contains(mouse)
+    {
+        let navigation_id = resolve_table_of_contents_navigation_id(table_id);
+        let navigation_state = widget_states.get(&navigation_id)?.as_scroll()?;
+        if navigation_state.content_height <= navigation_state.viewport_h {
+            return None;
+        }
+        return table_of_contents_scrollbar(
+            navigation_id,
+            navigation_abs,
+            navigation,
+            navigation_state,
+            mouse,
+        );
+    }
+    let viewport = taffy.layout(nodes.viewport).ok()?;
+    let viewport_abs = Point::new(
+        table_abs.x + viewport.location.x,
+        table_abs.y + viewport.location.y,
+    );
+    if !SkiaRect::from_xywh(
+        viewport_abs.x,
+        viewport_abs.y,
+        viewport.size.width,
+        viewport.size.height,
+    )
+    .contains(mouse)
+    {
+        return None;
+    }
+    let state = widget_states.get(&table_id)?.as_scroll()?;
+    if let Some(hit) = table_of_contents_nested_scrollbar_hit(
+        child,
+        taffy,
+        nodes.content,
+        mouse,
+        viewport_abs,
+        state.offset_y,
+        widget_states,
+        path,
+    ) {
+        return Some(hit);
+    }
+    if state.content_height <= state.viewport_h {
+        return None;
+    }
+    table_of_contents_scrollbar(table_id, viewport_abs, viewport, state, mouse)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn table_of_contents_nested_scrollbar_hit<Msg>(
+    child: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    content_node: NodeId,
+    mouse: Point,
+    viewport_abs: Point,
+    offset_y: f32,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<ScrollbarDragHit> {
+    path.push(0);
+    let hit = find_scrollbar_drag_hit_impl(
+        child,
+        taffy,
+        content_node,
+        mouse,
+        Point::new(viewport_abs.x, viewport_abs.y - offset_y),
+        widget_states,
+        path,
+    );
+    path.pop();
+    hit
+}
+
+fn table_of_contents_scrollbar(
+    table_id: u64,
+    viewport_abs: Point,
+    viewport: &taffy::tree::Layout,
+    state: &crate::engine::widget_state::ScrollState,
+    mouse: Point,
+) -> Option<ScrollbarDragHit> {
+    let thumb_h = (viewport.size.height * state.thumb_ratio()).max(20.0);
+    scrollbar_drag_hit(
+        table_id,
+        viewport_abs,
+        (viewport.size.width, viewport.size.height),
+        ScrollbarMetrics {
+            current_offset: state.offset_y,
+            viewport_h: state.viewport_h.max(viewport.size.height),
+            content_h: state.content_height,
+            thumb_y: state.thumb_y(),
+            thumb_h,
+        },
+        mouse,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -2361,6 +2815,7 @@ mod tests {
         AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget,
     };
     use crate::widgets::carousel::CarouselState;
+    use crate::widgets::table_of_contents::HeadingLevel;
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {
@@ -2850,6 +3305,169 @@ mod tests {
             &crate::render::RichTextRenderer::default(),
         );
         (taffy, root)
+    }
+
+    #[test]
+    fn table_of_contents_link_hit_resolves_a_heading_scroll_target() {
+        let document: Widget<'_, Msg> = Widget::Column {
+            style: Style::default(),
+            children: vec![
+                Widget::heading(HeadingLevel::H1, "Overview", fixed_size_style(320.0, 36.0)),
+                Widget::Spacer {
+                    style: fixed_size_style(320.0, 96.0),
+                },
+                Widget::heading(
+                    HeadingLevel::H2,
+                    "Installation",
+                    fixed_size_style(320.0, 32.0),
+                ),
+            ],
+        };
+        let widget =
+            Widget::table_of_contents("Contents", document, fixed_size_style(320.0, 220.0))
+                .with_id(71);
+        let states = HashMap::from([(71, WidgetState::Scroll(ScrollState::default()))]);
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(320, 220));
+        let link = crate::widgets::table_of_contents::entry_rect(&taffy, root, 1).unwrap();
+
+        let hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(link.center_x(), link.center_y()),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+
+        assert!(matches!(
+            hit,
+            Some(HitResult::TableOfContentsActivate {
+                id: 71,
+                index: 1,
+                target_y,
+                ..
+            }) if target_y > 0.0
+        ));
+    }
+
+    #[test]
+    fn table_of_contents_finds_nested_scrollbar_when_its_document_fits() {
+        let nested: Widget<'_, Msg> = Widget::scroll_view(
+            Widget::Spacer {
+                style: fixed_size_style(300.0, 300.0),
+            },
+            fixed_size_style(300.0, 100.0),
+        )
+        .with_id(82);
+        let widget = Widget::table_of_contents("Contents", nested, fixed_size_style(300.0, 300.0))
+            .with_id(81);
+        let states = HashMap::from([
+            (
+                81,
+                WidgetState::Scroll(ScrollState {
+                    offset_y: 0.0,
+                    content_height: 100.0,
+                    viewport_h: 200.0,
+                }),
+            ),
+            (
+                82,
+                WidgetState::Scroll(ScrollState {
+                    offset_y: 0.0,
+                    content_height: 300.0,
+                    viewport_h: 100.0,
+                }),
+            ),
+        ]);
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(300, 300));
+        let nodes = crate::widgets::table_of_contents::layout_nodes(&taffy, root).unwrap();
+        let viewport = taffy.layout(nodes.viewport).unwrap();
+        let content = taffy.layout(nodes.content).unwrap();
+        let nested_node = taffy.children(nodes.content).unwrap()[0];
+        let nested_layout = taffy.layout(nested_node).unwrap();
+        let mouse = Point::new(
+            viewport.location.x
+                + content.location.x
+                + nested_layout.location.x
+                + nested_layout.size.width
+                - crate::layout::SCROLLBAR_W
+                - 1.0,
+            viewport.location.y + content.location.y + nested_layout.location.y + 5.0,
+        );
+
+        let hit =
+            find_scrollbar_drag_hit(&widget, &taffy, root, mouse, Point::new(0.0, 0.0), &states);
+
+        assert!(matches!(hit, Some(hit) if hit.id == 82));
+    }
+
+    #[test]
+    fn table_of_contents_navigation_scrolls_to_offscreen_links() {
+        let document: Widget<'_, Msg> = Widget::Column {
+            style: Style::default(),
+            children: (0..16)
+                .map(|index| -> Widget<'_, Msg> {
+                    Widget::heading(
+                        HeadingLevel::H2,
+                        format!("Section {index}"),
+                        fixed_size_style(320.0, 28.0),
+                    )
+                })
+                .collect(),
+        };
+        let widget =
+            Widget::table_of_contents("Contents", document, fixed_size_style(320.0, 220.0))
+                .with_id(83);
+        let layout_states = HashMap::from([(83, WidgetState::Scroll(ScrollState::default()))]);
+        let (taffy, root) = test_layout(&widget, &layout_states, PhysicalSize::new(320, 220));
+        let nodes = crate::widgets::table_of_contents::layout_nodes(&taffy, root).unwrap();
+        let navigation = taffy.layout(nodes.navigation).unwrap();
+        let content_height =
+            crate::widgets::table_of_contents::navigation_content_height(&taffy, root).unwrap();
+        let navigation_id = crate::widget::resolve_table_of_contents_navigation_id(83);
+        let entry = crate::widgets::table_of_contents::entry_rect(&taffy, root, 12).unwrap();
+        let max_offset = (content_height - navigation.size.height).max(0.0);
+        let offset_y = (entry.center_y() - navigation.location.y - navigation.size.height * 0.5)
+            .clamp(0.0, max_offset);
+        let states = HashMap::from([
+            (83, WidgetState::Scroll(ScrollState::default())),
+            (
+                navigation_id,
+                WidgetState::Scroll(ScrollState {
+                    offset_y,
+                    content_height,
+                    viewport_h: navigation.size.height,
+                }),
+            ),
+        ]);
+        let navigation_mouse = Point::new(
+            navigation.location.x + 8.0,
+            navigation.location.y + navigation.size.height * 0.5,
+        );
+        let link_mouse = Point::new(entry.center_x(), entry.center_y() - offset_y);
+
+        assert_eq!(
+            find_scroll_focus(
+                &widget,
+                &taffy,
+                root,
+                navigation_mouse,
+                Point::new(0.0, 0.0),
+                &states,
+            ),
+            Some(navigation_id)
+        );
+        assert!(matches!(
+            hit_test(
+                &widget,
+                &taffy,
+                root,
+                link_mouse,
+                Point::new(0.0, 0.0),
+                &states,
+            ),
+            Some(HitResult::TableOfContentsActivate { index: 12, .. })
+        ));
     }
 
     #[test]

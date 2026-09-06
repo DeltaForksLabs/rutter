@@ -65,6 +65,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Text and rich-content button variants, checkbox, switch, radio, slider, counter, select, progress bar, and spinner.
 - Text input, search bar, and multiline text area.
 - Scroll view, virtual list, virtual grid, and horizontally virtualized carousel for large item sets.
+- Semantic headings and an automatic table of contents for scrollable documents.
 - Calendar, date picker, dropdown menu, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
 
 ### Overlays
@@ -139,6 +140,7 @@ cargo run -- carousel
 cargo run -- multi_window
 cargo run -- rich_text
 cargo run -- advanced
+cargo run -- table_of_contents
 ```
 
 Every widget example starts in Dark mode and exposes an accessible SVG sun/moon toggle in the upper-right corner. Applications can preserve the static `theme()` API or implement `theme_for(state)` when the active palette depends on application state; opaque windows are cleared with the resolved `theme.surface` color.
@@ -378,6 +380,23 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `Spacer`
 - `Divider`
 - `ScrollView`
+- `Heading`
+- `TableOfContents`
+
+`Widget::heading(level, content, style)` adds a semantic document heading. Wrap a document in `Widget::table_of_contents(title, child, style)` to generate a navigation list from its visible headings. Selecting a navigation link, pressing Enter or Space on its keyboard focus target, or activating its accessibility link scrolls the document smoothly to the matching heading. Give the table of contents a bounded height so its document viewport can scroll; long navigation lists receive their own scrollbar.
+
+```rust
+use rutter::{HeadingLevel, Widget};
+use taffy::prelude::Style;
+
+let document: Widget<'_, ()> = Widget::Column {
+    children: vec![Widget::heading(HeadingLevel::H1, "Overview", Style::default())],
+    style: Style::default(),
+};
+let contents = Widget::table_of_contents("Contents", document, Style::default());
+```
+
+Migration note for `0.31.0`: `Widget` is an exhaustive public enum. Code that matches it directly must handle the new `Heading` and `TableOfContents` variants.
 
 ### Input Widgets
 

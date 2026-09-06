@@ -12,6 +12,7 @@ use crate::input_state::InputWidgetState;
 use crate::layout::RutterContext;
 use crate::widget::Widget;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, DropdownMenuState};
+use crate::widgets::table_of_contents::layout_nodes;
 
 mod search;
 
@@ -172,6 +173,9 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             Widget::ScrollView { child, .. } => {
                 self.visit_scroll(widget, child, node, absolute, size)
             }
+            Widget::TableOfContents { child, .. } => {
+                self.visit_table_of_contents(widget, child, node, absolute)
+            }
             Widget::Accordion {
                 expanded, child, ..
             } => self.visit_accordion(*expanded, child, node, absolute),
@@ -323,6 +327,49 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
         let viewport = SkiaRect::from_xywh(absolute.x, absolute.y, size.0, size.1);
         self.clip = intersect_optional(previous_clip, viewport);
         self.visit_first(child, node, Point::new(absolute.x, absolute.y - offset), 0);
+        self.clip = previous_clip;
+    }
+
+    fn visit_table_of_contents(
+        &mut self,
+        table: &Widget<'entry, Msg>,
+        document: &'widget Widget<'entry, Msg>,
+        node: NodeId,
+        table_absolute: Point,
+    ) {
+        let Some(nodes) = layout_nodes(self.taffy, node) else {
+            return;
+        };
+        let Ok(viewport) = self.taffy.layout(nodes.viewport) else {
+            return;
+        };
+        let table_id = table.resolved_id(&self.path).unwrap();
+        let offset_y = self
+            .widget_states
+            .get(&table_id)
+            .and_then(WidgetState::as_scroll)
+            .map(|state| state.offset_y)
+            .unwrap_or(0.0);
+        let viewport_absolute = Point::new(
+            table_absolute.x + viewport.location.x,
+            table_absolute.y + viewport.location.y,
+        );
+        let previous_clip = self.clip;
+        self.clip = intersect_optional(
+            previous_clip,
+            SkiaRect::from_xywh(
+                viewport_absolute.x,
+                viewport_absolute.y,
+                viewport.size.width,
+                viewport.size.height,
+            ),
+        );
+        self.visit_child(
+            document,
+            nodes.content,
+            Point::new(viewport_absolute.x, viewport_absolute.y - offset_y),
+            0,
+        );
         self.clip = previous_clip;
     }
 

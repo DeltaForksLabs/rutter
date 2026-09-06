@@ -347,6 +347,21 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
         }
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.native_surfaces_active || self.fatal_error.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        let deadline = self
+            .surface_runners
+            .values()
+            .filter_map(|runner| runner.next_smooth_scroll_deadline(now))
+            .min();
+        if let Some(deadline) = deadline {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, native: WindowId, event: WindowEvent) {
         let Some(surface) = self.routes.surface_for(native) else {
             return;

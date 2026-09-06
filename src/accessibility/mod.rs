@@ -7,7 +7,7 @@ use accesskit::{
     Action, ActivationHandler, DeactivationHandler, Node, NodeId, Orientation as AccessOrientation,
     Rect, Role, Toggled, Tree, TreeId, TreeUpdate,
 };
-use skia_safe::Point;
+use skia_safe::{Point, Rect as SkiaRect};
 use taffy::prelude::{NodeId as TaffyNodeId, TaffyTree};
 
 use crate::engine::widget_state::WidgetState;
@@ -18,7 +18,11 @@ use crate::render::select_overlay::collector::{
     collect_dropdown_triggers, collect_open_dropdown_overlays,
 };
 use crate::widget::id::resolve_accessibility_path_id;
-use crate::widget::{DialogAction, VirtualSelection, Widget};
+use crate::widget::{
+    DialogAction, VirtualSelection, Widget, resolve_table_of_contents_navigation_id,
+    resolve_table_of_contents_viewport_id,
+};
+use crate::widgets::table_of_contents::{collect_entries, entry_rect, layout_nodes};
 use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
 
 mod action_queue;
@@ -191,6 +195,9 @@ impl<'a> AccessibilityBuilder<'a> {
             Widget::ScrollView { child, .. } => {
                 self.collect_scroll_view(widget, child, node, frame, path)
             }
+            Widget::TableOfContents { child, .. } => {
+                self.collect_table_of_contents(widget, child, node, frame, path)
+            }
             Widget::Popover {
                 anchor,
                 content,
@@ -263,6 +270,123 @@ impl<'a> AccessibilityBuilder<'a> {
             children,
         );
         vec![access_node_id(widget.resolved_id(path).unwrap())]
+    }
+
+    fn collect_table_of_contents<Msg>(
+        &mut self,
+        table: &Widget<Msg>,
+        document: &Widget<Msg>,
+        node: Option<TaffyNodeId>,
+        frame: LayoutFrame,
+        path: &mut Vec<usize>,
+    ) -> Vec<NodeId> {
+        let Some(table_node) = node else {
+            return self.collect_single_child(document, None, frame.origin, path);
+        };
+        let Some(nodes) = layout_nodes(self.taffy, table_node) else {
+            return self.collect_single_child(document, None, frame.origin, path);
+        };
+        let table_id = table.resolved_id(path).unwrap();
+        let navigation =
+            self.table_of_contents_navigation(table, document, table_node, frame.origin, path);
+        let viewport = LayoutFrame::from_taffy(self.taffy, Some(nodes.viewport), frame.origin);
+        let offset_y = self
+            .inputs
+            .widget_states
+            .get(&table_id)
+            .and_then(WidgetState::as_scroll)
+            .map(|state| state.offset_y)
+            .unwrap_or(0.0);
+        let document_origin = Point::new(viewport.origin.x, viewport.origin.y - offset_y);
+        path.push(0);
+        let document_children = self.collect(document, Some(nodes.content), document_origin, path);
+        path.pop();
+        self.push_viewport_node(table_id, viewport.rect, document_children);
+        self.push_table_of_contents_node(table_id, frame.rect, navigation);
+        vec![access_node_id(table_id)]
+    }
+
+    fn table_of_contents_navigation<Msg>(
+        &mut self,
+        table: &Widget<Msg>,
+        document: &Widget<Msg>,
+        table_node: TaffyNodeId,
+        table_origin: Point,
+        path: &[usize],
+    ) -> NodeId {
+        let table_id = table.resolved_id(path).unwrap();
+        let entries = collect_entries(document);
+        let children =
+            self.table_of_contents_link_nodes(table, table_node, table_origin, path, &entries);
+        let navigation = layout_nodes(self.taffy, table_node)
+            .map(|nodes| LayoutFrame::from_taffy(self.taffy, Some(nodes.navigation), table_origin))
+            .unwrap_or_else(|| LayoutFrame::empty(table_origin));
+        let mut node = Node::new(Role::Navigation);
+        node.set_bounds(navigation.rect);
+        if let Widget::TableOfContents { title, .. } = table {
+            node.set_label(*title);
+        }
+        node.set_children(children);
+        let id = access_node_id(resolve_table_of_contents_navigation_id(table_id));
+        self.nodes.push((id, node));
+        id
+    }
+
+    fn table_of_contents_link_nodes<Msg>(
+        &mut self,
+        table: &Widget<Msg>,
+        table_node: TaffyNodeId,
+        table_origin: Point,
+        path: &[usize],
+        entries: &[crate::widgets::table_of_contents::TableOfContentsEntry],
+    ) -> Vec<NodeId> {
+        let table_id = table.resolved_id(path).unwrap();
+        let navigation_offset_y = self
+            .inputs
+            .widget_states
+            .get(&resolve_table_of_contents_navigation_id(table_id))
+            .and_then(WidgetState::as_scroll)
+            .map(|state| state.offset_y)
+            .unwrap_or(0.0);
+        entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let id = table.table_of_contents_entry_focus_id(path, index)?;
+                let rect = entry_rect(self.taffy, table_node, index)?;
+                let mut node = Node::new(Role::Link);
+                node.set_bounds(access_rect(SkiaRect::from_xywh(
+                    table_origin.x + rect.left,
+                    table_origin.y + rect.top - navigation_offset_y,
+                    rect.width(),
+                    rect.height(),
+                )));
+                node.set_label(entry.title.clone());
+                node.add_action(Action::Focus);
+                node.add_action(Action::Click);
+                let node_id = access_node_id(id);
+                self.nodes.push((node_id, node));
+                Some(node_id)
+            })
+            .collect()
+    }
+
+    fn push_viewport_node(&mut self, table_id: u64, rect: Rect, children: Vec<NodeId>) {
+        let mut node = Node::new(Role::Group);
+        node.set_bounds(rect);
+        node.set_children(children);
+        let id = access_node_id(resolve_table_of_contents_viewport_id(table_id));
+        self.nodes.push((id, node));
+    }
+
+    fn push_table_of_contents_node(&mut self, table_id: u64, rect: Rect, children: NodeId) {
+        let mut node = Node::new(Role::ScrollView);
+        node.set_bounds(rect);
+        node.set_children(vec![
+            children,
+            access_node_id(resolve_table_of_contents_viewport_id(table_id)),
+        ]);
+        self.nodes.push((access_node_id(table_id), node));
     }
 
     fn collect_popover<Msg>(
@@ -524,6 +648,7 @@ fn collect_indexed_child<Msg>(
 fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
     Some(match widget {
         Widget::Text { .. } | Widget::RichText { .. } => Role::TextRun,
+        Widget::Heading { .. } => Role::Heading,
         Widget::Image { .. } => Role::Image,
         Widget::Button { .. } | Widget::ButtonContent { .. } => Role::Button,
         Widget::TextInput { is_password, .. } if *is_password => Role::PasswordInput,
@@ -568,10 +693,18 @@ fn apply_leaf_props<Msg>(
     path: &[usize],
 ) {
     apply_actions(node, widget);
+    apply_heading_props(node, widget);
     apply_toggle_props(node, widget);
     apply_numeric_props(node, widget);
     apply_input_props(node, widget, inputs.input_states, path);
     apply_collection_props(node, widget);
+}
+
+fn apply_heading_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
+    let Widget::Heading { level, .. } = widget else {
+        return;
+    };
+    node.set_level(level.access_level() as usize);
 }
 
 fn apply_actions<Msg>(node: &mut Node, widget: &Widget<Msg>) {
@@ -743,6 +876,7 @@ fn set_widget_label<Msg>(
 ) {
     match widget {
         Widget::Text { content, .. } => node.set_label(content.clone()),
+        Widget::Heading { content, .. } => node.set_label(content.clone()),
         Widget::RichText { content, .. } => node.set_label(content.plain_text()),
         Widget::Button { text, .. } => node.set_label(*text),
         Widget::ButtonContent { label, .. } => node.set_label(*label),
@@ -881,6 +1015,7 @@ mod tests {
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::ButtonVariant;
     use crate::widgets::calendar::{CalendarDate, CalendarMonth};
+    use crate::widgets::table_of_contents::HeadingLevel;
     use winit::dpi::PhysicalSize;
 
     fn fs() -> Rc<RefCell<FontSystem>> {
@@ -1050,6 +1185,36 @@ mod tests {
         let text = node_for(&update, Role::TextRun);
 
         assert_eq!(text.label(), Some("2026"));
+    }
+
+    #[test]
+    fn accessibility_update_exposes_heading_levels_and_navigation_links() {
+        let document = Widget::Column {
+            style: Style::default(),
+            children: vec![
+                Widget::heading(HeadingLevel::H1, "Overview", base_style(260.0, 32.0)),
+                Widget::heading(HeadingLevel::H2, "Install", base_style(260.0, 28.0)),
+            ],
+        };
+        let widget =
+            Widget::table_of_contents("Contents", document, base_style(280.0, 180.0)).with_id(31);
+
+        let update = build_update(&widget);
+        let heading = node_for(&update, Role::Heading);
+        let navigation = node_for(&update, Role::Navigation);
+        let links = update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| (node.role() == Role::Link).then_some(node))
+            .collect::<Vec<_>>();
+
+        assert_eq!(heading.label(), Some("Overview"));
+        assert_eq!(heading.level(), Some(1));
+        assert_eq!(navigation.label(), Some("Contents"));
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[1].label(), Some("Install"));
+        assert!(links[0].supports_action(Action::Focus));
+        assert!(links[0].supports_action(Action::Click));
     }
 
     #[test]

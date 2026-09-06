@@ -9,4 +9,5 @@ pub(crate) mod counter;
 pub mod dropdown_menu;
 pub mod rich_text;
 pub mod search;
+pub mod table_of_contents;
 pub mod time;

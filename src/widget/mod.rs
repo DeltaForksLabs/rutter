@@ -17,6 +17,7 @@ use crate::widgets::carousel::CarouselConfig;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
 use crate::widgets::search::SearchSuggestions;
+use crate::widgets::table_of_contents::HeadingLevel;
 use crate::widgets::time::{ClockConfig, TimeZone};
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
@@ -346,6 +347,10 @@ pub(crate) enum WidgetIdTag {
     Clock = 31,
     SearchPopup = 32,
     SearchSuggestion = 33,
+    TableOfContents = 34,
+    TableOfContentsEntry = 35,
+    TableOfContentsNavigation = 36,
+    TableOfContentsViewport = 37,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,6 +392,14 @@ pub(crate) fn resolve_search_suggestion_id(search_id: u64, item_index: usize) ->
     resolve_subwidget_id(search_id, WidgetIdTag::SearchSuggestion, item_index)
 }
 
+pub(crate) fn resolve_table_of_contents_navigation_id(table_id: u64) -> u64 {
+    resolve_subwidget_id(table_id, WidgetIdTag::TableOfContentsNavigation, 0)
+}
+
+pub(crate) fn resolve_table_of_contents_viewport_id(table_id: u64) -> u64 {
+    resolve_subwidget_id(table_id, WidgetIdTag::TableOfContentsViewport, 0)
+}
+
 fn hash_widget_id_segment(hash: u64, segment: u64) -> u64 {
     let mixed: u64 = hash ^ segment;
     mixed.wrapping_mul(WIDGET_ID_HASH_PRIME)
@@ -421,6 +434,12 @@ pub enum Widget<'a, Msg> {
         style: Style,
         color: Option<SkiaColor>,
         size: f32,
+    },
+    Heading {
+        content: String,
+        level: HeadingLevel,
+        style: Style,
+        color: Option<SkiaColor>,
     },
     RichText {
         content: RichText<'a>,
@@ -544,6 +563,13 @@ pub enum Widget<'a, Msg> {
     },
     ScrollView {
         id: u64,
+        child: Box<Widget<'a, Msg>>,
+        style: Style,
+    },
+    /// A document viewport with an automatically generated navigation list.
+    TableOfContents {
+        id: u64,
+        title: &'a str,
         child: Box<Widget<'a, Msg>>,
         style: Style,
     },
@@ -1018,6 +1044,49 @@ impl<'a, Msg> Widget<'a, Msg> {
     pub fn scroll_view(child: Widget<'a, Msg>, style: Style) -> Self {
         Self::ScrollView {
             id: AUTO_ID,
+            child: Box::new(child),
+            style,
+        }
+    }
+
+    /// Creates a semantic heading that an enclosing table of contents discovers.
+    ///
+    /// ```rust
+    /// use rutter::{HeadingLevel, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// let heading: Widget<'_, ()> = Widget::heading(HeadingLevel::H2, "Install", Style::default());
+    /// ```
+    pub fn heading(level: HeadingLevel, content: impl Into<String>, style: Style) -> Self {
+        Self::Heading {
+            content: content.into(),
+            level,
+            style,
+            color: None,
+        }
+    }
+
+    /// Creates a scrollable document with clickable links for every semantic heading.
+    ///
+    /// The supplied `style` must constrain the document height for its body to scroll.
+    ///
+    /// ```rust
+    /// use rutter::{HeadingLevel, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// let document: Widget<'_, ()> = Widget::table_of_contents(
+    ///     "Contents",
+    ///     Widget::Column {
+    ///         children: vec![Widget::heading(HeadingLevel::H1, "Overview", Style::default())],
+    ///         style: Style::default(),
+    ///     },
+    ///     Style::default(),
+    /// );
+    /// ```
+    pub fn table_of_contents(title: &'a str, child: Widget<'a, Msg>, style: Style) -> Self {
+        Self::TableOfContents {
+            id: AUTO_ID,
+            title,
             child: Box::new(child),
             style,
         }
@@ -1534,6 +1603,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::ProgressBar { id: slot, .. }
             | Self::Spinner { id: slot, .. }
             | Self::ScrollView { id: slot, .. }
+            | Self::TableOfContents { id: slot, .. }
             | Self::Accordion { id: slot, .. }
             | Self::TabBar { id: slot, .. }
             | Self::Modal { id: slot, .. }
@@ -1615,6 +1685,9 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::ProgressBar { id, .. } => (Some(*id), WidgetIdTag::ProgressBar, "ProgressBar"),
             Self::Spinner { id, .. } => (Some(*id), WidgetIdTag::Spinner, "Spinner"),
             Self::ScrollView { id, .. } => (Some(*id), WidgetIdTag::ScrollView, "ScrollView"),
+            Self::TableOfContents { id, .. } => {
+                (Some(*id), WidgetIdTag::TableOfContents, "TableOfContents")
+            }
             Self::Accordion { id, .. } => (Some(*id), WidgetIdTag::Accordion, "Accordion"),
             Self::TabBar { id, .. } => (Some(*id), WidgetIdTag::TabBar, "TabBar"),
             Self::Modal { id, .. } => (Some(*id), WidgetIdTag::Modal, "Modal"),
@@ -1680,6 +1753,21 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::TabBar { .. } => Some(resolve_subwidget_id(
                 self.resolved_id(path)?,
                 WidgetIdTag::Tab,
+                index,
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn table_of_contents_entry_focus_id(
+        &self,
+        path: &[usize],
+        index: usize,
+    ) -> Option<u64> {
+        match self {
+            Self::TableOfContents { .. } => Some(resolve_subwidget_id(
+                self.resolved_id(path)?,
+                WidgetIdTag::TableOfContentsEntry,
                 index,
             )),
             _ => None,

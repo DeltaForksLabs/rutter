@@ -26,6 +26,7 @@
 //   cargo run -- search_bar
 //   cargo run -- slider
 //   cargo run -- tabs
+//   cargo run -- table_of_contents
 //   cargo run -- text_area
 //   cargo run -- text_input
 //   cargo run -- time
@@ -62,6 +63,7 @@ fn main() {
         "search_bar" => widget_examples::search_bar_demo::run(),
         "slider" => widget_examples::slider_demo::run(),
         "tabs" => widget_examples::tab_demo::run(),
+        "table_of_contents" => widget_examples::table_of_contents_demo::run(),
         "text_area" => widget_examples::text_area_demo::run(),
         "text_input" => widget_examples::text_input_demo::run(),
         "time" => widget_examples::time_demo::run(),

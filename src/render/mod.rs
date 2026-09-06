@@ -20,6 +20,7 @@ pub(crate) mod rich_text;
 pub(crate) mod search_overlay;
 pub(crate) mod select_overlay;
 mod svg;
+mod table_of_contents;
 pub mod text;
 mod text_cache;
 
@@ -46,6 +47,7 @@ pub use self::image_cache::ImageRenderCache;
 use self::overlay_hover::{OverlayHoverInput, overlay_hover_routes};
 use self::rich_text::RichTextDirection;
 pub use self::rich_text::RichTextRenderer;
+use self::table_of_contents::{TableOfContentsNavigationInput, draw_navigation};
 use self::text::{
     TextBufferCache, TextDrawInput, TextShapeRequest, draw_single_line_text, draw_text_line,
     get_cached_font, measure_single_line_text,
@@ -70,11 +72,12 @@ use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     ContextMenuEntry, DialogAction, DialogPosition, InputState, Orientation, ToastKind,
-    ToastPosition, VirtualSelection, Widget,
+    ToastPosition, VirtualSelection, Widget, resolve_table_of_contents_navigation_id,
 };
 use crate::widgets::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
 use crate::widgets::rich_text::OwnedRichTextSpec;
 use crate::widgets::search::SEARCH_BAR_LEADING_TEXT_INSET;
+use crate::widgets::table_of_contents::layout_nodes;
 use winit::dpi::PhysicalSize;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -620,6 +623,47 @@ fn draw_popover_overlays<'w, Msg>(
                 path.pop();
             }
         }
+        Widget::TableOfContents { child, .. } => {
+            let Some(nodes) = layout_nodes(taffy, node) else {
+                return;
+            };
+            let Ok(viewport) = taffy.layout(nodes.viewport) else {
+                return;
+            };
+            let table_id = widget.resolved_id(path).unwrap();
+            let offset_y = widget_states
+                .get(&table_id)
+                .and_then(WidgetState::as_scroll)
+                .map(|state| state.offset_y)
+                .unwrap_or(0.0);
+            path.push(0);
+            draw_popover_overlays(
+                canvas,
+                taffy,
+                nodes.content,
+                child,
+                fs,
+                swash,
+                mouse_pos,
+                focused_id,
+                shows_interaction_effects,
+                input_states,
+                widget_states,
+                font_cache,
+                text_cache,
+                image_cache,
+                layout_fs.clone(),
+                cursor_visible,
+                theme,
+                scale,
+                path,
+                Point::new(
+                    abs_pos.x + viewport.location.x,
+                    abs_pos.y + viewport.location.y - offset_y,
+                ),
+            );
+            path.pop();
+        }
         Widget::Accordion {
             expanded, child, ..
         } => {
@@ -776,7 +820,8 @@ fn collect_visible_toasts<'w, Msg>(
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
-        | Widget::ScrollView { child, .. } => {
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. } => {
             path.push(0);
             collect_visible_toasts(child, widget_states, path, out);
             path.pop();
@@ -850,7 +895,8 @@ pub(super) fn collect_open_context_menus<'w, Msg>(
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
-        | Widget::ScrollView { child, .. } => {
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. } => {
             path.push(0);
             collect_open_context_menus(child, widget_states, path, out);
             path.pop();
@@ -1035,6 +1081,55 @@ fn draw_widgets_impl<'w, Msg>(
             if content_h > size.1 {
                 draw_scrollbar(canvas, size, scroll_state, theme);
             }
+        }
+        Widget::TableOfContents { child, .. } => {
+            let table_id = resolved_id.unwrap();
+            let navigation_state = widget_states
+                .get(&resolve_table_of_contents_navigation_id(table_id))
+                .and_then(WidgetState::as_scroll);
+            draw_navigation(TableOfContentsNavigationInput {
+                canvas,
+                taffy,
+                table_node: node,
+                table: widget,
+                content: child,
+                mouse: local_mouse,
+                focused_id,
+                shows_interaction_effects,
+                navigation_offset_y: navigation_state.map(|state| state.offset_y).unwrap_or(0.0),
+                font_cache,
+                theme,
+                path,
+            });
+            draw_table_of_contents_navigation_scrollbar(
+                canvas,
+                taffy,
+                node,
+                navigation_state,
+                theme,
+            );
+            draw_table_of_contents_content(
+                canvas,
+                taffy,
+                node,
+                child,
+                fs,
+                swash,
+                local_mouse,
+                focused_id,
+                shows_interaction_effects,
+                input_states,
+                widget_states,
+                font_cache,
+                text_cache,
+                image_cache,
+                layout_fs.clone(),
+                cursor_visible,
+                theme,
+                scale,
+                path,
+                table_id,
+            );
         }
         Widget::Tooltip { child, text, .. } => {
             let ids = taffy.children(node).unwrap();
@@ -1373,6 +1468,24 @@ fn draw_widgets_impl<'w, Msg>(
                 size,
                 color: c,
                 font_size: *font_size,
+                font_cache,
+                center: false,
+                control_policy: TextControlPolicy::PreserveLineBreaks,
+            });
+        }
+        Widget::Heading {
+            content,
+            color,
+            level,
+            ..
+        } => {
+            let color = color.unwrap_or(theme.on_surface);
+            draw_text_line(TextDrawInput {
+                canvas,
+                text: content,
+                size,
+                color,
+                font_size: level.font_size(),
                 font_cache,
                 center: false,
                 control_policy: TextControlPolicy::PreserveLineBreaks,
@@ -1933,6 +2046,162 @@ fn draw_widgets_impl<'w, Msg>(
         }
     }
 
+    canvas.restore();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_table_of_contents_content<'w, Msg>(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    table_node: NodeId,
+    child: &Widget<'w, Msg>,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    mouse: Point,
+    focused_id: Option<u64>,
+    shows_interaction_effects: bool,
+    input_states: &HashMap<u64, InputWidgetState>,
+    widget_states: &HashMap<u64, WidgetState>,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
+    image_cache: &mut ImageRenderCache,
+    layout_fs: Rc<RefCell<FontSystem>>,
+    cursor_visible: bool,
+    theme: &Theme,
+    scale: f32,
+    path: &mut Vec<usize>,
+    table_id: u64,
+) {
+    let Some(nodes) = layout_nodes(taffy, table_node) else {
+        return;
+    };
+    let Ok(viewport) = taffy.layout(nodes.viewport) else {
+        return;
+    };
+    let scroll_state = widget_states
+        .get(&table_id)
+        .and_then(WidgetState::as_scroll);
+    let offset_y = scroll_state.map(|state| state.offset_y).unwrap_or(0.0);
+    draw_table_of_contents_document(
+        canvas,
+        taffy,
+        nodes.content,
+        child,
+        fs,
+        swash,
+        Point::new(
+            mouse.x - viewport.location.x,
+            mouse.y - viewport.location.y + offset_y,
+        ),
+        focused_id,
+        shows_interaction_effects,
+        input_states,
+        widget_states,
+        font_cache,
+        text_cache,
+        image_cache,
+        layout_fs,
+        cursor_visible,
+        theme,
+        scale,
+        path,
+        viewport,
+        offset_y,
+    );
+    draw_table_of_contents_scrollbar(canvas, viewport, scroll_state, theme);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_table_of_contents_document<'w, Msg>(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    content_node: NodeId,
+    child: &Widget<'w, Msg>,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    mouse: Point,
+    focused_id: Option<u64>,
+    shows_interaction_effects: bool,
+    input_states: &HashMap<u64, InputWidgetState>,
+    widget_states: &HashMap<u64, WidgetState>,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
+    image_cache: &mut ImageRenderCache,
+    layout_fs: Rc<RefCell<FontSystem>>,
+    cursor_visible: bool,
+    theme: &Theme,
+    scale: f32,
+    path: &mut Vec<usize>,
+    viewport: &taffy::tree::Layout,
+    offset_y: f32,
+) {
+    canvas.save();
+    canvas.translate((viewport.location.x, viewport.location.y));
+    canvas.clip_rect(
+        SkiaRect::from_xywh(0.0, 0.0, viewport.size.width, viewport.size.height),
+        None,
+        true,
+    );
+    canvas.translate((0.0, -offset_y));
+    path.push(0);
+    draw_widgets_impl(
+        canvas,
+        taffy,
+        content_node,
+        child,
+        fs,
+        swash,
+        mouse,
+        focused_id,
+        shows_interaction_effects,
+        input_states,
+        widget_states,
+        font_cache,
+        text_cache,
+        image_cache,
+        layout_fs,
+        cursor_visible,
+        theme,
+        scale,
+        path,
+    );
+    path.pop();
+    canvas.restore();
+}
+
+fn draw_table_of_contents_navigation_scrollbar(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    table_node: NodeId,
+    state: Option<&crate::engine::widget_state::ScrollState>,
+    theme: &Theme,
+) {
+    let Some(nodes) = layout_nodes(taffy, table_node) else {
+        return;
+    };
+    let Ok(navigation) = taffy.layout(nodes.navigation) else {
+        return;
+    };
+    draw_table_of_contents_scrollbar(canvas, navigation, state, theme);
+}
+
+fn draw_table_of_contents_scrollbar(
+    canvas: &Canvas,
+    viewport: &taffy::tree::Layout,
+    state: Option<&crate::engine::widget_state::ScrollState>,
+    theme: &Theme,
+) {
+    if !state.is_some_and(|state| state.content_height > state.viewport_h) {
+        return;
+    }
+    canvas.save();
+    canvas.translate((viewport.location.x, viewport.location.y));
+    draw_scrollbar(
+        canvas,
+        (viewport.size.width, viewport.size.height),
+        state,
+        theme,
+    );
     canvas.restore();
 }
 

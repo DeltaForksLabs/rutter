@@ -22,6 +22,11 @@ use crate::text_controls::{TextControlPolicy, normalize_text_controls};
 use crate::widget::Widget;
 use crate::widgets::counter::{COUNTER_DEFAULT_HEIGHT, counter_preferred_width};
 use crate::widgets::rich_text::OwnedRichTextSpec;
+use crate::widgets::table_of_contents::{
+    TABLE_OF_CONTENTS_LINK_SIZE, TABLE_OF_CONTENTS_TITLE_SIZE, collect_entries, entry_style,
+    navigation_style, navigation_title_style, root_style as table_of_contents_root_style,
+    viewport_style,
+};
 use crate::widgets::time::clock_layout_text;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -181,6 +186,26 @@ impl LayoutBlueprint {
                 let child = Self::from_widget_with_path(child, path);
                 path.pop();
                 Self::with_children(Some(resolved_id), style.clone(), vec![child])
+            }
+            Widget::TableOfContents {
+                child,
+                style,
+                title,
+                ..
+            } => {
+                let resolved_id = widget.resolved_id(path).unwrap();
+                let navigation = table_of_contents_navigation(title, child);
+                path.push(0);
+                let mut content = Self::from_widget_with_path(child, path);
+                path.pop();
+                // Keep the document at its intrinsic height so the viewport can scroll it.
+                content.style.flex_shrink = 0.0;
+                let viewport = Self::with_children(None, viewport_style(), vec![content]);
+                Self::with_children(
+                    Some(resolved_id),
+                    table_of_contents_root_style(style),
+                    vec![navigation, viewport],
+                )
             }
             Widget::Tooltip { child, style, .. } => {
                 path.push(0);
@@ -342,6 +367,19 @@ impl LayoutBlueprint {
                     font_size: *size,
                 }),
             ),
+            Widget::Heading {
+                content,
+                level,
+                style,
+                ..
+            } => Self::leaf_with_context(
+                None,
+                style.clone(),
+                RutterContext::Text(TextContext {
+                    content: content.clone(),
+                    font_size: level.font_size(),
+                }),
+            ),
             Widget::RichText { content, style } => Self::leaf_with_context(
                 None,
                 style.clone(),
@@ -384,6 +422,40 @@ impl LayoutBlueprint {
             ),
         }
     }
+}
+
+fn table_of_contents_navigation<Msg>(title: &str, document: &Widget<'_, Msg>) -> LayoutBlueprint {
+    let mut children = vec![table_of_contents_text(title, TABLE_OF_CONTENTS_TITLE_SIZE)];
+    children.extend(
+        collect_entries(document)
+            .into_iter()
+            .map(table_of_contents_entry),
+    );
+    LayoutBlueprint::with_children(None, navigation_style(), children)
+}
+
+fn table_of_contents_text(content: &str, font_size: f32) -> LayoutBlueprint {
+    LayoutBlueprint::leaf_with_context(
+        None,
+        navigation_title_style(),
+        RutterContext::Text(TextContext {
+            content: content.to_owned(),
+            font_size,
+        }),
+    )
+}
+
+fn table_of_contents_entry(
+    entry: crate::widgets::table_of_contents::TableOfContentsEntry,
+) -> LayoutBlueprint {
+    LayoutBlueprint::leaf_with_context(
+        None,
+        entry_style(entry.level),
+        RutterContext::Text(TextContext {
+            content: entry.title,
+            font_size: TABLE_OF_CONTENTS_LINK_SIZE,
+        }),
+    )
 }
 
 pub fn build_taffy_tree<'a, Msg>(

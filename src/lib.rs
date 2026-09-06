@@ -52,6 +52,7 @@ pub use search::{
     SearchConfigError, SearchLabels, SearchMatch, SearchMatcher, SearchScoreFn, SearchSuggestions,
     filter_ranked,
 };
+pub use table_of_contents::HeadingLevel;
 pub use theme::Theme;
 pub use time::{
     ClockConfig, ClockError, ClockFormat, ClockTime, HourCycle, LocalTimeResolution, TimeOfDay,
@@ -63,7 +64,7 @@ pub use widget::{
     VirtualSelection, Widget, WidgetConfigError, validate_counter, validate_slider,
     validate_virtual_grid, validate_virtual_list,
 };
-pub use widgets::{calendar, carousel, dropdown_menu, rich_text, search, time};
+pub use widgets::{calendar, carousel, dropdown_menu, rich_text, search, table_of_contents, time};
 
 // ── Re-exports de dependências públicas ──────────────────────
 pub use arboard;

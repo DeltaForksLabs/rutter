@@ -158,6 +158,7 @@ pub(super) fn has_visible_blocking_overlay<Msg>(widget: &Widget<'_, Msg>) -> boo
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
         | Widget::ButtonContent { child, .. } => has_visible_blocking_overlay(child),
         Widget::Accordion {
             expanded, child, ..

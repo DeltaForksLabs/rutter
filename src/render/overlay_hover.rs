@@ -20,6 +20,7 @@ use crate::i18n::LayoutDirection;
 use crate::input_state::InputWidgetState;
 use crate::layout::RutterContext;
 use crate::widget::Widget;
+use crate::widgets::table_of_contents::layout_nodes;
 
 // A finite off-canvas point keeps downstream geometry calculations valid.
 const HIDDEN_HOVER_COORDINATE: f32 = -1.0e20;
@@ -227,6 +228,9 @@ impl<'tree> PopoverHoverVisitor<'tree> {
             | Widget::Tooltip { child, .. }
             | Widget::ContextMenu { child, .. }
             | Widget::ScrollView { child, .. } => self.captures_pointer_in_first_child(child, node),
+            Widget::TableOfContents { child, .. } => {
+                self.captures_pointer_in_table_of_contents(child, node)
+            }
             Widget::Accordion {
                 expanded, child, ..
             } => *expanded && self.captures_pointer_in_first_child(child, node),
@@ -341,6 +345,17 @@ impl<'tree> PopoverHoverVisitor<'tree> {
             return false;
         };
         self.captures_pointer_in_child(child, child_node, 0)
+    }
+
+    fn captures_pointer_in_table_of_contents<Msg>(
+        &mut self,
+        child: &Widget<Msg>,
+        node: NodeId,
+    ) -> bool {
+        let Some(nodes) = layout_nodes(self.taffy, node) else {
+            return false;
+        };
+        self.captures_pointer_in_child(child, nodes.content, 0)
     }
 
     fn captures_pointer_in_child<Msg>(

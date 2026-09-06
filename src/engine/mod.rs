@@ -17,6 +17,7 @@ pub mod widget_state;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Instant;
 
 use arboard::Clipboard;
 use cosmic_text::{FontSystem, SwashCache};
@@ -56,16 +57,57 @@ use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::theme::Theme;
 use crate::widget::id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
-use crate::widget::{DialogAction, VirtualSelection, Widget, resolve_search_suggestion_id};
+use crate::widget::{
+    DialogAction, VirtualSelection, Widget, resolve_search_suggestion_id,
+    resolve_table_of_contents_navigation_id,
+};
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
 use crate::widgets::search::{
     SEARCH_BAR_LEADING_TEXT_INSET, SearchMatch, SearchMatcher, SearchSuggestions, filter_ranked,
+};
+use crate::widgets::table_of_contents::{
+    TableOfContentsLayoutNodes, collect_entries, entry_offset_y, entry_rect, layout_nodes,
+    navigation_content_height,
 };
 
 #[derive(Debug, Clone, Copy)]
 enum ToastRuntimeUpdate {
     EnsureVisible { id: u64, duration_ms: u32 },
     Dismiss { id: u64 },
+}
+
+const SMOOTH_SCROLL_DURATION: std::time::Duration = std::time::Duration::from_millis(250);
+
+#[derive(Debug, Clone, Copy)]
+struct SmoothScrollAnimation {
+    start_offset: f32,
+    target_offset: f32,
+    started_at: Instant,
+}
+
+fn finite_scroll_offset(offset: f32) -> f32 {
+    if offset.is_finite() {
+        return offset;
+    }
+    0.0
+}
+
+fn smooth_scroll_progress(now: Instant, started_at: Instant) -> f32 {
+    let elapsed = now
+        .checked_duration_since(started_at)
+        .unwrap_or_default()
+        .as_secs_f32();
+    (elapsed / SMOOTH_SCROLL_DURATION.as_secs_f32()).clamp(0.0, 1.0)
+}
+
+fn interpolate_scroll_offset(
+    start_offset: f32,
+    target_offset: f32,
+    progress: f32,
+    max_offset: f32,
+) -> f32 {
+    let eased = progress * progress * (3.0 - 2.0 * progress);
+    (start_offset + (target_offset - start_offset) * eased).clamp(0.0, max_offset)
 }
 
 fn collect_toast_runtime_updates<Msg>(widget: &Widget<Msg>, out: &mut Vec<ToastRuntimeUpdate>) {
@@ -89,7 +131,8 @@ fn contains_live_clock_child<Msg>(widget: &Widget<Msg>) -> bool {
         | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
-        | Widget::ScrollView { child, .. } => contains_live_clock(child),
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. } => contains_live_clock(child),
         Widget::Accordion {
             expanded, child, ..
         } => *expanded && contains_live_clock(child),
@@ -149,6 +192,7 @@ fn collect_toast_runtime_updates_impl<Msg>(
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
@@ -204,7 +248,8 @@ fn collect_overlay_focus_scope<Msg>(
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
-        | Widget::ScrollView { child, .. } => {
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. } => {
             path.push(0);
             let found = collect_overlay_focus_scope(child, out, path);
             path.pop();
@@ -324,6 +369,16 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
                 collect_focus_order_impl(child, out, path);
                 path.pop();
             }
+        }
+        Widget::TableOfContents { child, .. } => {
+            for index in 0..collect_entries(child).len() {
+                if let Some(focus_id) = widget.table_of_contents_entry_focus_id(path, index) {
+                    out.push(focus_id);
+                }
+            }
+            path.push(0);
+            collect_focus_order_impl(child, out, path);
+            path.pop();
         }
         Widget::Container { child, .. }
         | Widget::Tooltip { child, .. }
@@ -471,6 +526,14 @@ struct TabFocusRuntime {
     index: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TableOfContentsEntryRuntime {
+    parent_id: u64,
+    target_y: f32,
+    navigation_y: f32,
+    navigation_height: f32,
+}
+
 #[derive(Debug, Clone)]
 struct VListRuntime<Msg> {
     on_select: fn(usize) -> Msg,
@@ -522,6 +585,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     visible_search_suggestion_ids: HashSet<u64>,
     tabs: HashMap<u64, TabRuntime<Msg>>,
     tab_items: HashMap<u64, TabFocusRuntime>,
+    table_of_contents_entries: HashMap<u64, TableOfContentsEntryRuntime>,
     carousels: HashMap<u64, CarouselRuntime<Msg>>,
     vlists: HashMap<u64, VListRuntime<Msg>>,
     vgrids: HashMap<u64, VGridRuntime<Msg>>,
@@ -564,6 +628,7 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             visible_search_suggestion_ids: HashSet::new(),
             tabs: HashMap::new(),
             tab_items: HashMap::new(),
+            table_of_contents_entries: HashMap::new(),
             carousels: HashMap::new(),
             vlists: HashMap::new(),
             vgrids: HashMap::new(),
@@ -595,6 +660,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.visible_search_suggestion_ids.clear();
         self.tabs.clear();
         self.tab_items.clear();
+        self.table_of_contents_entries.clear();
         self.carousels.clear();
         self.vlists.clear();
         self.vgrids.clear();
@@ -602,6 +668,48 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.toast_dismiss.clear();
         self.popover_dismiss.clear();
     }
+}
+
+fn table_of_contents_navigation_reveal_offset(
+    state: &ScrollState,
+    entry_y: f32,
+    entry_height: f32,
+) -> f32 {
+    if entry_height >= state.viewport_h || entry_y < state.offset_y {
+        return entry_y.clamp(0.0, state.max_offset());
+    }
+    let entry_bottom = entry_y + entry_height;
+    if entry_bottom > state.offset_y + state.viewport_h {
+        return (entry_bottom - state.viewport_h).clamp(0.0, state.max_offset());
+    }
+    state.offset_y
+}
+
+fn reveal_table_of_contents_navigation_entry<Msg: Clone>(
+    caches: &WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+    focus_id: u64,
+) -> bool {
+    let Some(entry) = caches.table_of_contents_entries.get(&focus_id).copied() else {
+        return false;
+    };
+    let navigation_id = resolve_table_of_contents_navigation_id(entry.parent_id);
+    let Some(state) = states
+        .get_mut(&navigation_id)
+        .and_then(WidgetState::as_scroll_mut)
+    else {
+        return false;
+    };
+    let target = table_of_contents_navigation_reveal_offset(
+        state,
+        entry.navigation_y,
+        entry.navigation_height,
+    );
+    if (target - state.offset_y).abs() <= f32::EPSILON {
+        return false;
+    }
+    state.set_offset(target);
+    true
 }
 
 fn runtime_focus_is_live<Msg: Clone>(caches: &WidgetRuntimeCaches<Msg>, id: u64) -> bool {
@@ -825,6 +933,111 @@ fn sync_virtual_grid_viewport(
     state.viewport_h = layout.size.height;
 }
 
+#[allow(clippy::too_many_arguments)]
+fn sync_table_of_contents_runtime<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+    table: &Widget<Msg>,
+    document: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    table_node: Option<NodeId>,
+    table_abs: Point,
+    spacing: f32,
+    path: &[usize],
+) -> Result<Option<RuntimeMetadataTraversal>, WidgetIdError> {
+    let Some(table_node) = table_node else {
+        return Ok(None);
+    };
+    let Some(nodes) = layout_nodes(taffy, table_node) else {
+        return Ok(None);
+    };
+    let (Ok(viewport), Ok(content)) = (taffy.layout(nodes.viewport), taffy.layout(nodes.content))
+    else {
+        return Ok(None);
+    };
+    let table_id = table.resolved_id(path).unwrap();
+    let navigation_id = resolve_table_of_contents_navigation_id(table_id);
+    if let Ok(navigation) = taffy.layout(nodes.navigation) {
+        sync_table_of_contents_scroll_state(
+            states,
+            navigation_id,
+            navigation_content_height(taffy, table_node).unwrap_or(0.0),
+            navigation.size.height,
+        );
+    }
+    sync_table_of_contents_scroll_state(
+        states,
+        table_id,
+        content.size.height,
+        viewport.size.height,
+    );
+    sync_table_of_contents_entries(caches, table, document, taffy, nodes, path)?;
+    let offset_y = states
+        .get(&table_id)
+        .and_then(WidgetState::as_scroll)
+        .map(|state| state.offset_y)
+        .unwrap_or(0.0);
+    Ok(Some(RuntimeMetadataTraversal {
+        node: Some(nodes.content),
+        abs: Point::new(
+            table_abs.x + viewport.location.x,
+            table_abs.y + viewport.location.y - offset_y,
+        ),
+        spacing,
+    }))
+}
+
+fn sync_table_of_contents_scroll_state(
+    states: &mut HashMap<u64, WidgetState>,
+    table_id: u64,
+    content_height: f32,
+    viewport_height: f32,
+) {
+    let Some(state) = states
+        .get_mut(&table_id)
+        .and_then(WidgetState::as_scroll_mut)
+    else {
+        return;
+    };
+    state.set_geometry(content_height, viewport_height);
+}
+
+fn sync_table_of_contents_entries<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    table: &Widget<Msg>,
+    document: &Widget<Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    nodes: TableOfContentsLayoutNodes,
+    path: &[usize],
+) -> Result<(), WidgetIdError> {
+    let table_id = table.resolved_id(path).unwrap();
+    let navigation_y = taffy
+        .layout(nodes.navigation)
+        .map(|layout| layout.location.y)
+        .unwrap_or(0.0);
+    for index in 0..collect_entries(document).len() {
+        let Some(focus_id) = table.table_of_contents_entry_focus_id(path, index) else {
+            continue;
+        };
+        let target_y = entry_offset_y(document, taffy, nodes.content, index).unwrap_or(0.0);
+        let (entry_y, entry_height) = entry_rect(taffy, nodes.table, index)
+            .map(|rect| (rect.top - navigation_y, rect.height()))
+            .unwrap_or((0.0, 0.0));
+        insert_runtime_entry(
+            &mut caches.table_of_contents_entries,
+            focus_id,
+            TableOfContentsEntryRuntime {
+                parent_id: table_id,
+                target_y,
+                navigation_y: entry_y,
+                navigation_height: entry_height,
+            },
+            "table of contents entries",
+        )?;
+    }
+    Ok(())
+}
+
 fn sync_virtual_multi_selection_runtime<Msg: Clone>(
     caches: &mut WidgetRuntimeCaches<Msg>,
     widget_states: &mut HashMap<u64, WidgetState>,
@@ -918,6 +1131,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub app_state: A::State,
     pub input_states: HashMap<u64, crate::input_state::InputWidgetState>,
     pub widget_states: HashMap<u64, WidgetState>,
+    smooth_scrolls: HashMap<u64, SmoothScrollAnimation>,
     virtual_multi_selection_states: HashMap<u64, VirtualMultiSelectionState>,
     widget_id_snapshot: Option<WidgetIdSnapshot>,
     pub focused_widget_id: Option<u64>,
@@ -1012,6 +1226,7 @@ impl<A: AppLogic> RutterEngine<A> {
             app_state,
             input_states: HashMap::new(),
             widget_states: HashMap::new(),
+            smooth_scrolls: HashMap::new(),
             virtual_multi_selection_states: HashMap::new(),
             widget_id_snapshot: None,
             focused_widget_id: None,
@@ -1211,6 +1426,8 @@ impl<A: AppLogic> RutterEngine<A> {
         let live_input_ids = input_ids.into_iter().collect::<HashSet<_>>();
 
         self.widget_states
+            .retain(|id, _| live_widget_ids.contains(id));
+        self.smooth_scrolls
             .retain(|id, _| live_widget_ids.contains(id));
         self.input_states
             .retain(|id, _| live_input_ids.contains(id));
@@ -1423,6 +1640,75 @@ impl<A: AppLogic> RutterEngine<A> {
             {
                 changed = true;
             }
+        }
+        changed |= self.tick_smooth_scrolls(Instant::now());
+        changed
+    }
+
+    pub(crate) fn start_smooth_scroll(&mut self, id: u64, target_offset: f32, now: Instant) {
+        let Some(scroll) = self.widget_states.get(&id).and_then(WidgetState::as_scroll) else {
+            return;
+        };
+        let target_offset = finite_scroll_offset(target_offset).clamp(0.0, scroll.max_offset());
+        if (scroll.offset_y - target_offset).abs() <= f32::EPSILON {
+            self.smooth_scrolls.remove(&id);
+            return;
+        }
+        self.smooth_scrolls.insert(
+            id,
+            SmoothScrollAnimation {
+                start_offset: scroll.offset_y,
+                target_offset,
+                started_at: now,
+            },
+        );
+    }
+
+    pub(crate) fn cancel_smooth_scroll(&mut self, id: u64) {
+        self.smooth_scrolls.remove(&id);
+    }
+
+    pub(crate) fn has_pending_smooth_scroll(&self) -> bool {
+        !self.smooth_scrolls.is_empty()
+    }
+
+    pub(crate) fn reveal_table_of_contents_entry(&mut self, focus_id: u64) -> bool {
+        reveal_table_of_contents_navigation_entry(
+            &self.runtime_caches,
+            &mut self.widget_states,
+            focus_id,
+        )
+    }
+
+    fn tick_smooth_scrolls(&mut self, now: Instant) -> bool {
+        let animations = std::mem::take(&mut self.smooth_scrolls);
+        let mut changed = false;
+        for (id, animation) in animations {
+            let Some(scroll) = self
+                .widget_states
+                .get_mut(&id)
+                .and_then(WidgetState::as_scroll_mut)
+            else {
+                continue;
+            };
+            let target_offset = animation.target_offset.clamp(0.0, scroll.max_offset());
+            let progress = smooth_scroll_progress(now, animation.started_at);
+            scroll.set_offset(interpolate_scroll_offset(
+                animation.start_offset,
+                target_offset,
+                progress,
+                scroll.max_offset(),
+            ));
+            if progress < 1.0 {
+                self.smooth_scrolls.insert(
+                    id,
+                    SmoothScrollAnimation {
+                        target_offset,
+                        ..animation
+                    },
+                );
+            }
+            changed = true;
         }
         changed
     }
@@ -1928,13 +2214,10 @@ impl<A: AppLogic> RutterEngine<A> {
                 if let Some(layout) = layout
                     && let Some(ws) = widget_states.get_mut(&resolved_id)
                     && let Some(s) = ws.as_scroll_mut()
+                    && let Some(child_node) = Self::first_child(traversal.node, sources.taffy)
+                    && let Ok(child_layout) = sources.taffy.layout(child_node)
                 {
-                    s.viewport_h = layout.size.height;
-                    if let Some(child_node) = Self::first_child(traversal.node, sources.taffy)
-                        && let Ok(child_layout) = sources.taffy.layout(child_node)
-                    {
-                        s.content_height = child_layout.size.height;
-                    }
+                    s.set_geometry(child_layout.size.height, layout.size.height);
                 }
                 path.push(0);
                 Self::sync_runtime_metadata_impl(
@@ -1948,6 +2231,33 @@ impl<A: AppLogic> RutterEngine<A> {
                         abs: abs_pos,
                         spacing: traversal.spacing,
                     },
+                    path,
+                )?;
+                path.pop();
+            }
+            Widget::TableOfContents { child, .. } => {
+                let child_traversal = sync_table_of_contents_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    child,
+                    sources.taffy,
+                    traversal.node,
+                    abs_pos,
+                    traversal.spacing,
+                    path,
+                )?;
+                let Some(child_traversal) = child_traversal else {
+                    return Ok(());
+                };
+                path.push(0);
+                Self::sync_runtime_metadata_impl(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    child.as_ref(),
+                    child_traversal,
                     path,
                 )?;
                 path.pop();
@@ -2422,6 +2732,7 @@ mod tests {
 
     use crate::layout::build_taffy_tree;
     use crate::widget::{DialogAction, DialogPosition, InputState};
+    use crate::widgets::table_of_contents::HeadingLevel;
     use cosmic_text::FontSystem;
 
     fn fs() -> Rc<RefCell<FontSystem>> {
@@ -2497,6 +2808,113 @@ mod tests {
             .and_then(WidgetState::as_search)
             .unwrap();
         assert_eq!(state.hovered_option, None);
+    }
+
+    #[test]
+    fn smooth_scroll_interpolation_reaches_and_clamps_its_destination() {
+        let started_at = Instant::now();
+        let halfway = smooth_scroll_progress(
+            started_at + std::time::Duration::from_millis(125),
+            started_at,
+        );
+        let final_progress = smooth_scroll_progress(
+            started_at + std::time::Duration::from_millis(250),
+            started_at,
+        );
+
+        assert!((halfway - 0.5).abs() < f32::EPSILON);
+        assert_eq!(interpolate_scroll_offset(20.0, 120.0, halfway, 80.0), 70.0);
+        assert_eq!(
+            interpolate_scroll_offset(20.0, 120.0, final_progress, 80.0),
+            80.0
+        );
+        assert_eq!(finite_scroll_offset(f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn table_of_contents_runtime_maps_focus_entries_to_heading_offsets() {
+        let document: Widget<'_, Msg> = Widget::Column {
+            style: Style::default(),
+            children: vec![
+                Widget::heading(HeadingLevel::H1, "Overview", base_style(320.0, 36.0)),
+                Widget::Spacer {
+                    style: base_style(320.0, 96.0),
+                },
+                Widget::heading(HeadingLevel::H2, "Installation", base_style(320.0, 32.0)),
+            ],
+        };
+        let widget =
+            Widget::table_of_contents("Contents", document, base_style(320.0, 220.0)).with_id(41);
+        let mut states = HashMap::from([(41, WidgetState::Scroll(ScrollState::default()))]);
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &widget, fs(), &states);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(320, 220),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
+        let mut caches = WidgetRuntimeCaches::default();
+
+        RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
+            &mut caches,
+            &mut states,
+            &HashMap::new(),
+            &taffy,
+            &widget,
+            root,
+            DummyApp::theme().spacing,
+        );
+
+        let entry_targets = caches
+            .table_of_contents_entries
+            .values()
+            .map(|entry| entry.target_y)
+            .collect::<Vec<_>>();
+        let state = states.get(&41).and_then(WidgetState::as_scroll).unwrap();
+
+        assert_eq!(caches.table_of_contents_entries.len(), 2);
+        assert!(entry_targets.iter().any(|target| *target > 0.0));
+        assert!(state.content_height > state.viewport_h);
+    }
+
+    #[test]
+    fn focused_table_of_contents_entry_reveals_its_navigation_link() {
+        let table_id = 44;
+        let focus_id = 45;
+        let navigation_id = crate::widget::resolve_table_of_contents_navigation_id(table_id);
+        let mut caches: WidgetRuntimeCaches<Msg> = WidgetRuntimeCaches::default();
+        caches.table_of_contents_entries.insert(
+            focus_id,
+            TableOfContentsEntryRuntime {
+                parent_id: table_id,
+                target_y: 240.0,
+                navigation_y: 180.0,
+                navigation_height: 28.0,
+            },
+        );
+        let mut states = HashMap::from([(
+            navigation_id,
+            WidgetState::Scroll(ScrollState {
+                offset_y: 0.0,
+                content_height: 480.0,
+                viewport_h: 100.0,
+            }),
+        )]);
+
+        assert!(reveal_table_of_contents_navigation_entry(
+            &caches,
+            &mut states,
+            focus_id,
+        ));
+        assert_eq!(
+            states
+                .get(&navigation_id)
+                .and_then(WidgetState::as_scroll)
+                .map(|state| state.offset_y),
+            Some(108.0)
+        );
     }
 
     #[derive(Debug, Clone, PartialEq)]

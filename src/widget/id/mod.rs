@@ -4,8 +4,12 @@
 use std::collections::{HashMap, hash_map::Entry};
 use std::num::NonZeroU64;
 
-use super::{AUTO_ID, DialogAction, Widget, WidgetIdTag};
+use super::{
+    AUTO_ID, DialogAction, Widget, WidgetIdTag, resolve_table_of_contents_navigation_id,
+    resolve_table_of_contents_viewport_id,
+};
 use crate::widgets::dropdown_menu::{DropdownMenuEntryKind, entry_at_path};
+use crate::widgets::table_of_contents::collect_entries;
 pub use error::WidgetIdError;
 use structure::{WidgetStructureKind, widget_structure_kind};
 
@@ -190,6 +194,7 @@ impl WidgetIdVisitor {
             Widget::Container { child, .. }
             | Widget::ButtonContent { child, .. }
             | Widget::ScrollView { child, .. }
+            | Widget::TableOfContents { child, .. }
             | Widget::Tooltip { child, .. }
             | Widget::Accordion { child, .. }
             | Widget::Modal { child, .. }
@@ -250,7 +255,9 @@ impl WidgetIdVisitor {
 
     fn register_accessibility_leaf<Msg>(&mut self, widget: &Widget<'_, Msg>) -> WidgetIdResult {
         let widget_type = match widget {
-            Widget::Text { .. } | Widget::RichText { .. } => "AccessibilityText",
+            Widget::Text { .. } | Widget::RichText { .. } | Widget::Heading { .. } => {
+                "AccessibilityText"
+            }
             Widget::Image { .. } => "AccessibilityImage",
             _ => return Ok(()),
         };
@@ -280,6 +287,11 @@ impl WidgetIdVisitor {
                 suggestions: Some(suggestions),
                 ..
             } => self.register_search_suggestions(widget, suggestions.items.len(), origin),
+            Widget::TableOfContents { child, .. } => self.register_table_of_contents_entries(
+                widget,
+                collect_entries(child).len(),
+                origin,
+            ),
             _ => Ok(()),
         }
     }
@@ -294,6 +306,42 @@ impl WidgetIdVisitor {
             if let Some(value) = widget.tab_focus_id(&self.path, index) {
                 self.insert_subwidget(value, WidgetIdTag::Tab, "Tab", &[index], origin)?;
             }
+        }
+        Ok(())
+    }
+
+    fn register_table_of_contents_entries<Msg>(
+        &mut self,
+        widget: &Widget<'_, Msg>,
+        count: usize,
+        origin: WidgetIdOrigin,
+    ) -> WidgetIdResult {
+        let table_id = widget.resolved_id(&self.path).unwrap();
+        self.insert_subwidget(
+            resolve_table_of_contents_navigation_id(table_id),
+            WidgetIdTag::TableOfContentsNavigation,
+            "TableOfContentsNavigation",
+            &[0],
+            origin,
+        )?;
+        self.insert_subwidget(
+            resolve_table_of_contents_viewport_id(table_id),
+            WidgetIdTag::TableOfContentsViewport,
+            "TableOfContentsViewport",
+            &[0],
+            origin,
+        )?;
+        for index in 0..count {
+            let Some(value) = widget.table_of_contents_entry_focus_id(&self.path, index) else {
+                continue;
+            };
+            self.insert_subwidget(
+                value,
+                WidgetIdTag::TableOfContentsEntry,
+                "TableOfContentsEntry",
+                &[index],
+                origin,
+            )?;
         }
         Ok(())
     }
