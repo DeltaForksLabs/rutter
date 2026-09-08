@@ -19,10 +19,10 @@ use crate::render::select_overlay::collector::{
 };
 use crate::widget::id::resolve_accessibility_path_id;
 use crate::widget::{
-    DialogAction, VirtualSelection, Widget, resolve_table_of_contents_navigation_id,
-    resolve_table_of_contents_viewport_id,
+    DialogAction, VirtualSelection, Widget, resolve_table_of_contents_accordion_id,
+    resolve_table_of_contents_navigation_id, resolve_table_of_contents_viewport_id,
 };
-use crate::widgets::table_of_contents::{collect_entries, entry_rect, layout_nodes};
+use crate::widgets::table_of_contents::{collect_entries, entry_rects, layout_nodes, title_rect};
 use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
 
 mod action_queue;
@@ -315,12 +315,60 @@ impl<'a> AccessibilityBuilder<'a> {
         path: &[usize],
     ) -> NodeId {
         let table_id = table.resolved_id(path).unwrap();
+        let navigation = table_of_contents_navigation_frame(self.taffy, table_node, table_origin);
+        if table.table_of_contents_accordion().is_some() {
+            return self.table_of_contents_accordion_navigation(
+                table,
+                document,
+                table_node,
+                table_origin,
+                path,
+            );
+        }
+        let children = self.table_of_contents_link_nodes(
+            table,
+            table_node,
+            table_origin,
+            path,
+            &collect_entries(document),
+        );
+        self.push_table_of_contents_navigation(table, table_id, navigation, children)
+    }
+
+    fn table_of_contents_accordion_navigation<Msg>(
+        &mut self,
+        table: &Widget<Msg>,
+        document: &Widget<Msg>,
+        table_node: TaffyNodeId,
+        table_origin: Point,
+        path: &[usize],
+    ) -> NodeId {
+        let table_id = table.resolved_id(path).unwrap();
+        let expanded = table.table_of_contents_entries_visible();
         let entries = collect_entries(document);
-        let children =
-            self.table_of_contents_link_nodes(table, table_node, table_origin, path, &entries);
-        let navigation = layout_nodes(self.taffy, table_node)
-            .map(|nodes| LayoutFrame::from_taffy(self.taffy, Some(nodes.navigation), table_origin))
-            .unwrap_or_else(|| LayoutFrame::empty(table_origin));
+        let navigation_id = (expanded && !entries.is_empty()).then(|| {
+            let navigation = table_of_contents_entries_frame(self.taffy, table_node, table_origin);
+            let links =
+                self.table_of_contents_link_nodes(table, table_node, table_origin, path, &entries);
+            self.push_table_of_contents_navigation(table, table_id, navigation, links)
+        });
+        self.push_table_of_contents_accordion(
+            table,
+            table_node,
+            table_origin,
+            path,
+            expanded,
+            navigation_id,
+        )
+    }
+
+    fn push_table_of_contents_navigation<Msg>(
+        &mut self,
+        table: &Widget<Msg>,
+        table_id: u64,
+        navigation: LayoutFrame,
+        children: Vec<NodeId>,
+    ) -> NodeId {
         let mut node = Node::new(Role::Navigation);
         node.set_bounds(navigation.rect);
         if let Widget::TableOfContents { title, .. } = table {
@@ -328,6 +376,26 @@ impl<'a> AccessibilityBuilder<'a> {
         }
         node.set_children(children);
         let id = access_node_id(resolve_table_of_contents_navigation_id(table_id));
+        self.nodes.push((id, node));
+        id
+    }
+
+    fn push_table_of_contents_accordion<Msg>(
+        &mut self,
+        table: &Widget<Msg>,
+        table_node: TaffyNodeId,
+        table_origin: Point,
+        path: &[usize],
+        expanded: bool,
+        navigation_id: Option<NodeId>,
+    ) -> NodeId {
+        let table_id = table.resolved_id(path).unwrap();
+        let header = table_of_contents_header_frame(self.taffy, table_node, table_origin);
+        let mut node = Node::new(Role::DisclosureTriangle);
+        node.set_bounds(header.rect);
+        apply_table_of_contents_accordion_props(&mut node, table, expanded);
+        node.set_children(navigation_id.into_iter().collect::<Vec<_>>());
+        let id = access_node_id(resolve_table_of_contents_accordion_id(table_id));
         self.nodes.push((id, node));
         id
     }
@@ -340,24 +408,17 @@ impl<'a> AccessibilityBuilder<'a> {
         path: &[usize],
         entries: &[crate::widgets::table_of_contents::TableOfContentsEntry],
     ) -> Vec<NodeId> {
-        let table_id = table.resolved_id(path).unwrap();
-        let navigation_offset_y = self
-            .inputs
-            .widget_states
-            .get(&resolve_table_of_contents_navigation_id(table_id))
-            .and_then(WidgetState::as_scroll)
-            .map(|state| state.offset_y)
-            .unwrap_or(0.0);
+        let rects = entry_rects(self.taffy, table_node);
         entries
             .iter()
+            .zip(rects)
             .enumerate()
-            .filter_map(|(index, entry)| {
+            .filter_map(|(index, (entry, rect))| {
                 let id = table.table_of_contents_entry_focus_id(path, index)?;
-                let rect = entry_rect(self.taffy, table_node, index)?;
                 let mut node = Node::new(Role::Link);
                 node.set_bounds(access_rect(SkiaRect::from_xywh(
                     table_origin.x + rect.left,
-                    table_origin.y + rect.top - navigation_offset_y,
+                    table_origin.y + rect.top,
                     rect.width(),
                     rect.height(),
                 )));
@@ -574,6 +635,65 @@ impl<'a> AccessibilityBuilder<'a> {
         }
         ids
     }
+}
+
+fn table_of_contents_navigation_frame(
+    taffy: &TaffyTree<RutterContext>,
+    table_node: TaffyNodeId,
+    table_origin: Point,
+) -> LayoutFrame {
+    let navigation = layout_nodes(taffy, table_node).map(|nodes| nodes.navigation);
+    LayoutFrame::from_taffy(taffy, navigation, table_origin)
+}
+
+fn table_of_contents_entries_frame(
+    taffy: &TaffyTree<RutterContext>,
+    table_node: TaffyNodeId,
+    table_origin: Point,
+) -> LayoutFrame {
+    let Some(nodes) = layout_nodes(taffy, table_node) else {
+        return LayoutFrame::empty(table_origin);
+    };
+    let navigation = LayoutFrame::from_taffy(taffy, Some(nodes.navigation), table_origin);
+    LayoutFrame::from_taffy(taffy, nodes.entries, navigation.origin)
+}
+
+fn table_of_contents_header_frame(
+    taffy: &TaffyTree<RutterContext>,
+    table_node: TaffyNodeId,
+    table_origin: Point,
+) -> LayoutFrame {
+    let Some(rect) = title_rect(taffy, table_node) else {
+        return LayoutFrame::empty(table_origin);
+    };
+    let origin = Point::new(table_origin.x + rect.left, table_origin.y + rect.top);
+    LayoutFrame {
+        origin,
+        rect: access_rect(SkiaRect::from_xywh(
+            origin.x,
+            origin.y,
+            rect.width(),
+            rect.height(),
+        )),
+    }
+}
+
+fn apply_table_of_contents_accordion_props<Msg>(
+    node: &mut Node,
+    table: &Widget<Msg>,
+    expanded: bool,
+) {
+    if let Widget::TableOfContents { title, .. } = table {
+        node.set_label(*title);
+    }
+    node.set_expanded(expanded);
+    node.add_action(if expanded {
+        Action::Collapse
+    } else {
+        Action::Expand
+    });
+    node.add_action(Action::Focus);
+    node.add_action(Action::Click);
 }
 
 #[derive(Clone, Copy)]
@@ -1015,7 +1135,7 @@ mod tests {
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::ButtonVariant;
     use crate::widgets::calendar::{CalendarDate, CalendarMonth};
-    use crate::widgets::table_of_contents::HeadingLevel;
+    use crate::widgets::table_of_contents::{HeadingLevel, TableOfContentsOptions};
     use winit::dpi::PhysicalSize;
 
     fn fs() -> Rc<RefCell<FontSystem>> {
@@ -1215,6 +1335,74 @@ mod tests {
         assert_eq!(links[1].label(), Some("Install"));
         assert!(links[0].supports_action(Action::Focus));
         assert!(links[0].supports_action(Action::Click));
+    }
+
+    #[test]
+    fn collapsed_table_of_contents_exposes_a_disclosure_without_hidden_links() {
+        let options = TableOfContentsOptions::new(2)
+            .unwrap()
+            .with_accordion_state(false, ());
+        let widget = Widget::table_of_contents_with_options(
+            "On this page",
+            Widget::Column {
+                style: Style::default(),
+                children: vec![Widget::heading(
+                    HeadingLevel::H2,
+                    "Install",
+                    base_style(260.0, 28.0),
+                )],
+            },
+            base_style(280.0, 180.0),
+            options,
+        )
+        .with_id(32);
+
+        let update = build_update(&widget);
+        let disclosure = node_for(&update, Role::DisclosureTriangle);
+        let has_navigation = update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.role() == Role::Navigation);
+        let has_link = update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.role() == Role::Link);
+
+        assert_eq!(disclosure.label(), Some("On this page"));
+        assert_eq!(disclosure.is_expanded(), Some(false));
+        assert!(disclosure.supports_action(Action::Expand));
+        assert!(disclosure.supports_action(Action::Focus));
+        assert!(disclosure.supports_action(Action::Click));
+        assert!(!has_navigation);
+        assert!(!has_link);
+    }
+
+    #[test]
+    fn expanded_table_of_contents_accordion_exposes_its_navigation_links() {
+        let options = TableOfContentsOptions::default().with_accordion(());
+        let widget = Widget::table_of_contents_with_options(
+            "On this page",
+            Widget::heading(HeadingLevel::H2, "Install", base_style(260.0, 28.0)),
+            base_style(280.0, 180.0),
+            options,
+        )
+        .with_id(33);
+
+        let update = build_update(&widget);
+        let disclosure = node_for(&update, Role::DisclosureTriangle);
+        let navigation = node_for(&update, Role::Navigation);
+        let link = node_for(&update, Role::Link);
+        let disclosure_bounds = disclosure.bounds().unwrap();
+        let navigation_bounds = navigation.bounds().unwrap();
+        let link_bounds = link.bounds().unwrap();
+
+        assert_eq!(disclosure.is_expanded(), Some(true));
+        assert!(disclosure.supports_action(Action::Collapse));
+        assert_eq!(navigation.label(), Some("On this page"));
+        assert_eq!(link.label(), Some("Install"));
+        assert!(navigation_bounds.y0 >= disclosure_bounds.y1);
+        assert!(link_bounds.y0 >= navigation_bounds.y0);
+        assert!(link_bounds.y1 <= navigation_bounds.y1);
     }
 
     #[test]

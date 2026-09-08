@@ -30,6 +30,8 @@ pub(crate) enum WidgetStructureKind {
     Spinner,
     ScrollView,
     TableOfContents,
+    TableOfContentsAccordionCollapsed,
+    TableOfContentsAccordionExpanded,
     Tooltip,
     AccordionCollapsed,
     AccordionExpanded,
@@ -82,6 +84,8 @@ impl WidgetStructureKind {
             Self::Spinner => "Spinner",
             Self::ScrollView => "ScrollView",
             Self::TableOfContents => "TableOfContents",
+            Self::TableOfContentsAccordionCollapsed => "TableOfContentsAccordionCollapsed",
+            Self::TableOfContentsAccordionExpanded => "TableOfContentsAccordionExpanded",
             Self::Tooltip => "Tooltip",
             Self::AccordionCollapsed => "AccordionCollapsed",
             Self::AccordionExpanded => "AccordionExpanded",
@@ -137,6 +141,13 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::ProgressBar { .. } => Kind::ProgressBar,
         Widget::Spinner { .. } => Kind::Spinner,
         Widget::ScrollView { .. } => Kind::ScrollView,
+        Widget::TableOfContents { .. } if widget.table_of_contents_accordion().is_some() => {
+            if widget.table_of_contents_entries_visible() {
+                Kind::TableOfContentsAccordionExpanded
+            } else {
+                Kind::TableOfContentsAccordionCollapsed
+            }
+        }
         Widget::TableOfContents { .. } => Kind::TableOfContents,
         Widget::Tooltip { .. } => Kind::Tooltip,
         Widget::Accordion { expanded: true, .. } => Kind::AccordionExpanded,

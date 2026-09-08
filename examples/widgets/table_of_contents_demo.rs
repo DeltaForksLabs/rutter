@@ -5,7 +5,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
-use rutter::{AppLogic, HeadingLevel, RutterRunner, Theme, Widget};
+use rutter::{AppLogic, HeadingLevel, RutterRunner, TableOfContentsOptions, Theme, Widget};
 use taffy::prelude::*;
 
 use super::{
@@ -13,14 +13,24 @@ use super::{
     theme_selector::{ExampleTheme, example_theme_selector},
 };
 
-#[derive(Default)]
 pub struct TableOfContentsDemoState {
     pub theme: ExampleTheme,
+    pub contents_expanded: bool,
+}
+
+impl Default for TableOfContentsDemoState {
+    fn default() -> Self {
+        Self {
+            theme: ExampleTheme::default(),
+            contents_expanded: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     ThemeChanged(ExampleTheme),
+    ToggleContents,
 }
 
 pub struct TableOfContentsDemo;
@@ -46,8 +56,15 @@ impl AppLogic for TableOfContentsDemo {
                     color: None,
                     size: 14.0,
                 },
-                Widget::table_of_contents("Conteúdo", documentation(), document_viewport_style())
-                    .with_id(320),
+                Widget::table_of_contents_with_options(
+                    "Nesta página",
+                    documentation(),
+                    document_viewport_style(),
+                    TableOfContentsOptions::new(2)
+                        .expect("table of contents demo uses 2 columns, expected columns > 0")
+                        .with_accordion_state(state.contents_expanded, Msg::ToggleContents),
+                )
+                .with_id(320),
             ],
         }
     }
@@ -55,6 +72,7 @@ impl AppLogic for TableOfContentsDemo {
     fn update(state: &mut TableOfContentsDemoState, message: Msg, _: &mut Clipboard) {
         match message {
             Msg::ThemeChanged(theme) => state.theme = theme,
+            Msg::ToggleContents => state.contents_expanded = !state.contents_expanded,
         }
     }
 
@@ -106,8 +124,9 @@ fn documentation_sections<'a>() -> Vec<Widget<'a, Msg>> {
     [
         (HeadingLevel::H1, "Visão geral", "O sumário é gerado a partir dos headings semânticos do documento."),
         (HeadingLevel::H2, "Instalação", "Cada item navega para a posição calculada pelo layout, sem IDs manuais por seção."),
-        (HeadingLevel::H2, "Navegação", "Os links podem receber foco pelo teclado e expõem papéis de heading e link para tecnologias assistivas."),
-        (HeadingLevel::H3, "Rolagem suave", "A animação é cancelada ao usar a roda do mouse ou arrastar a barra de rolagem."),
+        (HeadingLevel::H3, "Navegação", "Os links podem receber foco pelo teclado e expõem papéis de heading e link para tecnologias assistivas."),
+        (HeadingLevel::H4, "Rolagem suave", "A animação é cancelada ao usar a roda do mouse ou arrastar a barra de rolagem."),
+        (HeadingLevel::H5, "Rolagem suave", "A animação é cancelada ao usar a roda do mouse ou arrastar a barra de rolagem."),
     ]
     .into_iter()
     .flat_map(|(level, title, text)| section(level, title, text))
@@ -133,7 +152,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{HeadingLevel, Widget, documentation};
+    use rutter::AppLogic;
+
+    use super::{
+        HeadingLevel, TableOfContentsDemo, TableOfContentsDemoState, Widget, documentation,
+    };
 
     #[test]
     fn documentation_contains_semantic_headings() {
@@ -148,5 +171,20 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn demo_starts_with_an_expanded_two_column_navigation() {
+        let mut state = TableOfContentsDemoState::default();
+        let Widget::Column { children, .. } = TableOfContentsDemo::view(&mut state) else {
+            panic!("expected the demo root to be a column");
+        };
+        let Some(Widget::TableOfContents { options, .. }) = children.get(2) else {
+            panic!("expected the third demo child to be a TableOfContents widget");
+        };
+
+        assert_eq!(options.columns(), 2);
+        assert!(options.is_accordion());
+        assert!(options.is_expanded());
     }
 }

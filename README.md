@@ -383,20 +383,28 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `Heading`
 - `TableOfContents`
 
-`Widget::heading(level, content, style)` adds a semantic document heading. Wrap a document in `Widget::table_of_contents(title, child, style)` to generate a navigation list from its visible headings. Selecting a navigation link, pressing Enter or Space on its keyboard focus target, or activating its accessibility link scrolls the document smoothly to the matching heading. Give the table of contents a bounded height so its document viewport can scroll; long navigation lists receive their own scrollbar.
+`Widget::heading(level, content, style)` adds a semantic document heading. Wrap a document in `Widget::table_of_contents(title, child, style)` to generate a single-column inline navigation list from its visible headings. Heading indentation follows the discovered outline rather than absolute `H1`–`H6` values, so a document that starts at `H3` does not begin nested; deeper descendants share one readable visual child indent. Selecting a navigation link, pressing Enter or Space on its keyboard focus target, or activating its accessibility link scrolls the document smoothly to the matching heading.
+
+Use `TableOfContentsOptions` with `Widget::table_of_contents_with_options` for multiple vertical columns or an optional controlled accordion. `with_accordion` starts expanded by default; `with_accordion_state` accepts the current controlled state. Navigation never receives a scrollbar. An absolute style height reserves the document viewport below the intrinsic navigation; percentage and flex sizing establish the table's minimum allocation while preserving a usable document viewport. If the resulting table exceeds its surface, place it in a scrollable parent.
 
 ```rust
-use rutter::{HeadingLevel, Widget};
+use rutter::{HeadingLevel, TableOfContentsOptions, Widget};
 use taffy::prelude::Style;
 
 let document: Widget<'_, ()> = Widget::Column {
     children: vec![Widget::heading(HeadingLevel::H1, "Overview", Style::default())],
     style: Style::default(),
 };
-let contents = Widget::table_of_contents("Contents", document, Style::default());
+let options = TableOfContentsOptions::new(2).unwrap().with_accordion(());
+let contents = Widget::table_of_contents_with_options(
+    "On this page",
+    document,
+    Style::default(),
+    options,
+);
 ```
 
-Migration note for `0.31.0`: `Widget` is an exhaustive public enum. Code that matches it directly must handle the new `Heading` and `TableOfContents` variants.
+Migration note for `0.32.0`: `Widget::TableOfContents` now carries `options`; prefer the constructors instead of direct enum literals. `Widget` remains an exhaustive public enum, so direct matches must continue to handle `Heading` and `TableOfContents`.
 
 ### Input Widgets
 

@@ -331,6 +331,15 @@ impl WidgetIdVisitor {
             &[0],
             origin,
         )?;
+        if let Some(value) = widget.table_of_contents_accordion_focus_id(&self.path) {
+            self.insert_subwidget(
+                value,
+                WidgetIdTag::TableOfContentsAccordion,
+                "TableOfContentsAccordion",
+                &[0],
+                origin,
+            )?;
+        }
         for index in 0..count {
             let Some(value) = widget.table_of_contents_entry_focus_id(&self.path, index) else {
                 continue;

@@ -72,7 +72,7 @@ use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     ContextMenuEntry, DialogAction, DialogPosition, InputState, Orientation, ToastKind,
-    ToastPosition, VirtualSelection, Widget, resolve_table_of_contents_navigation_id,
+    ToastPosition, VirtualSelection, Widget,
 };
 use crate::widgets::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
 use crate::widgets::rich_text::OwnedRichTextSpec;
@@ -1084,9 +1084,6 @@ fn draw_widgets_impl<'w, Msg>(
         }
         Widget::TableOfContents { child, .. } => {
             let table_id = resolved_id.unwrap();
-            let navigation_state = widget_states
-                .get(&resolve_table_of_contents_navigation_id(table_id))
-                .and_then(WidgetState::as_scroll);
             draw_navigation(TableOfContentsNavigationInput {
                 canvas,
                 taffy,
@@ -1096,18 +1093,10 @@ fn draw_widgets_impl<'w, Msg>(
                 mouse: local_mouse,
                 focused_id,
                 shows_interaction_effects,
-                navigation_offset_y: navigation_state.map(|state| state.offset_y).unwrap_or(0.0),
                 font_cache,
                 theme,
                 path,
             });
-            draw_table_of_contents_navigation_scrollbar(
-                canvas,
-                taffy,
-                node,
-                navigation_state,
-                theme,
-            );
             draw_table_of_contents_content(
                 canvas,
                 taffy,
@@ -2169,22 +2158,6 @@ fn draw_table_of_contents_document<'w, Msg>(
     canvas.restore();
 }
 
-fn draw_table_of_contents_navigation_scrollbar(
-    canvas: &Canvas,
-    taffy: &TaffyTree<RutterContext>,
-    table_node: NodeId,
-    state: Option<&crate::engine::widget_state::ScrollState>,
-    theme: &Theme,
-) {
-    let Some(nodes) = layout_nodes(taffy, table_node) else {
-        return;
-    };
-    let Ok(navigation) = taffy.layout(nodes.navigation) else {
-        return;
-    };
-    draw_table_of_contents_scrollbar(canvas, navigation, state, theme);
-}
-
 fn draw_table_of_contents_scrollbar(
     canvas: &Canvas,
     viewport: &taffy::tree::Layout,
@@ -2634,7 +2607,7 @@ fn draw_text_input_runs<'a>(
     );
 }
 
-struct AccordionHeaderRenderInput<'a> {
+pub(super) struct AccordionHeaderRenderInput<'a> {
     canvas: &'a Canvas,
     title: &'a str,
     expanded: bool,
@@ -2709,7 +2682,7 @@ fn accordion_header_shape(rect: SkiaRect, radius: f32, expanded: bool) -> RRect 
     )
 }
 
-fn draw_accordion_header(input: AccordionHeaderRenderInput<'_>) {
+pub(super) fn draw_accordion_header(input: AccordionHeaderRenderInput<'_>) {
     let AccordionHeaderRenderInput {
         canvas,
         title,

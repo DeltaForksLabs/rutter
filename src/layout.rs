@@ -23,9 +23,10 @@ use crate::widget::Widget;
 use crate::widgets::counter::{COUNTER_DEFAULT_HEIGHT, counter_preferred_width};
 use crate::widgets::rich_text::OwnedRichTextSpec;
 use crate::widgets::table_of_contents::{
-    TABLE_OF_CONTENTS_LINK_SIZE, TABLE_OF_CONTENTS_TITLE_SIZE, collect_entries, entry_style,
-    navigation_style, navigation_title_style, root_style as table_of_contents_root_style,
-    viewport_style,
+    TABLE_OF_CONTENTS_LINK_SIZE, TABLE_OF_CONTENTS_TITLE_SIZE, TableOfContentsEntry,
+    TableOfContentsOptions, collect_entries, entry_style, navigation_column_style,
+    navigation_entries_style, navigation_header_style, navigation_style,
+    root_style as table_of_contents_root_style, viewport_style,
 };
 use crate::widgets::time::clock_layout_text;
 
@@ -191,16 +192,17 @@ impl LayoutBlueprint {
                 child,
                 style,
                 title,
+                options,
                 ..
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
-                let navigation = table_of_contents_navigation(title, child);
+                let navigation = table_of_contents_navigation(title, child, options);
                 path.push(0);
                 let mut content = Self::from_widget_with_path(child, path);
                 path.pop();
                 // Keep the document at its intrinsic height so the viewport can scroll it.
                 content.style.flex_shrink = 0.0;
-                let viewport = Self::with_children(None, viewport_style(), vec![content]);
+                let viewport = Self::with_children(None, viewport_style(style), vec![content]);
                 Self::with_children(
                     Some(resolved_id),
                     table_of_contents_root_style(style),
@@ -424,35 +426,80 @@ impl LayoutBlueprint {
     }
 }
 
-fn table_of_contents_navigation<Msg>(title: &str, document: &Widget<'_, Msg>) -> LayoutBlueprint {
-    let mut children = vec![table_of_contents_text(title, TABLE_OF_CONTENTS_TITLE_SIZE)];
-    children.extend(
-        collect_entries(document)
-            .into_iter()
-            .map(table_of_contents_entry),
-    );
-    LayoutBlueprint::with_children(None, navigation_style(), children)
+fn table_of_contents_navigation<Msg>(
+    title: &str,
+    document: &Widget<'_, Msg>,
+    options: &TableOfContentsOptions<Msg>,
+) -> LayoutBlueprint {
+    let has_accordion = options.is_accordion();
+    let mut children = vec![table_of_contents_text(title, has_accordion)];
+    if options.is_expanded() {
+        let entries = collect_entries(document);
+        if !entries.is_empty() {
+            children.push(table_of_contents_entries(
+                entries,
+                options.columns(),
+                has_accordion,
+            ));
+        }
+    }
+    LayoutBlueprint::with_children(None, navigation_style(has_accordion), children)
 }
 
-fn table_of_contents_text(content: &str, font_size: f32) -> LayoutBlueprint {
+fn table_of_contents_text(content: &str, has_accordion: bool) -> LayoutBlueprint {
     LayoutBlueprint::leaf_with_context(
         None,
-        navigation_title_style(),
+        navigation_header_style(has_accordion),
         RutterContext::Text(TextContext {
             content: content.to_owned(),
-            font_size,
+            font_size: TABLE_OF_CONTENTS_TITLE_SIZE,
         }),
     )
 }
 
-fn table_of_contents_entry(
-    entry: crate::widgets::table_of_contents::TableOfContentsEntry,
+fn table_of_contents_entries(
+    entries: Vec<TableOfContentsEntry>,
+    columns: usize,
+    has_accordion: bool,
 ) -> LayoutBlueprint {
+    let columns = table_of_contents_entry_columns(entries, columns);
+    LayoutBlueprint::with_children(None, navigation_entries_style(has_accordion), columns)
+}
+
+fn table_of_contents_entry_columns(
+    entries: Vec<TableOfContentsEntry>,
+    columns: usize,
+) -> Vec<LayoutBlueprint> {
+    let column_count = columns.max(1).min(entries.len());
+    let base_size = entries.len() / column_count;
+    let larger_columns = entries.len() % column_count;
+    let mut remaining = entries.as_slice();
+    (0..column_count)
+        .map(|index| {
+            let size = base_size + usize::from(index < larger_columns);
+            let (column, rest) = remaining.split_at(size);
+            remaining = rest;
+            table_of_contents_entry_column(column)
+        })
+        .collect()
+}
+
+fn table_of_contents_entry_column(entries: &[TableOfContentsEntry]) -> LayoutBlueprint {
+    let children = entries
+        .iter()
+        .cloned()
+        .map(table_of_contents_entry)
+        .collect();
+    LayoutBlueprint::with_children(None, navigation_column_style(), children)
+}
+
+fn table_of_contents_entry(entry: TableOfContentsEntry) -> LayoutBlueprint {
+    let visual_depth = entry.visual_depth();
     LayoutBlueprint::leaf_with_context(
         None,
-        entry_style(entry.level),
+        entry_style(visual_depth),
         RutterContext::Text(TextContext {
-            content: entry.title,
+            content: entry.display_title(),
             font_size: TABLE_OF_CONTENTS_LINK_SIZE,
         }),
     )
@@ -703,10 +750,8 @@ pub fn compute_layout(
         height: AvailableSpace::Definite(size.height as f32),
     };
     taffy
-        .compute_layout_with_measure(
-            root,
-            available,
-            |known, available, _, ctx, style| match ctx {
+        .compute_layout_with_measure(root, available, |known, available, _, context, style| {
+            match context {
                 Some(RutterContext::Text(text)) => {
                     measure_plain_text(text, known, available, &fs_rc)
                 }
@@ -719,8 +764,8 @@ pub fn compute_layout(
                     rich_text_renderer,
                 ),
                 Some(RutterContext::None) | None => Size::ZERO,
-            },
-        )
+            }
+        })
         .unwrap();
 }
 

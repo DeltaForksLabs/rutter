@@ -1627,7 +1627,6 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             } else {
                 self.focused_input_rect = None;
             }
-            self.engine.reveal_table_of_contents_entry(id);
         } else {
             self.focused_input_rect = None;
         }

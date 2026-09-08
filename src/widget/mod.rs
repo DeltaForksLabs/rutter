@@ -17,7 +17,9 @@ use crate::widgets::carousel::CarouselConfig;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
 use crate::widgets::search::SearchSuggestions;
-use crate::widgets::table_of_contents::HeadingLevel;
+use crate::widgets::table_of_contents::{
+    HeadingLevel, TableOfContentsAccordion, TableOfContentsOptions,
+};
 use crate::widgets::time::{ClockConfig, TimeZone};
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
@@ -351,6 +353,7 @@ pub(crate) enum WidgetIdTag {
     TableOfContentsEntry = 35,
     TableOfContentsNavigation = 36,
     TableOfContentsViewport = 37,
+    TableOfContentsAccordion = 38,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,6 +401,10 @@ pub(crate) fn resolve_table_of_contents_navigation_id(table_id: u64) -> u64 {
 
 pub(crate) fn resolve_table_of_contents_viewport_id(table_id: u64) -> u64 {
     resolve_subwidget_id(table_id, WidgetIdTag::TableOfContentsViewport, 0)
+}
+
+pub(crate) fn resolve_table_of_contents_accordion_id(table_id: u64) -> u64 {
+    resolve_subwidget_id(table_id, WidgetIdTag::TableOfContentsAccordion, 0)
 }
 
 fn hash_widget_id_segment(hash: u64, segment: u64) -> u64 {
@@ -572,6 +579,7 @@ pub enum Widget<'a, Msg> {
         title: &'a str,
         child: Box<Widget<'a, Msg>>,
         style: Style,
+        options: TableOfContentsOptions<Msg>,
     },
     Tooltip {
         child: Box<Widget<'a, Msg>>,
@@ -1066,9 +1074,11 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
-    /// Creates a scrollable document with clickable links for every semantic heading.
+    /// Creates a scrollable document with a single-column inline navigation list.
     ///
-    /// The supplied `style` must constrain the document height for its body to scroll.
+    /// An absolute style height constrains the document viewport. Relative and
+    /// flex sizing establish the table's minimum allocation while navigation
+    /// remains fully visible without receiving a scrollbar.
     ///
     /// ```rust
     /// use rutter::{HeadingLevel, Widget};
@@ -1084,11 +1094,35 @@ impl<'a, Msg> Widget<'a, Msg> {
     /// );
     /// ```
     pub fn table_of_contents(title: &'a str, child: Widget<'a, Msg>, style: Style) -> Self {
+        Self::table_of_contents_with_options(title, child, style, TableOfContentsOptions::default())
+    }
+
+    /// Creates a scrollable document with configurable navigation columns and accordion behavior.
+    ///
+    /// ```
+    /// use rutter::{TableOfContentsOptions, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// let options = TableOfContentsOptions::new(2).unwrap().with_accordion(());
+    /// let contents: Widget<'_, ()> = Widget::table_of_contents_with_options(
+    ///     "On this page",
+    ///     Widget::Column { children: vec![], style: Style::default() },
+    ///     Style::default(),
+    ///     options,
+    /// );
+    /// ```
+    pub fn table_of_contents_with_options(
+        title: &'a str,
+        child: Widget<'a, Msg>,
+        style: Style,
+        options: TableOfContentsOptions<Msg>,
+    ) -> Self {
         Self::TableOfContents {
             id: AUTO_ID,
             title,
             child: Box::new(child),
             style,
+            options,
         }
     }
 
@@ -1772,6 +1806,30 @@ impl<'a, Msg> Widget<'a, Msg> {
             )),
             _ => None,
         }
+    }
+
+    pub(crate) fn table_of_contents_accordion_focus_id(&self, path: &[usize]) -> Option<u64> {
+        let Self::TableOfContents { options, .. } = self else {
+            return None;
+        };
+        let table_id = self.resolved_id(path)?;
+        options
+            .accordion()
+            .map(|_| resolve_table_of_contents_accordion_id(table_id))
+    }
+
+    pub(crate) fn table_of_contents_entries_visible(&self) -> bool {
+        match self {
+            Self::TableOfContents { options, .. } => options.is_expanded(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn table_of_contents_accordion(&self) -> Option<&TableOfContentsAccordion<Msg>> {
+        let Self::TableOfContents { options, .. } = self else {
+            return None;
+        };
+        options.accordion()
     }
 
     pub(crate) fn search_popup_id(&self, path: &[usize]) -> Option<u64> {

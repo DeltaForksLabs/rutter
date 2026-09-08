@@ -4,15 +4,24 @@
 //! Semantic headings and layout rules for the document table of contents.
 
 use skia_safe::Rect as SkiaRect;
-use taffy::prelude::{
-    Dimension, FlexDirection, LengthPercentage, NodeId, Rect, Size, Style, TaffyTree,
-};
+use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::layout::RutterContext;
 use crate::widget::Widget;
 
+mod options;
+mod styles;
+
+pub(crate) use options::TableOfContentsAccordion;
+pub use options::{TableOfContentsConfigError, TableOfContentsOptions};
+pub(crate) use styles::{
+    entry_style, navigation_column_style, navigation_entries_style, navigation_header_style,
+    navigation_style, root_style, viewport_style,
+};
+
 pub(crate) const TABLE_OF_CONTENTS_TITLE_SIZE: f32 = 18.0;
 pub(crate) const TABLE_OF_CONTENTS_LINK_SIZE: f32 = 14.0;
+pub(crate) const TABLE_OF_CONTENTS_ACCORDION_HEADER_HEIGHT: f32 = 44.0;
 const TABLE_OF_CONTENTS_NAVIGATION_PADDING: f32 = 12.0;
 
 /// Semantic rank for a document heading.
@@ -58,12 +67,26 @@ impl HeadingLevel {
 pub(crate) struct TableOfContentsEntry {
     pub(crate) title: String,
     pub(crate) level: HeadingLevel,
+    pub(crate) depth: usize,
+}
+
+impl TableOfContentsEntry {
+    pub(crate) fn display_title(&self) -> String {
+        format!("· {}", self.title)
+    }
+
+    pub(crate) fn visual_depth(&self) -> usize {
+        // Deep semantic ranks remain available to assistive technology, while
+        // one visual child inset keeps narrow navigation columns readable.
+        self.depth.min(1)
+    }
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct TableOfContentsLayoutNodes {
-    pub(crate) table: NodeId,
     pub(crate) navigation: NodeId,
+    pub(crate) header: NodeId,
+    pub(crate) entries: Option<NodeId>,
     pub(crate) viewport: NodeId,
     pub(crate) content: NodeId,
 }
@@ -75,62 +98,89 @@ pub(crate) fn layout_nodes(
     let table_children = taffy.children(table_node).ok()?;
     let navigation = table_children.first().copied()?;
     let viewport = table_children.get(1).copied()?;
+    let navigation_children = taffy.children(navigation).ok()?;
+    let header = navigation_children.first().copied()?;
     let content = taffy.children(viewport).ok()?.first().copied()?;
     Some(TableOfContentsLayoutNodes {
-        table: table_node,
         navigation,
+        header,
+        entries: navigation_children.get(1).copied(),
         viewport,
         content,
     })
 }
 
-pub(crate) fn entry_rect(
-    taffy: &TaffyTree<RutterContext>,
-    table_node: NodeId,
-    index: usize,
-) -> Option<SkiaRect> {
-    navigation_child_rect(taffy, table_node, index + 1)
+pub(crate) fn entry_rects(taffy: &TaffyTree<RutterContext>, table_node: NodeId) -> Vec<SkiaRect> {
+    let Some((columns, origin)) = navigation_entry_columns(taffy, table_node) else {
+        return Vec::new();
+    };
+    columns
+        .into_iter()
+        .flat_map(|column| column_entry_rects(taffy, column, origin))
+        .collect()
 }
 
-pub(crate) fn navigation_content_height(
+fn navigation_entry_columns(
     taffy: &TaffyTree<RutterContext>,
     table_node: NodeId,
-) -> Option<f32> {
-    let navigation = layout_nodes(taffy, table_node)?.navigation;
-    let content_height = taffy
-        .children(navigation)
-        .ok()?
-        .iter()
-        .filter_map(|node| taffy.layout(*node).ok())
-        .map(|layout| layout.location.y + layout.size.height)
-        .fold(0.0_f32, f32::max);
-    Some(content_height + TABLE_OF_CONTENTS_NAVIGATION_PADDING)
+) -> Option<(Vec<NodeId>, (f32, f32))> {
+    let nodes = layout_nodes(taffy, table_node)?;
+    let entries_node = nodes.entries?;
+    let navigation = taffy.layout(nodes.navigation).ok()?;
+    let entries = taffy.layout(entries_node).ok()?;
+    let origin = (
+        navigation.location.x + entries.location.x,
+        navigation.location.y + entries.location.y,
+    );
+    Some((taffy.children(entries_node).ok()?, origin))
 }
 
 pub(crate) fn title_rect(taffy: &TaffyTree<RutterContext>, table_node: NodeId) -> Option<SkiaRect> {
-    navigation_child_rect(taffy, table_node, 0)
-}
-
-pub(crate) fn entry_text_inset(level: HeadingLevel) -> f32 {
-    8.0 + level.index() as f32 * 16.0
-}
-
-fn navigation_child_rect(
-    taffy: &TaffyTree<RutterContext>,
-    table_node: NodeId,
-    child_index: usize,
-) -> Option<SkiaRect> {
     let nodes = layout_nodes(taffy, table_node)?;
     let navigation = taffy.layout(nodes.navigation).ok()?;
-    let entry_node = taffy
-        .children(nodes.navigation)
-        .ok()?
-        .get(child_index)
-        .copied()?;
+    let header = taffy.layout(nodes.header).ok()?;
+    Some(SkiaRect::from_xywh(
+        navigation.location.x + header.location.x,
+        navigation.location.y + header.location.y,
+        header.size.width,
+        header.size.height,
+    ))
+}
+
+pub(crate) fn entry_text_inset(depth: usize) -> f32 {
+    8.0 + depth as f32 * 16.0
+}
+
+fn column_entry_rects(
+    taffy: &TaffyTree<RutterContext>,
+    column_node: NodeId,
+    parent_origin: (f32, f32),
+) -> Vec<SkiaRect> {
+    let Ok(column) = taffy.layout(column_node) else {
+        return Vec::new();
+    };
+    let origin = (
+        parent_origin.0 + column.location.x,
+        parent_origin.1 + column.location.y,
+    );
+    let Ok(entries) = taffy.children(column_node) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter_map(|entry| entry_rect_at_origin(taffy, entry, origin))
+        .collect()
+}
+
+fn entry_rect_at_origin(
+    taffy: &TaffyTree<RutterContext>,
+    entry_node: NodeId,
+    origin: (f32, f32),
+) -> Option<SkiaRect> {
     let entry = taffy.layout(entry_node).ok()?;
     Some(SkiaRect::from_xywh(
-        navigation.location.x + entry.location.x,
-        navigation.location.y + entry.location.y,
+        origin.0 + entry.location.x,
+        origin.1 + entry.location.y,
         entry.size.width,
         entry.size.height,
     ))
@@ -139,7 +189,22 @@ fn navigation_child_rect(
 pub(crate) fn collect_entries<Msg>(document: &Widget<'_, Msg>) -> Vec<TableOfContentsEntry> {
     let mut entries = Vec::new();
     collect_entries_impl(document, &mut entries);
+    assign_outline_depths(&mut entries);
     entries
+}
+
+fn assign_outline_depths(entries: &mut [TableOfContentsEntry]) {
+    let mut ancestors = Vec::new();
+    for entry in entries {
+        while ancestors
+            .last()
+            .is_some_and(|ancestor: &HeadingLevel| ancestor.index() >= entry.level.index())
+        {
+            ancestors.pop();
+        }
+        entry.depth = ancestors.len();
+        ancestors.push(entry.level);
+    }
 }
 
 /// Returns a heading's vertical position relative to the document content node.
@@ -296,6 +361,7 @@ fn collect_entries_impl<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<TableOf
         entries.push(TableOfContentsEntry {
             title: content.clone(),
             level: *level,
+            depth: 0,
         });
         return;
     }
@@ -368,169 +434,6 @@ fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<Table
     }
 }
 
-pub(crate) fn root_style(style: &Style) -> Style {
-    Style {
-        flex_direction: FlexDirection::Column,
-        ..style.clone()
-    }
-}
-
-pub(crate) fn navigation_style() -> Style {
-    Style {
-        flex_direction: FlexDirection::Column,
-        size: Size {
-            width: Dimension::percent(1.0),
-            height: Dimension::auto(),
-        },
-        min_size: Size::zero(),
-        padding: Rect::length(TABLE_OF_CONTENTS_NAVIGATION_PADDING),
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(4.0),
-        },
-        flex_shrink: 1.0,
-        ..Style::default()
-    }
-}
-
-pub(crate) fn navigation_title_style() -> Style {
-    Style {
-        size: Size {
-            width: Dimension::percent(1.0),
-            height: Dimension::auto(),
-        },
-        flex_shrink: 0.0,
-        ..Style::default()
-    }
-}
-
-pub(crate) fn entry_style(level: HeadingLevel) -> Style {
-    let mut style = navigation_title_style();
-    style.padding = Rect::length(4.0_f32);
-    style.padding.left = LengthPercentage::length(8.0 + level.index() as f32 * 16.0);
-    style
-}
-
-pub(crate) fn viewport_style() -> Style {
-    Style {
-        flex_direction: FlexDirection::Column,
-        size: Size {
-            width: Dimension::percent(1.0),
-            height: Dimension::auto(),
-        },
-        min_size: Size::zero(),
-        flex_grow: 1.0,
-        flex_shrink: 1.0,
-        ..Style::default()
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use cosmic_text::FontSystem;
-    use taffy::prelude::{Dimension, Size};
-    use winit::dpi::PhysicalSize;
-
-    use super::*;
-    use crate::engine::widget_state::{ScrollState, WidgetState};
-    use crate::layout::{build_taffy_tree, compute_layout};
-
-    fn fixed_style(width: f32, height: f32) -> Style {
-        Style {
-            size: Size {
-                width: Dimension::length(width),
-                height: Dimension::length(height),
-            },
-            ..Style::default()
-        }
-    }
-
-    fn document() -> Widget<'static, ()> {
-        Widget::Column {
-            style: Style::default(),
-            children: vec![
-                Widget::heading(HeadingLevel::H1, "Overview", fixed_style(320.0, 36.0)),
-                Widget::Spacer {
-                    style: fixed_style(320.0, 96.0),
-                },
-                Widget::heading(HeadingLevel::H2, "Installation", fixed_style(320.0, 32.0)),
-            ],
-        }
-    }
-
-    #[test]
-    fn discovers_headings_and_resolves_their_document_offsets() {
-        let document = document();
-        let table =
-            Widget::table_of_contents("Contents", document, fixed_style(320.0, 200.0)).with_id(42);
-        let states = HashMap::from([(42, WidgetState::Scroll(ScrollState::default()))]);
-        let fonts = Rc::new(RefCell::new(FontSystem::new()));
-        let mut taffy = TaffyTree::new();
-        let root = build_taffy_tree(&mut taffy, &table, fonts.clone(), &states);
-        compute_layout(
-            &mut taffy,
-            root,
-            PhysicalSize::new(320, 200),
-            fonts,
-            &crate::render::RichTextRenderer::default(),
-        );
-
-        let Widget::TableOfContents { child, .. } = &table else {
-            panic!("expected a TableOfContents widget");
-        };
-        let entries = collect_entries(child);
-        let nodes = layout_nodes(&taffy, root).unwrap();
-        let first_offset = entry_offset_y(child, &taffy, nodes.content, 0).unwrap();
-        let second_offset = entry_offset_y(child, &taffy, nodes.content, 1).unwrap();
-        let viewport_height = taffy.layout(nodes.viewport).unwrap().size.height;
-        let content_height = taffy.layout(nodes.content).unwrap().size.height;
-
-        assert_eq!(entries[0].title, "Overview");
-        assert_eq!(entries[1].level, HeadingLevel::H2);
-        assert!(second_offset > first_offset);
-        assert!(content_height > viewport_height);
-        assert!(
-            entry_rect(&taffy, root, 1).unwrap().top > entry_rect(&taffy, root, 0).unwrap().top
-        );
-    }
-
-    #[test]
-    fn long_navigation_keeps_a_document_viewport() {
-        let document: Widget<'_, ()> = Widget::Column {
-            style: Style::default(),
-            children: (0..16)
-                .map(|index| -> Widget<'_, ()> {
-                    Widget::heading(
-                        HeadingLevel::H2,
-                        format!("Section {index}"),
-                        fixed_style(320.0, 28.0),
-                    )
-                })
-                .collect(),
-        };
-        let table =
-            Widget::table_of_contents("Contents", document, fixed_style(320.0, 220.0)).with_id(43);
-        let states = HashMap::from([(43, WidgetState::Scroll(ScrollState::default()))]);
-        let fonts = Rc::new(RefCell::new(FontSystem::new()));
-        let mut taffy = TaffyTree::new();
-        let root = build_taffy_tree(&mut taffy, &table, fonts.clone(), &states);
-        compute_layout(
-            &mut taffy,
-            root,
-            PhysicalSize::new(320, 220),
-            fonts,
-            &crate::render::RichTextRenderer::default(),
-        );
-
-        let nodes = layout_nodes(&taffy, root).unwrap();
-        let navigation_height = taffy.layout(nodes.navigation).unwrap().size.height;
-        let viewport_height = taffy.layout(nodes.viewport).unwrap().size.height;
-
-        assert!(navigation_content_height(&taffy, root).unwrap() > navigation_height);
-        assert!(viewport_height > 0.0);
-    }
-}
+#[path = "table_of_contents/tests.rs"]
+mod tests;

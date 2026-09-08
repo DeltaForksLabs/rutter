@@ -19,11 +19,8 @@ use crate::widget::{
     CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     CONTEXT_MENU_VIEWPORT_MARGIN, ContextMenuEntry, DialogAction, DialogPosition, POPOVER_GAP,
     POPOVER_VIEWPORT_MARGIN, Widget, estimate_context_menu_height, estimate_context_menu_width,
-    resolve_table_of_contents_navigation_id,
 };
-use crate::widgets::table_of_contents::{
-    collect_entries, entry_offset_y, entry_rect, layout_nodes,
-};
+use crate::widgets::table_of_contents::{entry_offset_y, entry_rects, layout_nodes, title_rect};
 
 const ACCORDION_HEADER_H: f32 = 44.0;
 const MODAL_MAX_CARD_W: f32 = 480.0;
@@ -1073,15 +1070,12 @@ fn table_of_contents_hit<Msg: Clone>(
     path: &mut Vec<usize>,
 ) -> Option<HitResult<Msg>> {
     let table_id = widget.resolved_id(path)?;
-    if let Some(index) = table_of_contents_entry_index(
-        child,
-        taffy,
-        node_id,
-        table_abs,
-        table_id,
-        widget_states,
-        mouse,
-    ) {
+    if let Some(hit) =
+        table_of_contents_accordion_hit(widget, taffy, node_id, table_abs, path, mouse)
+    {
+        return Some(hit);
+    }
+    if let Some(index) = table_of_contents_entry_index(taffy, node_id, table_abs, mouse) {
         let target_y = layout_nodes(taffy, node_id)
             .and_then(|nodes| entry_offset_y(child, taffy, nodes.content, index))
             .unwrap_or(0.0);
@@ -1104,13 +1098,29 @@ fn table_of_contents_hit<Msg: Clone>(
     )
 }
 
-fn table_of_contents_entry_index<Msg>(
-    child: &Widget<Msg>,
+fn table_of_contents_accordion_hit<Msg: Clone>(
+    widget: &Widget<Msg>,
     taffy: &TaffyTree<RutterContext>,
     node_id: NodeId,
     table_abs: Point,
-    table_id: u64,
-    widget_states: &HashMap<u64, WidgetState>,
+    path: &[usize],
+    mouse: Point,
+) -> Option<HitResult<Msg>> {
+    let on_toggle = widget.table_of_contents_accordion()?.on_toggle().clone();
+    let header = title_rect(taffy, node_id)?;
+    if !table_entry_contains(header, table_abs, mouse) {
+        return None;
+    }
+    Some(HitResult::Message {
+        focus_id: widget.table_of_contents_accordion_focus_id(path),
+        msg: on_toggle,
+    })
+}
+
+fn table_of_contents_entry_index(
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    table_abs: Point,
     mouse: Point,
 ) -> Option<usize> {
     let nodes = layout_nodes(taffy, node_id)?;
@@ -1124,24 +1134,9 @@ fn table_of_contents_entry_index<Msg>(
     if !navigation_rect.contains(mouse) {
         return None;
     }
-    let offset_y = widget_states
-        .get(&resolve_table_of_contents_navigation_id(table_id))
-        .and_then(WidgetState::as_scroll)
-        .map(|state| state.offset_y)
-        .unwrap_or(0.0);
-    collect_entries(child)
-        .iter()
-        .enumerate()
-        .find_map(|(index, _)| {
-            entry_rect(taffy, node_id, index)
-                .map(|rect| offset_table_of_contents_navigation_rect(rect, offset_y))
-                .filter(|rect| table_entry_contains(*rect, table_abs, mouse))
-                .map(|_| index)
-        })
-}
-
-fn offset_table_of_contents_navigation_rect(rect: SkiaRect, offset_y: f32) -> SkiaRect {
-    SkiaRect::from_xywh(rect.left, rect.top - offset_y, rect.width(), rect.height())
+    entry_rects(taffy, node_id)
+        .into_iter()
+        .position(|rect| table_entry_contains(rect, table_abs, mouse))
 }
 
 fn table_entry_contains(rect: SkiaRect, table_abs: Point, mouse: Point) -> bool {
@@ -1316,7 +1311,6 @@ fn collect_stateful_ids_impl<Msg>(
         Widget::TableOfContents { child, .. } => {
             let table_id = widget.resolved_id(path).unwrap();
             out.push((table_id, "scroll"));
-            out.push((resolve_table_of_contents_navigation_id(table_id), "scroll"));
             path.push(0);
             collect_stateful_ids_impl(child, out, path);
             path.pop();
@@ -2339,14 +2333,6 @@ fn table_of_contents_scroll_focus<Msg>(
     )
     .contains(mouse)
     {
-        let navigation_id = resolve_table_of_contents_navigation_id(table_id);
-        if widget_states
-            .get(&navigation_id)
-            .and_then(WidgetState::as_scroll)
-            .is_some_and(|state| state.content_height > state.viewport_h)
-        {
-            return Some(navigation_id);
-        }
         return Some(table_id);
     }
     let viewport = taffy.layout(nodes.viewport).ok()?;
@@ -2685,32 +2671,6 @@ fn table_of_contents_scrollbar_hit<Msg>(
 ) -> Option<ScrollbarDragHit> {
     let table_id = widget.resolved_id(path)?;
     let nodes = layout_nodes(taffy, node_id)?;
-    let navigation = taffy.layout(nodes.navigation).ok()?;
-    let navigation_abs = Point::new(
-        table_abs.x + navigation.location.x,
-        table_abs.y + navigation.location.y,
-    );
-    if SkiaRect::from_xywh(
-        navigation_abs.x,
-        navigation_abs.y,
-        navigation.size.width,
-        navigation.size.height,
-    )
-    .contains(mouse)
-    {
-        let navigation_id = resolve_table_of_contents_navigation_id(table_id);
-        let navigation_state = widget_states.get(&navigation_id)?.as_scroll()?;
-        if navigation_state.content_height <= navigation_state.viewport_h {
-            return None;
-        }
-        return table_of_contents_scrollbar(
-            navigation_id,
-            navigation_abs,
-            navigation,
-            navigation_state,
-            mouse,
-        );
-    }
     let viewport = taffy.layout(nodes.viewport).ok()?;
     let viewport_abs = Point::new(
         table_abs.x + viewport.location.x,
@@ -3328,7 +3288,7 @@ mod tests {
                 .with_id(71);
         let states = HashMap::from([(71, WidgetState::Scroll(ScrollState::default()))]);
         let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(320, 220));
-        let link = crate::widgets::table_of_contents::entry_rect(&taffy, root, 1).unwrap();
+        let link = crate::widgets::table_of_contents::entry_rects(&taffy, root)[1];
 
         let hit = hit_test(
             &widget,
@@ -3402,7 +3362,7 @@ mod tests {
     }
 
     #[test]
-    fn table_of_contents_navigation_scrolls_to_offscreen_links() {
+    fn table_of_contents_navigation_has_no_independent_scroll_state() {
         let document: Widget<'_, Msg> = Widget::Column {
             style: Style::default(),
             children: (0..16)
@@ -3415,36 +3375,27 @@ mod tests {
                 })
                 .collect(),
         };
-        let widget =
-            Widget::table_of_contents("Contents", document, fixed_size_style(320.0, 220.0))
-                .with_id(83);
+        let options = crate::TableOfContentsOptions::new(2).unwrap();
+        let widget = Widget::table_of_contents_with_options(
+            "Contents",
+            document,
+            fixed_size_style(320.0, 220.0),
+            options,
+        )
+        .with_id(83);
         let layout_states = HashMap::from([(83, WidgetState::Scroll(ScrollState::default()))]);
         let (taffy, root) = test_layout(&widget, &layout_states, PhysicalSize::new(320, 220));
         let nodes = crate::widgets::table_of_contents::layout_nodes(&taffy, root).unwrap();
         let navigation = taffy.layout(nodes.navigation).unwrap();
-        let content_height =
-            crate::widgets::table_of_contents::navigation_content_height(&taffy, root).unwrap();
-        let navigation_id = crate::widget::resolve_table_of_contents_navigation_id(83);
-        let entry = crate::widgets::table_of_contents::entry_rect(&taffy, root, 12).unwrap();
-        let max_offset = (content_height - navigation.size.height).max(0.0);
-        let offset_y = (entry.center_y() - navigation.location.y - navigation.size.height * 0.5)
-            .clamp(0.0, max_offset);
-        let states = HashMap::from([
-            (83, WidgetState::Scroll(ScrollState::default())),
-            (
-                navigation_id,
-                WidgetState::Scroll(ScrollState {
-                    offset_y,
-                    content_height,
-                    viewport_h: navigation.size.height,
-                }),
-            ),
-        ]);
+        let entry = crate::widgets::table_of_contents::entry_rects(&taffy, root)[15];
+        let states = HashMap::from([(83, WidgetState::Scroll(ScrollState::default()))]);
         let navigation_mouse = Point::new(
             navigation.location.x + 8.0,
             navigation.location.y + navigation.size.height * 0.5,
         );
-        let link_mouse = Point::new(entry.center_x(), entry.center_y() - offset_y);
+        let link_mouse = Point::new(entry.center_x(), entry.center_y());
+        let mut stateful = Vec::new();
+        collect_stateful_ids(&widget, &mut stateful);
 
         assert_eq!(
             find_scroll_focus(
@@ -3455,8 +3406,10 @@ mod tests {
                 Point::new(0.0, 0.0),
                 &states,
             ),
-            Some(navigation_id)
+            Some(83)
         );
+        assert_eq!(stateful, vec![(83, "scroll")]);
+        assert!(entry.bottom <= taffy.layout(root).unwrap().size.height);
         assert!(matches!(
             hit_test(
                 &widget,
@@ -3466,7 +3419,41 @@ mod tests {
                 Point::new(0.0, 0.0),
                 &states,
             ),
-            Some(HitResult::TableOfContentsActivate { index: 12, .. })
+            Some(HitResult::TableOfContentsActivate { index: 15, .. })
+        ));
+    }
+
+    #[test]
+    fn collapsed_table_of_contents_accordion_only_activates_its_header() {
+        let options =
+            crate::TableOfContentsOptions::default().with_accordion_state(false, Msg::Toggle);
+        let widget = Widget::table_of_contents_with_options(
+            "Contents",
+            Widget::heading(HeadingLevel::H2, "Overview", fixed_size_style(320.0, 32.0)),
+            fixed_size_style(320.0, 220.0),
+            options,
+        )
+        .with_id(84);
+        let states = HashMap::from([(84, WidgetState::Scroll(ScrollState::default()))]);
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(320, 220));
+        let header = crate::widgets::table_of_contents::title_rect(&taffy, root).unwrap();
+
+        let hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(header.center_x(), header.center_y()),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+
+        assert!(crate::widgets::table_of_contents::entry_rects(&taffy, root).is_empty());
+        assert!(matches!(
+            hit,
+            Some(HitResult::Message {
+                focus_id: Some(_),
+                msg: Msg::Toggle,
+            })
         ));
     }
 

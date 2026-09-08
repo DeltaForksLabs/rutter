@@ -52,7 +52,7 @@ pub use search::{
     SearchConfigError, SearchLabels, SearchMatch, SearchMatcher, SearchScoreFn, SearchSuggestions,
     filter_ranked,
 };
-pub use table_of_contents::HeadingLevel;
+pub use table_of_contents::{HeadingLevel, TableOfContentsConfigError, TableOfContentsOptions};
 pub use theme::Theme;
 pub use time::{
     ClockConfig, ClockError, ClockFormat, ClockTime, HourCycle, LocalTimeResolution, TimeOfDay,
