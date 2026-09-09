@@ -52,6 +52,11 @@ pub use search::{
     SearchConfigError, SearchLabels, SearchMatch, SearchMatcher, SearchScoreFn, SearchSuggestions,
     filter_ranked,
 };
+pub use table::{
+    TableAlignment, TableCell, TableColumn, TableColumnKey, TableColumnWidth, TableConfigError,
+    TableMetrics, TableModel, TableOptions, TableRow, TableRowKey, TableSelection, TableSort,
+    TableSortDirection, TableSorting,
+};
 pub use table_of_contents::{HeadingLevel, TableOfContentsConfigError, TableOfContentsOptions};
 pub use theme::Theme;
 pub use time::{
@@ -64,7 +69,9 @@ pub use widget::{
     VirtualSelection, Widget, WidgetConfigError, validate_counter, validate_slider,
     validate_virtual_grid, validate_virtual_list,
 };
-pub use widgets::{calendar, carousel, dropdown_menu, rich_text, search, table_of_contents, time};
+pub use widgets::{
+    calendar, carousel, dropdown_menu, rich_text, search, table, table_of_contents, time,
+};
 
 // ── Re-exports de dependências públicas ──────────────────────
 pub use arboard;

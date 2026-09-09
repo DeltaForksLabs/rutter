@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use crate::layout::{SCROLLBAR_W, VIRTUAL_GRID_GAP, VIRTUAL_GRID_PADDING};
 use crate::widgets::carousel::CarouselState;
 use crate::widgets::dropdown_menu::DropdownMenuState;
+use crate::widgets::table::TableState;
 
 // ── (mantidos da Fase 3) ──────────────────────────────────────
 
@@ -492,6 +493,7 @@ pub enum WidgetState {
     Carousel(CarouselState),
     VList(VirtualListState),
     VGrid(VirtualGridState),
+    Table(TableState),
 }
 
 impl WidgetState {
@@ -689,6 +691,20 @@ impl WidgetState {
     pub fn as_vgrid_mut(&mut self) -> Option<&mut VirtualGridState> {
         if let Self::VGrid(s) = self {
             Some(s)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn as_table(&self) -> Option<&TableState> {
+        if let Self::Table(state) = self {
+            Some(state)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn as_table_mut(&mut self) -> Option<&mut TableState> {
+        if let Self::Table(state) = self {
+            Some(state)
         } else {
             None
         }

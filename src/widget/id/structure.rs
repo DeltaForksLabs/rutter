@@ -32,6 +32,7 @@ pub(crate) enum WidgetStructureKind {
     TableOfContents,
     TableOfContentsAccordionCollapsed,
     TableOfContentsAccordionExpanded,
+    Table,
     Tooltip,
     AccordionCollapsed,
     AccordionExpanded,
@@ -86,6 +87,7 @@ impl WidgetStructureKind {
             Self::TableOfContents => "TableOfContents",
             Self::TableOfContentsAccordionCollapsed => "TableOfContentsAccordionCollapsed",
             Self::TableOfContentsAccordionExpanded => "TableOfContentsAccordionExpanded",
+            Self::Table => "Table",
             Self::Tooltip => "Tooltip",
             Self::AccordionCollapsed => "AccordionCollapsed",
             Self::AccordionExpanded => "AccordionExpanded",
@@ -149,6 +151,7 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
             }
         }
         Widget::TableOfContents { .. } => Kind::TableOfContents,
+        Widget::Table { .. } => Kind::Table,
         Widget::Tooltip { .. } => Kind::Tooltip,
         Widget::Accordion { expanded: true, .. } => Kind::AccordionExpanded,
         Widget::Accordion { .. } => Kind::AccordionCollapsed,

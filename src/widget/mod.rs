@@ -17,6 +17,9 @@ use crate::widgets::carousel::CarouselConfig;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
 use crate::widgets::search::SearchSuggestions;
+use crate::widgets::table::{
+    TableColumnKey, TableModel, TableOptions, TableRowKey, TableSelection,
+};
 use crate::widgets::table_of_contents::{
     HeadingLevel, TableOfContentsAccordion, TableOfContentsOptions,
 };
@@ -354,6 +357,13 @@ pub(crate) enum WidgetIdTag {
     TableOfContentsNavigation = 36,
     TableOfContentsViewport = 37,
     TableOfContentsAccordion = 38,
+    Table = 39,
+    TableHeader = 40,
+    TableRow = 41,
+    TableCell = 42,
+    TableEmpty = 43,
+    TableHeaderRow = 44,
+    TableEmptyRow = 45,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +415,43 @@ pub(crate) fn resolve_table_of_contents_viewport_id(table_id: u64) -> u64 {
 
 pub(crate) fn resolve_table_of_contents_accordion_id(table_id: u64) -> u64 {
     resolve_subwidget_id(table_id, WidgetIdTag::TableOfContentsAccordion, 0)
+}
+
+pub(crate) fn resolve_table_header_id(table_id: u64, column: TableColumnKey) -> u64 {
+    resolve_keyed_subwidget_id(table_id, WidgetIdTag::TableHeader, &[column.get()])
+}
+
+pub(crate) fn resolve_table_row_id(table_id: u64, row: TableRowKey) -> u64 {
+    resolve_keyed_subwidget_id(table_id, WidgetIdTag::TableRow, &[row.get()])
+}
+
+pub(crate) fn resolve_table_cell_id(
+    table_id: u64,
+    row: TableRowKey,
+    column: TableColumnKey,
+) -> u64 {
+    resolve_keyed_subwidget_id(table_id, WidgetIdTag::TableCell, &[row.get(), column.get()])
+}
+
+pub(crate) fn resolve_table_empty_id(table_id: u64) -> u64 {
+    resolve_keyed_subwidget_id(table_id, WidgetIdTag::TableEmpty, &[])
+}
+
+pub(crate) fn resolve_table_header_row_id(table_id: u64) -> u64 {
+    resolve_keyed_subwidget_id(table_id, WidgetIdTag::TableHeaderRow, &[])
+}
+
+pub(crate) fn resolve_table_empty_row_id(table_id: u64) -> u64 {
+    resolve_keyed_subwidget_id(table_id, WidgetIdTag::TableEmptyRow, &[])
+}
+
+fn resolve_keyed_subwidget_id(base_id: u64, tag: WidgetIdTag, keys: &[u64]) -> u64 {
+    let mut hash = hash_widget_id_segment(WIDGET_ID_HASH_OFFSET, tag as u64);
+    hash = hash_widget_id_segment(hash, base_id);
+    for key in keys {
+        hash = hash_widget_id_segment(hash, key.wrapping_add(1));
+    }
+    hash | AUTOMATIC_ID_NAMESPACE_BIT
 }
 
 fn hash_widget_id_segment(hash: u64, segment: u64) -> u64 {
@@ -580,6 +627,13 @@ pub enum Widget<'a, Msg> {
         child: Box<Widget<'a, Msg>>,
         style: Style,
         options: TableOfContentsOptions<Msg>,
+    },
+    /// A keyed, text-based table with sticky headers and controlled interactions.
+    Table {
+        id: u64,
+        model: TableModel<'a>,
+        options: TableOptions<'a, Msg>,
+        style: Style,
     },
     Tooltip {
         child: Box<Widget<'a, Msg>>,
@@ -1126,6 +1180,51 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a semantic table with sticky headers and no row interaction.
+    ///
+    /// ```rust
+    /// use rutter::{TableColumn, TableColumnKey, TableColumnWidth, TableModel, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// let columns = vec![TableColumn::new(
+    ///     TableColumnKey::new(1),
+    ///     "Name",
+    ///     TableColumnWidth::flex(120.0, 1).unwrap(),
+    /// )];
+    /// let model = TableModel::new("People", columns, Vec::new()).unwrap();
+    /// let table: Widget<'_, ()> = Widget::table(model, Style::default());
+    /// ```
+    pub fn table(model: TableModel<'a>, style: Style) -> Self {
+        Self::table_with_options(model, TableOptions::default(), style)
+    }
+
+    /// Creates a semantic table with controlled sorting and row selection.
+    ///
+    /// ```rust
+    /// use rutter::{TableColumn, TableColumnKey, TableColumnWidth, TableModel, TableOptions, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// let columns = vec![TableColumn::new(
+    ///     TableColumnKey::new(1), "Name", TableColumnWidth::fixed(160.0).unwrap(),
+    /// )];
+    /// let model = TableModel::new("People", columns, Vec::new()).unwrap();
+    /// let table: Widget<'_, ()> = Widget::table_with_options(
+    ///     model, TableOptions::default(), Style::default(),
+    /// );
+    /// ```
+    pub fn table_with_options(
+        model: TableModel<'a>,
+        options: TableOptions<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::Table {
+            id: AUTO_ID,
+            model,
+            options,
+            style,
+        }
+    }
+
     pub fn accordion(
         title: &'a str,
         expanded: bool,
@@ -1638,6 +1737,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Spinner { id: slot, .. }
             | Self::ScrollView { id: slot, .. }
             | Self::TableOfContents { id: slot, .. }
+            | Self::Table { id: slot, .. }
             | Self::Accordion { id: slot, .. }
             | Self::TabBar { id: slot, .. }
             | Self::Modal { id: slot, .. }
@@ -1722,6 +1822,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::TableOfContents { id, .. } => {
                 (Some(*id), WidgetIdTag::TableOfContents, "TableOfContents")
             }
+            Self::Table { id, .. } => (Some(*id), WidgetIdTag::Table, "Table"),
             Self::Accordion { id, .. } => (Some(*id), WidgetIdTag::Accordion, "Accordion"),
             Self::TabBar { id, .. } => (Some(*id), WidgetIdTag::TabBar, "TabBar"),
             Self::Modal { id, .. } => (Some(*id), WidgetIdTag::Modal, "Modal"),
@@ -1778,6 +1879,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::VirtualGridContent { .. }
             | Self::VirtualGridWithSelection { .. }
             | Self::VirtualGridContentWithSelection { .. } => self.resolved_id(path),
+            Self::Table { .. } if self.table_is_interactive() => self.resolved_id(path),
             _ => None,
         }
     }
@@ -1830,6 +1932,16 @@ impl<'a, Msg> Widget<'a, Msg> {
             return None;
         };
         options.accordion()
+    }
+
+    pub(crate) fn table_is_interactive(&self) -> bool {
+        let Self::Table { model, options, .. } = self else {
+            return false;
+        };
+        let selectable = !matches!(options.selection(), TableSelection::None);
+        let sortable = options.sorting().is_some()
+            && model.columns().iter().any(|column| column.is_sortable());
+        selectable || sortable
     }
 
     pub(crate) fn search_popup_id(&self, path: &[usize]) -> Option<u64> {

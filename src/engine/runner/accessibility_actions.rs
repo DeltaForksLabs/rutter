@@ -52,11 +52,15 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             accesskit::Action::Collapse => self.collapse_accessibility_target(target),
             accesskit::Action::Increment => self.adjust_accessibility_target(target, true),
             accesskit::Action::Decrement => self.adjust_accessibility_target(target, false),
+            accesskit::Action::ScrollIntoView => self.reveal_table_accessibility_target(target),
             _ => false,
         }
     }
 
     fn focus_accessibility_target(&mut self, target: u64) -> bool {
+        if self.focus_table_accessibility_target(target) {
+            return true;
+        }
         if self.focus_search_accessibility_target(target) {
             return true;
         }
@@ -109,6 +113,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn click_accessibility_target(&mut self, target: u64) -> bool {
+        if self.click_table_accessibility_target(target) {
+            return true;
+        }
         if self.click_search_accessibility_target(target) {
             return true;
         }

@@ -37,9 +37,9 @@ use crate::render::dropdown_menu_overlay::{
     DropdownMenuOverlayHit, hit_test_dropdown_menu_overlay,
 };
 use crate::render::hit_test::{
-    ContextMenuOverlayHit, HitResult, PopoverOverlayHit, find_context_menu_target_with_metadata,
-    find_scroll_focus, find_scrollbar_drag_hit, hit_test, hit_test_context_menu_overlay,
-    hit_test_popover_overlay,
+    ContextMenuOverlayHit, HitResult, PopoverOverlayHit, ScrollbarAxis,
+    find_context_menu_target_with_metadata, find_scroll_focus, find_scrollbar_drag_hit, hit_test,
+    hit_test_context_menu_overlay, hit_test_popover_overlay,
 };
 use crate::render::search_overlay::{
     SearchOverlayHit, SearchOverlayHitInput, hit_test_search_overlay,
@@ -57,6 +57,7 @@ mod dropdown_keyboard;
 mod dropdown_pointer;
 mod search;
 mod secondary_pointer;
+mod table;
 mod virtual_selection;
 
 use self::secondary_pointer::{SecondaryPointerBlockers, has_visible_blocking_overlay};
@@ -403,7 +404,17 @@ fn virtual_multi_pointer_index<Msg>(id: u64, hit: Option<HitResult<Msg>>) -> Opt
     }
 }
 
-fn apply_scrollbar_drag_offset(widget_state: &mut WidgetState, offset: f32) {
+fn apply_scrollbar_drag_offset(widget_state: &mut WidgetState, offset: f32, axis: ScrollbarAxis) {
+    if let Some(table_state) = widget_state.as_table_mut() {
+        match axis {
+            ScrollbarAxis::Horizontal => table_state.set_scroll_x(offset),
+            ScrollbarAxis::Vertical => table_state.set_scroll_y(offset),
+        }
+        return;
+    }
+    if axis == ScrollbarAxis::Horizontal {
+        return;
+    }
     if let Some(scroll_state) = widget_state.as_scroll_mut() {
         scroll_state.offset_y = offset;
         return;
@@ -442,10 +453,12 @@ fn next_clock_tick_at() -> Instant {
 #[derive(Debug, Clone)]
 struct ScrollDrag {
     id: u64,
-    start_y: f32,
+    axis: ScrollbarAxis,
+    reversed: bool,
+    start_pointer: f32,
     start_offset: f32,
-    viewport_h: f32,
-    content_h: f32,
+    viewport_extent: f32,
+    content_extent: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -614,14 +627,25 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
 
                 if let Some(drag) = &self.scroll_drag {
                     let id = drag.id;
-                    let dy_px = self.cursor_pos.y - drag.start_y;
-                    let scrollable = (drag.content_h - drag.viewport_h).max(1.0);
-                    let track_h = drag.viewport_h
-                        - (drag.viewport_h / drag.content_h * drag.viewport_h).max(20.0);
-                    let ratio = scrollable / track_h.max(1.0);
-                    let new_offset = (drag.start_offset + dy_px * ratio).clamp(0.0, scrollable);
+                    let pointer = match drag.axis {
+                        ScrollbarAxis::Horizontal => self.cursor_pos.x,
+                        ScrollbarAxis::Vertical => self.cursor_pos.y,
+                    };
+                    let pointer_delta = pointer - drag.start_pointer;
+                    let signed_delta = if drag.reversed {
+                        -pointer_delta
+                    } else {
+                        pointer_delta
+                    };
+                    let scrollable = (drag.content_extent - drag.viewport_extent).max(1.0);
+                    let track = drag.viewport_extent
+                        - (drag.viewport_extent / drag.content_extent * drag.viewport_extent)
+                            .max(20.0);
+                    let ratio = scrollable / track.max(1.0);
+                    let new_offset =
+                        (drag.start_offset + signed_delta * ratio).clamp(0.0, scrollable);
                     if let Some(ws) = self.engine.widget_states.get_mut(&id) {
-                        apply_scrollbar_drag_offset(ws, new_offset);
+                        apply_scrollbar_drag_offset(ws, new_offset, drag.axis);
                     }
                     self.redraw();
                     return;
@@ -1235,6 +1259,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 self.activate_table_of_contents_entry(id, focus_id, target_y);
                             }
                         }
+                        HitResult::TableActivate { id, target } => {
+                            if button == winit::event::MouseButton::Left {
+                                self.activate_table_target(id, target);
+                            }
+                        }
                     }
                     self.redraw();
                 } else {
@@ -1794,6 +1823,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(runtime) = self.engine.runtime_caches.carousels.get(&id).cloned() {
             return self.scroll_carousel(id, delta_x, delta_y, &runtime);
         }
+        if self.engine.runtime_caches.tables.contains_key(&id) {
+            return self.scroll_table(id, delta_x, delta_y);
+        }
         self.scroll_vertical_target(id, delta_y)
     }
 
@@ -1901,14 +1933,20 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     fn begin_scroll_drag(&mut self, hit: crate::render::hit_test::ScrollbarDragHit) {
         self.engine.cancel_smooth_scroll(hit.id);
         if let Some(widget_state) = self.engine.widget_states.get_mut(&hit.id) {
-            apply_scrollbar_drag_offset(widget_state, hit.start_offset);
+            apply_scrollbar_drag_offset(widget_state, hit.start_offset, hit.axis);
         }
+        let start_pointer = match hit.axis {
+            ScrollbarAxis::Horizontal => self.cursor_pos.x,
+            ScrollbarAxis::Vertical => self.cursor_pos.y,
+        };
         self.scroll_drag = Some(ScrollDrag {
             id: hit.id,
-            start_y: self.cursor_pos.y,
+            axis: hit.axis,
+            reversed: hit.reversed,
+            start_pointer,
             start_offset: hit.start_offset,
-            viewport_h: hit.viewport_h,
-            content_h: hit.content_h,
+            viewport_extent: hit.viewport_extent,
+            content_extent: hit.content_extent,
         });
         self.engine.active_scroll_id = Some(hit.id);
         self.redraw();
@@ -2012,6 +2050,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return false;
         }
         if self.handle_dropdown_key(fid, key) {
+            return true;
+        }
+        if self.handle_table_key(fid, key) {
             return true;
         }
 
@@ -3000,7 +3041,7 @@ mod tests {
     };
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
-    use crate::render::hit_test::HitResult;
+    use crate::render::hit_test::{HitResult, ScrollbarAxis};
 
     #[test]
     fn wheel_deltas_preserve_horizontal_trackpad_input() {
@@ -3044,9 +3085,9 @@ mod tests {
         let mut list = WidgetState::VList(VirtualListState::default());
         let mut grid = WidgetState::VGrid(VirtualGridState::default());
 
-        apply_scrollbar_drag_offset(&mut scroll, 120.0);
-        apply_scrollbar_drag_offset(&mut list, 240.0);
-        apply_scrollbar_drag_offset(&mut grid, 360.0);
+        apply_scrollbar_drag_offset(&mut scroll, 120.0, ScrollbarAxis::Vertical);
+        apply_scrollbar_drag_offset(&mut list, 240.0, ScrollbarAxis::Vertical);
+        apply_scrollbar_drag_offset(&mut grid, 360.0, ScrollbarAxis::Vertical);
 
         assert_eq!(scroll.as_scroll().map(|state| state.offset_y), Some(120.0));
         assert_eq!(list.as_vlist().map(|state| state.scroll_y), Some(240.0));

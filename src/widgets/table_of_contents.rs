@@ -397,6 +397,7 @@ fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<Table
         Widget::Popover { anchor, .. } => collect_entries_impl(anchor, entries),
         Widget::ScrollView { .. }
         | Widget::TableOfContents { .. }
+        | Widget::Table { .. }
         | Widget::Accordion { .. }
         | Widget::Modal { .. }
         | Widget::Dialog { .. }

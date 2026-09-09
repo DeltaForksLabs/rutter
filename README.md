@@ -65,7 +65,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Text and rich-content button variants, checkbox, switch, radio, slider, counter, select, progress bar, and spinner.
 - Text input, search bar, and multiline text area.
 - Scroll view, virtual list, virtual grid, and horizontally virtualized carousel for large item sets.
-- Semantic headings and an automatic table of contents for scrollable documents.
+- Semantic textual tables with sticky headers, controlled selection and sorting, two-axis scrolling, and automatic table of contents for documents.
 - Calendar, date picker, dropdown menu, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
 
 ### Overlays
@@ -140,6 +140,7 @@ cargo run -- carousel
 cargo run -- multi_window
 cargo run -- rich_text
 cargo run -- advanced
+cargo run -- table
 cargo run -- table_of_contents
 ```
 
@@ -381,7 +382,39 @@ Rendering is performed through a Skia `Canvas`. The engine selects the best avai
 - `Divider`
 - `ScrollView`
 - `Heading`
+- `Table`
 - `TableOfContents`
+
+`Widget::table(model, style)` renders a semantic textual table with a sticky header and virtualized uniform-height rows. `TableModel` validates a non-empty accessible name, unique stable row and column keys, one cell per column, and at most one row-header column. Columns accept fixed widths or weighted flex widths plus logical start, center, and end alignment; overflowing content scrolls horizontally and vertically, including mirrored behavior for RTL locales.
+
+Use `Widget::table_with_options` with `TableOptions` for a custom empty label and row metrics, controlled single or multiple row selection, and controlled sorting. Pointer and keyboard interaction supports keyed selection, Ctrl/Command toggles, Shift ranges, sortable headers, two-dimensional navigation, Home/End, Page Up/Page Down, Space, and Enter. AccessKit clients receive table/grid, row, header, cell, row-header, selection, sort-direction, active-descendant, and scroll metadata.
+
+```rust
+use rutter::{
+    TableCell, TableColumn, TableColumnKey, TableColumnWidth, TableModel,
+    TableOptions, TableRow, TableRowKey, TableSelection, Widget,
+};
+use taffy::prelude::Style;
+
+let columns = vec![TableColumn::new(
+    TableColumnKey::new(1),
+    "Name",
+    TableColumnWidth::flex(120.0, 1).unwrap(),
+).with_row_header(true)];
+let rows = vec![TableRow::new(
+    TableRowKey::new(10),
+    [TableCell::new("Ada")],
+)];
+let model = TableModel::new("People", columns, rows).unwrap();
+let selected = [TableRowKey::new(10)];
+let options = TableOptions::default().with_selection(TableSelection::multiple(
+    &selected,
+    std::convert::identity,
+));
+let table = Widget::table_with_options(model, options, Style::default());
+```
+
+Migration note for `0.33.0`: `Widget` now includes the `Table` variant. Because `Widget` is an exhaustive public enum, direct matches must add a `Table` arm.
 
 `Widget::heading(level, content, style)` adds a semantic document heading. Wrap a document in `Widget::table_of_contents(title, child, style)` to generate a single-column inline navigation list from its visible headings. Heading indentation follows the discovered outline rather than absolute `H1`–`H6` values, so a document that starts at `H3` does not begin nested; deeper descendants share one readable visual child indent. Selecting a navigation link, pressing Enter or Space on its keyboard focus target, or activating its accessibility link scrolls the document smoothly to the matching heading.
 

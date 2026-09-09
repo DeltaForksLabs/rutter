@@ -5,8 +5,10 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::num::NonZeroU64;
 
 use super::{
-    AUTO_ID, DialogAction, Widget, WidgetIdTag, resolve_table_of_contents_navigation_id,
-    resolve_table_of_contents_viewport_id,
+    AUTO_ID, DialogAction, Widget, WidgetIdTag, resolve_table_cell_id, resolve_table_empty_id,
+    resolve_table_empty_row_id, resolve_table_header_id, resolve_table_header_row_id,
+    resolve_table_of_contents_navigation_id, resolve_table_of_contents_viewport_id,
+    resolve_table_row_id,
 };
 use crate::widgets::dropdown_menu::{DropdownMenuEntryKind, entry_at_path};
 use crate::widgets::table_of_contents::collect_entries;
@@ -292,6 +294,7 @@ impl WidgetIdVisitor {
                 collect_entries(child).len(),
                 origin,
             ),
+            Widget::Table { model, .. } => self.register_table(model, widget, origin),
             _ => Ok(()),
         }
     }
@@ -349,6 +352,97 @@ impl WidgetIdVisitor {
                 WidgetIdTag::TableOfContentsEntry,
                 "TableOfContentsEntry",
                 &[index],
+                origin,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn register_table<Msg>(
+        &mut self,
+        model: &crate::widgets::table::TableModel<'_>,
+        widget: &Widget<'_, Msg>,
+        origin: WidgetIdOrigin,
+    ) -> WidgetIdResult {
+        let table_id = widget.resolved_id(&self.path).unwrap();
+        self.register_table_headers(model, table_id, origin)?;
+        if model.rows().is_empty() {
+            self.insert_subwidget(
+                resolve_table_empty_row_id(table_id),
+                WidgetIdTag::TableEmptyRow,
+                "TableEmptyRow",
+                &[1],
+                origin,
+            )?;
+            return self.insert_subwidget(
+                resolve_table_empty_id(table_id),
+                WidgetIdTag::TableEmpty,
+                "TableEmpty",
+                &[1, 0],
+                origin,
+            );
+        }
+        self.register_table_rows(model, table_id, origin)
+    }
+
+    fn register_table_headers(
+        &mut self,
+        model: &crate::widgets::table::TableModel<'_>,
+        table_id: u64,
+        origin: WidgetIdOrigin,
+    ) -> WidgetIdResult {
+        self.insert_subwidget(
+            resolve_table_header_row_id(table_id),
+            WidgetIdTag::TableHeaderRow,
+            "TableHeaderRow",
+            &[0],
+            origin,
+        )?;
+        for (column_index, column) in model.columns().iter().enumerate() {
+            self.insert_subwidget(
+                resolve_table_header_id(table_id, column.key()),
+                WidgetIdTag::TableHeader,
+                "TableHeader",
+                &[0, column_index],
+                origin,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn register_table_rows(
+        &mut self,
+        model: &crate::widgets::table::TableModel<'_>,
+        table_id: u64,
+        origin: WidgetIdOrigin,
+    ) -> WidgetIdResult {
+        for (row_index, row) in model.rows().iter().enumerate() {
+            self.insert_subwidget(
+                resolve_table_row_id(table_id, row.key()),
+                WidgetIdTag::TableRow,
+                "TableRow",
+                &[row_index + 1],
+                origin,
+            )?;
+            self.register_table_cells(model, table_id, row_index, origin)?;
+        }
+        Ok(())
+    }
+
+    fn register_table_cells(
+        &mut self,
+        model: &crate::widgets::table::TableModel<'_>,
+        table_id: u64,
+        row_index: usize,
+        origin: WidgetIdOrigin,
+    ) -> WidgetIdResult {
+        let row = &model.rows()[row_index];
+        for (column_index, column) in model.columns().iter().enumerate() {
+            self.insert_subwidget(
+                resolve_table_cell_id(table_id, row.key(), column.key()),
+                WidgetIdTag::TableCell,
+                "TableCell",
+                &[row_index + 1, column_index],
                 origin,
             )?;
         }

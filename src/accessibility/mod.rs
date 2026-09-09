@@ -28,8 +28,13 @@ use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
 mod action_queue;
 mod dropdown_menu;
 mod search;
+mod table;
 
 pub(crate) use action_queue::AccessibilityActionInbox;
+
+#[cfg(test)]
+#[path = "table_tests.rs"]
+mod table_tests;
 
 const ROOT_ACCESSIBILITY_ID: u64 = 0;
 
@@ -197,6 +202,9 @@ impl<'a> AccessibilityBuilder<'a> {
             }
             Widget::TableOfContents { child, .. } => {
                 self.collect_table_of_contents(widget, child, node, frame, path)
+            }
+            Widget::Table { model, options, .. } => {
+                table::collect(self, widget, model, options, frame, path)
             }
             Widget::Popover {
                 anchor,

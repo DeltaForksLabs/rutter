@@ -11,6 +11,7 @@ pub mod gpu;
 pub mod multi_runner;
 pub mod run_error;
 pub mod runner;
+mod table_runtime;
 mod virtual_selection;
 pub mod widget_state;
 
@@ -35,6 +36,7 @@ use self::gpu::{
     BackendType, GraphicsBackend, GraphicsError, create_best_backend, create_required_backend,
 };
 use self::run_error::RutterRunError;
+use self::table_runtime::{TableAccessibilityTarget, TableRuntime};
 use self::virtual_selection::{VirtualMultiSelectionLayout, VirtualMultiSelectionState};
 use self::widget_state::{
     AnimState, ContextMenuState, ModalState, PopoverState, ScrollState, SearchState, SelectState,
@@ -57,10 +59,17 @@ use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache};
 use crate::theme::Theme;
 use crate::widget::id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
-use crate::widget::{DialogAction, VirtualSelection, Widget, resolve_search_suggestion_id};
+use crate::widget::{
+    DialogAction, VirtualSelection, Widget, resolve_search_suggestion_id, resolve_table_cell_id,
+    resolve_table_header_id, resolve_table_row_id,
+};
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
 use crate::widgets::search::{
     SEARCH_BAR_LEADING_TEXT_INSET, SearchMatch, SearchMatcher, SearchSuggestions, filter_ranked,
+};
+use crate::widgets::table::{
+    TableModel, TableOptions, TableState, allocate_column_widths, calculate_viewport,
+    minimum_content_width,
 };
 use crate::widgets::table_of_contents::{
     TableOfContentsLayoutNodes, collect_entries, entry_offset_y, layout_nodes,
@@ -342,6 +351,9 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::VirtualGridContentWithSelection { .. } => {
             out.push(widget.keyboard_focus_id(path).unwrap())
         }
+        Widget::Table { .. } if widget.table_is_interactive() => {
+            out.push(widget.keyboard_focus_id(path).unwrap())
+        }
         Widget::TabBar { tabs, .. } => {
             for index in 0..tabs.len() {
                 if let Some(focus_id) = widget.tab_focus_id(path, index) {
@@ -598,6 +610,8 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     carousels: HashMap<u64, CarouselRuntime<Msg>>,
     vlists: HashMap<u64, VListRuntime<Msg>>,
     vgrids: HashMap<u64, VGridRuntime<Msg>>,
+    tables: HashMap<u64, TableRuntime<Msg>>,
+    table_targets: HashMap<u64, TableAccessibilityTarget>,
     virtual_multi_selections: HashMap<u64, VirtualMultiSelectionRuntime<Msg>>,
     toast_dismiss: HashMap<u64, Msg>,
     popover_dismiss: HashMap<u64, Msg>,
@@ -641,6 +655,8 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             carousels: HashMap::new(),
             vlists: HashMap::new(),
             vgrids: HashMap::new(),
+            tables: HashMap::new(),
+            table_targets: HashMap::new(),
             virtual_multi_selections: HashMap::new(),
             toast_dismiss: HashMap::new(),
             popover_dismiss: HashMap::new(),
@@ -673,6 +689,8 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.carousels.clear();
         self.vlists.clear();
         self.vgrids.clear();
+        self.tables.clear();
+        self.table_targets.clear();
         self.virtual_multi_selections.clear();
         self.toast_dismiss.clear();
         self.popover_dismiss.clear();
@@ -803,6 +821,7 @@ fn widget_state_matches_seed(state: &WidgetState, kind: &str) -> bool {
             | (WidgetState::Carousel(_), "carousel")
             | (WidgetState::VList(_), "vlist")
             | (WidgetState::VGrid(_), "vgrid")
+            | (WidgetState::Table(_), "table")
     )
 }
 
@@ -869,6 +888,112 @@ fn sync_virtual_grid_runtime<Msg: Clone>(
     insert_runtime_entry(&mut caches.vgrids, resolved_id, runtime, "virtual grids")?;
     sync_virtual_grid_viewport(states, resolved_id, layout);
     Ok(())
+}
+
+fn sync_table_runtime<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+    widget: &Widget<Msg>,
+    model: &TableModel<'_>,
+    options: &TableOptions<'_, Msg>,
+    layout: Option<&taffy::tree::Layout>,
+    path: &[usize],
+) -> Result<(), WidgetIdError> {
+    let table_id = widget.resolved_id(path).unwrap();
+    let size = layout
+        .map(|layout| (layout.size.width, layout.size.height))
+        .unwrap_or_default();
+    let viewport = calculate_viewport(
+        size,
+        options.metrics(),
+        model.rows().len(),
+        minimum_content_width(model.columns()),
+    );
+    let widths = allocate_column_widths(model.columns(), viewport.body.width);
+    let runtime = TableRuntime::new(model, options, widths, viewport.body.height);
+    sync_table_state(states, table_id, model, viewport, &runtime);
+    sync_table_accessibility_targets(caches, table_id, model)?;
+    insert_runtime_entry(&mut caches.tables, table_id, runtime, "tables")
+}
+
+fn sync_table_accessibility_targets<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    table_id: u64,
+    model: &TableModel<'_>,
+) -> Result<(), WidgetIdError> {
+    for column in model.columns() {
+        insert_table_target(
+            caches,
+            resolve_table_header_id(table_id, column.key()),
+            table_id,
+            crate::widgets::table::TableCellTarget::header(column.key()),
+        )?;
+    }
+    sync_table_body_targets(caches, table_id, model)
+}
+
+fn sync_table_body_targets<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    table_id: u64,
+    model: &TableModel<'_>,
+) -> Result<(), WidgetIdError> {
+    let Some(first_column) = model.columns().first() else {
+        return Ok(());
+    };
+    for row in model.rows() {
+        let row_target =
+            crate::widgets::table::TableCellTarget::body(row.key(), first_column.key());
+        insert_table_target(
+            caches,
+            resolve_table_row_id(table_id, row.key()),
+            table_id,
+            row_target,
+        )?;
+        for column in model.columns() {
+            let target = crate::widgets::table::TableCellTarget::body(row.key(), column.key());
+            insert_table_target(
+                caches,
+                resolve_table_cell_id(table_id, row.key(), column.key()),
+                table_id,
+                target,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn insert_table_target<Msg: Clone>(
+    caches: &mut WidgetRuntimeCaches<Msg>,
+    id: u64,
+    parent_id: u64,
+    target: crate::widgets::table::TableCellTarget,
+) -> Result<(), WidgetIdError> {
+    insert_runtime_entry(
+        &mut caches.table_targets,
+        id,
+        TableAccessibilityTarget { parent_id, target },
+        "table accessibility targets",
+    )
+}
+
+fn sync_table_state<Msg>(
+    states: &mut HashMap<u64, WidgetState>,
+    table_id: u64,
+    model: &TableModel<'_>,
+    viewport: crate::widgets::table::geometry::TableViewport,
+    runtime: &TableRuntime<Msg>,
+) {
+    let Some(state) = states
+        .get_mut(&table_id)
+        .and_then(WidgetState::as_table_mut)
+    else {
+        return;
+    };
+    state.sync_viewport(viewport);
+    state.reconcile(model);
+    if state.active.is_none() {
+        state.active = runtime.initial_target();
+    }
 }
 
 fn sync_virtual_list_viewport(
@@ -1440,6 +1565,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     "carousel" => WidgetState::Carousel(CarouselState::default()),
                     "vlist" => WidgetState::VList(VirtualListState::default()),
                     "vgrid" => WidgetState::VGrid(VirtualGridState::default()),
+                    "table" => WidgetState::Table(TableState::default()),
                     _ => WidgetState::Anim(AnimState::default()),
                 });
             if *kind == "anim" {
@@ -2223,6 +2349,17 @@ impl<A: AppLogic> RutterEngine<A> {
                     path,
                 )?;
                 path.pop();
+            }
+            Widget::Table { model, options, .. } => {
+                sync_table_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    model,
+                    options,
+                    layout,
+                    path,
+                )?;
             }
             Widget::VirtualList {
                 item_height,

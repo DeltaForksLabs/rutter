@@ -403,6 +403,7 @@ impl LayoutBlueprint {
             | Widget::SearchBar { style, .. }
             | Widget::Slider { style, .. }
             | Widget::CarouselView { style, .. }
+            | Widget::Table { style, .. }
             | Widget::VirtualList { style, .. }
             | Widget::VirtualListContent { style, .. }
             | Widget::VirtualListWithSelection { style, .. }

@@ -20,6 +20,7 @@ pub(crate) mod rich_text;
 pub(crate) mod search_overlay;
 pub(crate) mod select_overlay;
 mod svg;
+mod table;
 mod table_of_contents;
 pub mod text;
 mod text_cache;
@@ -47,6 +48,7 @@ pub use self::image_cache::ImageRenderCache;
 use self::overlay_hover::{OverlayHoverInput, overlay_hover_routes};
 use self::rich_text::RichTextDirection;
 pub use self::rich_text::RichTextRenderer;
+use self::table::{TableRenderInput, draw_table};
 use self::table_of_contents::{TableOfContentsNavigationInput, draw_navigation};
 use self::text::{
     TextBufferCache, TextDrawInput, TextShapeRequest, draw_single_line_text, draw_text_line,
@@ -1668,6 +1670,24 @@ fn draw_widgets_impl<'w, Msg>(
             });
         }
         Widget::Toast { .. } => {}
+        Widget::Table { model, options, .. } => {
+            let state = resolved_id
+                .and_then(|id| widget_states.get(&id))
+                .and_then(WidgetState::as_table);
+            draw_table(TableRenderInput {
+                canvas,
+                model,
+                options,
+                state,
+                size,
+                mouse: local_mouse,
+                focused: is_focused,
+                shows_interaction_effects,
+                direction: node_layout_direction(taffy, node),
+                font_cache,
+                theme,
+            });
+        }
         Widget::CarouselView {
             item_count,
             items,

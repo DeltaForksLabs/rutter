@@ -20,6 +20,11 @@ use crate::widget::{
     CONTEXT_MENU_VIEWPORT_MARGIN, ContextMenuEntry, DialogAction, DialogPosition, POPOVER_GAP,
     POPOVER_VIEWPORT_MARGIN, Widget, estimate_context_menu_height, estimate_context_menu_width,
 };
+use crate::widgets::table::{
+    TableCellTarget, TableHit, TableLayoutDirection, TableModel, TableOptions, TableSelection,
+    TableState, allocate_column_widths, calculate_viewport, hit_test as hit_test_table,
+    minimum_content_width,
+};
 use crate::widgets::table_of_contents::{entry_offset_y, entry_rects, layout_nodes, title_rect};
 
 const ACCORDION_HEADER_H: f32 = 44.0;
@@ -91,6 +96,10 @@ pub enum HitResult<Msg> {
         focus_id: u64,
         target_y: f32,
     },
+    TableActivate {
+        id: u64,
+        target: TableCellTarget,
+    },
 }
 
 pub type InputChangeCallback<Msg> = fn(String) -> Msg;
@@ -100,9 +109,17 @@ pub type InputProperties<Msg> = (InputChangeCallback<Msg>, Option<Msg>, bool, bo
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollbarDragHit {
     pub id: u64,
+    pub axis: ScrollbarAxis,
+    pub reversed: bool,
     pub start_offset: f32,
-    pub viewport_h: f32,
-    pub content_h: f32,
+    pub viewport_extent: f32,
+    pub content_extent: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbarAxis {
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -757,6 +774,17 @@ fn hit_test_impl<Msg: Clone>(
             widget_states,
             path,
         ),
+        Widget::Table { model, options, .. } => table_hit(
+            widget,
+            model,
+            options,
+            taffy,
+            node_id,
+            mouse,
+            abs_pos,
+            widget_states,
+            path,
+        ),
         Widget::Tooltip { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
             path.push(0);
@@ -1059,6 +1087,114 @@ fn hit_test_impl<Msg: Clone>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn table_hit<Msg>(
+    widget: &Widget<Msg>,
+    model: &TableModel<'_>,
+    options: &TableOptions<'_, Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs_pos: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &[usize],
+) -> Option<HitResult<Msg>> {
+    let table_id = widget.resolved_id(path)?;
+    let layout = taffy.layout(node_id).ok()?;
+    let state = widget_states.get(&table_id).and_then(WidgetState::as_table);
+    let (viewport, widths, scroll, direction) = table_geometry(
+        model,
+        options,
+        (layout.size.width, layout.size.height),
+        state,
+        table_node_direction(taffy, node_id),
+    );
+    let point = (mouse.x - abs_pos.x, mouse.y - abs_pos.y);
+    match hit_test_table(
+        point,
+        &widths,
+        model.rows().len(),
+        viewport,
+        scroll,
+        direction,
+        options.metrics(),
+    )? {
+        TableHit::Header { column } => table_header_hit(widget, model, options, path, column),
+        TableHit::Cell { row, column } => table_cell_hit(widget, model, options, path, row, column),
+        TableHit::HorizontalScrollbar | TableHit::VerticalScrollbar | TableHit::EmptyState => {
+            Some(HitResult::ScrollFocus(table_id))
+        }
+    }
+}
+
+fn table_header_hit<Msg>(
+    widget: &Widget<Msg>,
+    model: &TableModel<'_>,
+    options: &TableOptions<'_, Msg>,
+    path: &[usize],
+    column: usize,
+) -> Option<HitResult<Msg>> {
+    let column = model.columns().get(column)?;
+    if options.sorting().is_none() || !column.is_sortable() {
+        return Some(HitResult::ScrollFocus(widget.resolved_id(path)?));
+    }
+    Some(HitResult::TableActivate {
+        id: widget.resolved_id(path)?,
+        target: TableCellTarget::header(column.key()),
+    })
+}
+
+fn table_cell_hit<Msg>(
+    widget: &Widget<Msg>,
+    model: &TableModel<'_>,
+    options: &TableOptions<'_, Msg>,
+    path: &[usize],
+    row: usize,
+    column: usize,
+) -> Option<HitResult<Msg>> {
+    let row = model.rows().get(row)?;
+    let column = model.columns().get(column)?;
+    if matches!(options.selection(), TableSelection::None) {
+        return Some(HitResult::ScrollFocus(widget.resolved_id(path)?));
+    }
+    Some(HitResult::TableActivate {
+        id: widget.resolved_id(path)?,
+        target: TableCellTarget::body(row.key(), column.key()),
+    })
+}
+
+fn table_geometry<Msg>(
+    model: &TableModel<'_>,
+    options: &TableOptions<'_, Msg>,
+    size: (f32, f32),
+    state: Option<&TableState>,
+    direction: TableLayoutDirection,
+) -> (
+    crate::widgets::table::geometry::TableViewport,
+    Vec<f32>,
+    (f32, f32),
+    TableLayoutDirection,
+) {
+    let viewport = calculate_viewport(
+        size,
+        options.metrics(),
+        model.rows().len(),
+        minimum_content_width(model.columns()),
+    );
+    let widths = allocate_column_widths(model.columns(), viewport.body.width);
+    let scroll = state
+        .map(|state| (state.scroll_x, state.scroll_y))
+        .unwrap_or_default();
+    (viewport, widths, scroll, direction)
+}
+
+fn table_node_direction(taffy: &TaffyTree<RutterContext>, node_id: NodeId) -> TableLayoutDirection {
+    match taffy.style(node_id).map(|style| style.direction) {
+        Ok(Direction::Rtl) => TableLayoutDirection::Rtl,
+        _ => TableLayoutDirection::Ltr,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn table_of_contents_hit<Msg: Clone>(
     widget: &Widget<Msg>,
     child: &Widget<Msg>,
@@ -1315,6 +1451,7 @@ fn collect_stateful_ids_impl<Msg>(
             collect_stateful_ids_impl(child, out, path);
             path.pop();
         }
+        Widget::Table { .. } => out.push((widget.resolved_id(path).unwrap(), "table")),
         Widget::ProgressBar {
             indeterminate: true,
             ..
@@ -2242,6 +2379,7 @@ fn find_scroll_focus_impl<Msg>(
             widget_states,
             path,
         ),
+        Widget::Table { .. } => Some(widget.resolved_id(path).unwrap()),
         Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
         | Widget::VirtualListWithSelection { .. }
@@ -2398,9 +2536,11 @@ fn scrollbar_drag_hit(
     let start_offset = scrollbar_press_offset(track, thumb, metrics, mouse)?;
     Some(ScrollbarDragHit {
         id,
+        axis: ScrollbarAxis::Vertical,
+        reversed: false,
         start_offset,
-        viewport_h: metrics.viewport_h,
-        content_h: metrics.content_h,
+        viewport_extent: metrics.viewport_h,
+        content_extent: metrics.content_h,
     })
 }
 
@@ -2501,6 +2641,17 @@ fn find_scrollbar_drag_hit_impl<Msg>(
         Widget::TableOfContents { child, .. } => table_of_contents_scrollbar_hit(
             widget,
             child,
+            taffy,
+            node_id,
+            mouse,
+            abs_pos,
+            widget_states,
+            path,
+        ),
+        Widget::Table { model, options, .. } => table_scrollbar_hit(
+            widget,
+            model,
+            options,
             taffy,
             node_id,
             mouse,
@@ -2655,6 +2806,129 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             result
         }
         _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn table_scrollbar_hit<Msg>(
+    widget: &Widget<Msg>,
+    model: &TableModel<'_>,
+    options: &TableOptions<'_, Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    node_id: NodeId,
+    mouse: Point,
+    abs_pos: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &[usize],
+) -> Option<ScrollbarDragHit> {
+    let table_id = widget.resolved_id(path)?;
+    let layout = taffy.layout(node_id).ok()?;
+    let state = widget_states.get(&table_id)?.as_table()?;
+    let (viewport, _, scroll, direction) = table_geometry(
+        model,
+        options,
+        (layout.size.width, layout.size.height),
+        Some(state),
+        table_node_direction(taffy, node_id),
+    );
+    let local = (mouse.x - abs_pos.x, mouse.y - abs_pos.y);
+    let thumbs = state.thumbs(direction);
+    if let (Some(track), Some(thumb)) = (viewport.horizontal_track, thumbs.horizontal)
+        && track.contains(local.0, local.1)
+    {
+        return Some(table_axis_drag_hit(
+            table_id,
+            ScrollbarAxis::Horizontal,
+            direction == TableLayoutDirection::Rtl,
+            track,
+            thumb,
+            local.0,
+            scroll.0,
+            viewport.content_width,
+        ));
+    }
+    let (track, thumb) = (viewport.vertical_track?, thumbs.vertical?);
+    track.contains(local.0, local.1).then(|| {
+        table_axis_drag_hit(
+            table_id,
+            ScrollbarAxis::Vertical,
+            false,
+            track,
+            thumb,
+            local.1,
+            scroll.1,
+            viewport.content_height,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn table_axis_drag_hit(
+    id: u64,
+    axis: ScrollbarAxis,
+    reversed: bool,
+    track: crate::widgets::table::geometry::TableRect,
+    thumb: crate::widgets::table::geometry::TableRect,
+    pointer: f32,
+    current_offset: f32,
+    content_extent: f32,
+) -> ScrollbarDragHit {
+    let horizontal = axis == ScrollbarAxis::Horizontal;
+    let track_start = if horizontal { track.x } else { track.y };
+    let track_extent = if horizontal {
+        track.width
+    } else {
+        track.height
+    };
+    let thumb_start = if horizontal { thumb.x } else { thumb.y };
+    let thumb_extent = if horizontal {
+        thumb.width
+    } else {
+        thumb.height
+    };
+    let pointer_in_thumb = pointer >= thumb_start && pointer <= thumb_start + thumb_extent;
+    let start_offset = if pointer_in_thumb {
+        current_offset
+    } else {
+        table_track_offset(
+            pointer,
+            track_start,
+            track_extent,
+            thumb_extent,
+            content_extent,
+            reversed,
+        )
+    };
+    ScrollbarDragHit {
+        id,
+        axis,
+        reversed,
+        start_offset,
+        viewport_extent: track_extent,
+        content_extent,
+    }
+}
+
+fn table_track_offset(
+    pointer: f32,
+    track_start: f32,
+    track_extent: f32,
+    thumb_extent: f32,
+    content_extent: f32,
+    reversed: bool,
+) -> f32 {
+    let travel = (track_extent - thumb_extent).max(0.0);
+    let thumb_start = (pointer - track_start - thumb_extent * 0.5).clamp(0.0, travel);
+    let max_offset = (content_extent - track_extent).max(0.0);
+    let visual = if travel > 0.0 {
+        thumb_start / travel * max_offset
+    } else {
+        0.0
+    };
+    if reversed {
+        max_offset - visual
+    } else {
+        visual
     }
 }
 
@@ -3643,3 +3917,7 @@ mod tests {
         assert!((center.top - 200.0).abs() < f32::EPSILON);
     }
 }
+
+#[cfg(test)]
+#[path = "table_hit_tests.rs"]
+mod table_hit_tests;

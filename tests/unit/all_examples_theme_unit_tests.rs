@@ -9,9 +9,10 @@ use super::{
     image_viewer_demo::ImageViewerDemo, modal_toast_demo::ModalToastDemo,
     multi_window_demo::MultiWindowDemo, popover_demo::PopoverDemo, progress_demo::ProgressDemo,
     rich_text_demo::RichTextDemo, scroll_demo::ScrollDemo, search_bar_demo::SearchBarDemo,
-    slider_demo::SliderDemo, tab_demo::TabDemo, table_of_contents_demo::TableOfContentsDemo,
-    text_area_demo::TextAreaDemo, text_input_demo::TextInputDemo, time_demo::TimeDemo,
-    vgrid_demo::VGridDemo, vlist_demo::VListDemo,
+    slider_demo::SliderDemo, tab_demo::TabDemo, table_demo::TableDemo,
+    table_of_contents_demo::TableOfContentsDemo, text_area_demo::TextAreaDemo,
+    text_input_demo::TextInputDemo, time_demo::TimeDemo, vgrid_demo::VGridDemo,
+    vlist_demo::VListDemo,
 };
 
 #[test]
@@ -36,6 +37,7 @@ fn composite_examples_start_dark_with_theme_selectors() {
     assert_single_window_theme::<ProgressDemo>();
     assert_single_window_theme::<RichTextDemo>();
     assert_single_window_theme::<ScrollDemo>();
+    assert_single_window_theme::<TableDemo>();
     assert_single_window_theme::<TableOfContentsDemo>();
 }
 
