@@ -1,6 +1,9 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
-use crate::app::{ContextMenuTarget, LogicalPointerPosition, SecondaryPointerContext};
+use crate::app::{
+    ContextMenuTarget, LogicalPointerPosition, SecondaryPointerContext, ShortcutEvent,
+    ShortcutOutcome,
+};
 use crate::engine::run_error::RutterRunError;
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
@@ -182,6 +185,34 @@ pub trait MultiWindowAppLogic {
         _target: ContextMenuTarget,
     ) -> Option<Self::Message> {
         None
+    }
+    /// Matches a pressed key delivered to one focused Rutter surface.
+    ///
+    /// This hook is surface-local and does not register a global desktop shortcut. Return
+    /// [`ShortcutOutcome::Message`] to route a typed message through [`Self::update`], or leave
+    /// unmatched events as [`ShortcutOutcome::Ignored`] so normal input and widget behavior runs.
+    ///
+    /// ```rust
+    /// use rutter::{ShortcutEvent, ShortcutKey, ShortcutNamedKey, ShortcutOutcome, SurfaceId};
+    ///
+    /// #[derive(Clone, Debug)]
+    /// enum Message { Close }
+    ///
+    /// fn shortcut(surface: SurfaceId, event: ShortcutEvent) -> ShortcutOutcome<Message> {
+    ///     match (surface, event.key) {
+    ///         (_, ShortcutKey::Named(ShortcutNamedKey::Escape)) => ShortcutOutcome::Message(Message::Close),
+    ///         _ => ShortcutOutcome::Ignored,
+    ///     }
+    /// }
+    ///
+    /// let _ = shortcut;
+    /// ```
+    fn shortcut(
+        _state: &Self::State,
+        _surface: SurfaceId,
+        _event: ShortcutEvent,
+    ) -> ShortcutOutcome<Self::Message> {
+        ShortcutOutcome::Ignored
     }
     /// Returns the application theme.
     fn theme() -> crate::theme::Theme {

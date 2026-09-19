@@ -26,7 +26,8 @@ pub use input::{limits as input_limits, state as input_state};
 // ── Re-exports ergonômicos ───────────────────────────────────
 pub use app::{
     AppLogic, ContextMenuTarget, ContextMenuVirtualItem, LogicalPointerPosition,
-    PhysicalDesktopPosition, SecondaryPointerContext, SurfaceConfig,
+    PhysicalDesktopPosition, SecondaryPointerContext, ShortcutEvent, ShortcutKey, ShortcutNamedKey,
+    ShortcutOutcome, SurfaceConfig,
 };
 pub use calendar::{
     CalendarConfig, CalendarDate, CalendarError, CalendarLabels, CalendarMonth, WeekStart,

@@ -6,7 +6,10 @@ use std::marker::PhantomData;
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
 
-use crate::app::{AppLogic, ContextMenuTarget, LogicalPointerPosition, SecondaryPointerContext};
+use crate::app::{
+    AppLogic, ContextMenuTarget, LogicalPointerPosition, SecondaryPointerContext, ShortcutEvent,
+    ShortcutOutcome,
+};
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
 use crate::multi_window::{MultiWindowAppLogic, SurfaceCommand, SurfaceId};
@@ -75,6 +78,10 @@ impl<A: MultiWindowAppLogic> AppLogic for SurfaceAppAdapter<A> {
         A::context_menu_opening(&state.model, state.surface, target)
     }
 
+    fn shortcut(state: &Self::State, event: ShortcutEvent) -> ShortcutOutcome<Self::Message> {
+        A::shortcut(&state.model, state.surface, event)
+    }
+
     fn theme() -> Theme {
         A::theme()
     }
@@ -107,7 +114,7 @@ fn retain_secondary_pointer_commands<A: MultiWindowAppLogic>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ContextMenuVirtualItem;
+    use crate::app::{ContextMenuVirtualItem, ShortcutKey};
 
     fn pointer_test_view<'a, State>(_: &'a mut State, _: SurfaceId) -> Widget<'a, ()> {
         Widget::Spacer {
@@ -232,6 +239,53 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, Default)]
+    struct ShortcutState;
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum ShortcutMessage {
+        Dismiss(SurfaceId),
+    }
+
+    struct ShortcutApp;
+
+    impl MultiWindowAppLogic for ShortcutApp {
+        type State = ShortcutState;
+        type Message = ShortcutMessage;
+
+        fn new(_: &mut FontSystem) -> Self::State {
+            ShortcutState
+        }
+
+        fn view<'a>(_: &'a mut Self::State, _: SurfaceId) -> Widget<'a, Self::Message> {
+            Widget::Spacer {
+                style: Default::default(),
+            }
+        }
+
+        fn update(
+            _: &mut Self::State,
+            _: SurfaceId,
+            _: Self::Message,
+            _: &mut Clipboard,
+        ) -> Vec<SurfaceCommand> {
+            Vec::new()
+        }
+
+        fn shortcut(
+            _: &Self::State,
+            surface: SurfaceId,
+            event: ShortcutEvent,
+        ) -> ShortcutOutcome<Self::Message> {
+            match event.key {
+                ShortcutKey::Character(key) if key == "x" => {
+                    ShortcutOutcome::Message(ShortcutMessage::Dismiss(surface))
+                }
+                _ => ShortcutOutcome::Ignored,
+            }
+        }
+    }
+
     #[test]
     fn secondary_pointer_event_retains_source_position_and_commands() {
         let surface = SurfaceId::new(7);
@@ -284,6 +338,27 @@ mod tests {
         assert_eq!(
             message,
             Some(ContextMenuMessage::Select { surface, target })
+        );
+    }
+
+    #[test]
+    fn shortcut_forwards_the_source_surface_and_typed_event() {
+        let surface = SurfaceId::new(13);
+        let state = SurfaceAppState::new(surface, ShortcutState, 0);
+        let event = ShortcutEvent {
+            key: ShortcutKey::Character("x".into()),
+            control: false,
+            alt: false,
+            shift: false,
+            super_key: false,
+            repeat: false,
+        };
+
+        let outcome = SurfaceAppAdapter::<ShortcutApp>::shortcut(&state, event);
+
+        assert_eq!(
+            outcome,
+            ShortcutOutcome::Message(ShortcutMessage::Dismiss(surface))
         );
     }
 }

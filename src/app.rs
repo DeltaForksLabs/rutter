@@ -16,6 +16,11 @@ use crate::input_limits::{InputKind, InputLimits};
 use crate::render::text::TextShapeCacheLimits;
 use crate::widget::Widget;
 
+mod shortcut;
+
+pub(crate) use shortcut::shortcut_event_from_winit;
+pub use shortcut::{ShortcutEvent, ShortcutKey, ShortcutNamedKey, ShortcutOutcome};
+
 /// Logical client coordinates for a pointer event dispatched by Rutter.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LogicalPointerPosition {
@@ -375,6 +380,36 @@ pub trait AppLogic {
         None
     }
 
+    /// Matches a pressed key delivered to the focused Rutter surface.
+    ///
+    /// Return [`ShortcutOutcome::Message`] to dispatch a typed message through
+    /// [`Self::update`], [`ShortcutOutcome::Consumed`] to suppress the event without a message,
+    /// or [`ShortcutOutcome::Ignored`] to preserve text input, focus traversal, and built-in
+    /// widget navigation. Plain printable key events in a focused Rutter input, including Shift
+    /// variants, and IME commits bypass this hook so composition cannot become an accidental
+    /// shortcut. Modified character chords and named keys are offered before toolkit key routing.
+    ///
+    /// ```rust
+    /// use rutter::{AppLogic, ShortcutEvent, ShortcutKey, ShortcutOutcome};
+    ///
+    /// #[derive(Clone, Debug)]
+    /// enum Message { OpenLauncher }
+    ///
+    /// fn shortcut(event: ShortcutEvent) -> ShortcutOutcome<Message> {
+    ///     match (&event.key, event.control, event.repeat) {
+    ///         (ShortcutKey::Character(key), true, false) if key.eq_ignore_ascii_case("p") => {
+    ///             ShortcutOutcome::Message(Message::OpenLauncher)
+    ///         }
+    ///         _ => ShortcutOutcome::Ignored,
+    ///     }
+    /// }
+    ///
+    /// let _ = shortcut;
+    /// ```
+    fn shortcut(_state: &Self::State, _event: ShortcutEvent) -> ShortcutOutcome<Self::Message> {
+        ShortcutOutcome::Ignored
+    }
+
     /// Retorna o tema da aplicação.
     fn theme() -> crate::theme::Theme {
         crate::theme::Theme::default()
@@ -503,5 +538,23 @@ mod tests {
         let target = ContextMenuTarget::from_resolved_id(91);
 
         assert_eq!(LegacyPointerApp::context_menu_opening(&state, target), None);
+    }
+
+    #[test]
+    fn default_shortcut_hook_ignores_the_event() {
+        let state = LegacyPointerState::default();
+        let event = ShortcutEvent {
+            key: ShortcutKey::Character("p".into()),
+            control: true,
+            alt: false,
+            shift: false,
+            super_key: false,
+            repeat: false,
+        };
+
+        assert_eq!(
+            LegacyPointerApp::shortcut(&state, event),
+            ShortcutOutcome::Ignored
+        );
     }
 }

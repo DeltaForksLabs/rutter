@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::*;
+use crate::app::ShortcutKey;
 use winit::dpi::{PhysicalPosition, PhysicalSize, Position, Size};
 use winit::window::WindowLevel as WinitWindowLevel;
 
@@ -246,5 +247,22 @@ fn default_surface_event_hook_requires_no_application_changes() {
             SurfaceEvent::FocusChanged(false),
         )
         .is_empty()
+    );
+}
+
+#[test]
+fn default_shortcut_hook_requires_no_application_changes() {
+    let event = ShortcutEvent {
+        key: ShortcutKey::Character("p".into()),
+        control: true,
+        alt: false,
+        shift: false,
+        super_key: false,
+        repeat: false,
+    };
+
+    assert_eq!(
+        FakeMultiWindowLogic::shortcut(&(), SurfaceId::PRIMARY, event),
+        ShortcutOutcome::Ignored
     );
 }

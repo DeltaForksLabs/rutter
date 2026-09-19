@@ -1,5 +1,19 @@
 # Development Log
 
+## [2026-09-19T20:54:24-03:00] - Surface-Local Application Shortcuts - 0.34.0
+
+**Context:** Add typed, layout-aware keyboard shortcut hooks for single- and multi-window applications without exposing Winit input types.
+
+**Challenge:** Preserve IME and text composition, focus traversal, editing commands, widget navigation, and accessibility actions while allowing matched named keys and modifier chords to reach application state through the existing Elm update path.
+
+**Alternatives:** Returning `Option<Message>` keeps the hook minimal but forces applications to invent no-op messages to suppress key repeats. A three-state `ShortcutOutcome` keeps unmatched input transparent, dispatches typed messages normally, and permits explicit repeat consumption without a fabricated state transition.
+
+**Decision:** Normalize Winit logical keys into framework-owned character, named, dead, and unidentified variants plus modifier and repeat state. Route only pressed events for the focused surface; reserve printable unmodified input and IME commits for text composition, then offer named and modified events to the application before existing toolkit handling. Forward the multi-window hook through the surface adapter so `SurfaceId`, revision tracking, and `SurfaceCommand` collection remain intact.
+
+**Files Changed:** `src/app/shortcut.rs`, `src/app.rs`, `src/engine/runner/shortcut.rs`, runner event routing, the multi-window trait and adapter, root exports, focused tests, README documentation, and package version metadata.
+
+**Validation:** `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; focused shortcut tests; `cargo test --locked` (544 library tests, 33 binary tests, integration suites, and 281 doctests); `cargo clippy --locked --all-targets -- -D warnings`; and `git diff --check`.
+
 ## [2026-09-09T02:23:28-03:00] - Semantic Text Table - 0.33.0
 
 **Context:** Add a keyed textual table with sticky headers, controlled interaction, bidirectional scrolling, RTL layout, and assistive-technology semantics.

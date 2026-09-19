@@ -57,6 +57,7 @@ mod dropdown_keyboard;
 mod dropdown_pointer;
 mod search;
 mod secondary_pointer;
+mod shortcut;
 mod table;
 mod virtual_selection;
 
@@ -1325,9 +1326,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.redraw();
                 }
             }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed && !self.handle_text_commit(&event) =>
-            {
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if self.handle_application_shortcut(&event) || self.handle_text_commit(&event) {
+                    return;
+                }
                 if let Err(error) = self.refresh_layout_before_keyboard_input() {
                     self.terminate_for_error(el, error);
                     return;

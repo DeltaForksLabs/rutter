@@ -206,6 +206,35 @@ fn main() {
 }
 ```
 
+### Surface-local keyboard shortcuts
+
+`AppLogic::shortcut` receives normalized logical keys without exposing Winit types. Return `ShortcutOutcome::Message` to dispatch through the normal `update` path, `ShortcutOutcome::Consumed` to intentionally suppress an event such as a key repeat, or `ShortcutOutcome::Ignored` to keep Rutter's existing text editing, focus traversal, and focused-widget behavior.
+
+```rust
+use rutter::{ShortcutEvent, ShortcutKey, ShortcutNamedKey, ShortcutOutcome};
+
+impl AppLogic for App {
+    // `State`, `Message`, `new`, `view`, and `update` are unchanged.
+
+    fn shortcut(_: &State, event: ShortcutEvent) -> ShortcutOutcome<Msg> {
+        match (&event.key, event.control, event.repeat) {
+            (ShortcutKey::Character(key), true, false) if key.eq_ignore_ascii_case("p") => {
+                ShortcutOutcome::Message(Msg::OpenLauncher)
+            }
+            (ShortcutKey::Named(ShortcutNamedKey::Escape), _, false) => {
+                ShortcutOutcome::Message(Msg::DismissLauncher)
+            }
+            (_, _, true) => ShortcutOutcome::Consumed,
+            _ => ShortcutOutcome::Ignored,
+        }
+    }
+}
+```
+
+`ShortcutKey::Character` contains layout-aware logical text rather than a physical key position, while `ShortcutKey::Named` represents portable non-text keys. `ShortcutEvent` exposes Control, Alt, Shift, Super/Meta/Command, and repeat state. A focused Rutter input retains unmodified printable input, including Shift variants, before the hook; IME commits also bypass it. Named keys and modified chords reach the hook before Rutter's built-in routing, so only an explicitly matched `Message` or `Consumed` outcome overrides Tab traversal, Escape dismissal, editing commands, or widget navigation. AccessKit actions keep their separate existing path.
+
+`MultiWindowAppLogic::shortcut` receives the source `SurfaceId` in addition to the same event, allowing a panel or popup to implement its own local commands. This API does not register global desktop hotkeys or bypass compositor, portal, or X11 policy; platform adapters remain responsible for that capability.
+
 ### Multi-window applications
 
 `MultiWindowRunner` owns every native window, backend, AccessKit adapter, and input runtime. Applications use stable `SurfaceId` values and emit `SurfaceCommand` operations instead of creating Winit windows directly. Unknown events from failed backend probes are discarded before accessibility or rendering side effects. After the first surface commits, later windows reuse its backend type instead of repeating failed Vulkan/OpenGL probes on Wayland.
