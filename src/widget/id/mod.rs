@@ -10,6 +10,7 @@ use super::{
     resolve_table_of_contents_navigation_id, resolve_table_of_contents_viewport_id,
     resolve_table_row_id,
 };
+use crate::widget::custom::custom_accessibility_is_valid;
 use crate::widgets::dropdown_menu::{DropdownMenuEntryKind, entry_at_path};
 use crate::widgets::table_of_contents::collect_entries;
 pub use error::WidgetIdError;
@@ -183,6 +184,7 @@ impl WidgetIdVisitor {
         self.snapshot
             .structure
             .push((self.path.len(), widget_structure_kind(widget)));
+        self.validate_custom_accessibility(widget)?;
         let origin = self.register_primary(widget)?;
         self.register_subwidgets(widget, origin)?;
         self.visit_children(widget)
@@ -207,6 +209,16 @@ impl WidgetIdVisitor {
             } => self.visit_popover(anchor, content),
             _ => Ok(()),
         }
+    }
+
+    fn validate_custom_accessibility<Msg>(&self, widget: &Widget<'_, Msg>) -> WidgetIdResult {
+        let Widget::Custom { id, widget, .. } = widget else {
+            return Ok(());
+        };
+        if custom_accessibility_is_valid(widget.as_ref()) {
+            return Ok(());
+        }
+        Err(WidgetIdError::InvalidCustomAccessibility { value: id.get() })
     }
 
     fn visit_indexed<Msg>(&mut self, children: &[Widget<'_, Msg>]) -> WidgetIdResult {

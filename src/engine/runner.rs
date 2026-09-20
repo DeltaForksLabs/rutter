@@ -50,9 +50,11 @@ use crate::render::select_overlay::collector::{
 };
 use crate::render::select_overlay::hit_test_select_overlay;
 use crate::text_controls::{TextControlNormalizer, TextControlPolicy};
+use crate::widget::{CustomPoint, CustomPointerEvent, CustomSize};
 
 mod accessibility_actions;
 mod counter;
+mod custom;
 mod dropdown_keyboard;
 mod dropdown_pointer;
 mod search;
@@ -487,6 +489,7 @@ pub struct RutterRunner<A: AppLogic> {
     cursor_physical: PhysicalPosition<f64>,
     scroll_drag: Option<ScrollDrag>,
     virtual_multi_pointer_capture: Option<u64>,
+    custom_pointer_capture: Option<custom::CustomPointerCapture>,
     counter_hold_repeat: Option<counter::CounterHoldRepeat>,
     mouse_down: bool,
     last_click_time: std::time::Instant,
@@ -505,6 +508,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             cursor_physical: PhysicalPosition::new(0.0, 0.0),
             scroll_drag: None,
             virtual_multi_pointer_capture: None,
+            custom_pointer_capture: None,
             counter_hold_repeat: None,
             mouse_down: false,
             last_click_time: Instant::now(),
@@ -668,6 +672,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             self.terminate_for_error(el, error);
                             return;
                         }
+                    }
+                    if self.dispatch_captured_custom_move() {
+                        return;
                     }
                     if let Some(fid) = self.engine.focused_input_id()
                         && let Some(rect) = self.focused_input_rect
@@ -1265,6 +1272,31 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 self.activate_table_target(id, target);
                             }
                         }
+                        HitResult::CustomPointer {
+                            id,
+                            position,
+                            bounds,
+                            focuses_keyboard,
+                        } => {
+                            if button == winit::event::MouseButton::Left {
+                                if focuses_keyboard {
+                                    self.focus_widget(Some(id));
+                                }
+                                self.dispatch_custom_pointer(
+                                    id,
+                                    CustomPointerEvent::Press {
+                                        position: CustomPoint {
+                                            x: position.x,
+                                            y: position.y,
+                                        },
+                                        bounds: CustomSize {
+                                            width: bounds.0,
+                                            height: bounds.1,
+                                        },
+                                    },
+                                );
+                            }
+                        }
                     }
                     self.redraw();
                 } else {
@@ -1280,6 +1312,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             } => {
                 self.mouse_down = false;
                 self.counter_hold_repeat = None;
+                self.dispatch_captured_custom_release();
                 self.end_virtual_multi_pointer_capture();
                 if self.scroll_drag.take().is_some() {
                     self.redraw();
@@ -1295,6 +1328,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
                 self.mouse_down = false;
                 self.counter_hold_repeat = None;
+                self.custom_pointer_capture = None;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dropdown_target = match self.refresh_dropdown_scroll_target() {
@@ -2044,12 +2078,15 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
     }
 
-    fn handle_focused_widget_key(&mut self, key: &Key) -> bool {
+    fn handle_focused_widget_key(&mut self, key: &Key, repeat: bool) -> bool {
         let Some(fid) = self.engine.focused_widget_id else {
             return false;
         };
         if self.engine.runtime_caches.inputs.contains_key(&fid) {
             return false;
+        }
+        if self.dispatch_custom_keyboard(fid, key, repeat) {
+            return true;
         }
         if self.handle_dropdown_key(fid, key) {
             return true;
@@ -2601,7 +2638,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.handle_text_input(key);
             return;
         }
-        let _ = self.handle_focused_widget_key(key);
+        let _ = self.handle_focused_widget_key(key, repeat);
     }
 
     fn handle_tab(&mut self) {

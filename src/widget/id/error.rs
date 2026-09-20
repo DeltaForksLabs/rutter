@@ -61,6 +61,9 @@ pub enum WidgetIdError {
         first_key: Option<u64>,
         second_key: Option<u64>,
     },
+    InvalidCustomAccessibility {
+        value: u64,
+    },
 }
 
 impl Display for WidgetIdError {
@@ -143,6 +146,10 @@ impl Display for WidgetIdError {
                 "dropdown menu ID {menu_id} has indistinguishable label {label:?} at {} with key {first_key:?} and {} with key {second_key:?}; expected otherwise-identical sibling entries to have distinct explicit keys",
                 TreePath(first_path),
                 TreePath(second_path)
+            ),
+            Self::InvalidCustomAccessibility { value } => write!(
+                formatter,
+                "custom widget ID {value} declares visual-only interaction with accessibility actions; expected visual-only widgets to omit Click, Increment, and Decrement actions"
             ),
         }
     }

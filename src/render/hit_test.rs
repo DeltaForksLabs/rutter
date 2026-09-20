@@ -100,6 +100,12 @@ pub enum HitResult<Msg> {
         id: u64,
         target: TableCellTarget,
     },
+    CustomPointer {
+        id: u64,
+        position: Point,
+        bounds: (f32, f32),
+        focuses_keyboard: bool,
+    },
 }
 
 pub type InputChangeCallback<Msg> = fn(String) -> Msg;
@@ -753,6 +759,14 @@ fn hit_test_impl<Msg: Clone>(
         Widget::DropdownMenu { .. } => Some(HitResult::DropdownMenuToggle(
             widget.resolved_id(path).unwrap(),
         )),
+        Widget::Custom {
+            id, widget: custom, ..
+        } if custom.interaction().supports_pointer() => Some(HitResult::CustomPointer {
+            id: id.get(),
+            position: Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y),
+            bounds: (layout.size.width, layout.size.height),
+            focuses_keyboard: custom.interaction().supports_keyboard(),
+        }),
         Widget::ScrollView { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
             path.push(0);
@@ -3040,13 +3054,15 @@ mod tests {
         find_context_menu_target, find_context_menu_target_with_metadata, find_scroll_focus,
         find_scrollbar_drag_hit, hit_test, rounded_rect_contains, scrollbar_drag_hit,
     };
+    use crate::WidgetId;
     use crate::app::ContextMenuVirtualItem;
     use crate::engine::widget_state::{
         ScrollState, VirtualGridState, VirtualListState, WidgetState,
     };
     use crate::layout::{build_taffy_tree, compute_layout};
     use crate::widget::{
-        AUTO_ID, ButtonVariant, ContextMenuEntry, DialogPosition, InputState, Widget,
+        AUTO_ID, ButtonVariant, ContextMenuEntry, CustomInteraction, CustomPaintContext,
+        CustomWidgetV1, DialogPosition, InputState, Widget,
     };
     use crate::widgets::carousel::CarouselState;
     use crate::widgets::table_of_contents::HeadingLevel;
@@ -3062,12 +3078,85 @@ mod tests {
         Msg::Str(value)
     }
 
+    struct PointerCustom;
+
+    impl CustomWidgetV1<Msg> for PointerCustom {
+        fn paint(&self, _: CustomPaintContext<'_>) {}
+
+        fn interaction(&self) -> CustomInteraction {
+            CustomInteraction::PointerAndKeyboard
+        }
+    }
+
+    struct VisualCustom;
+
+    impl CustomWidgetV1<Msg> for VisualCustom {
+        fn paint(&self, _: CustomPaintContext<'_>) {}
+    }
+
     #[test]
     fn rounded_container_hit_region_excludes_clipped_corners() {
         let rect = SkiaRect::from_xywh(0.0, 0.0, 20.0, 20.0);
 
         assert!(!rounded_rect_contains(rect, 8.0, Point::new(0.0, 0.0)));
         assert!(rounded_rect_contains(rect, 8.0, Point::new(10.0, 10.0)));
+    }
+
+    #[test]
+    fn custom_pointer_hit_uses_container_layout_coordinates() {
+        let widget = Widget::Container {
+            child: Box::new(Widget::custom(
+                WidgetId::manual(301).unwrap(),
+                PointerCustom,
+                fixed_size_style(60.0, 30.0),
+            )),
+            style: fixed_size_style(100.0, 60.0),
+            color: None,
+            radius: 0.0,
+        };
+        let states = HashMap::new();
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(100, 60));
+
+        let hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(20.0, 10.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+
+        assert!(matches!(
+            hit,
+            Some(HitResult::CustomPointer {
+                id: 301,
+                focuses_keyboard: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn visual_only_custom_node_cannot_claim_pointer_input() {
+        let widget = Widget::custom(
+            WidgetId::manual(302).unwrap(),
+            VisualCustom,
+            fixed_size_style(60.0, 30.0),
+        );
+        let states = HashMap::new();
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(60, 30));
+
+        assert!(
+            hit_test(
+                &widget,
+                &taffy,
+                root,
+                Point::new(20.0, 10.0),
+                Point::new(0.0, 0.0),
+                &states,
+            )
+            .is_none()
+        );
     }
 
     fn usize_msg(value: usize) -> Msg {

@@ -113,6 +113,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn click_accessibility_target(&mut self, target: u64) -> bool {
+        if self
+            .dispatch_custom_accessibility_action(target, crate::CustomAccessibilityAction::Click)
+        {
+            return true;
+        }
         if self.click_table_accessibility_target(target) {
             return true;
         }
@@ -141,7 +146,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if !self.focus_accessibility_target(target) {
             return false;
         }
-        self.handle_focused_widget_key(&Key::Named(NamedKey::Enter))
+        self.handle_focused_widget_key(&Key::Named(NamedKey::Enter), false)
     }
 
     fn expand_accessibility_target(&mut self, target: u64) -> bool {
@@ -244,6 +249,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn adjust_accessibility_target(&mut self, target: u64, increment: bool) -> bool {
+        let action = if increment {
+            crate::CustomAccessibilityAction::Increment
+        } else {
+            crate::CustomAccessibilityAction::Decrement
+        };
+        if self.dispatch_custom_accessibility_action(target, action) {
+            return true;
+        }
         if !self.focus_accessibility_target(target) {
             return false;
         }
@@ -252,6 +265,6 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         } else {
             NamedKey::ArrowLeft
         };
-        self.handle_focused_widget_key(&Key::Named(key))
+        self.handle_focused_widget_key(&Key::Named(key), false)
     }
 }

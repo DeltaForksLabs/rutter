@@ -8,6 +8,7 @@
 pub(crate) mod clock;
 mod control_icons;
 pub(crate) mod counter;
+mod custom;
 pub(crate) mod dropdown_menu_overlay;
 pub mod hit_test;
 pub mod image;
@@ -44,6 +45,7 @@ use taffy::prelude::{NodeId, TaffyTree};
 use self::clock::{ClockRenderInput, draw_clock};
 use self::control_icons::{ControlChevronDirection, draw_control_chevron, draw_search_magnifier};
 use self::counter::{CounterRenderInput, draw_counter};
+use self::custom::{CustomRenderFrame, draw_custom_widget};
 pub use self::image_cache::ImageRenderCache;
 use self::overlay_hover::{OverlayHoverInput, overlay_hover_routes};
 use self::rich_text::RichTextDirection;
@@ -71,6 +73,7 @@ use crate::layout::{
 use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
 use crate::text_controls::TextControlPolicy;
 use crate::theme::Theme;
+use crate::widget::CustomWidgetState;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     ContextMenuEntry, DialogAction, DialogPosition, InputState, Orientation, ToastKind,
@@ -221,6 +224,48 @@ pub fn draw_widgets_with_cache<'w, Msg>(
     theme: &Theme,
     scale: f32,
 ) {
+    let custom_widget_states = HashMap::new();
+    draw_widgets_with_cache_and_custom_state(
+        canvas,
+        taffy,
+        node,
+        widget,
+        fs,
+        swash,
+        mouse_pos,
+        focused_id,
+        input_states,
+        widget_states,
+        &custom_widget_states,
+        font_cache,
+        text_cache,
+        image_cache,
+        cursor_visible,
+        theme,
+        scale,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    node: NodeId,
+    widget: &Widget<'w, Msg>,
+    fs: &mut FontSystem,
+    swash: &mut SwashCache,
+    mouse_pos: Point,
+    focused_id: Option<u64>,
+    input_states: &HashMap<u64, InputWidgetState>,
+    widget_states: &HashMap<u64, WidgetState>,
+    custom_widget_states: &HashMap<u64, CustomWidgetState>,
+    font_cache: &mut HashMap<(String, u32), Font>,
+    text_cache: &mut TextBufferCache,
+    image_cache: &mut ImageRenderCache,
+    cursor_visible: bool,
+    theme: &Theme,
+    scale: f32,
+) {
     let hover_routes = overlay_hover_routes(OverlayHoverInput {
         taffy,
         root: node,
@@ -247,6 +292,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         hover_routes.base.shows_interaction_effects,
         input_states,
         widget_states,
+        custom_widget_states,
         font_cache,
         text_cache,
         image_cache,
@@ -269,6 +315,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         hover_routes.popover.shows_interaction_effects,
         input_states,
         widget_states,
+        custom_widget_states,
         font_cache,
         text_cache,
         image_cache,
@@ -415,6 +462,7 @@ fn draw_popover_overlays<'w, Msg>(
     shows_interaction_effects: bool,
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
+    custom_widget_states: &HashMap<u64, CustomWidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
@@ -452,6 +500,7 @@ fn draw_popover_overlays<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -523,6 +572,7 @@ fn draw_popover_overlays<'w, Msg>(
                 shows_interaction_effects,
                 input_states,
                 widget_states,
+                custom_widget_states,
                 font_cache,
                 text_cache,
                 image_cache,
@@ -544,6 +594,7 @@ fn draw_popover_overlays<'w, Msg>(
                 shows_interaction_effects,
                 input_states,
                 widget_states,
+                custom_widget_states,
                 font_cache,
                 text_cache,
                 image_cache,
@@ -576,6 +627,7 @@ fn draw_popover_overlays<'w, Msg>(
                         shows_interaction_effects,
                         input_states,
                         widget_states,
+                        custom_widget_states,
                         font_cache,
                         text_cache,
                         image_cache,
@@ -612,6 +664,7 @@ fn draw_popover_overlays<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -651,6 +704,7 @@ fn draw_popover_overlays<'w, Msg>(
                 shows_interaction_effects,
                 input_states,
                 widget_states,
+                custom_widget_states,
                 font_cache,
                 text_cache,
                 image_cache,
@@ -690,6 +744,7 @@ fn draw_popover_overlays<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -725,6 +780,7 @@ fn draw_popover_overlays<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -958,6 +1014,7 @@ fn draw_widgets_impl<'w, Msg>(
     shows_interaction_effects: bool,
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
+    custom_widget_states: &HashMap<u64, CustomWidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
@@ -994,6 +1051,7 @@ fn draw_widgets_impl<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -1033,6 +1091,7 @@ fn draw_widgets_impl<'w, Msg>(
                 shows_interaction_effects,
                 input_states,
                 widget_states,
+                custom_widget_states,
                 font_cache,
                 text_cache,
                 image_cache,
@@ -1069,6 +1128,7 @@ fn draw_widgets_impl<'w, Msg>(
                 shows_interaction_effects,
                 input_states,
                 widget_states,
+                custom_widget_states,
                 font_cache,
                 text_cache,
                 image_cache,
@@ -1111,6 +1171,7 @@ fn draw_widgets_impl<'w, Msg>(
                 shows_interaction_effects,
                 input_states,
                 widget_states,
+                custom_widget_states,
                 font_cache,
                 text_cache,
                 image_cache,
@@ -1137,6 +1198,7 @@ fn draw_widgets_impl<'w, Msg>(
                 shows_interaction_effects,
                 input_states,
                 widget_states,
+                custom_widget_states,
                 font_cache,
                 text_cache,
                 image_cache,
@@ -1168,6 +1230,7 @@ fn draw_widgets_impl<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -1196,6 +1259,7 @@ fn draw_widgets_impl<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -1254,6 +1318,7 @@ fn draw_widgets_impl<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -1445,6 +1510,27 @@ fn draw_widgets_impl<'w, Msg>(
             draw_image(canvas, data, size, *radius, scale, image_cache)
         }
         Widget::Divider { orientation, .. } => draw_divider(canvas, *orientation, size, theme),
+        Widget::Custom { widget, style, .. } => {
+            let empty_state = CustomWidgetState::default();
+            let runtime_state = custom_widget_states
+                .get(&resolved_id.unwrap())
+                .unwrap_or(&empty_state);
+            draw_custom_widget(
+                canvas,
+                CustomRenderFrame {
+                    widget: widget.as_ref(),
+                    style,
+                    size,
+                    mouse: local_mouse,
+                    is_focused,
+                    shows_interaction_effects,
+                    runtime_state,
+                    theme,
+                    scale_factor: scale,
+                    direction: node_layout_direction(taffy, node),
+                },
+            );
+        }
         Widget::Spacer { .. } => {}
         Widget::Text {
             content,
@@ -1587,6 +1673,7 @@ fn draw_widgets_impl<'w, Msg>(
                     shows_interaction_effects,
                     input_states,
                     widget_states,
+                    custom_widget_states,
                     font_cache,
                     text_cache,
                     image_cache,
@@ -1625,6 +1712,7 @@ fn draw_widgets_impl<'w, Msg>(
                 shows_interaction_effects,
                 input_states,
                 widget_states,
+                custom_widget_states,
                 font_cache,
                 text_cache,
                 image_cache,
@@ -2071,6 +2159,7 @@ fn draw_table_of_contents_content<'w, Msg>(
     shows_interaction_effects: bool,
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
+    custom_widget_states: &HashMap<u64, CustomWidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
@@ -2106,6 +2195,7 @@ fn draw_table_of_contents_content<'w, Msg>(
         shows_interaction_effects,
         input_states,
         widget_states,
+        custom_widget_states,
         font_cache,
         text_cache,
         image_cache,
@@ -2133,6 +2223,7 @@ fn draw_table_of_contents_document<'w, Msg>(
     shows_interaction_effects: bool,
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
+    custom_widget_states: &HashMap<u64, CustomWidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
@@ -2165,6 +2256,7 @@ fn draw_table_of_contents_document<'w, Msg>(
         shows_interaction_effects,
         input_states,
         widget_states,
+        custom_widget_states,
         font_cache,
         text_cache,
         image_cache,
@@ -2839,6 +2931,7 @@ fn draw_modal<Msg>(
     shows_interaction_effects: bool,
     input_states: &HashMap<u64, InputWidgetState>,
     widget_states: &HashMap<u64, WidgetState>,
+    custom_widget_states: &HashMap<u64, CustomWidgetState>,
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
@@ -2903,6 +2996,7 @@ fn draw_modal<Msg>(
         shows_interaction_effects,
         input_states,
         widget_states,
+        custom_widget_states,
         font_cache,
         text_cache,
         image_cache,
@@ -3961,6 +4055,7 @@ fn draw_virtual_item_widget<'w, Msg>(
     // Virtual item widgets are visual-only, so global state must not alias IDs materialized on demand.
     let isolated_input_states = HashMap::new();
     let isolated_widget_states = HashMap::new();
+    let isolated_custom_widget_states = HashMap::new();
     let root = build_taffy_tree_with_direction(
         &mut taffy,
         item,
@@ -3990,6 +4085,7 @@ fn draw_virtual_item_widget<'w, Msg>(
         ctx.shows_interaction_effects,
         &isolated_input_states,
         &isolated_widget_states,
+        &isolated_custom_widget_states,
         ctx.font_cache,
         ctx.text_cache,
         ctx.image_cache,

@@ -418,6 +418,7 @@ fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<Table
         | Widget::Select { .. }
         | Widget::ProgressBar { .. }
         | Widget::Spinner { .. }
+        | Widget::Custom { .. }
         | Widget::Divider { .. }
         | Widget::Spacer { .. }
         | Widget::TabBar { .. }

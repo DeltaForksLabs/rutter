@@ -13,6 +13,7 @@ The project is focused on building a pragmatic foundation for desktop interfaces
 - [Project Status](#project-status)
 - [Demo](#demo)
 - [Quick Start](#quick-start)
+- [Custom Widgets](#custom-widgets)
 - [Architecture](#architecture)
 - [Widgets](#widgets)
 - [Rendering Backends](#rendering-backends)
@@ -47,6 +48,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - State-aware Light/Dark theme support through a central `Theme` type.
 - Locale and Project Fluent catalog helpers for i18n and RTL layout direction.
 - Keyboard focus traversal for interactive widgets.
+- Versioned custom leaf widgets with confined Skia painting, typed input, bounded runtime state, and AccessKit semantics.
 - Audited multi-window runtime with stable surface IDs and per-window event routing.
 - Clipboard paste sanitization for text inputs.
 - Safe image decoding limits to reduce malicious allocation risk.
@@ -234,6 +236,72 @@ impl AppLogic for App {
 `ShortcutKey::Character` contains layout-aware logical text rather than a physical key position, while `ShortcutKey::Named` represents portable non-text keys. `ShortcutEvent` exposes Control, Alt, Shift, Super/Meta/Command, and repeat state. A focused Rutter input retains unmodified printable input, including Shift variants, before the hook; IME commits also bypass it. Named keys and modified chords reach the hook before Rutter's built-in routing, so only an explicitly matched `Message` or `Consumed` outcome overrides Tab traversal, Escape dismissal, editing commands, or widget navigation. AccessKit actions keep their separate existing path.
 
 `MultiWindowAppLogic::shortcut` receives the source `SurfaceId` in addition to the same event, allowing a panel or popup to implement its own local commands. This API does not register global desktop hotkeys or bypass compositor, portal, or X11 policy; platform adapters remain responsible for that capability.
+
+### Custom widgets
+
+`CustomWidgetV1` is Rutter's supported extension boundary for specialized leaf behavior such as a resource graph, audio visualizer, or segmented progress display. It is versioned by `CUSTOM_WIDGET_API_VERSION`; future incompatible contracts will use a new trait rather than expose engine internals as an ABI. Construct a custom node with a mandatory stable `WidgetId`:
+
+```rust
+use rutter::{
+    CustomAccessibility, CustomAccessibilityActions, CustomAccessibilityNode,
+    CustomAccessibilityRole, CustomAccessibilityState, CustomEventOutcome, CustomInteraction,
+    CustomPaintContext, CustomPointerEvent, CustomWidgetState, CustomWidgetV1, Widget, WidgetId,
+};
+use taffy::prelude::Style;
+
+enum Msg { OpenGraph }
+
+struct ResourceGraph;
+
+impl CustomWidgetV1<Msg> for ResourceGraph {
+    fn paint(&self, context: CustomPaintContext<'_>) {
+        let mut paint = rutter::skia_safe::Paint::default();
+        paint.set_color(context.theme.primary);
+        context.canvas.draw_line(
+            (0.0, context.layout.measured_size.height),
+            (context.layout.measured_size.width, 0.0),
+            &paint,
+        );
+    }
+
+    fn interaction(&self) -> CustomInteraction {
+        CustomInteraction::PointerAndKeyboard
+    }
+
+    fn pointer_event(
+        &self,
+        event: CustomPointerEvent,
+        _: &mut CustomWidgetState,
+    ) -> CustomEventOutcome<Msg> {
+        match event {
+            CustomPointerEvent::Press { .. } => CustomEventOutcome::Message(Msg::OpenGraph),
+            _ => CustomEventOutcome::Ignored,
+        }
+    }
+
+    fn accessibility(&self) -> CustomAccessibility {
+        CustomAccessibility::Node(CustomAccessibilityNode {
+            role: CustomAccessibilityRole::Button,
+            name: String::from("Open resource graph"),
+            value: None,
+            state: CustomAccessibilityState::Default,
+            actions: CustomAccessibilityActions { click: true, ..Default::default() },
+        })
+    }
+}
+
+let graph: Widget<'_, Msg> = Widget::custom(
+    WidgetId::manual(900).unwrap(),
+    ResourceGraph,
+    Style::default(),
+);
+```
+
+The `Style` is the node's declared Taffy constraint, while `CustomPaintContext::layout.measured_size` is its final logical size after parent layout, direction, and scale handling. Rutter records custom Skia commands into a private picture and replays it through the node's normal clip and transforms; the callback never receives a window canvas, renderer, graphics backend, event-loop proxy, or application state reference.
+
+Declare `VisualOnly` explicitly (the default) for a painted node that cannot receive clicks or keyboard focus. Pointer-capable nodes receive primary press events and can request `CapturePointer`; captured move and release events use local coordinates. Keyboard-capable nodes participate in normal Tab focus order and receive normalized `ShortcutEvent` values after application shortcuts and before the remaining built-in focused-widget routing. `CustomAccessibility::Node` emits one Rutter-owned AccessKit node with approved roles, state, value, and Click/Increment/Decrement actions; visual-only nodes cannot declare those actions.
+
+`CustomWidgetState` is event-loop-owned, keyed by the manual ID, limited to `MAX_CUSTOM_WIDGET_STATE_BYTES` (64 KiB), preserved when that ID moves in the tree, and retired when it is removed. Version 1 intentionally has no intrinsic custom measurement, custom child tree, overlay/popover creation, arbitrary AccessKit subtree, raw native handle, worker-thread canvas, or global-hotkey API. Keep application model state in `AppLogic` and use this bounded state only for local runtime interaction that must not outlive the node.
 
 ### Multi-window applications
 

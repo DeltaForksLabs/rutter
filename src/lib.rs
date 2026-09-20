@@ -66,9 +66,13 @@ pub use time::{
 };
 pub use widget::id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
 pub use widget::{
-    AUTO_ID, ButtonVariant, ContextMenuEntry, CounterConfigError, DialogPosition, InputState,
-    VirtualSelection, Widget, WidgetConfigError, validate_counter, validate_slider,
-    validate_virtual_grid, validate_virtual_list,
+    AUTO_ID, ButtonVariant, CUSTOM_WIDGET_API_VERSION, ContextMenuEntry, CounterConfigError,
+    CustomAccessibility, CustomAccessibilityAction, CustomAccessibilityActions,
+    CustomAccessibilityNode, CustomAccessibilityRole, CustomAccessibilityState, CustomEventOutcome,
+    CustomInteraction, CustomLayout, CustomPaintContext, CustomPoint, CustomPointerEvent,
+    CustomSize, CustomWidgetState, CustomWidgetStateError, CustomWidgetV1, DialogPosition,
+    InputState, MAX_CUSTOM_WIDGET_STATE_BYTES, VirtualSelection, Widget, WidgetConfigError,
+    validate_counter, validate_slider, validate_virtual_grid, validate_virtual_list,
 };
 pub use widgets::{
     calendar, carousel, dropdown_menu, rich_text, search, table, table_of_contents, time,

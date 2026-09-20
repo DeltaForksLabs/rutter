@@ -19,8 +19,10 @@ use crate::render::select_overlay::collector::{
 };
 use crate::widget::id::resolve_accessibility_path_id;
 use crate::widget::{
-    DialogAction, VirtualSelection, Widget, resolve_table_of_contents_accordion_id,
-    resolve_table_of_contents_navigation_id, resolve_table_of_contents_viewport_id,
+    CustomAccessibility, CustomAccessibilityActions, CustomAccessibilityRole,
+    CustomAccessibilityState, DialogAction, VirtualSelection, Widget,
+    resolve_table_of_contents_accordion_id, resolve_table_of_contents_navigation_id,
+    resolve_table_of_contents_viewport_id,
 };
 use crate::widgets::table_of_contents::{collect_entries, entry_rects, layout_nodes, title_rect};
 use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
@@ -228,6 +230,7 @@ impl<'a> AccessibilityBuilder<'a> {
                 suggestions: Some(_),
                 ..
             } => self.collect_search_bar(widget, frame, path),
+            Widget::Custom { .. } => self.collect_custom_leaf(widget, frame),
             _ => self.collect_leaf(widget, frame, path),
         }
     }
@@ -570,6 +573,33 @@ impl<'a> AccessibilityBuilder<'a> {
         vec![id]
     }
 
+    fn collect_custom_leaf<Msg>(
+        &mut self,
+        widget: &Widget<Msg>,
+        frame: LayoutFrame,
+    ) -> Vec<NodeId> {
+        let Widget::Custom { id, widget, .. } = widget else {
+            return Vec::new();
+        };
+        let CustomAccessibility::Node(descriptor) = widget.accessibility() else {
+            return Vec::new();
+        };
+        let mut node = Node::new(custom_accessibility_role(descriptor.role));
+        node.set_bounds(frame.rect);
+        node.set_label(descriptor.name);
+        if let Some(value) = descriptor.value {
+            node.set_value(value);
+        }
+        apply_custom_accessibility_state(&mut node, descriptor.state);
+        apply_custom_accessibility_actions(&mut node, descriptor.actions);
+        if widget.interaction().supports_keyboard() {
+            node.add_action(Action::Focus);
+        }
+        let node_id = access_node_id(id.get());
+        self.nodes.push((node_id, node));
+        vec![node_id]
+    }
+
     fn collect_search_bar<Msg>(
         &mut self,
         widget: &Widget<Msg>,
@@ -804,6 +834,41 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         | Widget::VirtualGridContentWithSelection { .. } => Role::Grid,
         _ => return None,
     })
+}
+
+fn custom_accessibility_role(role: CustomAccessibilityRole) -> Role {
+    match role {
+        CustomAccessibilityRole::Button => Role::Button,
+        CustomAccessibilityRole::CheckBox => Role::CheckBox,
+        CustomAccessibilityRole::Switch => Role::Switch,
+        CustomAccessibilityRole::RadioButton => Role::RadioButton,
+        CustomAccessibilityRole::Slider => Role::Slider,
+        CustomAccessibilityRole::ProgressIndicator => Role::ProgressIndicator,
+        CustomAccessibilityRole::Image => Role::Image,
+        CustomAccessibilityRole::StaticText => Role::TextRun,
+    }
+}
+
+fn apply_custom_accessibility_state(node: &mut Node, state: CustomAccessibilityState) {
+    match state {
+        CustomAccessibilityState::Default => {}
+        CustomAccessibilityState::Toggled(value) => node.set_toggled(Toggled::from(value)),
+        CustomAccessibilityState::Selected(value) => node.set_selected(value),
+        CustomAccessibilityState::Expanded(value) => node.set_expanded(value),
+        CustomAccessibilityState::Busy => node.set_busy(),
+    }
+}
+
+fn apply_custom_accessibility_actions(node: &mut Node, actions: CustomAccessibilityActions) {
+    if actions.click {
+        node.add_action(Action::Click);
+    }
+    if actions.increment {
+        node.add_action(Action::Increment);
+    }
+    if actions.decrement {
+        node.add_action(Action::Decrement);
+    }
 }
 
 fn leaf_access_id<Msg>(widget: &Widget<Msg>, path: &[usize]) -> Option<NodeId> {
@@ -1140,8 +1205,13 @@ mod tests {
     use cosmic_text::FontSystem;
     use taffy::prelude::{Dimension, Size, Style};
 
+    use crate::WidgetId;
     use crate::layout::{build_taffy_tree, compute_layout};
-    use crate::widget::ButtonVariant;
+    use crate::widget::{
+        ButtonVariant, CustomAccessibility, CustomAccessibilityActions, CustomAccessibilityNode,
+        CustomAccessibilityRole, CustomAccessibilityState, CustomInteraction, CustomPaintContext,
+        CustomWidgetV1,
+    };
     use crate::widgets::calendar::{CalendarDate, CalendarMonth};
     use crate::widgets::table_of_contents::{HeadingLevel, TableOfContentsOptions};
     use winit::dpi::PhysicalSize;
@@ -1280,6 +1350,29 @@ mod tests {
             .unwrap()
     }
 
+    struct AccessibleCustom;
+
+    impl CustomWidgetV1<()> for AccessibleCustom {
+        fn paint(&self, _: CustomPaintContext<'_>) {}
+
+        fn interaction(&self) -> CustomInteraction {
+            CustomInteraction::PointerAndKeyboard
+        }
+
+        fn accessibility(&self) -> CustomAccessibility {
+            CustomAccessibility::Node(CustomAccessibilityNode {
+                role: CustomAccessibilityRole::Button,
+                name: String::from("Refresh graph"),
+                value: Some(String::from("Ready")),
+                state: CustomAccessibilityState::Default,
+                actions: CustomAccessibilityActions {
+                    click: true,
+                    ..Default::default()
+                },
+            })
+        }
+    }
+
     #[test]
     fn accessibility_update_exposes_button_label() {
         let widget = Widget::Button {
@@ -1299,6 +1392,28 @@ mod tests {
             update.tree.as_ref().unwrap().root,
             NodeId(ROOT_ACCESSIBILITY_ID)
         );
+    }
+
+    #[test]
+    fn accessible_custom_node_emits_its_declared_role_value_and_actions() {
+        let widget = Widget::custom(
+            WidgetId::manual(411).unwrap(),
+            AccessibleCustom,
+            base_style(120.0, 40.0),
+        );
+
+        let update = build_update(&widget);
+        let node = update
+            .nodes
+            .iter()
+            .find_map(|(id, node)| (*id == NodeId(411)).then_some(node))
+            .unwrap();
+
+        assert_eq!(node.role(), Role::Button);
+        assert_eq!(node.label(), Some("Refresh graph"));
+        assert_eq!(node.value(), Some("Ready"));
+        assert!(node.supports_action(Action::Click));
+        assert!(node.supports_action(Action::Focus));
     }
 
     #[test]

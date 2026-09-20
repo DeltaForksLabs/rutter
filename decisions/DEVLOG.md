@@ -1,5 +1,19 @@
 # Development Log
 
+## [2026-09-20T01:18:43-03:00] - Versioned Custom Widget Boundary - 0.35.0
+
+**Context:** Add a supported v1 extension boundary for custom Rutter leaf widgets with constrained rendering, input, local runtime state, and accessibility semantics.
+
+**Challenge:** Extend layout, rendering, hit testing, keyboard focus, pointer capture, state reconciliation, and AccessKit without leaking the native canvas, renderer, event loop, or application state across the public API.
+
+**Alternatives:** Exposing the window canvas directly would simplify custom painting but let callback code escape Rutter's clip and rendering lifecycle. Allowing arbitrary nested custom subtrees would add reconciliation, focus, and accessibility ownership complexity. Recording into a private picture and keeping v1 as a styled leaf preserves controlled rendering and a small compatible contract.
+
+**Decision:** Add `Widget::Custom` with mandatory manual IDs and a versioned `CustomWidgetV1` trait. Record painting into a private Skia picture before replaying it through node clipping; retain at most 64 KiB of private runtime bytes per live ID; route typed pointer, keyboard, and approved AccessKit actions through `AppLogic::update`; and reject visual-only widgets that advertise accessibility actions.
+
+**Files Changed:** `src/widget/custom.rs`, widget identity/validation, Taffy layout, custom rendering, hit testing, engine state and runner routing, AccessKit emission/actions, public exports, README documentation, and package version metadata.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo test --locked` (556 library tests, 33 binary tests, integration suites, and 286 doctests); and `cargo clippy --locked --all-targets -- -D warnings`.
+
 ## [2026-09-19T20:54:24-03:00] - Surface-Local Application Shortcuts - 0.34.0
 
 **Context:** Add typed, layout-aware keyboard shortcut hooks for single- and multi-window applications without exposing Winit input types.

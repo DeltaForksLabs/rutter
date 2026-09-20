@@ -5,6 +5,7 @@
 // Rutter Framework — widget/mod.rs
 // ============================================================
 
+pub mod custom;
 pub(crate) mod id;
 
 use std::fmt;
@@ -24,6 +25,13 @@ use crate::widgets::table_of_contents::{
     HeadingLevel, TableOfContentsAccordion, TableOfContentsOptions,
 };
 use crate::widgets::time::{ClockConfig, TimeZone};
+pub use custom::{
+    CUSTOM_WIDGET_API_VERSION, CustomAccessibility, CustomAccessibilityAction,
+    CustomAccessibilityActions, CustomAccessibilityNode, CustomAccessibilityRole,
+    CustomAccessibilityState, CustomEventOutcome, CustomInteraction, CustomLayout,
+    CustomPaintContext, CustomPoint, CustomPointerEvent, CustomSize, CustomWidgetState,
+    CustomWidgetStateError, CustomWidgetV1, MAX_CUSTOM_WIDGET_STATE_BYTES,
+};
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
 /// árvore. IDs manuais seguros devem ser criados com [`WidgetId::manual`].
@@ -364,6 +372,7 @@ pub(crate) enum WidgetIdTag {
     TableEmpty = 43,
     TableHeaderRow = 44,
     TableEmptyRow = 45,
+    Custom = 46,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,6 +486,12 @@ pub enum Widget<'a, Msg> {
         radius: f32,
     },
     Spacer {
+        style: Style,
+    },
+    /// A manually identified leaf implemented through the versioned custom-widget contract.
+    Custom {
+        id: WidgetId,
+        widget: Box<dyn CustomWidgetV1<Msg> + 'a>,
         style: Style,
     },
     Divider {
@@ -785,6 +800,30 @@ pub enum Widget<'a, Msg> {
 }
 
 impl<'a, Msg> Widget<'a, Msg> {
+    /// Creates a framework-integrated custom leaf with a stable manual ID.
+    ///
+    /// The custom implementation receives only confined paint and event-loop
+    /// callback contexts. Its declared `Style` participates in normal Taffy
+    /// layout, clipping, direction, and scale handling.
+    ///
+    /// ```
+    /// use rutter::{CustomPaintContext, CustomWidgetV1, Widget, WidgetId};
+    /// use taffy::prelude::Style;
+    ///
+    /// struct Rule;
+    /// impl CustomWidgetV1<()> for Rule {
+    ///     fn paint(&self, _: CustomPaintContext<'_>) {}
+    /// }
+    /// let _: Widget<'_, ()> = Widget::custom(WidgetId::manual(7).unwrap(), Rule, Style::default());
+    /// ```
+    pub fn custom(id: WidgetId, widget: impl CustomWidgetV1<Msg> + 'a, style: Style) -> Self {
+        Self::Custom {
+            id,
+            widget: Box::new(widget),
+            style,
+        }
+    }
+
     /// Creates one non-interactive text leaf from styled spans.
     ///
     /// ```rust
@@ -1844,6 +1883,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::VirtualGridContentWithSelection { id, .. } => {
                 (Some(*id), WidgetIdTag::VirtualGrid, "VirtualGrid")
             }
+            Self::Custom { id, .. } => (Some(id.get()), WidgetIdTag::Custom, "Custom"),
             _ => return None,
         })
     }
@@ -1879,6 +1919,9 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::VirtualGridContent { .. }
             | Self::VirtualGridWithSelection { .. }
             | Self::VirtualGridContentWithSelection { .. } => self.resolved_id(path),
+            Self::Custom { widget, .. } if widget.interaction().supports_keyboard() => {
+                self.resolved_id(path)
+            }
             Self::Table { .. } if self.table_is_interactive() => self.resolved_id(path),
             _ => None,
         }

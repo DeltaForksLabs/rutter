@@ -338,6 +338,9 @@ impl LayoutBlueprint {
             Widget::Select { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
+            Widget::Custom { style, .. } => {
+                Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
+            }
             Widget::Counter { value, style, .. } => Self::leaf_with_context(
                 Some(widget.resolved_id(path).unwrap()),
                 style.clone(),

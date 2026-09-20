@@ -56,8 +56,9 @@ use crate::render::select_overlay::collector::{
     collect_dropdown_triggers, collect_open_dropdown_overlays, collect_open_search_overlays,
 };
 use crate::render::text::TextBufferCache;
-use crate::render::{ImageRenderCache, draw_widgets_with_cache};
+use crate::render::{ImageRenderCache, draw_widgets_with_cache_and_custom_state};
 use crate::theme::Theme;
+use crate::widget::custom::{CustomWidgetState, collect_custom_widget_ids};
 use crate::widget::id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 use crate::widget::{
     DialogAction, VirtualSelection, Widget, resolve_search_suggestion_id, resolve_table_cell_id,
@@ -353,6 +354,9 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         }
         Widget::Table { .. } if widget.table_is_interactive() => {
             out.push(widget.keyboard_focus_id(path).unwrap())
+        }
+        Widget::Custom { id, widget, .. } if widget.interaction().supports_keyboard() => {
+            out.push(id.get())
         }
         Widget::TabBar { tabs, .. } => {
             for index in 0..tabs.len() {
@@ -843,6 +847,16 @@ fn validate_existing_widget_states(
     Ok(())
 }
 
+fn reconcile_custom_widget_states(
+    states: &mut HashMap<u64, CustomWidgetState>,
+    live_ids: &HashSet<u64>,
+) {
+    states.retain(|id, _| live_ids.contains(id));
+    for id in live_ids {
+        states.entry(*id).or_default();
+    }
+}
+
 fn sync_virtual_list_runtime<Msg: Clone>(
     caches: &mut WidgetRuntimeCaches<Msg>,
     states: &mut HashMap<u64, WidgetState>,
@@ -1226,6 +1240,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub app_state: A::State,
     pub input_states: HashMap<u64, crate::input_state::InputWidgetState>,
     pub widget_states: HashMap<u64, WidgetState>,
+    custom_widget_states: HashMap<u64, CustomWidgetState>,
     smooth_scrolls: HashMap<u64, SmoothScrollAnimation>,
     virtual_multi_selection_states: HashMap<u64, VirtualMultiSelectionState>,
     widget_id_snapshot: Option<WidgetIdSnapshot>,
@@ -1321,6 +1336,7 @@ impl<A: AppLogic> RutterEngine<A> {
             app_state,
             input_states: HashMap::new(),
             widget_states: HashMap::new(),
+            custom_widget_states: HashMap::new(),
             smooth_scrolls: HashMap::new(),
             virtual_multi_selection_states: HashMap::new(),
             widget_id_snapshot: None,
@@ -1493,19 +1509,22 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn try_ensure_widget_states(&mut self) -> Result<(), WidgetIdError> {
-        let (stateful, input_ids, toast_updates, has_live_clock, next_snapshot) = {
+        let (stateful, input_ids, custom_ids, toast_updates, has_live_clock, next_snapshot) = {
             let widget_tree = A::view(&mut self.app_state);
             let next_snapshot = validate_widget_id_snapshot(&widget_tree)?;
             let mut stateful = Vec::new();
             let mut input_ids = Vec::new();
+            let mut custom_ids = Vec::new();
             let mut toast_updates = Vec::new();
             collect_stateful_ids(&widget_tree, &mut stateful);
             collect_input_ids(&widget_tree, &mut input_ids);
+            collect_custom_widget_ids(&widget_tree, &mut custom_ids);
             collect_toast_runtime_updates(&widget_tree, &mut toast_updates);
             let has_live_clock = contains_live_clock(&widget_tree);
             (
                 stateful,
                 input_ids,
+                custom_ids,
                 toast_updates,
                 has_live_clock,
                 next_snapshot,
@@ -1519,6 +1538,7 @@ impl<A: AppLogic> RutterEngine<A> {
 
         let live_widget_ids = stateful.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
         let live_input_ids = input_ids.into_iter().collect::<HashSet<_>>();
+        let live_custom_ids = custom_ids.into_iter().collect::<HashSet<_>>();
 
         self.widget_states
             .retain(|id, _| live_widget_ids.contains(id));
@@ -1526,6 +1546,7 @@ impl<A: AppLogic> RutterEngine<A> {
             .retain(|id, _| live_widget_ids.contains(id));
         self.input_states
             .retain(|id, _| live_input_ids.contains(id));
+        reconcile_custom_widget_states(&mut self.custom_widget_states, &live_custom_ids);
         if self
             .active_scroll_id
             .is_some_and(|id| !live_widget_ids.contains(&id))
@@ -2785,7 +2806,7 @@ impl<A: AppLogic> RutterEngine<A> {
             let canvas = backend.begin_frame()?;
             prepare_top_level_canvas(canvas, self.surface_config, &theme, self.scale_factor);
 
-            draw_widgets_with_cache(
+            draw_widgets_with_cache_and_custom_state(
                 canvas,
                 &self.taffy,
                 self.last_root_node,
@@ -2796,6 +2817,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 self.focused_widget_id,
                 &self.input_states,
                 &self.widget_states,
+                &self.custom_widget_states,
                 &mut self.font_cache,
                 &mut self.text_cache,
                 &mut self.image_cache,
@@ -2827,7 +2849,7 @@ mod dropdown_menu_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::{cell::RefCell, collections::HashSet};
 
     use crate::layout::build_taffy_tree;
     use crate::widget::{DialogAction, DialogPosition, InputState};
@@ -2846,6 +2868,19 @@ mod tests {
             },
             ..Style::default()
         }
+    }
+
+    #[test]
+    fn custom_runtime_state_survives_reorder_and_retires_after_removal() {
+        let mut states = HashMap::from([(71, CustomWidgetState::default())]);
+        states.get_mut(&71).unwrap().replace_bytes(&[9]).unwrap();
+
+        reconcile_custom_widget_states(&mut states, &HashSet::from([71, 88]));
+        assert_eq!(states.get(&71).unwrap().bytes(), &[9]);
+        assert!(states.contains_key(&88));
+
+        reconcile_custom_widget_states(&mut states, &HashSet::from([88]));
+        assert!(!states.contains_key(&71));
     }
 
     #[test]
