@@ -131,6 +131,17 @@ fn scheduler_uses_the_earliest_surface_deadline() {
 }
 
 #[test]
+fn application_deadline_uses_wait_until_and_none_uses_wait() {
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    assert_eq!(
+        control_flow_for(Some(deadline)),
+        ControlFlow::WaitUntil(deadline)
+    );
+    assert_eq!(control_flow_for(None), ControlFlow::Wait);
+}
+
+#[test]
 fn surface_iteration_stops_for_exit_or_fatal_error() {
     assert!(!schedule_iteration_stops(false, false));
     assert!(schedule_iteration_stops(true, false));

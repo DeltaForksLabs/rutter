@@ -7,6 +7,7 @@
 
 pub mod custom;
 pub(crate) mod id;
+mod virtual_items;
 
 use std::fmt;
 
@@ -14,6 +15,7 @@ use skia_safe::Color as SkiaColor;
 use taffy::prelude::Style;
 
 use self::id::{AUTOMATIC_ID_NAMESPACE_BIT, WidgetId, WidgetIdError};
+use crate::PointerRegionConfig;
 use crate::widgets::carousel::CarouselConfig;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
@@ -31,6 +33,9 @@ pub use custom::{
     CustomAccessibilityState, CustomEventOutcome, CustomInteraction, CustomLayout,
     CustomPaintContext, CustomPoint, CustomPointerEvent, CustomSize, CustomWidgetState,
     CustomWidgetStateError, CustomWidgetV1, MAX_CUSTOM_WIDGET_STATE_BYTES,
+};
+pub use virtual_items::{
+    KeyedVirtualItems, KeyedVirtualItemsError, VirtualItemKey, VirtualItemKeyError,
 };
 
 /// Sentinel reservado para IDs gerados automaticamente a partir do caminho da
@@ -373,6 +378,8 @@ pub(crate) enum WidgetIdTag {
     TableHeaderRow = 44,
     TableEmptyRow = 45,
     Custom = 46,
+    InteractiveVirtualItem = 47,
+    PointerRegion = 48,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,14 +389,37 @@ pub(crate) enum DialogAction {
 }
 
 pub(crate) fn resolve_widget_id(raw_id: u64, tag: WidgetIdTag, path: &[usize]) -> u64 {
-    if raw_id != AUTO_ID {
+    if !is_interactive_virtual_item_path(path) && raw_id != AUTO_ID {
         return raw_id;
     }
     let mut hash = hash_widget_id_segment(WIDGET_ID_HASH_OFFSET, tag as u64);
+    if is_interactive_virtual_item_path(path) {
+        hash = hash_widget_id_segment(hash, WidgetIdTag::InteractiveVirtualItem as u64);
+        hash = hash_widget_id_segment(hash, raw_id);
+    }
     for &segment in path {
         hash = hash_widget_id_segment(hash, (segment as u64).wrapping_add(1));
     }
     hash | AUTOMATIC_ID_NAMESPACE_BIT
+}
+
+const INTERACTIVE_VIRTUAL_ITEM_PATH_MARKER: usize = usize::MAX;
+
+pub(crate) fn push_interactive_virtual_item_path(path: &mut Vec<usize>, key: VirtualItemKey) {
+    path.push(INTERACTIVE_VIRTUAL_ITEM_PATH_MARKER);
+    let value = key.get();
+    path.push((value & 0xffff) as usize);
+    path.push(((value >> 16) & 0xffff) as usize);
+    path.push(((value >> 32) & 0xffff) as usize);
+    path.push(((value >> 48) & 0xffff) as usize);
+}
+
+pub(crate) fn pop_interactive_virtual_item_path(path: &mut Vec<usize>) {
+    path.truncate(path.len().saturating_sub(5));
+}
+
+pub(crate) fn is_interactive_virtual_item_path(path: &[usize]) -> bool {
+    path.contains(&INTERACTIVE_VIRTUAL_ITEM_PATH_MARKER)
 }
 
 pub(crate) fn resolve_subwidget_id(base_id: u64, tag: WidgetIdTag, slot: usize) -> u64 {
@@ -492,6 +522,13 @@ pub enum Widget<'a, Msg> {
     Custom {
         id: WidgetId,
         widget: Box<dyn CustomWidgetV1<Msg> + 'a>,
+        style: Style,
+    },
+    /// An opt-in pointer boundary with a stable manual ID.
+    PointerRegion {
+        id: WidgetId,
+        child: Box<Widget<'a, Msg>>,
+        config: PointerRegionConfig<Msg>,
         style: Style,
     },
     Divider {
@@ -729,6 +766,13 @@ pub enum Widget<'a, Msg> {
         config: CarouselConfig,
         style: Style,
     },
+    InteractiveCarouselView {
+        id: u64,
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: fn(usize) -> Msg,
+        config: CarouselConfig,
+        style: Style,
+    },
     VirtualList {
         id: u64,
         item_height: f32,
@@ -742,6 +786,13 @@ pub enum Widget<'a, Msg> {
         item_height: f32,
         item_count: usize,
         items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    },
+    InteractiveVirtualListContent {
+        id: u64,
+        item_height: f32,
+        items: KeyedVirtualItems<'a, Msg>,
         on_select: fn(usize) -> Msg,
         style: Style,
     },
@@ -760,6 +811,14 @@ pub enum Widget<'a, Msg> {
         item_height: f32,
         item_count: usize,
         items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    },
+    InteractiveVirtualGridContent {
+        id: u64,
+        columns: usize,
+        item_height: f32,
+        items: KeyedVirtualItems<'a, Msg>,
         on_select: fn(usize) -> Msg,
         style: Style,
     },
@@ -820,6 +879,36 @@ impl<'a, Msg> Widget<'a, Msg> {
         Self::Custom {
             id,
             widget: Box::new(widget),
+            style,
+        }
+    }
+
+    /// Wraps content in an opt-in typed pointer and drag/drop boundary.
+    ///
+    /// The wrapper owns primary-pointer input inside its bounds, so keep an
+    /// equivalent keyboard control in the child when the gesture is an action.
+    ///
+    /// ```
+    /// # use rutter::{PointerEvent, PointerRegionConfig, Widget, WidgetId};
+    /// # use taffy::prelude::Style;
+    /// # enum Msg { Pointer(PointerEvent) }
+    /// let region = Widget::pointer_region(
+    ///     WidgetId::manual(9).unwrap(),
+    ///     Widget::Spacer { style: Style::default() },
+    ///     PointerRegionConfig::new(Msg::Pointer).with_pointer_capture(),
+    ///     Style::default(),
+    /// );
+    /// ```
+    pub fn pointer_region(
+        id: WidgetId,
+        child: Widget<'a, Msg>,
+        config: PointerRegionConfig<Msg>,
+        style: Style,
+    ) -> Self {
+        Self::PointerRegion {
+            id,
+            child: Box::new(child),
+            config,
             style,
         }
     }
@@ -1496,6 +1585,37 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a horizontally virtualized carousel with keyed interactive descendants.
+    ///
+    /// Build a [`KeyedVirtualItems`] source once per view. Its stable keys scope
+    /// child IDs, focus, and runtime state while only visible cards are retained.
+    ///
+    /// ```rust
+    /// use rutter::{CarouselConfig, KeyedVirtualItems, VirtualItemKey, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// let keys = [VirtualItemKey::new(1).unwrap()];
+    /// let build = |_| Some(Widget::Button { text: "Launch", on_press: (), style: Style::default(), color: None, variant: Default::default() });
+    /// let items = KeyedVirtualItems::try_new(&keys, &build).unwrap();
+    /// let _ = Widget::interactive_carousel_view(
+    ///     items, |_| (), CarouselConfig::uncontained(120.0).unwrap(), Style::default(),
+    /// );
+    /// ```
+    pub fn interactive_carousel_view(
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: fn(usize) -> Msg,
+        config: CarouselConfig,
+        style: Style,
+    ) -> Self {
+        Self::InteractiveCarouselView {
+            id: AUTO_ID,
+            items,
+            on_select,
+            config,
+            style,
+        }
+    }
+
     pub fn virtual_list(
         item_height: f32,
         item_count: usize,
@@ -1583,6 +1703,35 @@ impl<'a, Msg> Widget<'a, Msg> {
             id: AUTO_ID,
             item_height,
             item_count,
+            items,
+            on_select,
+            style,
+        }
+    }
+
+    /// Creates a virtual list with keyed interactive descendant widgets.
+    ///
+    /// Nested controls receive pointer, keyboard, and accessibility actions.
+    /// A press outside those controls keeps the list's `on_select` behavior.
+    ///
+    /// ```rust
+    /// use rutter::{KeyedVirtualItems, VirtualItemKey, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// let keys = [VirtualItemKey::new(1).unwrap()];
+    /// let build = |_| Some(Widget::Button { text: "Open", on_press: (), style: Style::default(), color: None, variant: Default::default() });
+    /// let items = KeyedVirtualItems::try_new(&keys, &build).unwrap();
+    /// let _ = Widget::interactive_virtual_list_content(36.0, items, |_| (), Style::default());
+    /// ```
+    pub fn interactive_virtual_list_content(
+        item_height: f32,
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    ) -> Self {
+        Self::InteractiveVirtualListContent {
+            id: AUTO_ID,
+            item_height,
             items,
             on_select,
             style,
@@ -1722,6 +1871,37 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a virtual grid with keyed interactive descendant widgets.
+    ///
+    /// Stable keys, rather than cell indices, retain descendant focus and state
+    /// while visible cells move because of filtering or reordering.
+    ///
+    /// ```rust
+    /// use rutter::{KeyedVirtualItems, VirtualItemKey, Widget};
+    /// use taffy::prelude::Style;
+    ///
+    /// let keys = [VirtualItemKey::new(1).unwrap()];
+    /// let build = |_| Some(Widget::Switch { checked: false, on_change: |_| (), style: Style::default() });
+    /// let items = KeyedVirtualItems::try_new(&keys, &build).unwrap();
+    /// let _ = Widget::interactive_virtual_grid_content(2, 48.0, items, |_| (), Style::default());
+    /// ```
+    pub fn interactive_virtual_grid_content(
+        columns: usize,
+        item_height: f32,
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: fn(usize) -> Msg,
+        style: Style,
+    ) -> Self {
+        Self::InteractiveVirtualGridContent {
+            id: AUTO_ID,
+            columns,
+            item_height,
+            items,
+            on_select,
+            style,
+        }
+    }
+
     /// Creates a content-based virtual grid with explicit selection configuration.
     ///
     /// Visible item widgets remain visual-only, matching
@@ -1786,12 +1966,15 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::DropdownMenu { id: slot, .. }
             | Self::Popover { id: slot, .. }
             | Self::CarouselView { id: slot, .. }
+            | Self::InteractiveCarouselView { id: slot, .. }
             | Self::VirtualList { id: slot, .. }
             | Self::VirtualListContent { id: slot, .. }
+            | Self::InteractiveVirtualListContent { id: slot, .. }
             | Self::VirtualListWithSelection { id: slot, .. }
             | Self::VirtualListContentWithSelection { id: slot, .. }
             | Self::VirtualGrid { id: slot, .. }
             | Self::VirtualGridContent { id: slot, .. }
+            | Self::InteractiveVirtualGridContent { id: slot, .. }
             | Self::VirtualGridWithSelection { id: slot, .. }
             | Self::VirtualGridContentWithSelection { id: slot, .. } => {
                 *slot = id;
@@ -1871,19 +2054,29 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::DropdownMenu { id, .. } => (Some(*id), WidgetIdTag::DropdownMenu, "DropdownMenu"),
             Self::Popover { id, .. } => (Some(*id), WidgetIdTag::Popover, "Popover"),
             Self::CarouselView { id, .. } => (Some(*id), WidgetIdTag::CarouselView, "CarouselView"),
+            Self::InteractiveCarouselView { id, .. } => (
+                Some(*id),
+                WidgetIdTag::CarouselView,
+                "InteractiveCarouselView",
+            ),
             Self::VirtualList { id, .. }
             | Self::VirtualListContent { id, .. }
+            | Self::InteractiveVirtualListContent { id, .. }
             | Self::VirtualListWithSelection { id, .. }
             | Self::VirtualListContentWithSelection { id, .. } => {
                 (Some(*id), WidgetIdTag::VirtualList, "VirtualList")
             }
             Self::VirtualGrid { id, .. }
             | Self::VirtualGridContent { id, .. }
+            | Self::InteractiveVirtualGridContent { id, .. }
             | Self::VirtualGridWithSelection { id, .. }
             | Self::VirtualGridContentWithSelection { id, .. } => {
                 (Some(*id), WidgetIdTag::VirtualGrid, "VirtualGrid")
             }
             Self::Custom { id, .. } => (Some(id.get()), WidgetIdTag::Custom, "Custom"),
+            Self::PointerRegion { id, .. } => {
+                (Some(id.get()), WidgetIdTag::PointerRegion, "PointerRegion")
+            }
             _ => return None,
         })
     }
@@ -1911,12 +2104,15 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Accordion { .. }
             | Self::TabBar { .. }
             | Self::CarouselView { .. }
+            | Self::InteractiveCarouselView { .. }
             | Self::VirtualList { .. }
             | Self::VirtualListContent { .. }
+            | Self::InteractiveVirtualListContent { .. }
             | Self::VirtualListWithSelection { .. }
             | Self::VirtualListContentWithSelection { .. }
             | Self::VirtualGrid { .. }
             | Self::VirtualGridContent { .. }
+            | Self::InteractiveVirtualGridContent { .. }
             | Self::VirtualGridWithSelection { .. }
             | Self::VirtualGridContentWithSelection { .. } => self.resolved_id(path),
             Self::Custom { widget, .. } if widget.interaction().supports_keyboard() => {

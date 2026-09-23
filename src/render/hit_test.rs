@@ -5,27 +5,37 @@
 // Rutter Framework — render/hit_test.rs
 // ============================================================
 
+use cosmic_text::FontSystem;
 use skia_safe::{Contains, Point, Rect as SkiaRect};
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use taffy::Direction;
 use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::app::{ContextMenuTarget, ContextMenuVirtualItem};
-use crate::engine::widget_state::{VirtualGridState, WidgetState, virtual_grid_row_count};
+use crate::engine::widget_state::{
+    VirtualGridState, WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left,
+    virtual_grid_cell_width, virtual_grid_row_count,
+};
 use crate::i18n::LayoutDirection;
-use crate::layout::{RutterContext, SCROLLBAR_W};
+use crate::layout::{
+    RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction, compute_layout,
+};
+use crate::render::RichTextRenderer;
 use crate::render::counter::{CounterSegment, counter_segment_at};
 use crate::widget::{
     CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
     CONTEXT_MENU_VIEWPORT_MARGIN, ContextMenuEntry, DialogAction, DialogPosition, POPOVER_GAP,
     POPOVER_VIEWPORT_MARGIN, Widget, estimate_context_menu_height, estimate_context_menu_width,
+    pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
 };
+use crate::widgets::carousel::geometry::carousel_item_frames;
 use crate::widgets::table::{
     TableCellTarget, TableHit, TableLayoutDirection, TableModel, TableOptions, TableSelection,
     TableState, allocate_column_widths, calculate_viewport, hit_test as hit_test_table,
     minimum_content_width,
 };
 use crate::widgets::table_of_contents::{entry_offset_y, entry_rects, layout_nodes, title_rect};
+use winit::dpi::PhysicalSize;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
 const MODAL_MAX_CARD_W: f32 = 480.0;
@@ -106,6 +116,7 @@ pub enum HitResult<Msg> {
         bounds: (f32, f32),
         focuses_keyboard: bool,
     },
+    PointerRegion(u64),
 }
 
 pub type InputChangeCallback<Msg> = fn(String) -> Msg;
@@ -349,6 +360,7 @@ fn hit_test_context_menu_overlay_impl<Msg: Clone>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. } => {
@@ -759,19 +771,34 @@ fn hit_test_impl<Msg: Clone>(
         Widget::DropdownMenu { .. } => Some(HitResult::DropdownMenuToggle(
             widget.resolved_id(path).unwrap(),
         )),
-        Widget::Custom {
-            id, widget: custom, ..
-        } if custom.interaction().supports_pointer() => Some(HitResult::CustomPointer {
-            id: id.get(),
-            position: Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y),
-            bounds: (layout.size.width, layout.size.height),
-            focuses_keyboard: custom.interaction().supports_keyboard(),
-        }),
+        Widget::Custom { widget: custom, .. } if custom.interaction().supports_pointer() => {
+            Some(HitResult::CustomPointer {
+                id: widget.resolved_id(path).unwrap(),
+                position: Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y),
+                bounds: (layout.size.width, layout.size.height),
+                focuses_keyboard: custom.interaction().supports_keyboard(),
+            })
+        }
+        Widget::PointerRegion { .. } => {
+            Some(HitResult::PointerRegion(widget.resolved_id(path).unwrap()))
+        }
         Widget::ScrollView { child, .. } => {
             let ids = taffy.children(node_id).unwrap();
+            let offset_y = widget_states
+                .get(&widget.resolved_id(path).unwrap())
+                .and_then(WidgetState::as_scroll)
+                .map(|state| state.offset_y)
+                .unwrap_or(0.0);
             path.push(0);
-            let child_hit =
-                hit_test_impl(child, taffy, ids[0], mouse, abs_pos, widget_states, path);
+            let child_hit = hit_test_impl(
+                child,
+                taffy,
+                ids[0],
+                mouse,
+                Point::new(abs_pos.x, abs_pos.y - offset_y),
+                widget_states,
+                path,
+            );
             path.pop();
             if let Some(result) = child_hit {
                 return Some(result);
@@ -1000,6 +1027,58 @@ fn hit_test_impl<Msg: Clone>(
                     index,
                 })
         }
+        Widget::InteractiveCarouselView { items, config, .. } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let direction = carousel_node_direction(taffy, node_id);
+            let mut fallback = crate::widgets::carousel::CarouselState::default();
+            fallback.sync_viewport(layout.size.width, config, items.len());
+            let state = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_carousel)
+                .unwrap_or(&fallback);
+            let frames = carousel_item_frames(
+                config,
+                state.position,
+                layout.size.width,
+                items.len(),
+                direction,
+            );
+            let hit = frames.iter().find_map(|frame| {
+                let rect = interactive_carousel_card_rect(*frame, layout.size.height);
+                if !SkiaRect::from_xywh(
+                    abs_pos.x + rect.left,
+                    abs_pos.y + rect.top,
+                    rect.width(),
+                    rect.height(),
+                )
+                .contains(mouse)
+                {
+                    return None;
+                }
+                let item = items.build_item(frame.index)?;
+                let key = items.key_at(frame.index)?;
+                push_interactive_virtual_item_path(path, key);
+                let result = hit_interactive_virtual_item(
+                    &item,
+                    (rect.width(), rect.height()),
+                    Point::new(abs_pos.x + rect.left, abs_pos.y + rect.top),
+                    direction,
+                    mouse,
+                    widget_states,
+                    path,
+                );
+                pop_interactive_virtual_item_path(path);
+                result
+            });
+            hit.or_else(|| {
+                state
+                    .index_at(mouse.x - abs_pos.x, config, items.len(), direction)
+                    .map(|index| HitResult::CarouselSelect {
+                        id: resolved_id,
+                        index,
+                    })
+            })
+        }
         Widget::VirtualList {
             item_height,
             item_count,
@@ -1031,6 +1110,52 @@ fn hit_test_impl<Msg: Clone>(
                     id: resolved_id,
                     index,
                 })
+        }
+        Widget::InteractiveVirtualListContent {
+            item_height, items, ..
+        } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let scroll_y = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_vlist)
+                .map(|state| state.scroll_y)
+                .unwrap_or(0.0);
+            let index = virtual_list_item_index_at(
+                mouse.y - abs_pos.y,
+                *item_height,
+                items.len(),
+                scroll_y,
+            );
+            let child_hit = index.and_then(|index| {
+                let item = items.build_item(index)?;
+                let key = items.key_at(index)?;
+                let origin =
+                    Point::new(abs_pos.x, abs_pos.y + index as f32 * item_height - scroll_y);
+                let size = (
+                    (layout.size.width - SCROLLBAR_W - 4.0).max(0.0),
+                    *item_height,
+                );
+                let bounds = SkiaRect::from_xywh(origin.x, origin.y, size.0, size.1);
+                if !bounds.contains(mouse) {
+                    return None;
+                }
+                push_interactive_virtual_item_path(path, key);
+                let result = hit_interactive_virtual_item(
+                    &item,
+                    size,
+                    origin,
+                    carousel_node_direction(taffy, node_id),
+                    mouse,
+                    widget_states,
+                    path,
+                );
+                pop_interactive_virtual_item_path(path);
+                result
+            });
+            child_hit.or(index.map(|index| HitResult::VListSelect {
+                id: resolved_id,
+                index,
+            }))
         }
         Widget::VirtualGrid {
             columns,
@@ -1073,6 +1198,58 @@ fn hit_test_impl<Msg: Clone>(
                 index,
             })
         }
+        Widget::InteractiveVirtualGridContent {
+            columns,
+            item_height,
+            items,
+            ..
+        } => {
+            let resolved_id = widget.resolved_id(path).unwrap();
+            let grid_state = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_vgrid);
+            let index = virtual_grid_item_index_at(
+                grid_state,
+                Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y),
+                (layout.size.width, layout.size.height),
+                *item_height,
+                items.len(),
+                *columns,
+            );
+            let child_hit = index.and_then(|index| {
+                let item = items.build_item(index)?;
+                let key = items.key_at(index)?;
+                let scroll_y = grid_state.map(|state| state.scroll_y).unwrap_or(0.0);
+                let columns = normalize_virtual_grid_columns(*columns);
+                let row = index / columns;
+                let cell_h = (*item_height - VIRTUAL_GRID_GAP).max(12.0);
+                let origin = Point::new(
+                    abs_pos.x + virtual_grid_cell_left(index % columns, layout.size.width, columns),
+                    abs_pos.y + row as f32 * item_height - scroll_y + VIRTUAL_GRID_GAP * 0.5,
+                );
+                let size = (virtual_grid_cell_width(layout.size.width, columns), cell_h);
+                let bounds = SkiaRect::from_xywh(origin.x, origin.y, size.0, size.1);
+                if !bounds.contains(mouse) {
+                    return None;
+                }
+                push_interactive_virtual_item_path(path, key);
+                let result = hit_interactive_virtual_item(
+                    &item,
+                    size,
+                    origin,
+                    carousel_node_direction(taffy, node_id),
+                    mouse,
+                    widget_states,
+                    path,
+                );
+                pop_interactive_virtual_item_path(path);
+                result
+            });
+            child_hit.or(index.map(|index| HitResult::VGridSelect {
+                id: resolved_id,
+                index,
+            }))
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).unwrap();
             for (i, child) in children.iter().enumerate().rev() {
@@ -1098,6 +1275,53 @@ fn hit_test_impl<Msg: Clone>(
         }
         _ => None,
     }
+}
+
+fn hit_interactive_virtual_item<Msg: Clone>(
+    item: &Widget<Msg>,
+    size: (f32, f32),
+    origin: Point,
+    direction: LayoutDirection,
+    mouse: Point,
+    widget_states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<HitResult<Msg>> {
+    let mut item_taffy = TaffyTree::new();
+    let fonts = Rc::new(RefCell::new(FontSystem::new()));
+    let root = build_taffy_tree_with_direction(
+        &mut item_taffy,
+        item,
+        fonts.clone(),
+        widget_states,
+        direction,
+    );
+    compute_layout(
+        &mut item_taffy,
+        root,
+        virtual_item_physical_size(size),
+        fonts,
+        &RichTextRenderer::default(),
+    );
+    hit_test_impl(item, &item_taffy, root, mouse, origin, widget_states, path)
+}
+
+fn virtual_item_physical_size(size: (f32, f32)) -> PhysicalSize<u32> {
+    PhysicalSize::new(size.0.max(1.0).ceil() as u32, size.1.max(1.0).ceil() as u32)
+}
+
+fn interactive_carousel_card_rect(
+    frame: crate::widgets::carousel::geometry::CarouselItemFrame,
+    viewport_height: f32,
+) -> SkiaRect {
+    const GAP: f32 = 8.0;
+    let horizontal = (GAP * 0.5).min(frame.width * 0.2);
+    let vertical = (GAP * 0.5).min(viewport_height * 0.2);
+    SkiaRect::from_xywh(
+        frame.x + horizontal,
+        vertical,
+        (frame.width - horizontal * 2.0).max(1.0),
+        (viewport_height - vertical * 2.0).max(1.0),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1384,6 +1608,14 @@ pub fn collect_input_ids<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>) {
     collect_input_ids_impl(widget, ids, &mut path);
 }
 
+pub(crate) fn collect_input_ids_at_path<Msg>(
+    widget: &Widget<Msg>,
+    ids: &mut Vec<u64>,
+    path: &mut Vec<usize>,
+) {
+    collect_input_ids_impl(widget, ids, path);
+}
+
 fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &mut Vec<usize>) {
     match widget {
         Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
@@ -1430,6 +1662,14 @@ fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &
 pub fn collect_stateful_ids<Msg>(widget: &Widget<Msg>, out: &mut Vec<(u64, &'static str)>) {
     let mut path = Vec::new();
     collect_stateful_ids_impl(widget, out, &mut path);
+}
+
+pub(crate) fn collect_stateful_ids_at_path<Msg>(
+    widget: &Widget<Msg>,
+    ids: &mut Vec<(u64, &'static str)>,
+    path: &mut Vec<usize>,
+) {
+    collect_stateful_ids_impl(widget, ids, path);
 }
 
 fn collect_stateful_ids_impl<Msg>(
@@ -1496,13 +1736,17 @@ fn collect_stateful_ids_impl<Msg>(
         }
         Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
+        | Widget::InteractiveVirtualListContent { .. }
         | Widget::VirtualListWithSelection { .. }
         | Widget::VirtualListContentWithSelection { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "vlist"))
         }
-        Widget::CarouselView { .. } => out.push((widget.resolved_id(path).unwrap(), "carousel")),
+        Widget::CarouselView { .. } | Widget::InteractiveCarouselView { .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "carousel"))
+        }
         Widget::VirtualGrid { .. }
         | Widget::VirtualGridContent { .. }
+        | Widget::InteractiveVirtualGridContent { .. }
         | Widget::VirtualGridWithSelection { .. }
         | Widget::VirtualGridContentWithSelection { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "vgrid"))
@@ -1517,6 +1761,7 @@ fn collect_stateful_ids_impl<Msg>(
         | Widget::Accordion { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. } => {
             path.push(0);
             collect_stateful_ids_impl(child, out, path);
@@ -1588,6 +1833,7 @@ fn find_input_props_impl<Msg: Clone>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -3046,7 +3292,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use skia_safe::{Point, Rect as SkiaRect};
-    use taffy::prelude::{Dimension, Size, Style, TaffyTree};
+    use taffy::prelude::{AlignItems, Dimension, Size, Style, TaffyTree};
     use winit::dpi::PhysicalSize;
 
     use super::{
@@ -3054,7 +3300,6 @@ mod tests {
         find_context_menu_target, find_context_menu_target_with_metadata, find_scroll_focus,
         find_scrollbar_drag_hit, hit_test, rounded_rect_contains, scrollbar_drag_hit,
     };
-    use crate::WidgetId;
     use crate::app::ContextMenuVirtualItem;
     use crate::engine::widget_state::{
         ScrollState, VirtualGridState, VirtualListState, WidgetState,
@@ -3066,6 +3311,7 @@ mod tests {
     };
     use crate::widgets::carousel::CarouselState;
     use crate::widgets::table_of_contents::HeadingLevel;
+    use crate::{KeyedVirtualItems, PointerEvent, PointerRegionConfig, VirtualItemKey, WidgetId};
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {
@@ -3159,6 +3405,92 @@ mod tests {
         );
     }
 
+    fn pointer_message(_: PointerEvent) -> Msg {
+        Msg::Toggle
+    }
+
+    #[test]
+    fn pointer_region_claims_primary_hits_before_wrapped_content() {
+        let widget = Widget::pointer_region(
+            WidgetId::manual(303).unwrap(),
+            sized_button(),
+            PointerRegionConfig::new(pointer_message).with_pointer_capture(),
+            fixed_size_style(100.0, 40.0),
+        );
+        let states = HashMap::new();
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(100, 40));
+
+        let hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(20.0, 10.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+
+        assert!(matches!(hit, Some(HitResult::PointerRegion(303))));
+    }
+
+    #[test]
+    fn scroll_view_hits_the_visible_region_at_the_painted_offset() {
+        let source = |id| {
+            Widget::pointer_region(
+                WidgetId::manual(id).unwrap(),
+                Widget::Spacer {
+                    style: fixed_size_style(100.0, 40.0),
+                },
+                PointerRegionConfig::new(pointer_message),
+                fixed_size_style(100.0, 40.0),
+            )
+        };
+        let widget = Widget::ScrollView {
+            id: 305,
+            child: Box::new(Widget::Column {
+                children: vec![source(306), source(307)],
+                style: fixed_size_style(100.0, 80.0),
+            }),
+            style: Style {
+                align_items: Some(AlignItems::FlexStart),
+                ..fixed_size_style(100.0, 40.0)
+            },
+        };
+        let mut states = HashMap::from([(
+            305,
+            WidgetState::Scroll(ScrollState {
+                offset_y: 0.0,
+                content_height: 80.0,
+                viewport_h: 40.0,
+            }),
+        )]);
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(100, 40));
+        let point = Point::new(20.0, 20.0);
+        assert!(matches!(
+            hit_test(&widget, &taffy, root, point, Point::default(), &states),
+            Some(HitResult::PointerRegion(306))
+        ));
+        states
+            .get_mut(&305)
+            .and_then(WidgetState::as_scroll_mut)
+            .unwrap()
+            .offset_y = 40.0;
+        assert!(matches!(
+            hit_test(&widget, &taffy, root, point, Point::default(), &states),
+            Some(HitResult::PointerRegion(307))
+        ));
+        assert!(
+            hit_test(
+                &widget,
+                &taffy,
+                root,
+                Point::new(20.0, 41.0),
+                Point::default(),
+                &states
+            )
+            .is_none()
+        );
+    }
+
     fn usize_msg(value: usize) -> Msg {
         Msg::Usize(value)
     }
@@ -3199,6 +3531,175 @@ mod tests {
             None,
             ButtonVariant::Primary,
         )
+    }
+
+    fn interactive_row<'a>(index: usize) -> Option<Widget<'a, Msg>> {
+        (index == 0).then(|| Widget::Row {
+            children: vec![
+                Widget::Button {
+                    text: "Run",
+                    on_press: Msg::Usize(9),
+                    style: fixed_size_style(30.0, 40.0),
+                    color: None,
+                    variant: ButtonVariant::Primary,
+                },
+                Widget::Switch {
+                    checked: false,
+                    on_change: |_| Msg::Toggle,
+                    style: fixed_size_style(30.0, 40.0),
+                },
+                Widget::Spacer {
+                    style: fixed_size_style(40.0, 40.0),
+                },
+            ],
+            style: fixed_size_style(100.0, 40.0),
+        })
+    }
+
+    #[test]
+    fn interactive_virtual_rows_route_child_actions_before_row_selection() {
+        let keys = [VirtualItemKey::new(71).unwrap()];
+        let items = KeyedVirtualItems::try_new(&keys, &interactive_row).unwrap();
+        let widget = Widget::interactive_virtual_list_content(
+            40.0,
+            items,
+            usize_msg,
+            fixed_size_style(100.0, 40.0),
+        )
+        .with_id(700);
+        let mut states = HashMap::new();
+        states.insert(
+            700,
+            WidgetState::VList(VirtualListState {
+                viewport_h: 40.0,
+                ..Default::default()
+            }),
+        );
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(100, 40));
+
+        let button_hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(10.0, 20.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+        let switch_hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(45.0, 20.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+        let row_hit = hit_test(
+            &widget,
+            &taffy,
+            root,
+            Point::new(90.0, 20.0),
+            Point::new(0.0, 0.0),
+            &states,
+        );
+
+        assert!(matches!(
+            button_hit,
+            Some(HitResult::Message {
+                msg: Msg::Usize(9),
+                ..
+            })
+        ));
+        assert!(matches!(
+            switch_hit,
+            Some(HitResult::Message {
+                msg: Msg::Toggle,
+                ..
+            })
+        ));
+        assert!(matches!(
+            row_hit,
+            Some(HitResult::VListSelect { id: 700, index: 0 })
+        ));
+    }
+
+    #[test]
+    fn keyed_virtual_child_focus_identity_survives_item_reordering() {
+        let key = VirtualItemKey::new(99).unwrap();
+        let mut first_path = vec![0];
+        super::push_interactive_virtual_item_path(&mut first_path, key);
+        let first = sized_button().keyboard_focus_id(&first_path);
+        let mut reordered_path = vec![0];
+        super::push_interactive_virtual_item_path(&mut reordered_path, key);
+        let reordered = sized_button().keyboard_focus_id(&reordered_path);
+
+        assert_eq!(first, reordered);
+    }
+
+    #[test]
+    fn interactive_grid_and_carousel_route_visible_child_actions() {
+        let keys = [VirtualItemKey::new(72).unwrap()];
+        let grid_items = KeyedVirtualItems::try_new(&keys, &interactive_row).unwrap();
+        let grid = Widget::interactive_virtual_grid_content(
+            1,
+            40.0,
+            grid_items,
+            usize_msg,
+            fixed_size_style(100.0, 40.0),
+        )
+        .with_id(701);
+        let grid_states = HashMap::from([(
+            701,
+            WidgetState::VGrid(VirtualGridState {
+                viewport_w: 100.0,
+                viewport_h: 40.0,
+                ..Default::default()
+            }),
+        )]);
+        let (grid_taffy, grid_root) = test_layout(&grid, &grid_states, PhysicalSize::new(100, 40));
+        let grid_hit = hit_test(
+            &grid,
+            &grid_taffy,
+            grid_root,
+            Point::new(20.0, 20.0),
+            Point::new(0.0, 0.0),
+            &grid_states,
+        );
+
+        let carousel_items = KeyedVirtualItems::try_new(&keys, &interactive_row).unwrap();
+        let carousel = Widget::interactive_carousel_view(
+            carousel_items,
+            usize_msg,
+            crate::CarouselConfig::uncontained(100.0).unwrap(),
+            fixed_size_style(100.0, 48.0),
+        )
+        .with_id(702);
+        let carousel_states =
+            HashMap::from([(702, WidgetState::Carousel(CarouselState::default()))]);
+        let (carousel_taffy, carousel_root) =
+            test_layout(&carousel, &carousel_states, PhysicalSize::new(100, 48));
+        let carousel_hit = hit_test(
+            &carousel,
+            &carousel_taffy,
+            carousel_root,
+            Point::new(20.0, 20.0),
+            Point::new(0.0, 0.0),
+            &carousel_states,
+        );
+
+        assert!(matches!(
+            grid_hit,
+            Some(HitResult::Message {
+                msg: Msg::Usize(9),
+                ..
+            })
+        ));
+        assert!(matches!(
+            carousel_hit,
+            Some(HitResult::Message {
+                msg: Msg::Usize(9),
+                ..
+            })
+        ));
     }
 
     fn expanded_accordion_with_body_button() -> Widget<'static, Msg> {

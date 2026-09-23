@@ -274,6 +274,7 @@ fn find_nested_heading_offset<Msg>(
             )
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. } => {
@@ -376,6 +377,7 @@ fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<Table
             }
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. } => collect_entries_impl(child, entries),
@@ -425,10 +427,13 @@ fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<Table
         | Widget::Toast { .. }
         | Widget::DropdownMenu { .. }
         | Widget::CarouselView { .. }
+        | Widget::InteractiveCarouselView { .. }
         | Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
+        | Widget::InteractiveVirtualListContent { .. }
         | Widget::VirtualGrid { .. }
         | Widget::VirtualGridContent { .. }
+        | Widget::InteractiveVirtualGridContent { .. }
         | Widget::VirtualListWithSelection { .. }
         | Widget::VirtualListContentWithSelection { .. }
         | Widget::VirtualGridWithSelection { .. }

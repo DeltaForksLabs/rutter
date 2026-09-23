@@ -23,7 +23,10 @@ use std::time::Instant;
 use arboard::Clipboard;
 use cosmic_text::{FontSystem, SwashCache};
 use skia_safe::{Canvas, Color as SkiaColor, Font, Point};
-use taffy::prelude::{NodeId, Style, TaffyTree};
+use taffy::{
+    Direction,
+    prelude::{NodeId, Style, TaffyTree},
+};
 use winit::{
     dpi::PhysicalSize,
     event::{Modifiers, WindowEvent},
@@ -51,19 +54,27 @@ use crate::input_limits::{InputKind, InputLimits};
 use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
 };
-use crate::render::hit_test::{collect_input_ids, collect_stateful_ids};
+use crate::pointer::{ActiveDragBadge, DragBadge, DragSource, DropTarget, PointerEvent};
+use crate::render::hit_test::{
+    collect_input_ids, collect_input_ids_at_path, collect_stateful_ids,
+    collect_stateful_ids_at_path,
+};
 use crate::render::select_overlay::collector::{
     collect_dropdown_triggers, collect_open_dropdown_overlays, collect_open_search_overlays,
 };
 use crate::render::text::TextBufferCache;
 use crate::render::{ImageRenderCache, draw_widgets_with_cache_and_custom_state};
 use crate::theme::Theme;
-use crate::widget::custom::{CustomWidgetState, collect_custom_widget_ids};
+use crate::widget::custom::{
+    CustomWidgetState, collect_custom_widget_ids, collect_custom_widget_ids_at_path,
+};
 use crate::widget::id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 use crate::widget::{
-    DialogAction, VirtualSelection, Widget, resolve_search_suggestion_id, resolve_table_cell_id,
+    DialogAction, KeyedVirtualItems, VirtualSelection, Widget, pop_interactive_virtual_item_path,
+    push_interactive_virtual_item_path, resolve_search_suggestion_id, resolve_table_cell_id,
     resolve_table_header_id, resolve_table_row_id,
 };
+use crate::widgets::carousel::geometry::carousel_item_frames;
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
 use crate::widgets::search::{
     SEARCH_BAR_LEADING_TEXT_INSET, SearchMatch, SearchMatcher, SearchSuggestions, filter_ranked,
@@ -134,6 +145,7 @@ fn contains_live_clock<Msg>(widget: &Widget<Msg>) -> bool {
 fn contains_live_clock_child<Msg>(widget: &Widget<Msg>) -> bool {
     match widget {
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
@@ -195,6 +207,7 @@ fn collect_toast_runtime_updates_impl<Msg>(
             }
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -252,6 +265,7 @@ fn collect_overlay_focus_scope<Msg>(
             false
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -342,12 +356,15 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::Select { .. }
         | Widget::DropdownMenu { .. }
         | Widget::CarouselView { .. }
+        | Widget::InteractiveCarouselView { .. }
         | Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
+        | Widget::InteractiveVirtualListContent { .. }
         | Widget::VirtualListWithSelection { .. }
         | Widget::VirtualListContentWithSelection { .. }
         | Widget::VirtualGrid { .. } => out.push(widget.keyboard_focus_id(path).unwrap()),
         Widget::VirtualGridContent { .. }
+        | Widget::InteractiveVirtualGridContent { .. }
         | Widget::VirtualGridWithSelection { .. }
         | Widget::VirtualGridContentWithSelection { .. } => {
             out.push(widget.keyboard_focus_id(path).unwrap())
@@ -355,8 +372,8 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         Widget::Table { .. } if widget.table_is_interactive() => {
             out.push(widget.keyboard_focus_id(path).unwrap())
         }
-        Widget::Custom { id, widget, .. } if widget.interaction().supports_keyboard() => {
-            out.push(id.get())
+        Widget::Custom { widget: custom, .. } if custom.interaction().supports_keyboard() => {
+            out.push(widget.keyboard_focus_id(path).unwrap())
         }
         Widget::TabBar { tabs, .. } => {
             for index in 0..tabs.len() {
@@ -389,6 +406,7 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
             path.pop();
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. } => {
@@ -589,6 +607,32 @@ struct CarouselRuntime<Msg> {
     config: CarouselConfig,
 }
 
+pub(crate) struct PointerRegionRuntime<Msg> {
+    pub(crate) on_pointer: fn(PointerEvent) -> Msg,
+    pub(crate) capture_on_press: bool,
+    pub(crate) drag_source: Option<DragSource<Msg>>,
+    pub(crate) drop_target: Option<DropTarget<Msg>>,
+    pub(crate) drag_badge: Option<DragBadge>,
+}
+
+impl<Msg> Clone for PointerRegionRuntime<Msg> {
+    fn clone(&self) -> Self {
+        Self {
+            on_pointer: self.on_pointer,
+            capture_on_press: self.capture_on_press,
+            drag_source: self.drag_source,
+            drop_target: self.drop_target,
+            drag_badge: self.drag_badge.clone(),
+        }
+    }
+}
+
+impl<Msg> std::fmt::Debug for PointerRegionRuntime<Msg> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PointerRegionRuntime")
+    }
+}
+
 #[derive(Debug)]
 struct WidgetRuntimeCaches<Msg: Clone> {
     input_order: Vec<u64>,
@@ -619,6 +663,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     virtual_multi_selections: HashMap<u64, VirtualMultiSelectionRuntime<Msg>>,
     toast_dismiss: HashMap<u64, Msg>,
     popover_dismiss: HashMap<u64, Msg>,
+    pub(crate) pointer_regions: HashMap<u64, PointerRegionRuntime<Msg>>,
 }
 
 struct RuntimeMetadataTraversal {
@@ -664,6 +709,7 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             virtual_multi_selections: HashMap::new(),
             toast_dismiss: HashMap::new(),
             popover_dismiss: HashMap::new(),
+            pointer_regions: HashMap::new(),
         }
     }
 }
@@ -698,6 +744,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.virtual_multi_selections.clear();
         self.toast_dismiss.clear();
         self.popover_dismiss.clear();
+        self.pointer_regions.clear();
     }
 }
 
@@ -902,6 +949,391 @@ fn sync_virtual_grid_runtime<Msg: Clone>(
     insert_runtime_entry(&mut caches.vgrids, resolved_id, runtime, "virtual grids")?;
     sync_virtual_grid_viewport(states, resolved_id, layout);
     Ok(())
+}
+
+fn interactive_list_visible_indices(
+    states: &HashMap<u64, WidgetState>,
+    collection_id: u64,
+    item_height: f32,
+    item_count: usize,
+) -> std::ops::Range<usize> {
+    let Some(state) = states.get(&collection_id).and_then(WidgetState::as_vlist) else {
+        return 0..0;
+    };
+    let (first, last) = state.visible_range(item_height, item_count);
+    first..last
+}
+
+fn interactive_grid_visible_indices(
+    states: &HashMap<u64, WidgetState>,
+    collection_id: u64,
+    item_height: f32,
+    item_count: usize,
+    columns: usize,
+) -> Vec<usize> {
+    let Some(state) = states.get(&collection_id).and_then(WidgetState::as_vgrid) else {
+        return Vec::new();
+    };
+    let (first_row, last_row) = state.visible_row_range(item_height, item_count, columns);
+    let columns = crate::engine::widget_state::normalize_virtual_grid_columns(columns);
+    (first_row * columns..last_row * columns)
+        .filter(|index| *index < item_count)
+        .collect()
+}
+
+fn interactive_carousel_visible_indices(
+    states: &HashMap<u64, WidgetState>,
+    collection_id: u64,
+    config: &CarouselConfig,
+    item_count: usize,
+    direction: crate::i18n::LayoutDirection,
+) -> Vec<usize> {
+    let Some(state) = states
+        .get(&collection_id)
+        .and_then(WidgetState::as_carousel)
+    else {
+        return Vec::new();
+    };
+    carousel_item_frames(
+        config,
+        state.position,
+        state.viewport_width,
+        item_count,
+        direction,
+    )
+    .into_iter()
+    .map(|frame| frame.index)
+    .collect()
+}
+
+fn collect_interactive_virtual_liveness<Msg>(
+    widget: &Widget<Msg>,
+    states: &HashMap<u64, WidgetState>,
+    stateful: &mut Vec<(u64, &'static str)>,
+    input_ids: &mut Vec<u64>,
+    custom_ids: &mut Vec<u64>,
+    path: &mut Vec<usize>,
+) {
+    match widget {
+        Widget::InteractiveVirtualListContent {
+            item_height, items, ..
+        } => collect_visible_interactive_items(
+            items,
+            interactive_list_visible_indices(
+                states,
+                widget.resolved_id(path).unwrap(),
+                *item_height,
+                items.len(),
+            ),
+            states,
+            stateful,
+            input_ids,
+            custom_ids,
+            path,
+        ),
+        Widget::InteractiveVirtualGridContent {
+            columns,
+            item_height,
+            items,
+            ..
+        } => collect_visible_interactive_items(
+            items,
+            interactive_grid_visible_indices(
+                states,
+                widget.resolved_id(path).unwrap(),
+                *item_height,
+                items.len(),
+                *columns,
+            ),
+            states,
+            stateful,
+            input_ids,
+            custom_ids,
+            path,
+        ),
+        Widget::InteractiveCarouselView { items, config, .. } => collect_visible_interactive_items(
+            items,
+            interactive_carousel_visible_indices(
+                states,
+                widget.resolved_id(path).unwrap(),
+                config,
+                items.len(),
+                crate::i18n::LayoutDirection::Ltr,
+            ),
+            states,
+            stateful,
+            input_ids,
+            custom_ids,
+            path,
+        ),
+        _ => collect_interactive_virtual_children(
+            widget, states, stateful, input_ids, custom_ids, path,
+        ),
+    }
+}
+
+fn collect_visible_interactive_items<Msg>(
+    items: &KeyedVirtualItems<'_, Msg>,
+    indices: impl IntoIterator<Item = usize>,
+    states: &HashMap<u64, WidgetState>,
+    stateful: &mut Vec<(u64, &'static str)>,
+    input_ids: &mut Vec<u64>,
+    custom_ids: &mut Vec<u64>,
+    path: &mut Vec<usize>,
+) {
+    for index in indices {
+        let Some(key) = items.key_at(index) else {
+            continue;
+        };
+        let Some(item) = items.build_item(index) else {
+            continue;
+        };
+        push_interactive_virtual_item_path(path, key);
+        collect_stateful_ids_at_path(&item, stateful, path);
+        collect_input_ids_at_path(&item, input_ids, path);
+        collect_custom_widget_ids_at_path(&item, custom_ids, path);
+        collect_interactive_virtual_liveness(&item, states, stateful, input_ids, custom_ids, path);
+        pop_interactive_virtual_item_path(path);
+    }
+}
+
+fn collect_interactive_virtual_children<Msg>(
+    widget: &Widget<Msg>,
+    states: &HashMap<u64, WidgetState>,
+    stateful: &mut Vec<(u64, &'static str)>,
+    input_ids: &mut Vec<u64>,
+    custom_ids: &mut Vec<u64>,
+    path: &mut Vec<usize>,
+) {
+    match widget {
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                collect_interactive_virtual_liveness(
+                    child, states, stateful, input_ids, custom_ids, path,
+                );
+                path.pop();
+            }
+        }
+        Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::ButtonContent { child, .. }
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            collect_interactive_virtual_liveness(
+                child, states, stateful, input_ids, custom_ids, path,
+            );
+            path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            collect_interactive_virtual_liveness(
+                anchor, states, stateful, input_ids, custom_ids, path,
+            );
+            path.pop();
+            if *open {
+                path.push(1);
+                collect_interactive_virtual_liveness(
+                    content, states, stateful, input_ids, custom_ids, path,
+                );
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn append_interactive_virtual_focus_order<Msg>(
+    widget: &Widget<Msg>,
+    states: &HashMap<u64, WidgetState>,
+    focus_order: &mut Vec<u64>,
+    path: &mut Vec<usize>,
+) {
+    let Some(child_focuses) = interactive_collection_focuses(widget, states, path) else {
+        return append_interactive_child_focuses(widget, states, focus_order, path);
+    };
+    insert_interactive_child_focuses(widget, child_focuses, focus_order, path);
+}
+
+fn interactive_collection_focuses<Msg>(
+    widget: &Widget<Msg>,
+    states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Option<Vec<u64>> {
+    match widget {
+        Widget::InteractiveVirtualListContent {
+            item_height, items, ..
+        } => Some(interactive_list_focuses(
+            widget,
+            items,
+            *item_height,
+            states,
+            path,
+        )),
+        Widget::InteractiveVirtualGridContent {
+            columns,
+            item_height,
+            items,
+            ..
+        } => Some(interactive_grid_focuses(
+            widget,
+            items,
+            *columns,
+            *item_height,
+            states,
+            path,
+        )),
+        Widget::InteractiveCarouselView { items, config, .. } => Some(
+            interactive_carousel_focuses(widget, items, config, states, path),
+        ),
+        _ => None,
+    }
+}
+
+fn interactive_list_focuses<Msg>(
+    widget: &Widget<Msg>,
+    items: &KeyedVirtualItems<'_, Msg>,
+    item_height: f32,
+    states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Vec<u64> {
+    let indices = interactive_list_visible_indices(
+        states,
+        widget.resolved_id(path).unwrap(),
+        item_height,
+        items.len(),
+    );
+    collect_visible_interactive_focuses(items, indices, states, path)
+}
+
+fn interactive_grid_focuses<Msg>(
+    widget: &Widget<Msg>,
+    items: &KeyedVirtualItems<'_, Msg>,
+    columns: usize,
+    item_height: f32,
+    states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Vec<u64> {
+    let indices = interactive_grid_visible_indices(
+        states,
+        widget.resolved_id(path).unwrap(),
+        item_height,
+        items.len(),
+        columns,
+    );
+    collect_visible_interactive_focuses(items, indices, states, path)
+}
+
+fn interactive_carousel_focuses<Msg>(
+    widget: &Widget<Msg>,
+    items: &KeyedVirtualItems<'_, Msg>,
+    config: &CarouselConfig,
+    states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Vec<u64> {
+    let indices = interactive_carousel_visible_indices(
+        states,
+        widget.resolved_id(path).unwrap(),
+        config,
+        items.len(),
+        crate::i18n::LayoutDirection::Ltr,
+    );
+    collect_visible_interactive_focuses(items, indices, states, path)
+}
+
+fn collect_visible_interactive_focuses<Msg>(
+    items: &KeyedVirtualItems<'_, Msg>,
+    indices: impl IntoIterator<Item = usize>,
+    states: &HashMap<u64, WidgetState>,
+    path: &mut Vec<usize>,
+) -> Vec<u64> {
+    let mut focus_order = Vec::new();
+    for index in indices {
+        let Some(key) = items.key_at(index) else {
+            continue;
+        };
+        let Some(item) = items.build_item(index) else {
+            continue;
+        };
+        push_interactive_virtual_item_path(path, key);
+        collect_focus_order_impl(&item, &mut focus_order, path);
+        append_interactive_virtual_focus_order(&item, states, &mut focus_order, path);
+        pop_interactive_virtual_item_path(path);
+    }
+    focus_order
+}
+
+fn insert_interactive_child_focuses<Msg>(
+    widget: &Widget<Msg>,
+    child_focuses: Vec<u64>,
+    focus_order: &mut Vec<u64>,
+    path: &[usize],
+) {
+    let Some(collection_id) = widget.keyboard_focus_id(path) else {
+        return;
+    };
+    let Some(index) = focus_order.iter().position(|id| *id == collection_id) else {
+        return;
+    };
+    focus_order.splice(index + 1..index + 1, child_focuses);
+}
+
+fn append_interactive_child_focuses<Msg>(
+    widget: &Widget<Msg>,
+    states: &HashMap<u64, WidgetState>,
+    focus_order: &mut Vec<u64>,
+    path: &mut Vec<usize>,
+) {
+    match widget {
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                append_interactive_virtual_focus_order(child, states, focus_order, path);
+                path.pop();
+            }
+        }
+        Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::ButtonContent { child, .. }
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            append_interactive_virtual_focus_order(child, states, focus_order, path);
+            path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            append_interactive_virtual_focus_order(anchor, states, focus_order, path);
+            path.pop();
+            if *open {
+                path.push(1);
+                append_interactive_virtual_focus_order(content, states, focus_order, path);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
 }
 
 fn sync_table_runtime<Msg: Clone>(
@@ -1254,6 +1686,7 @@ pub struct RutterEngine<A: AppLogic> {
     pub snapshot_scheduled: bool,
     pub scale_factor: f32,
     pub last_mouse_pos: Point,
+    pub(crate) active_drag_badge: Option<ActiveDragBadge>,
     pub has_animated: bool,
     pub has_live_clock: bool,
     surface_config: SurfaceConfig,
@@ -1350,6 +1783,7 @@ impl<A: AppLogic> RutterEngine<A> {
             snapshot_scheduled: false,
             scale_factor: 1.0,
             last_mouse_pos: Point::new(0.0, 0.0),
+            active_drag_badge: None,
             has_animated: false,
             has_live_clock: false,
             surface_config,
@@ -1519,6 +1953,14 @@ impl<A: AppLogic> RutterEngine<A> {
             collect_stateful_ids(&widget_tree, &mut stateful);
             collect_input_ids(&widget_tree, &mut input_ids);
             collect_custom_widget_ids(&widget_tree, &mut custom_ids);
+            collect_interactive_virtual_liveness(
+                &widget_tree,
+                &self.widget_states,
+                &mut stateful,
+                &mut input_ids,
+                &mut custom_ids,
+                &mut Vec::new(),
+            );
             collect_toast_runtime_updates(&widget_tree, &mut toast_updates);
             let has_live_clock = contains_live_clock(&widget_tree);
             (
@@ -1873,6 +2315,12 @@ impl<A: AppLogic> RutterEngine<A> {
         });
         let overlay_focus_scope =
             collect_focus_order(&widget_tree, &mut self.runtime_cache_scratch.focus_order);
+        append_interactive_virtual_focus_order(
+            &widget_tree,
+            &self.widget_states,
+            &mut self.runtime_cache_scratch.focus_order,
+            &mut Vec::new(),
+        );
         self.runtime_cache_scratch.visible_dropdown_triggers = collect_dropdown_triggers(
             &widget_tree,
             &self.taffy,
@@ -2318,6 +2766,35 @@ impl<A: AppLogic> RutterEngine<A> {
                     "toast dismiss callbacks",
                 )?;
             }
+            Widget::PointerRegion { child, config, .. } => {
+                insert_runtime_entry(
+                    &mut runtime_caches.pointer_regions,
+                    widget.resolved_id(path).unwrap(),
+                    PointerRegionRuntime {
+                        on_pointer: config.on_pointer,
+                        capture_on_press: config.capture_on_press,
+                        drag_source: config.drag_source,
+                        drop_target: config.drop_target,
+                        drag_badge: config.drag_badge.clone(),
+                    },
+                    "pointer regions",
+                )?;
+                path.push(0);
+                Self::sync_runtime_metadata_impl(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    child.as_ref(),
+                    RuntimeMetadataTraversal {
+                        node: Self::first_child(traversal.node, sources.taffy),
+                        abs: abs_pos,
+                        spacing: traversal.spacing,
+                    },
+                    path,
+                )?;
+                path.pop();
+            }
             Widget::ScrollView { child, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 if let Some(layout) = layout
@@ -2379,6 +2856,37 @@ impl<A: AppLogic> RutterEngine<A> {
                     model,
                     options,
                     layout,
+                    path,
+                )?;
+            }
+            Widget::InteractiveVirtualListContent {
+                item_height,
+                items,
+                on_select,
+                ..
+            } => {
+                let id = widget.resolved_id(path).unwrap();
+                sync_virtual_list_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    layout,
+                    path,
+                    VListRuntime {
+                        on_select: *on_select,
+                        item_height: *item_height,
+                        item_count: items.len(),
+                    },
+                )?;
+                let indices =
+                    interactive_list_visible_indices(widget_states, id, *item_height, items.len());
+                Self::sync_interactive_virtual_item_metadata(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    items,
+                    indices,
                     path,
                 )?;
             }
@@ -2452,6 +2960,50 @@ impl<A: AppLogic> RutterEngine<A> {
                     )?
                 }
             },
+            Widget::InteractiveCarouselView {
+                items,
+                on_select,
+                config,
+                ..
+            } => {
+                let id = widget.resolved_id(path).unwrap();
+                sync_carousel_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    layout,
+                    path,
+                    CarouselRuntime {
+                        on_select: *on_select,
+                        item_count: items.len(),
+                        config: config.clone(),
+                    },
+                )?;
+                let direction = traversal
+                    .node
+                    .and_then(|node| sources.taffy.style(node).ok())
+                    .map(|style| match style.direction {
+                        Direction::Rtl => crate::i18n::LayoutDirection::Rtl,
+                        Direction::Ltr => crate::i18n::LayoutDirection::Ltr,
+                    })
+                    .unwrap_or_default();
+                let indices = interactive_carousel_visible_indices(
+                    widget_states,
+                    id,
+                    config,
+                    items.len(),
+                    direction,
+                );
+                Self::sync_interactive_virtual_item_metadata(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    items,
+                    indices,
+                    path,
+                )?;
+            }
             Widget::CarouselView {
                 item_count,
                 on_select,
@@ -2469,6 +3021,44 @@ impl<A: AppLogic> RutterEngine<A> {
                         item_count: *item_count,
                         config: config.clone(),
                     },
+                )?;
+            }
+            Widget::InteractiveVirtualGridContent {
+                columns,
+                item_height,
+                items,
+                on_select,
+                ..
+            } => {
+                let id = widget.resolved_id(path).unwrap();
+                sync_virtual_grid_runtime(
+                    runtime_caches,
+                    widget_states,
+                    widget,
+                    layout,
+                    path,
+                    VGridRuntime {
+                        on_select: *on_select,
+                        columns: *columns,
+                        item_height: *item_height,
+                        item_count: items.len(),
+                    },
+                )?;
+                let indices = interactive_grid_visible_indices(
+                    widget_states,
+                    id,
+                    *item_height,
+                    items.len(),
+                    *columns,
+                );
+                Self::sync_interactive_virtual_item_metadata(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    items,
+                    indices,
+                    path,
                 )?;
             }
             Widget::VirtualGrid {
@@ -2664,6 +3254,42 @@ impl<A: AppLogic> RutterEngine<A> {
         Ok(())
     }
 
+    fn sync_interactive_virtual_item_metadata<Msg: Clone>(
+        runtime_caches: &mut WidgetRuntimeCaches<Msg>,
+        widget_states: &mut HashMap<u64, WidgetState>,
+        selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
+        sources: RuntimeMetadataSources<'_>,
+        items: &KeyedVirtualItems<'_, Msg>,
+        indices: impl IntoIterator<Item = usize>,
+        path: &mut Vec<usize>,
+    ) -> Result<(), WidgetIdError> {
+        for index in indices {
+            let Some(key) = items.key_at(index) else {
+                continue;
+            };
+            let Some(item) = items.build_item(index) else {
+                continue;
+            };
+            push_interactive_virtual_item_path(path, key);
+            let result = Self::sync_runtime_metadata_impl(
+                runtime_caches,
+                widget_states,
+                selection_states,
+                sources,
+                &item,
+                RuntimeMetadataTraversal {
+                    node: None,
+                    abs: Point::new(0.0, 0.0),
+                    spacing: 8.0,
+                },
+                path,
+            );
+            pop_interactive_virtual_item_path(path);
+            result?;
+        }
+        Ok(())
+    }
+
     fn visible_input_width(
         layout: Option<&taffy::tree::Layout>,
         spacing: f32,
@@ -2825,6 +3451,18 @@ impl<A: AppLogic> RutterEngine<A> {
                 &theme,
                 self.scale_factor,
             );
+            if let Some(badge) = &self.active_drag_badge {
+                crate::render::drag_badge::draw_drag_badge(
+                    canvas,
+                    badge,
+                    self.last_mouse_pos,
+                    (
+                        phys.width as f32 / self.scale_factor,
+                        phys.height as f32 / self.scale_factor,
+                    ),
+                    &mut self.font_cache,
+                );
+            }
         }
 
         let backend = self
@@ -3287,6 +3925,113 @@ mod tests {
 
         assert_eq!(runtime_caches.toast_dismiss.get(&6), Some(&Msg::Dismiss));
         assert_eq!(runtime_caches.popover_dismiss.get(&8), Some(&Msg::Dismiss));
+    }
+
+    fn interactive_runtime_button<'a>(index: usize) -> Option<Widget<'a, Msg>> {
+        Some(Widget::Button {
+            text: "Open",
+            on_press: Msg::Usize(index),
+            style: base_style(120.0, 40.0),
+            color: None,
+            variant: crate::ButtonVariant::Primary,
+        })
+    }
+
+    #[test]
+    fn interactive_virtual_runtime_registers_only_visible_keyed_child_callbacks() {
+        let keys = [
+            crate::VirtualItemKey::new(1).unwrap(),
+            crate::VirtualItemKey::new(2).unwrap(),
+            crate::VirtualItemKey::new(3).unwrap(),
+            crate::VirtualItemKey::new(4).unwrap(),
+        ];
+        let items = crate::KeyedVirtualItems::try_new(&keys, &interactive_runtime_button).unwrap();
+        let widget = Widget::interactive_virtual_list_content(
+            40.0,
+            items,
+            Msg::Usize,
+            base_style(120.0, 80.0),
+        )
+        .with_id(801);
+        let mut states = HashMap::from([(
+            801,
+            WidgetState::VList(VirtualListState {
+                viewport_h: 80.0,
+                ..Default::default()
+            }),
+        )]);
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &widget, fs(), &states);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(120, 80),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
+        let mut caches = WidgetRuntimeCaches::<Msg>::default();
+
+        RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
+            &mut caches,
+            &mut states,
+            &HashMap::new(),
+            &taffy,
+            &widget,
+            root,
+            DummyApp::theme().spacing,
+        );
+
+        let mut messages = caches.buttons.values().cloned().collect::<Vec<_>>();
+        messages.sort_by_key(|message| match message {
+            Msg::Usize(index) => *index,
+            _ => usize::MAX,
+        });
+        assert_eq!(messages, vec![Msg::Usize(0), Msg::Usize(1), Msg::Usize(2)]);
+    }
+
+    #[test]
+    fn interactive_virtual_children_follow_their_collection_in_tab_order() {
+        let key = crate::VirtualItemKey::new(77).unwrap();
+        let keys = [key];
+        let items = crate::KeyedVirtualItems::try_new(&keys, &interactive_runtime_button).unwrap();
+        let collection = Widget::interactive_virtual_list_content(
+            40.0,
+            items,
+            Msg::Usize,
+            base_style(120.0, 80.0),
+        )
+        .with_id(803);
+        let following = Widget::Button {
+            text: "Following",
+            on_press: Msg::Usize(9),
+            style: base_style(120.0, 40.0),
+            color: None,
+            variant: crate::ButtonVariant::Primary,
+        }
+        .with_id(804);
+        let following_id = following.keyboard_focus_id(&[1]).unwrap();
+        let widget = Widget::Column {
+            children: vec![collection, following],
+            style: Style::default(),
+        };
+        let states = HashMap::from([(
+            803,
+            WidgetState::VList(VirtualListState {
+                viewport_h: 80.0,
+                ..Default::default()
+            }),
+        )]);
+        let mut focus_order = Vec::new();
+        collect_focus_order(&widget, &mut focus_order);
+        append_interactive_virtual_focus_order(&widget, &states, &mut focus_order, &mut Vec::new());
+        let mut child_path = vec![0];
+        push_interactive_virtual_item_path(&mut child_path, key);
+        let child_id = interactive_runtime_button(0)
+            .unwrap()
+            .keyboard_focus_id(&child_path)
+            .unwrap();
+
+        assert_eq!(focus_order, vec![803, child_id, following_id]);
     }
 
     #[test]

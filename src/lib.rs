@@ -14,6 +14,7 @@ pub mod i18n;
 mod input;
 pub mod layout;
 pub mod multi_window;
+pub mod pointer;
 pub mod render;
 pub(crate) mod text_controls;
 pub mod theme;
@@ -44,6 +45,11 @@ pub use multi_window::{
     SurfaceId, SurfaceRequest, WindowConfig, WindowConfigError, WindowLevel, WindowPosition,
     WindowSize,
 };
+pub use pointer::{
+    DragBadge, DragBadgeError, DragBadgeIcon, DragCancelReason, DragEvent, DragPayload,
+    DragPayloadKind, DragPhase, DragSource, DropTarget, PointerEvent, PointerModifiers,
+    PointerPhase, PointerRegionConfig,
+};
 pub use render::text::TextShapeCacheLimits;
 pub use rich_text::{
     RichText, RichTextColor, RichTextError, RichTextSize, RichTextSlant, RichTextSpan,
@@ -71,7 +77,8 @@ pub use widget::{
     CustomAccessibilityNode, CustomAccessibilityRole, CustomAccessibilityState, CustomEventOutcome,
     CustomInteraction, CustomLayout, CustomPaintContext, CustomPoint, CustomPointerEvent,
     CustomSize, CustomWidgetState, CustomWidgetStateError, CustomWidgetV1, DialogPosition,
-    InputState, MAX_CUSTOM_WIDGET_STATE_BYTES, VirtualSelection, Widget, WidgetConfigError,
+    InputState, KeyedVirtualItems, KeyedVirtualItemsError, MAX_CUSTOM_WIDGET_STATE_BYTES,
+    VirtualItemKey, VirtualItemKeyError, VirtualSelection, Widget, WidgetConfigError,
     validate_counter, validate_slider, validate_virtual_grid, validate_virtual_list,
 };
 pub use widgets::{

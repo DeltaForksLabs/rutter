@@ -14,7 +14,7 @@ use crate::widgets::dropdown_menu::{
 };
 
 pub(super) fn collect<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<'_, Msg>,
     label: &str,
     entries: &[DropdownMenuEntry<'_, Msg>],
@@ -51,7 +51,7 @@ pub(super) fn collect<Msg>(
     }
 }
 
-fn dropdown_state(builder: &AccessibilityBuilder<'_>, id: u64) -> DropdownMenuState {
+fn dropdown_state(builder: &AccessibilityBuilder<'_, '_>, id: u64) -> DropdownMenuState {
     let mut state = builder
         .inputs
         .widget_states
@@ -66,7 +66,7 @@ fn dropdown_state(builder: &AccessibilityBuilder<'_>, id: u64) -> DropdownMenuSt
 }
 
 fn menu_surfaces<Msg>(
-    builder: &AccessibilityBuilder<'_>,
+    builder: &AccessibilityBuilder<'_, '_>,
     id: u64,
     frame: LayoutFrame,
     entries: &[DropdownMenuEntry<'_, Msg>],
@@ -86,7 +86,7 @@ fn menu_surfaces<Msg>(
     build_open_menu_surfaces(anchor, entries, state, viewport, builder.inputs.direction)
 }
 
-fn trigger_bounds(builder: &AccessibilityBuilder<'_>, id: u64, fallback: Rect) -> Rect {
+fn trigger_bounds(builder: &AccessibilityBuilder<'_, '_>, id: u64, fallback: Rect) -> Rect {
     builder
         .dropdown_geometries
         .get(&id)
@@ -96,7 +96,7 @@ fn trigger_bounds(builder: &AccessibilityBuilder<'_>, id: u64, fallback: Rect) -
 }
 
 fn open_root_menu<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<'_, Msg>,
     label: &str,
     entries: &[DropdownMenuEntry<'_, Msg>],
@@ -120,7 +120,7 @@ fn open_root_menu<Msg>(
 }
 
 fn push_trigger<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<'_, Msg>,
     label: &str,
     bounds: Rect,
@@ -146,7 +146,7 @@ fn push_trigger<Msg>(
 
 #[allow(clippy::too_many_arguments)]
 fn collect_level<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<'_, Msg>,
     label: &str,
     root_entries: &[DropdownMenuEntry<'_, Msg>],
@@ -181,7 +181,7 @@ fn collect_level<Msg>(
 
 #[allow(clippy::too_many_arguments)]
 fn collect_items<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<'_, Msg>,
     root_entries: &[DropdownMenuEntry<'_, Msg>],
     entries: &[DropdownMenuEntry<'_, Msg>],
@@ -212,7 +212,7 @@ fn collect_items<Msg>(
 
 #[allow(clippy::too_many_arguments)]
 fn collect_item<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<'_, Msg>,
     root_entries: &[DropdownMenuEntry<'_, Msg>],
     level_entries: &[DropdownMenuEntry<'_, Msg>],
@@ -280,7 +280,7 @@ fn clipped_row_rect<Msg>(
 
 #[allow(clippy::too_many_arguments)]
 fn collect_submenu<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<'_, Msg>,
     root_entries: &[DropdownMenuEntry<'_, Msg>],
     entry: &DropdownMenuEntry<'_, Msg>,

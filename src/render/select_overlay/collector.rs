@@ -187,6 +187,7 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
                 anchor, content, ..
             } => self.visit_popover(widget, anchor, content, node, absolute),
             Widget::Container { child, .. }
+            | Widget::PointerRegion { child, .. }
             | Widget::Tooltip { child, .. }
             | Widget::ContextMenu { child, .. }
             | Widget::ButtonContent { child, .. } => self.visit_first(child, node, absolute, 0),

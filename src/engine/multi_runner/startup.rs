@@ -188,6 +188,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             native_surfaces_active: false,
             fatal_error: None,
             accessibility_waker: None,
+            application_wakeup_scheduler: ApplicationWakeupScheduler::default(),
         })
     }
 }

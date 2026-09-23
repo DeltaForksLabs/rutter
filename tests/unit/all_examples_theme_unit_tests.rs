@@ -5,8 +5,8 @@ use super::{
     accordion_demo::AccordionDemo, advanced_widgets_demo::AdvancedWidgetsDemo,
     button_content_demo::ButtonContentDemo, calendar_demo::CalendarDemo,
     carousel_demo::CarouselDemo, controls_demo::ControlsDemo, counter_demo::CounterDemo,
-    dialog_demo::DialogDemo, dropdown_menu_demo::DropdownMenuDemo, form_demo::MyApp,
-    image_viewer_demo::ImageViewerDemo, modal_toast_demo::ModalToastDemo,
+    dialog_demo::DialogDemo, drag_drop_demo::DragDropDemo, dropdown_menu_demo::DropdownMenuDemo,
+    form_demo::MyApp, image_viewer_demo::ImageViewerDemo, modal_toast_demo::ModalToastDemo,
     multi_window_demo::MultiWindowDemo, popover_demo::PopoverDemo, progress_demo::ProgressDemo,
     rich_text_demo::RichTextDemo, scroll_demo::ScrollDemo, search_bar_demo::SearchBarDemo,
     slider_demo::SliderDemo, tab_demo::TabDemo, table_demo::TableDemo,
@@ -25,6 +25,7 @@ fn foundational_examples_start_dark_with_theme_selectors() {
     assert_single_window_theme::<ControlsDemo>();
     assert_single_window_theme::<CounterDemo>();
     assert_single_window_theme::<DialogDemo>();
+    assert_single_window_theme::<DragDropDemo>();
     assert_single_window_theme::<DropdownMenuDemo>();
 }
 

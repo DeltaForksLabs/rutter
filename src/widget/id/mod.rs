@@ -196,6 +196,7 @@ impl WidgetIdVisitor {
                 self.visit_indexed(children)
             }
             Widget::Container { child, .. }
+            | Widget::PointerRegion { child, .. }
             | Widget::ButtonContent { child, .. }
             | Widget::ScrollView { child, .. }
             | Widget::TableOfContents { child, .. }

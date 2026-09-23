@@ -13,6 +13,7 @@ pub mod calendar_demo;
 pub mod carousel_demo;
 pub mod controls_demo;
 pub mod counter_demo;
+pub mod drag_drop_demo;
 pub mod dropdown_menu_demo;
 pub mod form_demo;
 pub mod modal_toast_demo;

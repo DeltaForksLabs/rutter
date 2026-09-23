@@ -45,6 +45,9 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         self.routes.remove_surface(surface);
         self.focus_acquired_surfaces.remove(&surface);
         self.surface_configs.remove(&surface);
+        if let Some(runner) = self.surface_runners.get_mut(&surface) {
+            runner.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
+        }
         self.surface_runners.remove(&surface);
         self.notify_surface_closed(surface);
         Ok(())

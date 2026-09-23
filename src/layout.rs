@@ -181,6 +181,16 @@ impl LayoutBlueprint {
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
+            Widget::PointerRegion { child, style, .. } => {
+                path.push(0);
+                let child = Self::from_widget_with_path(child, path);
+                path.pop();
+                Self::with_children(
+                    Some(widget.resolved_id(path).unwrap()),
+                    style.clone(),
+                    vec![child],
+                )
+            }
             Widget::ScrollView { child, style, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 path.push(0);
@@ -406,15 +416,18 @@ impl LayoutBlueprint {
             | Widget::SearchBar { style, .. }
             | Widget::Slider { style, .. }
             | Widget::CarouselView { style, .. }
+            | Widget::InteractiveCarouselView { style, .. }
             | Widget::Table { style, .. }
             | Widget::VirtualList { style, .. }
             | Widget::VirtualListContent { style, .. }
+            | Widget::InteractiveVirtualListContent { style, .. }
             | Widget::VirtualListWithSelection { style, .. }
             | Widget::VirtualListContentWithSelection { style, .. }
             | Widget::VirtualGrid { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
             Widget::VirtualGridContent { style, .. }
+            | Widget::InteractiveVirtualGridContent { style, .. }
             | Widget::VirtualGridWithSelection { style, .. }
             | Widget::VirtualGridContentWithSelection { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())

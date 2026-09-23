@@ -14,6 +14,8 @@ The project is focused on building a pragmatic foundation for desktop interfaces
 - [Demo](#demo)
 - [Quick Start](#quick-start)
 - [Custom Widgets](#custom-widgets)
+- [Pointer Regions and In-Surface Drag](#pointer-regions-and-in-surface-drag)
+- [Application Wakeups](#application-wakeups)
 - [Architecture](#architecture)
 - [Widgets](#widgets)
 - [Rendering Backends](#rendering-backends)
@@ -126,6 +128,7 @@ cargo run -- search_bar
 cargo run -- controls
 cargo run -- slider
 cargo run -- counter
+cargo run -- drag_drop
 cargo run -- progress
 cargo run -- scroll
 cargo run -- tabs
@@ -303,6 +306,47 @@ Declare `VisualOnly` explicitly (the default) for a painted node that cannot rec
 
 `CustomWidgetState` is event-loop-owned, keyed by the manual ID, limited to `MAX_CUSTOM_WIDGET_STATE_BYTES` (64 KiB), preserved when that ID moves in the tree, and retired when it is removed. Version 1 intentionally has no intrinsic custom measurement, custom child tree, overlay/popover creation, arbitrary AccessKit subtree, raw native handle, worker-thread canvas, or global-hotkey API. Keep application model state in `AppLogic` and use this bounded state only for local runtime interaction that must not outlive the node.
 
+### Pointer regions and in-surface drag
+
+`Widget::pointer_region` opts a region into typed primary-pointer events without changing the behavior of ordinary widgets. It requires a stable manual `WidgetId`, a child for painting and layout, a `PointerRegionConfig`, and a Taffy `Style`. The region claims primary hits within its bounds **before** its child, so do not wrap an existing interactive control unless you intend to replace its pointer behavior. Callbacks return normal application messages handled by `AppLogic::update`.
+
+```rust
+use rutter::{DragBadge, DragPayload, DragPayloadKind, DragSource, DropTarget, PointerRegionConfig, Widget, WidgetId};
+use rutter::skia_safe::Color;
+
+let kind = DragPayloadKind::new(1);
+let source = Widget::pointer_region(
+    WidgetId::manual(100).unwrap(),
+    Widget::Spacer { style: Default::default() },
+    PointerRegionConfig::new(Msg::Pointer)
+        .with_drag_source(DragSource {
+            payload: DragPayload::new(kind, 42),
+            on_drag: Msg::Drag,
+        })
+        .with_drag_badge(DragBadge::new(Color::from_rgb(255, 191, 0), Color::BLACK)),
+    source_style,
+);
+let target = Widget::pointer_region(
+    WidgetId::manual(101).unwrap(),
+    Widget::Spacer { style: Default::default() },
+    PointerRegionConfig::new(Msg::Pointer).with_drop_target(DropTarget {
+        accepted_kind: kind,
+        on_drag: Msg::Drag,
+    }),
+    target_style,
+);
+```
+
+`PointerEvent` carries a logical surface-local position, modifier snapshot, and `Pressed`, `Moved`, `Released`, or `Cancelled` phase. Use `.with_pointer_capture()` to receive movement and release after the initial press even when the pointer leaves the region; declaring a drag source also captures automatically. Matching drop targets receive `Entered`, `Moved`, `Exited`, and `Dropped` drag events; source events include the matching target ID when available. Capture is cancelled on cursor exit, focus loss, a blocking overlay, source removal, or surface closure. Drag matching uses only the application-owned `DragPayloadKind` and opaque `u64` value: no OS clipboard, native drag, files, URLs, cross-surface transfer, or untrusted native handles are involved. A release without an eligible target reports `Dropped` with no target ID to the source only.
+
+Pointer regions are transparent to AccessKit and do not acquire keyboard focus or accessibility actions by themselves. Supply a separate accessible keyboard path for every operation users can perform through the region. Open modal, dialog, context-menu, popover, select, dropdown, and search overlays block underlying region hits and cancel captures; pointer regions inside those overlays are not active while the overlay is open.
+
+The optional `.with_drag_badge(...)` belongs to the source region's `PointerRegionConfig`; existing regions show no badge. `DragBadge::new(background, foreground)` draws a dot in transit and a plus over a matching target. Use `.with_icon(DragBadgeIcon::Move)` or `.with_icon(DragBadgeIcon::Copy)` for built-in shapes, `.with_text("Card")?` for a label, or `.with_image(&encoded_png)?` for an embedded raster image. Text is limited to 64 UTF-8 bytes, rejects controls, and is shown in a bounded pill (up to 120 logical pixels wide); longer labels are truncated with an ellipsis without splitting graphemes, including when the viewport is narrow. Encoded images are limited to 128 KiB and 128×128 pixels, then reduced to a retained 20×20 raster copy; invalid inputs return `DragBadgeError` with the original image error as its cause. Prepare decoded images outside `view` to avoid repeated decoding. Icon, text, and image badges retain a small plus indicator over matching targets. All badges are clipped, stay within the surface near edges, never participate in hit testing or AccessKit, and do not replace the native cursor.
+
+Run `cargo run -- drag_drop` for four hardcoded cards and a text-entry tile in a responsive wrapping grid beneath a fixed drop zone: amber uses the default dot/plus badge, blue a move icon, emerald the readable `EmeraldLeaf` text badge, and coral a Yosemite Falls photograph. Each card has its own pointer region across the entire tile, including the `Widget::Image` photo. In the fifth tile, type in the `TextInput`, activate **Select text** (or press Enter) to capture the whole trimmed value, then drag the separate **Drag selected text** handle onto the zone. This explicit selection accepts 1–64 printable UTF-8 bytes; editing the input does not change the selected value until you select again, and a drag keeps its original text even if the draft changes. Rutter does not expose a highlighted substring of `TextInput` to application messages, so selecting a substring with the mouse is **not** the drag source. The image badge keeps only a 20×20 raster copy, while the visible photo retains a higher-resolution local asset. The grid wraps to one column on narrower windows and scrolls vertically when needed. The accessible **Place Amber/Blue/Emerald/Coral/Text** and **Clear** buttons stay fixed *outside* the scrollable grid; Place Text uses the most recently selected value. The drop zone remains above both, previews the dragged card's color, photo, or text on hover, and retains it after a valid drop or keyboard placement. Logical-pointer coordinates, cancellation status, and application-owned payload checks remain available. ScrollView pointer hits account for the painted scroll offset so each tile still receives its own hits after scrolling.
+
+The bundled [`yosemite_falls.jpg`](examples/widgets/yosemite_falls.jpg) and [`yosemite_falls_badge.jpg`](examples/widgets/yosemite_falls_badge.jpg) are resized and JPEG-reencoded copies of the [Yosemite Falls and Merced River spring photo](https://www.nps.gov/common/uploads/structured_data/05383E91-AA28-2DDC-AB517507594F9FA6.jpg) credited **NPS Photo** on the [Yosemite National Park page](https://www.nps.gov/yose/index.htm). The original U.S. Government work is [public domain under the NPS ownership notice](https://www.nps.gov/aboutus/disclaimer.htm#ownership); no protection is claimed in original U.S. Government works. No image network request is needed at runtime.
+
 ### Multi-window applications
 
 `MultiWindowRunner` owns every native window, backend, AccessKit adapter, and input runtime. Applications use stable `SurfaceId` values and emit `SurfaceCommand` operations instead of creating Winit windows directly. Unknown events from failed backend probes are discarded before accessibility or rendering side effects. After the first surface commits, later windows reuse its backend type instead of repeating failed Vulkan/OpenGL probes on Wayland.
@@ -422,6 +466,33 @@ If state construction is already complete and does not need the shared font data
 Each committed surface has independent title, initial position, inner/minimum/maximum size, window level, visibility, decorations, resizability, transparency, close behavior, widget state, layout, graphics presentation, and accessibility routing. Sizes and positions use physical pixels; negative coordinates are valid for multi-monitor desktops. Position, visibility, and window level are platform hints and may be ignored, notably by Wayland compositors.
 
 `SurfaceEvent::FocusChanged` reaches application logic after the matching native event is forwarded to AccessKit and the surface engine. `SurfaceCommand::SetVisible` changes native visibility and persists the desired value across suspension/resume. `SurfaceCommand::RequestRedraw` asks the compositor for an asynchronous frame without invalidating layout; redraw requests can be coalesced. Both commands reject unknown logical surface IDs, while redraw is a safe no-op for a registered surface during suspension.
+
+### Application wakeups
+
+`MultiWindowAppLogic::next_wakeup` and `MultiWindowAppLogic::wakeup` provide a bounded, event-loop-owned timer boundary for low-frequency model changes. Return a monotonic `Instant` for the next required update, and return ordinary commands from `wakeup` to redraw only the affected surfaces:
+
+```rust
+use std::time::Instant;
+use rutter::{MultiWindowAppLogic, SurfaceCommand, SurfaceId};
+
+impl MultiWindowAppLogic for PanelApp {
+    // Existing State, Message, new, view, and update implementations remain unchanged.
+
+    fn next_wakeup(state: &PanelState, _: Instant) -> Option<Instant> {
+        state.next_clock_deadline
+    }
+
+    fn wakeup(state: &mut PanelState, now: Instant) -> Vec<SurfaceCommand> {
+        state.refresh_clock(now);
+        state.next_clock_deadline = state.next_minute_deadline(now);
+        vec![SurfaceCommand::RequestRedraw(SurfaceId::PRIMARY)]
+    }
+}
+```
+
+The default `next_wakeup` returns `None`, so existing applications receive no timer, polling, or redraw behavior. Rutter evaluates the deadline after startup, native events, application updates, and each wakeup; it combines the earliest application deadline with existing framework schedules through Winit `ControlFlow::WaitUntil`. `wakeup` runs only on Rutter's owning event-loop thread and does not expose a Winit handle, `EventLoopProxy`, renderer, or graphics context.
+
+Use an application-owned wall-clock or timezone source to calculate a desired boundary, then translate its duration into a monotonic deadline. If a deadline elapsed while suspended, Rutter runs one callback after resumption rather than replaying missed intervals. A callback that leaves a past deadline is not immediately re-run, preventing busy loops; return a future deadline or `None` instead. Commands emitted by `wakeup` use the same open, close, visibility, redraw, and surface-route validation as messages and surface events.
 
 An in-surface context-menu target first reaches `AppLogic::context_menu_opening` (or `MultiWindowAppLogic::context_menu_opening`), which can return a typed selection message for `update` before the overlay opens. `ContextMenuTarget::id()` is the resolved menu ID; assign stable manual IDs when mapping a target to application-owned items. When a menu wraps a virtual list or grid, `ContextMenuTarget::virtual_item()` exposes `ContextMenuVirtualItem::List` or `ContextMenuVirtualItem::Grid` with the resolved collection ID and pressed index, including the collection's current scroll offset. Unclaimed right-button presses reach `secondary_pointer_pressed_with_context` only after open select, dropdown, context-menu, and popover overlays have had dismissal priority; visible modals and dialogs consume the press. `SecondaryPointerContext` contains logical client coordinates, the source scale factor, and optional physical desktop coordinates. Absolute coordinates are unavailable on Wayland, Android, iOS, and Web, where `desktop_position()` returns `None` and applications should retain an in-surface overlay fallback. The original `secondary_pointer_pressed` callback remains supported through the default compatibility bridge. Track a fixed popup surface's lifecycle—as in the example—to avoid opening a duplicate `SurfaceId`.
 
@@ -637,6 +708,26 @@ let widget: Widget<'_, ()> = Widget::rich_text(content, Style::default());
 
 `VirtualListContent` and `VirtualGridContent` keep row and cell virtualization while allowing each visible item to render arbitrary widget content, including images, icons, and composed layouts.
 
+`interactive_virtual_list_content`, `interactive_virtual_grid_content`, and `interactive_carousel_view` opt into child interaction. Build their item source with `KeyedVirtualItems::try_new`: every `VirtualItemKey` is non-zero and the constructor returns `KeyedVirtualItemsError::DuplicateKey` with both indices when a collection reuses a key. Keys scope automatic and manual descendant IDs, so focus, input state, callbacks, and AccessKit node IDs stay with the item through reordering. Only visible items plus the existing overscan register runtime state and accessibility descendants; scrolling an item out of that range retires its retained state and focus.
+
+```rust
+use rutter::{ButtonVariant, KeyedVirtualItems, VirtualItemKey, Widget};
+use taffy::prelude::Style;
+
+let keys = [VirtualItemKey::new(41)?, VirtualItemKey::new(84)?];
+let rows = |index| Some(Widget::Button {
+    text: if index == 0 { "Launch" } else { "Favorite" },
+    on_press: Msg::ItemAction(index),
+    style: Style::default(),
+    color: None,
+    variant: ButtonVariant::Primary,
+});
+let items = KeyedVirtualItems::try_new(&keys, &rows)?;
+let list = Widget::interactive_virtual_list_content(40.0, items, Msg::SelectRow, list_style);
+```
+
+Interactive descendants win a pointer hit inside their bounds. A press on unused row or cell space still calls the collection `on_select`. Tab reaches the collection and then currently visible descendants without trapping traversal; standard Tab movement leaves the collection after the final visible descendant. Accessibility exposes those descendants with their scoped stable IDs and routes Click, Focus, Increment, and Decrement through the same runner cache used by pointer and keyboard input.
+
 `VirtualSelection` configures either single selection or controlled multiselection for virtual collections through `virtual_list_with_selection`, `virtual_list_content_with_selection`, `virtual_grid_with_selection`, and `virtual_grid_content_with_selection`. Use `VirtualSelection::multiple(&state.selected, Msg::SelectionChanged)` for file-manager-style selection: a plain click replaces the set, Shift selects a range, and Ctrl (or Command on macOS) toggles an item. Dragging selects a contiguous list range or a rectangular grid region; Ctrl/Command-drag adds that region to the selection. The multiselection callback receives a sorted, unique `Vec<usize>`; store it in application state and supply it again on the next view. Arrow keys replace or extend the selection with Shift, Ctrl/Command+Arrow moves the active item without changing selection, Ctrl/Command+Space toggles the active item, and Ctrl/Command+A selects all items.
 
 ```rust
@@ -708,9 +799,9 @@ let carousel = Widget::carousel_view(
 );
 ```
 
-Carousel item widgets follow the same security contract as `VirtualListContent`: they are visual-only and receive isolated runtime-state maps. Nested buttons and inputs are therefore rendered but do not handle interaction; selection belongs to the carousel. The current release is horizontal and finite, and intentionally defers touch dragging, infinite looping, vertical layouts, public controllers, overlay-aware wheel routing, parent-scroll bubbling, and custom scroll physics.
+`Widget::carousel_view` preserves the visual-only security contract: nested controls render but selection belongs to the carousel. Use `Widget::interactive_carousel_view` with `KeyedVirtualItems` when cards need nested controls. The current release is horizontal and finite, and intentionally defers touch dragging, infinite looping, vertical layouts, public controllers, overlay-aware wheel routing, parent-scroll bubbling, and custom scroll physics.
 
-AccessKit exposes the carousel as a labeled horizontal collection with its total item count and orientation. Accessibility actions and virtual item descendants are not routed yet; keyboard and pointer interaction remain available through Rutter's normal input path. See `examples/widgets/carousel_demo.rs` or run `cargo run -- carousel` for weighted and uncontained layouts.
+AccessKit exposes the carousel as a labeled horizontal collection with its total item count and orientation. Keyed interactive cards additionally expose their visible descendants, while visual-only carousel items remain inaccessible leaves. See `examples/widgets/carousel_demo.rs` or run `cargo run -- carousel` for weighted and uncontained layouts.
 
 ### Calendar and Date Picker
 

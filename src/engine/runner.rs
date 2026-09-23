@@ -57,6 +57,7 @@ mod counter;
 mod custom;
 mod dropdown_keyboard;
 mod dropdown_pointer;
+mod pointer_region;
 mod search;
 mod secondary_pointer;
 mod shortcut;
@@ -482,6 +483,14 @@ fn classify_window_event<Identifier: Eq>(
     }
 }
 
+fn logical_cursor_position(physical: PhysicalPosition<f64>, scale_factor: f32) -> Point {
+    let scale_factor = f64::from(scale_factor);
+    Point::new(
+        (physical.x / scale_factor) as f32,
+        (physical.y / scale_factor) as f32,
+    )
+}
+
 pub struct RutterRunner<A: AppLogic> {
     engine: RutterEngine<A>,
     active_window_id: Option<WindowId>,
@@ -490,6 +499,7 @@ pub struct RutterRunner<A: AppLogic> {
     scroll_drag: Option<ScrollDrag>,
     virtual_multi_pointer_capture: Option<u64>,
     custom_pointer_capture: Option<custom::CustomPointerCapture>,
+    pointer_region_capture: Option<pointer_region::PointerRegionCapture<A::Message>>,
     counter_hold_repeat: Option<counter::CounterHoldRepeat>,
     mouse_down: bool,
     last_click_time: std::time::Instant,
@@ -509,6 +519,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             scroll_drag: None,
             virtual_multi_pointer_capture: None,
             custom_pointer_capture: None,
+            pointer_region_capture: None,
             counter_hold_repeat: None,
             mouse_down: false,
             last_click_time: Instant::now(),
@@ -609,7 +620,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             return;
         }
         match event {
-            WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::CloseRequested => {
+                self.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
+                el.exit();
+            }
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 if let Err(error) = self.engine.handle_resize(size) {
                     self.terminate_for_error(el, error.into());
@@ -625,10 +639,8 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_physical = position;
                 self.cursor_pos = Point::new(position.x as f32, position.y as f32);
-                self.engine.last_mouse_pos = Point::new(
-                    self.cursor_pos.x / self.engine.scale_factor,
-                    self.cursor_pos.y / self.engine.scale_factor,
-                );
+                self.engine.last_mouse_pos =
+                    logical_cursor_position(self.cursor_physical, self.engine.scale_factor);
 
                 if let Some(drag) = &self.scroll_drag {
                     let id = drag.id;
@@ -662,6 +674,19 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
 
                 if self.mouse_down {
+                    if self.pointer_region_capture.is_some() {
+                        match self.dispatch_captured_pointer_region_move() {
+                            Ok(true) => {
+                                self.redraw();
+                                return;
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                self.terminate_for_error(el, error.into());
+                                return;
+                            }
+                        }
+                    }
                     match self.extend_virtual_multi_pointer_capture() {
                         Ok(true) => {
                             self.redraw();
@@ -1297,6 +1322,13 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 );
                             }
                         }
+                        HitResult::PointerRegion(id) => {
+                            if button == winit::event::MouseButton::Left
+                                && !self.pointer_region_overlay_blocks()
+                            {
+                                self.dispatch_pointer_region_press(id);
+                            }
+                        }
                     }
                     self.redraw();
                 } else {
@@ -1312,9 +1344,16 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             } => {
                 self.mouse_down = false;
                 self.counter_hold_repeat = None;
+                let pointer_region_released = match self.release_pointer_region_capture() {
+                    Ok(released) => released,
+                    Err(error) => {
+                        self.terminate_for_error(el, error.into());
+                        return;
+                    }
+                };
                 self.dispatch_captured_custom_release();
                 self.end_virtual_multi_pointer_capture();
-                if self.scroll_drag.take().is_some() {
+                if self.scroll_drag.take().is_some() || pointer_region_released {
                     self.redraw();
                 }
                 if let Some(sid) = self.engine.drag_slider_id.take()
@@ -1325,9 +1364,24 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.redraw();
                 }
             }
-            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
+            WindowEvent::CursorLeft { .. } => {
                 self.mouse_down = false;
                 self.counter_hold_repeat = None;
+                let had_capture = self.pointer_region_capture.is_some();
+                self.cancel_pointer_region_capture(crate::DragCancelReason::CursorLeftSurface);
+                if had_capture {
+                    self.redraw();
+                }
+                self.custom_pointer_capture = None;
+            }
+            WindowEvent::Focused(false) => {
+                self.mouse_down = false;
+                self.counter_hold_repeat = None;
+                let had_capture = self.pointer_region_capture.is_some();
+                self.cancel_pointer_region_capture(crate::DragCancelReason::FocusLost);
+                if had_capture {
+                    self.redraw();
+                }
                 self.custom_pointer_capture = None;
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1433,6 +1487,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
     pub(crate) fn release_surface(&mut self) {
         self.active_window_id = None;
+        self.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
         self.scroll_drag = None;
         self.end_virtual_multi_pointer_capture();
         self.counter_hold_repeat = None;
@@ -3070,8 +3125,9 @@ mod tests {
         WindowEventDestination, animation_frame_deadline, apply_scrollbar_drag_offset,
         carousel_key_index, carousel_wheel_delta, classify_window_event, clock_tick_delay,
         collect_open_popover_dismissals, collect_toast_runtime_state, input_copy_is_blocked,
-        latch_search_suggestion_dismissals, mapped_input_pointer_x, sanitize_clipboard_text,
-        sanitize_input_text, virtual_multi_pointer_index, wheel_deltas, wheel_select_index,
+        latch_search_suggestion_dismissals, logical_cursor_position, mapped_input_pointer_x,
+        sanitize_clipboard_text, sanitize_input_text, virtual_multi_pointer_index, wheel_deltas,
+        wheel_select_index,
     };
     use crate::LayoutDirection;
     use crate::engine::widget_state::{
@@ -3081,6 +3137,13 @@ mod tests {
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
     use crate::render::hit_test::{HitResult, ScrollbarAxis};
+
+    #[test]
+    fn pointer_position_uses_logical_coordinates_at_fractional_scale() {
+        let position = logical_cursor_position(PhysicalPosition::new(300.0, 150.0), 1.5);
+        assert_eq!(position.x, 200.0);
+        assert_eq!(position.y, 100.0);
+    }
 
     #[test]
     fn wheel_deltas_preserve_horizontal_trackpad_input() {

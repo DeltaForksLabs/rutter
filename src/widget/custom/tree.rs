@@ -21,6 +21,7 @@ pub(crate) fn collect_custom_widget_ids<Message>(widget: &Widget<'_, Message>, i
             collect_custom_child_ids(children, ids);
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. }
@@ -39,6 +40,53 @@ pub(crate) fn collect_custom_widget_ids<Message>(widget: &Widget<'_, Message>, i
     }
 }
 
+pub(crate) fn collect_custom_widget_ids_at_path<Message>(
+    widget: &Widget<'_, Message>,
+    ids: &mut Vec<u64>,
+    path: &mut Vec<usize>,
+) {
+    match widget {
+        Widget::Custom { .. } => ids.push(widget.resolved_id(path).unwrap()),
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                collect_custom_widget_ids_at_path(child, ids, path);
+                path.pop();
+            }
+        }
+        Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::ButtonContent { child, .. }
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            collect_custom_widget_ids_at_path(child, ids, path);
+            path.pop();
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            collect_custom_widget_ids_at_path(anchor, ids, path);
+            path.pop();
+            if *open {
+                path.push(1);
+                collect_custom_widget_ids_at_path(content, ids, path);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_custom_child_ids<Message>(children: &[Widget<'_, Message>], ids: &mut Vec<u64>) {
     for child in children {
         collect_custom_widget_ids(child, ids);
@@ -49,12 +97,23 @@ pub(crate) fn find_custom_widget<'tree, 'widget, Message>(
     widget: &'tree Widget<'widget, Message>,
     target_id: u64,
 ) -> Option<&'tree (dyn CustomWidgetV1<Message> + 'widget)> {
+    find_custom_widget_at_path(widget, target_id, &mut Vec::new())
+}
+
+fn find_custom_widget_at_path<'tree, 'widget, Message>(
+    widget: &'tree Widget<'widget, Message>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+) -> Option<&'tree (dyn CustomWidgetV1<Message> + 'widget)> {
     match widget {
-        Widget::Custom { id, widget, .. } if id.get() == target_id => Some(widget.as_ref()),
+        Widget::Custom { widget: custom, .. } if widget.resolved_id(path) == Some(target_id) => {
+            Some(custom.as_ref())
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            find_custom_in_children(children, target_id)
+            find_custom_in_children_at_path(children, target_id, path)
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. }
@@ -62,27 +121,45 @@ pub(crate) fn find_custom_widget<'tree, 'widget, Message>(
         | Widget::ContextMenu { child, .. }
         | Widget::Accordion { child, .. }
         | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => find_custom_widget(child, target_id),
+        | Widget::Dialog { child, .. } => find_custom_single_child(child, target_id, path),
         Widget::Popover {
             anchor,
             content,
             open,
             ..
-        } => find_custom_widget(anchor, target_id).or_else(|| {
-            open.then(|| find_custom_widget(content, target_id))
+        } => find_custom_single_child(anchor, target_id, path).or_else(|| {
+            open.then(|| find_custom_single_child(content, target_id, path))
                 .flatten()
         }),
         _ => None,
     }
 }
 
-fn find_custom_in_children<'tree, 'widget, Message>(
+fn find_custom_in_children_at_path<'tree, 'widget, Message>(
     children: &'tree [Widget<'widget, Message>],
     target_id: u64,
+    path: &mut Vec<usize>,
 ) -> Option<&'tree (dyn CustomWidgetV1<Message> + 'widget)> {
-    children
-        .iter()
-        .find_map(|child| find_custom_widget(child, target_id))
+    for (index, child) in children.iter().enumerate() {
+        path.push(index);
+        let result = find_custom_widget_at_path(child, target_id, path);
+        path.pop();
+        if result.is_some() {
+            return result;
+        }
+    }
+    None
+}
+
+fn find_custom_single_child<'tree, 'widget, Message>(
+    child: &'tree Widget<'widget, Message>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+) -> Option<&'tree (dyn CustomWidgetV1<Message> + 'widget)> {
+    path.push(0);
+    let result = find_custom_widget_at_path(child, target_id, path);
+    path.pop();
+    result
 }
 
 #[cfg(test)]

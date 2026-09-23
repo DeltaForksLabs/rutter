@@ -1,29 +1,43 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use accesskit::{
     Action, ActivationHandler, DeactivationHandler, Node, NodeId, Orientation as AccessOrientation,
     Rect, Role, Toggled, Tree, TreeId, TreeUpdate,
 };
+use cosmic_text::FontSystem;
 use skia_safe::{Point, Rect as SkiaRect};
 use taffy::prelude::{NodeId as TaffyNodeId, TaffyTree};
+use winit::dpi::PhysicalSize;
 
 use crate::engine::widget_state::WidgetState;
+use crate::engine::widget_state::{
+    normalize_virtual_grid_columns, virtual_grid_cell_left, virtual_grid_cell_width,
+};
 use crate::i18n::LayoutDirection;
 use crate::input_state::InputWidgetState;
-use crate::layout::RutterContext;
+use crate::layout::{
+    RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction, compute_layout,
+};
+use crate::render::RichTextRenderer;
 use crate::render::select_overlay::collector::{
     collect_dropdown_triggers, collect_open_dropdown_overlays,
 };
 use crate::widget::id::resolve_accessibility_path_id;
 use crate::widget::{
     CustomAccessibility, CustomAccessibilityActions, CustomAccessibilityRole,
-    CustomAccessibilityState, DialogAction, VirtualSelection, Widget,
+    CustomAccessibilityState, DialogAction, KeyedVirtualItems, VirtualSelection, Widget,
+    pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
     resolve_table_of_contents_accordion_id, resolve_table_of_contents_navigation_id,
     resolve_table_of_contents_viewport_id,
 };
+use crate::widgets::carousel::geometry::carousel_item_frames;
 use crate::widgets::table_of_contents::{collect_entries, entry_rects, layout_nodes, title_rect};
 use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
 
@@ -130,19 +144,19 @@ pub(crate) fn build_accessibility_update<Msg>(
     builder.finish(children)
 }
 
-struct AccessibilityBuilder<'a> {
-    taffy: &'a TaffyTree<RutterContext>,
-    inputs: AccessibilityInputs<'a>,
+struct AccessibilityBuilder<'layout, 'input> {
+    taffy: &'layout TaffyTree<RutterContext>,
+    inputs: AccessibilityInputs<'input>,
     nodes: Vec<(NodeId, Node)>,
     dropdown_geometries: HashMap<u64, DropdownAccessibilityGeometry>,
     visible_dropdowns: HashSet<u64>,
     search_popups: HashMap<u64, search::SearchAccessibilityPopup>,
 }
 
-impl<'a> AccessibilityBuilder<'a> {
+impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
     fn new(
-        taffy: &'a TaffyTree<RutterContext>,
-        inputs: AccessibilityInputs<'a>,
+        taffy: &'layout TaffyTree<RutterContext>,
+        inputs: AccessibilityInputs<'input>,
         dropdown_geometries: HashMap<u64, DropdownAccessibilityGeometry>,
         visible_dropdowns: HashSet<u64>,
         search_popups: HashMap<u64, search::SearchAccessibilityPopup>,
@@ -196,7 +210,9 @@ impl<'a> AccessibilityBuilder<'a> {
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
                 self.collect_children(children, node, frame.origin, path)
             }
-            Widget::Container { child, .. } | Widget::Tooltip { child, .. } => {
+            Widget::Container { child, .. }
+            | Widget::PointerRegion { child, .. }
+            | Widget::Tooltip { child, .. } => {
                 self.collect_single_child(child, node, frame.origin, path)
             }
             Widget::ScrollView { child, .. } => {
@@ -230,7 +246,26 @@ impl<'a> AccessibilityBuilder<'a> {
                 suggestions: Some(_),
                 ..
             } => self.collect_search_bar(widget, frame, path),
-            Widget::Custom { .. } => self.collect_custom_leaf(widget, frame),
+            Widget::InteractiveVirtualListContent {
+                item_height, items, ..
+            } => self.collect_interactive_virtual_list(widget, *item_height, items, frame, path),
+            Widget::InteractiveVirtualGridContent {
+                columns,
+                item_height,
+                items,
+                ..
+            } => self.collect_interactive_virtual_grid(
+                widget,
+                *columns,
+                *item_height,
+                items,
+                frame,
+                path,
+            ),
+            Widget::InteractiveCarouselView { items, config, .. } => {
+                self.collect_interactive_carousel(widget, items, config, frame, path)
+            }
+            Widget::Custom { .. } => self.collect_custom_leaf(widget, frame, path),
             _ => self.collect_leaf(widget, frame, path),
         }
     }
@@ -573,15 +608,191 @@ impl<'a> AccessibilityBuilder<'a> {
         vec![id]
     }
 
+    fn collect_interactive_virtual_list<Msg>(
+        &mut self,
+        widget: &Widget<Msg>,
+        item_height: f32,
+        items: &KeyedVirtualItems<'_, Msg>,
+        frame: LayoutFrame,
+        path: &mut Vec<usize>,
+    ) -> Vec<NodeId> {
+        let id = widget.resolved_id(path).unwrap();
+        let state = self
+            .inputs
+            .widget_states
+            .get(&id)
+            .and_then(WidgetState::as_vlist);
+        let scroll_y = state.map(|state| state.scroll_y).unwrap_or(0.0);
+        let (first, last) = state
+            .map(|state| state.visible_range(item_height, items.len()))
+            .unwrap_or((0, 0));
+        let width = (frame_width(frame.rect) - SCROLLBAR_W - 4.0).max(0.0);
+        let children = (first..last)
+            .flat_map(|index| {
+                self.collect_interactive_virtual_item(
+                    items,
+                    index,
+                    Point::new(
+                        frame.origin.x,
+                        frame.origin.y + index as f32 * item_height - scroll_y,
+                    ),
+                    (width, item_height),
+                    path,
+                )
+            })
+            .collect();
+        self.push_interactive_collection(widget, frame.rect, path, children);
+        vec![access_node_id(id)]
+    }
+
+    fn collect_interactive_virtual_grid<Msg>(
+        &mut self,
+        widget: &Widget<Msg>,
+        columns: usize,
+        item_height: f32,
+        items: &KeyedVirtualItems<'_, Msg>,
+        frame: LayoutFrame,
+        path: &mut Vec<usize>,
+    ) -> Vec<NodeId> {
+        let id = widget.resolved_id(path).unwrap();
+        let state = self
+            .inputs
+            .widget_states
+            .get(&id)
+            .and_then(WidgetState::as_vgrid);
+        let (first, last) = state
+            .map(|state| state.visible_row_range(item_height, items.len(), columns))
+            .unwrap_or((0, 0));
+        let columns = normalize_virtual_grid_columns(columns);
+        let scroll_y = state.map(|state| state.scroll_y).unwrap_or(0.0);
+        let cell_w = virtual_grid_cell_width(frame_width(frame.rect), columns);
+        let cell_h = (item_height - VIRTUAL_GRID_GAP).max(12.0);
+        let children = (first * columns..last * columns)
+            .filter(|index| *index < items.len())
+            .flat_map(|index| {
+                let row = index / columns;
+                let origin = Point::new(
+                    frame.origin.x
+                        + virtual_grid_cell_left(index % columns, frame_width(frame.rect), columns),
+                    frame.origin.y + row as f32 * item_height - scroll_y + VIRTUAL_GRID_GAP * 0.5,
+                );
+                self.collect_interactive_virtual_item(items, index, origin, (cell_w, cell_h), path)
+            })
+            .collect();
+        self.push_interactive_collection(widget, frame.rect, path, children);
+        vec![access_node_id(id)]
+    }
+
+    fn collect_interactive_carousel<Msg>(
+        &mut self,
+        widget: &Widget<Msg>,
+        items: &KeyedVirtualItems<'_, Msg>,
+        config: &crate::widgets::carousel::CarouselConfig,
+        frame: LayoutFrame,
+        path: &mut Vec<usize>,
+    ) -> Vec<NodeId> {
+        let id = widget.resolved_id(path).unwrap();
+        let state = self
+            .inputs
+            .widget_states
+            .get(&id)
+            .and_then(WidgetState::as_carousel);
+        let position = state.map(|state| state.position).unwrap_or_default();
+        let frames = carousel_item_frames(
+            config,
+            position,
+            frame_width(frame.rect),
+            items.len(),
+            self.inputs.direction,
+        );
+        let children = frames
+            .into_iter()
+            .flat_map(|item_frame| {
+                let rect = accessibility_carousel_card_rect(item_frame, frame_height(frame.rect));
+                self.collect_interactive_virtual_item(
+                    items,
+                    item_frame.index,
+                    Point::new(frame.origin.x + rect.left, frame.origin.y + rect.top),
+                    (rect.width(), rect.height()),
+                    path,
+                )
+            })
+            .collect();
+        self.push_interactive_collection(widget, frame.rect, path, children);
+        vec![access_node_id(id)]
+    }
+
+    fn collect_interactive_virtual_item<Msg>(
+        &mut self,
+        items: &KeyedVirtualItems<'_, Msg>,
+        index: usize,
+        origin: Point,
+        size: (f32, f32),
+        path: &mut Vec<usize>,
+    ) -> Vec<NodeId> {
+        let Some(key) = items.key_at(index) else {
+            return Vec::new();
+        };
+        let Some(item) = items.build_item(index) else {
+            return Vec::new();
+        };
+        let mut item_taffy = TaffyTree::new();
+        let fonts = Rc::new(RefCell::new(FontSystem::new()));
+        let root = build_taffy_tree_with_direction(
+            &mut item_taffy,
+            &item,
+            fonts.clone(),
+            self.inputs.widget_states,
+            self.inputs.direction,
+        );
+        compute_layout(
+            &mut item_taffy,
+            root,
+            virtual_item_size(size),
+            fonts,
+            &RichTextRenderer::default(),
+        );
+        push_interactive_virtual_item_path(path, key);
+        let mut item_builder = AccessibilityBuilder::new(
+            &item_taffy,
+            self.inputs,
+            HashMap::new(),
+            HashSet::new(),
+            HashMap::new(),
+        );
+        let children = item_builder.collect(&item, Some(root), origin, path);
+        self.nodes.append(&mut item_builder.nodes);
+        pop_interactive_virtual_item_path(path);
+        children
+    }
+
+    fn push_interactive_collection<Msg>(
+        &mut self,
+        widget: &Widget<Msg>,
+        rect: Rect,
+        path: &[usize],
+        children: Vec<NodeId>,
+    ) {
+        let id = widget.resolved_id(path).unwrap();
+        let role = leaf_role(widget).unwrap_or(Role::ListBox);
+        let mut node = self.widget_node(widget, role, rect, path);
+        node.set_children(children);
+        self.nodes.push((access_node_id(id), node));
+    }
+
     fn collect_custom_leaf<Msg>(
         &mut self,
         widget: &Widget<Msg>,
         frame: LayoutFrame,
+        path: &[usize],
     ) -> Vec<NodeId> {
-        let Widget::Custom { id, widget, .. } = widget else {
+        let Widget::Custom {
+            id, widget: custom, ..
+        } = widget
+        else {
             return Vec::new();
         };
-        let CustomAccessibility::Node(descriptor) = widget.accessibility() else {
+        let CustomAccessibility::Node(descriptor) = custom.accessibility() else {
             return Vec::new();
         };
         let mut node = Node::new(custom_accessibility_role(descriptor.role));
@@ -592,10 +803,10 @@ impl<'a> AccessibilityBuilder<'a> {
         }
         apply_custom_accessibility_state(&mut node, descriptor.state);
         apply_custom_accessibility_actions(&mut node, descriptor.actions);
-        if widget.interaction().supports_keyboard() {
+        if custom.interaction().supports_keyboard() {
             node.add_action(Action::Focus);
         }
-        let node_id = access_node_id(id.get());
+        let node_id = access_node_id(widget.resolved_id(path).unwrap_or(id.get()));
         self.nodes.push((node_id, node));
         vec![node_id]
     }
@@ -780,6 +991,33 @@ fn access_rect(rect: skia_safe::Rect) -> Rect {
     )
 }
 
+fn frame_width(rect: Rect) -> f32 {
+    (rect.x1 - rect.x0) as f32
+}
+
+fn frame_height(rect: Rect) -> f32 {
+    (rect.y1 - rect.y0) as f32
+}
+
+fn virtual_item_size(size: (f32, f32)) -> PhysicalSize<u32> {
+    PhysicalSize::new(size.0.max(1.0).ceil() as u32, size.1.max(1.0).ceil() as u32)
+}
+
+fn accessibility_carousel_card_rect(
+    frame: crate::widgets::carousel::geometry::CarouselItemFrame,
+    viewport_height: f32,
+) -> SkiaRect {
+    const GAP: f32 = 8.0;
+    let horizontal = (GAP * 0.5).min(frame.width * 0.2);
+    let vertical = (GAP * 0.5).min(viewport_height * 0.2);
+    SkiaRect::from_xywh(
+        frame.x + horizontal,
+        vertical,
+        (frame.width - horizontal * 2.0).max(1.0),
+        (viewport_height - vertical * 2.0).max(1.0),
+    )
+}
+
 fn children_for(taffy: &TaffyTree<RutterContext>, node: Option<TaffyNodeId>) -> Vec<TaffyNodeId> {
     node.and_then(|node| taffy.children(node).ok())
         .unwrap_or_default()
@@ -790,7 +1028,7 @@ fn first_child(taffy: &TaffyTree<RutterContext>, node: Option<TaffyNodeId>) -> O
 }
 
 fn collect_indexed_child<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<Msg>,
     node: Option<TaffyNodeId>,
     abs: Point,
@@ -823,13 +1061,15 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         Widget::ProgressBar { .. } | Widget::Spinner { .. } => Role::ProgressIndicator,
         Widget::TabBar { .. } => Role::TabList,
         Widget::Toast { visible: true, .. } => Role::Status,
-        Widget::CarouselView { .. } => Role::ListBox,
+        Widget::CarouselView { .. } | Widget::InteractiveCarouselView { .. } => Role::ListBox,
         Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
+        | Widget::InteractiveVirtualListContent { .. }
         | Widget::VirtualListWithSelection { .. }
         | Widget::VirtualListContentWithSelection { .. } => Role::ListBox,
         Widget::VirtualGrid { .. }
         | Widget::VirtualGridContent { .. }
+        | Widget::InteractiveVirtualGridContent { .. }
         | Widget::VirtualGridWithSelection { .. }
         | Widget::VirtualGridContentWithSelection { .. } => Role::Grid,
         _ => return None,
@@ -891,6 +1131,9 @@ fn apply_leaf_props<Msg>(
     apply_numeric_props(node, widget);
     apply_input_props(node, widget, inputs.input_states, path);
     apply_collection_props(node, widget);
+    if widget.keyboard_focus_id(path).is_some() {
+        node.add_action(Action::Focus);
+    }
 }
 
 fn apply_heading_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
@@ -999,9 +1242,14 @@ fn apply_collection_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
             node.set_size_of_set(*item_count);
             node.set_orientation(AccessOrientation::Horizontal);
         }
+        Widget::InteractiveCarouselView { items, .. } => {
+            node.set_size_of_set(items.len());
+            node.set_orientation(AccessOrientation::Horizontal);
+        }
         Widget::VirtualList { item_count, .. } | Widget::VirtualListContent { item_count, .. } => {
             node.set_size_of_set(*item_count)
         }
+        Widget::InteractiveVirtualListContent { items, .. } => node.set_size_of_set(items.len()),
         Widget::VirtualListWithSelection {
             item_count,
             selection,
@@ -1026,6 +1274,10 @@ fn apply_collection_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
             ..
         } => {
             node.set_row_count(item_count.div_ceil((*columns).max(1)));
+            node.set_column_count((*columns).max(1));
+        }
+        Widget::InteractiveVirtualGridContent { items, columns, .. } => {
+            node.set_row_count(items.len().div_ceil((*columns).max(1)));
             node.set_column_count((*columns).max(1));
         }
         Widget::VirtualGridWithSelection {
@@ -1089,9 +1341,13 @@ fn set_widget_label<Msg>(
         Widget::Spinner { .. } => node.set_label("Loading"),
         Widget::Toast { message, .. } => node.set_label(*message),
         Widget::CarouselView { config, .. } => node.set_label(config.accessibility_label.clone()),
+        Widget::InteractiveCarouselView { config, .. } => {
+            node.set_label(config.accessibility_label.clone())
+        }
         Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => {
             node.set_label("Virtual list")
         }
+        Widget::InteractiveVirtualListContent { .. } => node.set_label("Interactive virtual list"),
         Widget::VirtualListWithSelection { selection, .. }
         | Widget::VirtualListContentWithSelection { selection, .. } => node.set_label(
             virtual_selection_label(selection, "Virtual list", "Virtual multiselect list"),
@@ -1099,6 +1355,7 @@ fn set_widget_label<Msg>(
         Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => {
             node.set_label("Virtual grid")
         }
+        Widget::InteractiveVirtualGridContent { .. } => node.set_label("Interactive virtual grid"),
         Widget::VirtualGridWithSelection { selection, .. }
         | Widget::VirtualGridContentWithSelection { selection, .. } => node.set_label(
             virtual_selection_label(selection, "Virtual grid", "Virtual multiselect grid"),
@@ -1659,6 +1916,77 @@ mod tests {
         assert_eq!(carousel.orientation(), Some(AccessOrientation::Horizontal));
         assert!(!carousel.supports_action(Action::ScrollLeft));
         assert!(!carousel.supports_action(Action::ScrollRight));
+    }
+
+    fn interactive_accessibility_button<'a>(index: usize) -> Option<Widget<'a, ()>> {
+        Some(Widget::Button {
+            text: if index == 0 { "Launch" } else { "Favorite" },
+            on_press: (),
+            style: base_style(120.0, 40.0),
+            color: None,
+            variant: ButtonVariant::Primary,
+        })
+    }
+
+    #[test]
+    fn accessibility_exposes_only_visible_keyed_virtual_descendants() {
+        let keys = [
+            crate::VirtualItemKey::new(11).unwrap(),
+            crate::VirtualItemKey::new(12).unwrap(),
+            crate::VirtualItemKey::new(13).unwrap(),
+            crate::VirtualItemKey::new(14).unwrap(),
+        ];
+        let items =
+            crate::KeyedVirtualItems::try_new(&keys, &interactive_accessibility_button).unwrap();
+        let widget =
+            Widget::interactive_virtual_list_content(40.0, items, |_| (), base_style(120.0, 80.0))
+                .with_id(802);
+        let states = HashMap::from([(
+            802,
+            WidgetState::VList(crate::engine::widget_state::VirtualListState {
+                viewport_h: 80.0,
+                ..Default::default()
+            }),
+        )]);
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, &widget, fs(), &states);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(120, 80),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
+        let update = build_accessibility_update(
+            &taffy,
+            &widget,
+            root,
+            AccessibilityInputs {
+                input_states: &HashMap::new(),
+                widget_states: &states,
+                focused_widget_id: None,
+                viewport: (120.0, 80.0),
+                direction: LayoutDirection::Ltr,
+            },
+        );
+        let buttons = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::Button)
+            .map(|(_, node)| node)
+            .collect::<Vec<_>>();
+
+        assert_eq!(buttons.len(), 3);
+        assert!(
+            buttons
+                .iter()
+                .all(|node| node.supports_action(Action::Click))
+        );
+        assert!(
+            buttons
+                .iter()
+                .all(|node| node.supports_action(Action::Focus))
+        );
     }
 
     #[test]

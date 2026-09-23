@@ -9,6 +9,7 @@ pub(crate) mod clock;
 mod control_icons;
 pub(crate) mod counter;
 mod custom;
+pub(crate) mod drag_badge;
 pub(crate) mod dropdown_menu_overlay;
 pub mod hit_test;
 pub mod image;
@@ -73,11 +74,12 @@ use crate::layout::{
 use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
 use crate::text_controls::TextControlPolicy;
 use crate::theme::Theme;
-use crate::widget::CustomWidgetState;
 use crate::widget::{
     ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
-    ContextMenuEntry, DialogAction, DialogPosition, InputState, Orientation, ToastKind,
-    ToastPosition, VirtualSelection, Widget,
+    ContextMenuEntry, CustomWidgetState, DialogAction, DialogPosition, InputState,
+    KeyedVirtualItems, Orientation, ToastKind, ToastPosition, VirtualSelection, Widget,
+    is_interactive_virtual_item_path, pop_interactive_virtual_item_path,
+    push_interactive_virtual_item_path,
 };
 use crate::widgets::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
 use crate::widgets::rich_text::OwnedRichTextSpec;
@@ -643,6 +645,7 @@ fn draw_popover_overlays<'w, Msg>(
             }
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. } => {
@@ -876,6 +879,7 @@ fn collect_visible_toasts<'w, Msg>(
             }
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -952,6 +956,7 @@ pub(super) fn collect_open_context_menus<'w, Msg>(
             }
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. } => {
@@ -1105,6 +1110,33 @@ fn draw_widgets_impl<'w, Msg>(
             if clips_child {
                 canvas.restore();
             }
+        }
+        Widget::PointerRegion { child, .. } => {
+            let ids = taffy.children(node).unwrap();
+            path.push(0);
+            draw_widgets_impl(
+                canvas,
+                taffy,
+                ids[0],
+                child,
+                fs,
+                swash,
+                local_mouse,
+                focused_id,
+                shows_interaction_effects,
+                input_states,
+                widget_states,
+                custom_widget_states,
+                font_cache,
+                text_cache,
+                image_cache,
+                layout_fs.clone(),
+                cursor_visible,
+                theme,
+                scale,
+                path,
+            );
+            path.pop();
         }
         Widget::ScrollView { child, .. } => {
             let resolved_id = resolved_id.unwrap();
@@ -1792,6 +1824,7 @@ fn draw_widgets_impl<'w, Msg>(
             draw_carousel_view(
                 canvas,
                 items.as_ref(),
+                None,
                 &frames,
                 CarouselViewPaintState(selected, size, local_mouse, is_focused, theme),
                 &mut VirtualItemDrawContext {
@@ -1805,6 +1838,42 @@ fn draw_widgets_impl<'w, Msg>(
                     cursor_visible,
                     shows_interaction_effects,
                     scale,
+                    input_states,
+                    widget_states,
+                    custom_widget_states,
+                },
+                path,
+            );
+        }
+        Widget::InteractiveCarouselView { items, config, .. } => {
+            let state = widget_states
+                .get(&resolved_id.unwrap())
+                .and_then(WidgetState::as_carousel);
+            let direction = node_layout_direction(taffy, node);
+            let position = state.map(|state| state.position).unwrap_or_default();
+            let selected = state.and_then(|state| state.selected_item);
+            let frames = carousel_item_frames(config, position, size.0, items.len(), direction);
+            let build_item = |index| items.build_item(index);
+            draw_carousel_view(
+                canvas,
+                &build_item,
+                Some(items),
+                &frames,
+                CarouselViewPaintState(selected, size, local_mouse, is_focused, theme),
+                &mut VirtualItemDrawContext {
+                    fs,
+                    swash,
+                    font_cache,
+                    text_cache,
+                    image_cache,
+                    layout_fs: layout_fs.clone(),
+                    layout_direction: direction,
+                    cursor_visible,
+                    shows_interaction_effects,
+                    scale,
+                    input_states,
+                    widget_states,
+                    custom_widget_states,
                 },
                 path,
             );
@@ -1860,6 +1929,7 @@ fn draw_widgets_impl<'w, Msg>(
                 item_height,
                 item_count,
                 items,
+                None,
                 scroll_y,
                 VirtualSelectionPaint {
                     selected: &selected_rows,
@@ -1881,6 +1951,57 @@ fn draw_widgets_impl<'w, Msg>(
                     cursor_visible,
                     shows_interaction_effects,
                     scale,
+                    input_states,
+                    widget_states,
+                    custom_widget_states,
+                },
+                path,
+            );
+        }
+        Widget::InteractiveVirtualListContent {
+            item_height, items, ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let vstate = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_vlist);
+            let scroll_y = vstate.map(|state| state.scroll_y).unwrap_or(0.0);
+            let selected = vstate.and_then(|state| state.selected_row);
+            let hovered = vstate
+                .and_then(|state| state.hovered_row)
+                .filter(|_| shows_interaction_effects);
+            let selected_rows = legacy_virtual_selection(selected);
+            let build_item = |index| items.build_item(index);
+            draw_virtual_list_content(
+                canvas,
+                item_height,
+                &items.len(),
+                &build_item,
+                Some(items),
+                scroll_y,
+                VirtualSelectionPaint {
+                    selected: &selected_rows,
+                    active: selected,
+                    focused: is_focused,
+                },
+                hovered,
+                size,
+                local_mouse,
+                theme,
+                &mut VirtualItemDrawContext {
+                    fs,
+                    swash,
+                    font_cache,
+                    text_cache,
+                    image_cache,
+                    layout_fs: layout_fs.clone(),
+                    layout_direction: node_layout_direction(taffy, node),
+                    cursor_visible,
+                    shows_interaction_effects,
+                    scale,
+                    input_states,
+                    widget_states,
+                    custom_widget_states,
                 },
                 path,
             );
@@ -1942,6 +2063,7 @@ fn draw_widgets_impl<'w, Msg>(
                 item_height,
                 item_count,
                 items,
+                None,
                 vstate.map(|state| state.scroll_y).unwrap_or(0.0),
                 VirtualSelectionPaint {
                     selected: &selected_rows,
@@ -1965,6 +2087,9 @@ fn draw_widgets_impl<'w, Msg>(
                     cursor_visible,
                     shows_interaction_effects,
                     scale,
+                    input_states,
+                    widget_states,
+                    custom_widget_states,
                 },
                 path,
             );
@@ -2025,6 +2150,7 @@ fn draw_widgets_impl<'w, Msg>(
                 item_height,
                 item_count,
                 items,
+                None,
                 gstate,
                 scroll_y,
                 VirtualSelectionPaint {
@@ -2047,6 +2173,62 @@ fn draw_widgets_impl<'w, Msg>(
                     cursor_visible,
                     shows_interaction_effects,
                     scale,
+                    input_states,
+                    widget_states,
+                    custom_widget_states,
+                },
+                path,
+            );
+        }
+        Widget::InteractiveVirtualGridContent {
+            columns,
+            item_height,
+            items,
+            ..
+        } => {
+            let resolved_id = resolved_id.unwrap();
+            let gstate = widget_states
+                .get(&resolved_id)
+                .and_then(WidgetState::as_vgrid);
+            let scroll_y = gstate.map(|state| state.scroll_y).unwrap_or(0.0);
+            let selected = gstate.and_then(|state| state.selected_item);
+            let hovered = gstate
+                .and_then(|state| state.hovered_item)
+                .filter(|_| shows_interaction_effects);
+            let selected_cells = legacy_virtual_selection(selected);
+            let build_item = |index| items.build_item(index);
+            draw_virtual_grid_content(
+                canvas,
+                columns,
+                item_height,
+                &items.len(),
+                &build_item,
+                Some(items),
+                gstate,
+                scroll_y,
+                VirtualSelectionPaint {
+                    selected: &selected_cells,
+                    active: selected,
+                    focused: is_focused,
+                },
+                hovered,
+                size,
+                local_mouse,
+                theme,
+                &mut VirtualItemDrawContext {
+                    fs,
+                    swash,
+                    font_cache,
+                    text_cache,
+                    image_cache,
+                    layout_fs: layout_fs.clone(),
+                    layout_direction: node_layout_direction(taffy, node),
+                    cursor_visible,
+                    shows_interaction_effects,
+                    scale,
+                    input_states,
+                    widget_states,
+                    custom_widget_states,
                 },
                 path,
             );
@@ -2113,6 +2295,7 @@ fn draw_widgets_impl<'w, Msg>(
                 item_height,
                 item_count,
                 items,
+                None,
                 gstate,
                 gstate.map(|state| state.scroll_y).unwrap_or(0.0),
                 VirtualSelectionPaint {
@@ -2137,6 +2320,9 @@ fn draw_widgets_impl<'w, Msg>(
                     cursor_visible,
                     shows_interaction_effects,
                     scale,
+                    input_states,
+                    widget_states,
+                    custom_widget_states,
                 },
                 path,
             );
@@ -3469,6 +3655,9 @@ struct VirtualItemDrawContext<'a> {
     cursor_visible: bool,
     shows_interaction_effects: bool,
     scale: f32,
+    input_states: &'a HashMap<u64, InputWidgetState>,
+    widget_states: &'a HashMap<u64, WidgetState>,
+    custom_widget_states: &'a HashMap<u64, CustomWidgetState>,
 }
 
 struct CarouselViewPaintState<'a>(Option<usize>, (f32, f32), Point, bool, &'a Theme);
@@ -3512,6 +3701,7 @@ fn configured_virtual_selection<Msg>(
 fn draw_carousel_view<'w, Msg>(
     canvas: &Canvas,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     frames: &[CarouselItemFrame],
     paint_state: CarouselViewPaintState<'_>,
     ctx: &mut VirtualItemDrawContext<'_>,
@@ -3523,7 +3713,17 @@ fn draw_carousel_view<'w, Msg>(
     canvas.save();
     canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
     draw_carousel_items(
-        canvas, items, frames, selected, mouse, is_focused, size.1, theme, ctx, path,
+        canvas,
+        items,
+        keyed_items,
+        frames,
+        selected,
+        mouse,
+        is_focused,
+        size.1,
+        theme,
+        ctx,
+        path,
     );
     canvas.restore();
     draw_unselected_carousel_focus(canvas, visible_selection, is_focused, size, theme);
@@ -3554,6 +3754,7 @@ fn carousel_focus_intersects_viewport(frame: CarouselItemFrame, viewport_size: (
 fn draw_carousel_items<'w, Msg>(
     canvas: &Canvas,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     frames: &[CarouselItemFrame],
     selected: Option<usize>,
     mouse: Point,
@@ -3565,7 +3766,17 @@ fn draw_carousel_items<'w, Msg>(
 ) {
     for frame in frames.iter().copied() {
         draw_carousel_item(
-            canvas, items, frame, selected, mouse, is_focused, height, theme, ctx, path,
+            canvas,
+            items,
+            keyed_items,
+            frame,
+            selected,
+            mouse,
+            is_focused,
+            height,
+            theme,
+            ctx,
+            path,
         );
     }
 }
@@ -3574,6 +3785,7 @@ fn draw_carousel_items<'w, Msg>(
 fn draw_carousel_item<'w, Msg>(
     canvas: &Canvas,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     frame: CarouselItemFrame,
     selected: Option<usize>,
     mouse: Point,
@@ -3587,13 +3799,24 @@ fn draw_carousel_item<'w, Msg>(
     let is_selected = selected == Some(frame.index);
     draw_virtual_grid_cell_frame(canvas, rect, is_selected, rect.contains(mouse), theme);
     draw_carousel_item_focus(canvas, rect, is_selected && is_focused, theme);
-    draw_carousel_item_content(canvas, items, frame.index, rect, mouse, theme, ctx, path);
+    draw_carousel_item_content(
+        canvas,
+        items,
+        keyed_items,
+        frame.index,
+        rect,
+        mouse,
+        theme,
+        ctx,
+        path,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
 fn draw_carousel_item_content<'w, Msg>(
     canvas: &Canvas,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     index: usize,
     rect: SkiaRect,
     mouse: Point,
@@ -3604,9 +3827,9 @@ fn draw_carousel_item_content<'w, Msg>(
     if let Some(item) = items(index) {
         let origin = (rect.left, rect.top);
         let item_size = rect_size(rect);
-        path.push(index);
+        push_virtual_item_path(path, index, keyed_items);
         draw_virtual_item_widget(canvas, &item, origin, item_size, mouse, theme, ctx, path);
-        path.pop();
+        pop_virtual_item_path(path, keyed_items);
     }
 }
 
@@ -3683,6 +3906,7 @@ fn draw_virtual_list_content<'w, Msg>(
     item_height: &f32,
     item_count: &usize,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     scroll_y: f32,
     selection: VirtualSelectionPaint<'_>,
     hovered: Option<usize>,
@@ -3699,7 +3923,19 @@ fn draw_virtual_list_content<'w, Msg>(
     canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
     for i in visible_virtual_rows(scroll_y, ih, size.1, count) {
         draw_virtual_list_content_row(
-            canvas, items, i, ih, scroll_y, selection, hovered, size, mouse, theme, ctx, path,
+            canvas,
+            items,
+            keyed_items,
+            i,
+            ih,
+            scroll_y,
+            selection,
+            hovered,
+            size,
+            mouse,
+            theme,
+            ctx,
+            path,
         );
     }
     canvas.restore();
@@ -3711,6 +3947,7 @@ fn draw_virtual_list_content<'w, Msg>(
 fn draw_virtual_list_content_row<'w, Msg>(
     canvas: &Canvas,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     index: usize,
     item_height: f32,
     scroll_y: f32,
@@ -3734,7 +3971,7 @@ fn draw_virtual_list_content_row<'w, Msg>(
         theme,
     );
     if let Some(item) = items(index) {
-        path.push(index);
+        push_virtual_item_path(path, index, keyed_items);
         draw_virtual_item_widget(
             canvas,
             &item,
@@ -3745,7 +3982,7 @@ fn draw_virtual_list_content_row<'w, Msg>(
             ctx,
             path,
         );
-        path.pop();
+        pop_virtual_item_path(path, keyed_items);
     }
     draw_virtual_item_focus(canvas, rect, selection.is_active(index), 0.0, theme);
     draw_virtual_row_separator(canvas, y, item_height, size.0, theme);
@@ -3899,6 +4136,7 @@ fn draw_virtual_grid_content<'w, Msg>(
     item_height: &f32,
     item_count: &usize,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     state: Option<&VirtualGridState>,
     scroll_y: f32,
     selection: VirtualSelectionPaint<'_>,
@@ -3918,8 +4156,21 @@ fn draw_virtual_grid_content<'w, Msg>(
     canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
     for row in visible_virtual_rows(scroll_y, row_h, size.1, row_count) {
         draw_virtual_grid_content_row(
-            canvas, items, row, columns, row_h, count, scroll_y, selection, hovered, size, mouse,
-            theme, ctx, path,
+            canvas,
+            items,
+            keyed_items,
+            row,
+            columns,
+            row_h,
+            count,
+            scroll_y,
+            selection,
+            hovered,
+            size,
+            mouse,
+            theme,
+            ctx,
+            path,
         );
     }
     canvas.restore();
@@ -3935,6 +4186,7 @@ fn draw_virtual_grid_content<'w, Msg>(
 fn draw_virtual_grid_content_row<'w, Msg>(
     canvas: &Canvas,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     row: usize,
     columns: usize,
     row_h: f32,
@@ -3955,8 +4207,21 @@ fn draw_virtual_grid_content_row<'w, Msg>(
             break;
         }
         draw_virtual_grid_content_cell(
-            canvas, items, index, col, y, row_h, columns, selection, hovered, size, mouse, theme,
-            ctx, path,
+            canvas,
+            items,
+            keyed_items,
+            index,
+            col,
+            y,
+            row_h,
+            columns,
+            selection,
+            hovered,
+            size,
+            mouse,
+            theme,
+            ctx,
+            path,
         );
     }
 }
@@ -3965,6 +4230,7 @@ fn draw_virtual_grid_content_row<'w, Msg>(
 fn draw_virtual_grid_content_cell<'w, Msg>(
     canvas: &Canvas,
     items: &dyn Fn(usize) -> Option<Widget<'w, Msg>>,
+    keyed_items: Option<&KeyedVirtualItems<'w, Msg>>,
     index: usize,
     col: usize,
     y: f32,
@@ -3995,7 +4261,7 @@ fn draw_virtual_grid_content_cell<'w, Msg>(
         theme,
     );
     if let Some(item) = items(index) {
-        path.push(index);
+        push_virtual_item_path(path, index, keyed_items);
         draw_virtual_item_widget(
             canvas,
             &item,
@@ -4006,7 +4272,7 @@ fn draw_virtual_grid_content_cell<'w, Msg>(
             ctx,
             path,
         );
-        path.pop();
+        pop_virtual_item_path(path, keyed_items);
     }
 }
 
@@ -4052,15 +4318,30 @@ fn draw_virtual_item_widget<'w, Msg>(
 ) {
     let mut taffy = TaffyTree::new();
     let fs_rc = ctx.layout_fs.clone();
-    // Virtual item widgets are visual-only, so global state must not alias IDs materialized on demand.
     let isolated_input_states = HashMap::new();
     let isolated_widget_states = HashMap::new();
     let isolated_custom_widget_states = HashMap::new();
+    let interactive = is_interactive_virtual_item_path(path);
+    let input_states = if interactive {
+        ctx.input_states
+    } else {
+        &isolated_input_states
+    };
+    let widget_states = if interactive {
+        ctx.widget_states
+    } else {
+        &isolated_widget_states
+    };
+    let custom_widget_states = if interactive {
+        ctx.custom_widget_states
+    } else {
+        &isolated_custom_widget_states
+    };
     let root = build_taffy_tree_with_direction(
         &mut taffy,
         item,
         fs_rc.clone(),
-        &isolated_widget_states,
+        widget_states,
         ctx.layout_direction,
     );
     compute_layout(
@@ -4083,9 +4364,9 @@ fn draw_virtual_item_widget<'w, Msg>(
         Point::new(mouse.x - origin.0, mouse.y - origin.1),
         None,
         ctx.shows_interaction_effects,
-        &isolated_input_states,
-        &isolated_widget_states,
-        &isolated_custom_widget_states,
+        input_states,
+        widget_states,
+        custom_widget_states,
         ctx.font_cache,
         ctx.text_cache,
         ctx.image_cache,
@@ -4096,6 +4377,29 @@ fn draw_virtual_item_widget<'w, Msg>(
         path,
     );
     canvas.restore();
+}
+
+fn push_virtual_item_path<Msg>(
+    path: &mut Vec<usize>,
+    index: usize,
+    keyed_items: Option<&KeyedVirtualItems<'_, Msg>>,
+) {
+    if let Some(key) = keyed_items.and_then(|items| items.key_at(index)) {
+        push_interactive_virtual_item_path(path, key);
+        return;
+    }
+    path.push(index);
+}
+
+fn pop_virtual_item_path<Msg>(
+    path: &mut Vec<usize>,
+    keyed_items: Option<&KeyedVirtualItems<'_, Msg>>,
+) {
+    if keyed_items.is_some() {
+        pop_interactive_virtual_item_path(path);
+        return;
+    }
+    path.pop();
 }
 
 fn physical_size(size: (f32, f32)) -> PhysicalSize<u32> {

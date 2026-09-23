@@ -225,6 +225,7 @@ impl<'tree> PopoverHoverVisitor<'tree> {
                 self.captures_pointer_in_children(children, node)
             }
             Widget::Container { child, .. }
+            | Widget::PointerRegion { child, .. }
             | Widget::Tooltip { child, .. }
             | Widget::ContextMenu { child, .. }
             | Widget::ScrollView { child, .. } => self.captures_pointer_in_first_child(child, node),

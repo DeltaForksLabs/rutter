@@ -155,6 +155,7 @@ pub(super) fn has_visible_blocking_overlay<Msg>(widget: &Widget<'_, Msg>) -> boo
             children.iter().any(has_visible_blocking_overlay)
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }

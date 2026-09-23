@@ -17,7 +17,7 @@ use crate::widgets::table::{
 };
 
 pub(super) fn collect<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     widget: &Widget<Msg>,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
@@ -47,7 +47,7 @@ struct TableAccessibilityGeometry {
 
 impl TableAccessibilityGeometry {
     fn new<Msg>(
-        builder: &AccessibilityBuilder<'_>,
+        builder: &AccessibilityBuilder<'_, '_>,
         table_id: u64,
         model: &TableModel<'_>,
         options: &TableOptions<'_, Msg>,
@@ -93,7 +93,7 @@ impl TableAccessibilityGeometry {
 }
 
 fn push_header_row<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
@@ -134,7 +134,7 @@ fn push_header_row<Msg>(
 }
 
 fn push_header_cell<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     column: &crate::widgets::table::TableColumn<'_>,
     index: usize,
@@ -178,7 +178,7 @@ fn apply_header_sort<Msg>(
 }
 
 fn push_body_rows<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
@@ -199,7 +199,7 @@ fn push_body_rows<Msg>(
 
 #[allow(clippy::too_many_arguments)]
 fn push_body_row<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
@@ -240,7 +240,7 @@ fn push_body_row<Msg>(
 
 #[allow(clippy::too_many_arguments)]
 fn push_body_cell<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
@@ -269,7 +269,7 @@ fn push_body_cell<Msg>(
 }
 
 fn push_row_node<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     row: &crate::widgets::table::TableRow<'_>,
     row_index: usize,
@@ -301,7 +301,7 @@ fn push_row_node<Msg>(
 }
 
 fn push_empty_cell<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
@@ -319,7 +319,7 @@ fn push_empty_cell<Msg>(
 }
 
 fn push_empty_row<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
@@ -336,7 +336,7 @@ fn push_empty_row<Msg>(
 }
 
 fn push_table_root<Msg>(
-    builder: &mut AccessibilityBuilder<'_>,
+    builder: &mut AccessibilityBuilder<'_, '_>,
     table_id: u64,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
@@ -363,7 +363,7 @@ fn push_table_root<Msg>(
 
 fn apply_root_interaction<Msg>(
     node: &mut Node,
-    builder: &AccessibilityBuilder<'_>,
+    builder: &AccessibilityBuilder<'_, '_>,
     table_id: u64,
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,

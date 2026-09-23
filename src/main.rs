@@ -14,6 +14,7 @@
 //   cargo run -- controls
 //   cargo run -- counter
 //   cargo run -- dialog
+//   cargo run -- drag_drop
 //   cargo run -- dropdown_menu
 //   cargo run -- form           # complete demo (default)
 //   cargo run -- image_viewer
@@ -52,6 +53,7 @@ fn main() {
         "controls" => widget_examples::controls_demo::run(),
         "counter" => widget_examples::counter_demo::run(),
         "dialog" => widget_examples::dialog_demo::run(),
+        "drag_drop" => widget_examples::drag_drop_demo::run(),
         "dropdown_menu" => widget_examples::dropdown_menu_demo::run(),
         "form" => widget_examples::form_demo::run(),
         "image_viewer" => widget_examples::image_viewer_demo::run(),

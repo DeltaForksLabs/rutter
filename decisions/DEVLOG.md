@@ -1,5 +1,143 @@
 # Development Log
 
+## [2026-09-23T13:12:28-03:00] - Fixed Placement Actions and Selectable Text Drag - Unreleased
+
+**Context:** Keep Place/Clear actions outside the grid scroll and replace the violet card with an editable, draggable text example.
+
+**Challenge:** Pointer regions claim primary hits before children, so wrapping a `TextInput` would prevent editing and selecting text; the input's highlighted range is runtime-owned and not available to `AppLogic` callbacks.
+
+**Alternatives:** Exposing the input's highlighted range as a new public API would expand runtime/input semantics beyond this demo. A separate validated Select text action and drag handle preserves ordinary TextInput behavior and makes the snapshot explicit.
+
+**Decision:** Move keyboard placement buttons above the scroll viewport, keep the typed text input independent of the pointer drag handle, and arm the latter only after explicit selection of a nonempty printable value of up to 64 UTF-8 bytes. Retain an immutable drag snapshot across input edits and source-before-target drop callbacks; use the same text value for keyboard placement, preview and retained drop. Keep the compact layout usable at narrow widths.
+
+**Files Changed:** `examples/widgets/drag_drop_demo.rs`, `README.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test --locked --bin rutter drag_drop_demo` (10 passed); `cargo test --locked --features image-rs-decoder --bin rutter drag_drop_demo` (10 passed); `cargo check --locked --all-targets`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked -- --test-threads=2` (593 library tests, 43 binary tests, integration suites, and 300 doctests); `git diff --check`. An earlier `cargo test --locked --quiet` exceeded its 300-second timeout without a result; the complete suite was rerun with two test threads and passed.
+
+## [2026-09-23T12:43:35-03:00] - Responsive Drag Grid and Yosemite Image - Unreleased
+
+**Context:** Arrange drag sources in a responsive grid with reliable per-card pointer areas and a draggable landscape image that also appears in the drop zone.
+
+**Challenge:** ScrollView painted children at a translated offset but hit-tested them at their original position; a wrapping row needs intrinsic content height and enough space for accessible controls on narrow windows.
+
+**Alternatives:** Replacing the scroll view with a virtual grid would change the demo's small, stable set of pointer regions and could require separate keyed interaction plumbing. A wrapping row inside an intrinsic-height column preserves the existing IDs and lets Taffy select one or multiple columns.
+
+**Decision:** Apply the ScrollView offset in primary hit testing, keep each tile a whole-card pointer region, and put a flex-wrapped grid and the keyboard buttons inside scrollable intrinsic-height content below the fixed drop zone. Display an NPS public-domain Yosemite Falls photo through `Widget::Image` in the source and matching drop preview; retain a separately resized 128×99 JPEG for the existing bounded badge decoder. Remove the superseded flower icon asset.
+
+**Files Changed:** `src/render/hit_test.rs`, `examples/widgets/drag_drop_demo.rs`, `examples/widgets/yosemite_falls.jpg`, `examples/widgets/yosemite_falls_badge.jpg`, `examples/widgets/local_florist.png` (removed), `README.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test --locked scroll_view_hits_the_visible_region_at_the_painted_offset --lib` (1 passed); `cargo test --locked --bin rutter drag_drop_demo` (8 passed); `cargo test --locked --features image-rs-decoder --bin rutter drag_drop_demo` (8 passed); `cargo check --locked --all-targets`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked --quiet` (593 library tests, 41 binary tests, integration suites, and 300 doctests); `git diff --check`.
+
+## [2026-09-23T11:48:42-03:00] - Readable Drag Badge Text and Licensed Flower Image - Unreleased
+
+**Context:** Make drag badge text legible and replace the demo's featureless embedded raster with a recognizable, permissively licensed image.
+
+**Challenge:** Widen only text badges without obscuring their drop indicator or painting beyond narrow surfaces, while preserving the existing image decoder's strict size limits.
+
+**Alternatives:** Enlarging every badge would needlessly change status and icon feedback. Keeping the fixed circle would still truncate readable labels to roughly one character. A text-only pill preserves the existing circular badge geometry for other content.
+
+**Decision:** Measure text into a bounded, viewport-aware pill, reserve space for the acceptance mark, and truncate by grapheme at the available painted width. Replace the coral demo's PNG bytes with Google's pinned 48×48 Material Icons `local_florist` PNG under Apache-2.0, retain the existing 20×20 raster decoding path, and document its provenance and license.
+
+**Files Changed:** `src/render/drag_badge.rs`, `examples/widgets/drag_drop_demo.rs`, `examples/widgets/local_florist.png`, `README.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test --locked drag_badge --lib` (8 passed); `cargo test --locked --bin rutter drag_drop_demo` (7 passed); `cargo test --locked --features image-rs-decoder --bin rutter drag_drop_demo` (7 passed); `cargo check --locked --all-targets`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked --quiet` (592 library tests, 40 binary tests, integration suites, and 300 doctests); `git hash-object examples/widgets/local_florist.png` (upstream blob SHA verified); and `git diff --check`.
+
+## [2026-09-23T03:14:09-03:00] - Expanded Drag Badge Examples - Unreleased
+
+**Context:** Add hardcoded drag/drop cards that exercise each badge content option in the interactive demo.
+
+**Challenge:** Keep the drop target and keyboard alternatives usable when adding enough colored sources to exceed the window height.
+
+**Decision:** Define five stable-ID card presets for default status, move icon, truncated text, low-resolution embedded raster image, and copy icon badges. Decode the image once during app initialization; keep the drop zone and accessible actions above a bounded scrollable source list so long cards do not displace the target. Use the same palette for each source, badge, preview, and retained drop.
+
+**Files Changed:** `examples/widgets/drag_drop_demo.rs`, `README.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked --bin rutter drag_drop_demo` (6 passed); `cargo test --locked --quiet` (590 library tests, 39 binary tests, integration suites, and 300 doctests); `cargo test --locked --features image-rs-decoder --bin rutter drag_drop_demo` (6 passed); and `git diff --check`.
+
+## [2026-09-23T02:57:05-03:00] - Configurable Drag Badge and Color-Matched Drop Zone - Unreleased
+
+**Context:** Move drag feedback from the standalone example into an optional pointer-region API; show amber and blue cards with matching drop-zone colors, and accept icon, text, or image badge content.
+
+**Challenge:** Draw feedback over overlays without changing hit testing, AccessKit, native cursors, or the existing unconfigured drag behavior; bound badge text and image memory independently of user-supplied assets.
+
+**Alternatives:** Keeping a visual-only custom widget in each application would duplicate state, IDs, and layout updates. Native cursors would be platform-specific and cannot consistently depict target matching. Keeping original full-size images in active badges would retain unnecessary memory.
+
+**Decision:** Add `DragBadge` to `PointerRegionConfig` via `.with_drag_badge`, keep it inactive without a drag source, and paint per-surface feedback after widgets and overlays from the runner's capture state. Limit text to 64 bytes and truncate by grapheme/painted width; decode raster images with a strict budget and retain only a 20×20 copy. Built-in geometric icons avoid external decoding. Update the demo to use the new source configuration and color the zone with the hovered or selected card's palette while preserving keyboard controls.
+
+**Files Changed:** `src/pointer.rs`, `src/engine/mod.rs`, `src/engine/runner/pointer_region.rs`, `src/render/drag_badge.rs`, `src/render/mod.rs`, `src/lib.rs`, `examples/widgets/drag_drop_demo.rs`, `README.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked pointer_region --lib`; `cargo test --locked drag_badge --lib`; `cargo test --locked --quiet` (590 library tests, 39 binary tests, integration suites, and 300 doctests); `cargo test --locked --features image-rs-decoder pointer::tests::badge_keeps_only_a_small_decoded_copy_of_an_embedded_image --lib` (1 passed); and `git diff --check`.
+
+## [2026-09-23T02:27:25-03:00] - Non-Interactive Drag Pointer Badge - Unreleased
+
+**Context:** Show a small drag feedback icon beside the pointer while using the drag/drop widget example.
+
+**Challenge:** Keep the indicator above the demo's cards without allowing it to intercept hits on the drop zone or add a decorative accessibility node.
+
+**Alternatives:** A regular text/Container badge would add a transient accessibility node. A native OS cursor change cannot express the same in-surface hover feedback without platform-specific behavior. A visual-only custom widget reuses the existing clipped drawing boundary and stays outside pointer routing.
+
+**Decision:** Append a small absolute-positioned visual-only custom badge to the demo during active drags. Track its position from typed logical pointer events, offset it from the native hotspot, display a dot in transit and a plus over the matching target, and remove it on drop or cancellation. Keep the keyboard-accessible placement controls unchanged.
+
+**Superseded:** The configurable, per-surface badge described above replaces the example-local custom widget while retaining its non-interactive behavior.
+
+**Files Changed:** `examples/widgets/drag_drop_demo.rs`, `README.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked --bin rutter drag_drop_demo` (7 passed); `cargo test --locked --quiet` (581 library tests, 40 binary tests, integration suites, and 300 doctests); and `git diff --check`.
+
+## [2026-09-23T02:11:05-03:00] - Drag and Drop Widget Example - Unreleased
+
+**Context:** Demonstrate how to build an in-surface drag/drop interface using typed pointer regions and application-owned opaque payloads.
+
+**Challenge:** Show source, target, cancellation, and hover feedback without allowing a pointer-only operation or changing the existing demo launch convention.
+
+**Decision:** Add a standalone `drag_drop` demo with two stable-ID source regions, one kind-matched target region, state-driven visual and status feedback, and accessible buttons that place the same cards. Resolve payload IDs only against known application cards before changing selection; register the demo through the standard launcher and theme tests.
+
+**Files Changed:** `examples/widgets/drag_drop_demo.rs`, `examples/widgets/mod.rs`, `src/main.rs`, `tests/unit/all_examples_theme_unit_tests.rs`, and `README.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked --bin rutter drag_drop_demo` (4 passed); `cargo test --locked --quiet` (581 library tests, 37 binary tests, integration suites, and 300 doctests); and `git diff --check`.
+
+## [2026-09-23T01:52:15-03:00] - Typed Pointer Regions and In-Surface Drag - Unreleased
+
+**Context:** Add opt-in primary-pointer events, capture, and application-owned drag/drop without changing the interaction contract of existing widgets.
+
+**Challenge:** Carry source and matching target identity through layout changes, cancellation, overlay precedence, surface lifecycle, and per-surface runtime caches while keeping native drag handles and untrusted external payloads out of the API.
+
+**Alternatives:** Exposing native drag/drop would permit cross-process data and require platform-specific security and ownership rules. Reusing custom widget callbacks would couple drag sources to the custom paint extension. A transparent, explicitly keyed wrapper keeps the boundary opt-in and uses ordinary application messages.
+
+**Decision:** Introduce `Widget::pointer_region` with a required manual ID, typed logical pointer events and optional capture, plus opaque application-owned payload identifiers and kind-matched drop targets. Hit testing gives the wrapper primary-pointer ownership; the surface runner tracks capture and target enter/exit/drop phases, cancels on removal, focus loss, cursor exit, blocking overlays, and surface closure, and preserves the normal `AppLogic::update` path. AccessKit remains transparent; keyboard equivalents remain the application's responsibility.
+
+**Files Changed:** `src/pointer.rs`, widget ID/layout/render/hit-test traversals, engine runtime caches, `src/engine/runner/pointer_region.rs`, surface shutdown routing, tests, and README.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked pointer_region --lib`; `cargo test --locked --doc` (300 passed); `cargo test --locked --quiet` (581 library tests, 33 binary tests, integration suites, and 300 doctests); and `git diff --check`.
+
+## [2026-09-20T11:50:02-03:00] - Keyed Interactive Virtual Collections - 0.37.0
+
+**Context:** Let virtual lists, grids, and carousels opt into stable-keyed interactive child widgets without weakening the existing visual-only default.
+
+**Challenge:** Materialize child layout, hit testing, runtime callbacks, focus identities, retained state, and AccessKit nodes only for visible and overscanned items while ensuring an item key—not its changing index—owns descendant identity.
+
+**Alternatives:** Adding fields to visual-only variants would change their security and performance contract. Building every item to validate or retain descendants would defeat virtualization. Separate keyed constructors backed by a validated key slice preserve the old behavior and allow only the currently visible item set to participate in the runtime.
+
+**Decision:** Add `VirtualItemKey` and `KeyedVirtualItems::try_new`, which rejects duplicate keys with both indices. New interactive list, grid, and carousel constructors scope descendant IDs by the collection path and key; reuse ephemeral layouts for child-first hit testing, painting, and accessibility; register only visible-plus-overscan callbacks; and retire scoped maps when keys leave the current view. The collection remains the row/cell fallback target outside a child control.
+
+**Files Changed:** Keyed source API, widget identity, layout/render/hit-test paths, runtime metadata and focus collection, AccessKit generation, public exports, focused tests, documentation, and package version metadata.
+
+**Validation:** `cargo fmt --all -- --check`; `cargo check --offline --all-targets`; `cargo check --locked --all-targets`; focused keyed interaction, runtime-bounds, identity, duplicate-key, accessibility, and Tab-order tests; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked` (572 library tests, 33 binary tests, integration suites, and 298 doctests); and `git diff --check`.
+
+## [2026-09-20T01:51:09-03:00] - Bounded Multi-Window Application Wakeups - 0.36.0
+
+**Context:** Add an event-loop-owned deadline hook so multi-window applications can make low-frequency state transitions without worker threads or raw Winit access.
+
+**Challenge:** Merge app deadlines with existing surface schedules, propagate shared model changes without forcing redraws on unaffected surfaces, avoid past-deadline busy loops, and retain the normal validated command-routing path.
+
+**Alternatives:** A public `EventLoopProxy` would allow unrestricted cross-thread ingress and need separate capacity and ownership semantics. Continuous redraws waste CPU and GPU work. A callback that recursively consumes every overdue interval would replay work after suspension. A single due callback per event cycle keeps the boundary bounded and lets applications select the next future deadline.
+
+**Decision:** Add default `MultiWindowAppLogic::next_wakeup` and `wakeup` methods using `Instant`. The multi-window runner polls the canonical model on its event-loop thread, waits with the earliest future deadline, invokes one due callback per event cycle, applies returned `SurfaceCommand`s through the existing router, and synchronizes model clones without an implicit redraw. Past replacement deadlines disable waiting until a subsequent event instead of spinning.
+
+**Files Changed:** `src/multi_window/mod.rs`, multi-window runner scheduling, deterministic wakeup tests, README documentation, and package version metadata.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo test --locked wakeup --lib` (7 passed); `cargo test --locked` (564 library tests, 33 binary tests, integration suites, and 288 doctests); and `cargo clippy --locked --all-targets -- -D warnings`.
+
 ## [2026-09-20T01:18:43-03:00] - Versioned Custom Widget Boundary - 0.35.0
 
 **Context:** Add a supported v1 extension boundary for custom Rutter leaf widgets with constrained rendering, input, local runtime state, and accessibility semantics.
@@ -41,6 +179,34 @@
 **Files Changed:** `src/widgets/table/`, `src/widget/`, `src/layout.rs`, `src/render/table.rs`, `src/render/hit_test.rs`, `src/engine/table_runtime.rs`, `src/engine/runner/table.rs`, `src/accessibility/table.rs`, public exports, tests, the standalone table demo, documentation, and package version metadata.
 
 **Validation:** `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo test --locked --quiet` (534 library tests, 33 binary tests, integration suites, and 275 doctests); `cargo clippy --locked --all-targets -- -D warnings`; and `git diff --check`.
+
+## [2026-09-03T01:17:59-03:00] - Context Menu Pre-Open Selection - 0.29.0
+
+**Context:** Let applications select a right-clicked context-menu target before its in-surface menu overlay opens.
+
+**Challenge:** Context-menu routing claims a secondary press before the unclaimed pointer callback, while overlay priority and multi-window state synchronization must remain unchanged.
+
+**Alternatives:** Mutating application state from a new lifecycle hook would bypass `AppLogic::update`. Returning an optional message preserves the existing Elm-style update boundary and allows the menu to open after selection state changes.
+
+**Decision:** Add `ContextMenuTarget` plus `context_menu_opening` hooks on single- and multi-window application traits. The runner dispatches a returned selection message through `update` before opening the target menu.
+
+**Files Changed:** `src/app.rs`, `src/engine/runner/secondary_pointer.rs`, `src/multi_window/mod.rs`, `src/engine/multi_runner/app_adapter.rs`, public exports, documentation, and package version metadata.
+
+**Validation:** `cargo fmt --all -- --check`; `CARGO_TARGET_DIR=/home/p_daniel/Labs/Isolated_Environment/rustLang@Projects/rutter/target CARGO_BUILD_JOBS=3 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo check --locked --all-targets`; the same environment with `cargo test --locked` and `cargo clippy --locked --all-targets -- -D warnings`; and `git diff --check`.
+
+## [2026-08-29T20:53:15-03:00] - Responsive Widget Examples - Unreleased
+
+**Context:** Make every standalone widget example adapt to narrow surfaces while retaining useful desktop dimensions.
+
+**Challenge:** Fixed control widths, horizontal action rows, and popup anchors could overflow narrow windows even when their root columns already filled the surface.
+
+**Alternatives:** Keeping fixed widths would preserve the old desktop geometry but retain narrow-window overflow. Per-demo ad hoc percentage styles would work but duplicate the same width-cap policy across every example.
+
+**Decision:** Add an internal responsive-width style helper, use it for bounded controls and collections, wrap multi-action rows, and make the multi-window example resizable with smaller minimum dimensions. Preserve fixed dimensions only for intrinsic affordances such as icons, switches, and spinners.
+
+**Files Changed:** `examples/widgets/layout.rs`, the affected `examples/widgets/*.rs` demos, `tests/unit/controls_demo_layout_unit_tests.rs`, and `tests/unit/multi_window_demo_unit_tests.rs`.
+
+**Validation:** `cargo fmt --all`; `CARGO_TARGET_DIR=/home/p_daniel/Labs/Isolated_Environment/rustLang@Projects/rutter/target CARGO_BUILD_JOBS=3 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo check --locked --all-targets`; the same environment with `cargo test --locked --bin rutter`, `cargo test --locked`, and `cargo clippy --locked --all-targets -- -D warnings`; and `git diff --check`.
 
 ## [2026-08-28T00:36:37-03:00] - Descriptive Source Module Organization - Unreleased
 

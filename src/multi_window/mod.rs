@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::Hash;
+use std::time::Instant;
 use winit::error::EventLoopError;
 mod window_config;
 pub use window_config::{
@@ -213,6 +214,35 @@ pub trait MultiWindowAppLogic {
         _event: ShortcutEvent,
     ) -> ShortcutOutcome<Self::Message> {
         ShortcutOutcome::Ignored
+    }
+    /// Returns the next monotonic deadline for application-owned timed work.
+    ///
+    /// Return `None` to disable wakeups without polling or redraws. Rutter calls this after
+    /// startup and state transitions, then waits with its event-loop-owned monotonic clock.
+    ///
+    /// ```
+    /// use std::time::{Duration, Instant};
+    ///
+    /// fn next_minute_boundary(now: Instant) -> Option<Instant> {
+    ///     Some(now + Duration::from_secs(60))
+    /// }
+    /// ```
+    fn next_wakeup(_state: &Self::State, _now: Instant) -> Option<Instant> {
+        None
+    }
+    /// Handles one due application wakeup on Rutter's event-loop thread.
+    ///
+    /// Return normal [`SurfaceCommand`] values to redraw or change affected surfaces, then return
+    /// a replacement deadline from [`Self::next_wakeup`] when more timed work remains.
+    ///
+    /// ```
+    /// use rutter::{SurfaceCommand, SurfaceId};
+    ///
+    /// let commands = vec![SurfaceCommand::RequestRedraw(SurfaceId::PRIMARY)];
+    /// assert_eq!(commands.len(), 1);
+    /// ```
+    fn wakeup(_state: &mut Self::State, _now: Instant) -> Vec<SurfaceCommand> {
+        Vec::new()
     }
     /// Returns the application theme.
     fn theme() -> crate::theme::Theme {

@@ -12,5 +12,6 @@ pub use api::{
     CustomWidgetStateError, CustomWidgetV1, MAX_CUSTOM_WIDGET_STATE_BYTES,
 };
 pub(crate) use tree::{
-    collect_custom_widget_ids, custom_accessibility_is_valid, find_custom_widget,
+    collect_custom_widget_ids, collect_custom_widget_ids_at_path, custom_accessibility_is_valid,
+    find_custom_widget,
 };
