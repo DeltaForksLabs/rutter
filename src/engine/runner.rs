@@ -1501,6 +1501,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         &mut self.engine.app_state
     }
 
+    pub(crate) fn deliver_message(&mut self, message: A::Message) {
+        A::update(
+            &mut self.engine.app_state,
+            message,
+            &mut self.engine.clipboard,
+        );
+    }
+
     pub(crate) fn invalidate_and_redraw(&mut self) {
         self.engine.layout_dirty = true;
         self.redraw();

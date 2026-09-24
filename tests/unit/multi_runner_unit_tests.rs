@@ -1,4 +1,6 @@
 use std::cell::Cell;
+use std::num::NonZeroUsize;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
@@ -33,14 +35,14 @@ impl MultiWindowAppLogic for FakeMultiWindowApp {
 
     fn update(
         state: &mut Self::State,
-        _: SurfaceId,
+        surface: SurfaceId,
         message: Self::Message,
         _: &mut Clipboard,
     ) -> Vec<SurfaceCommand> {
         match message {
             FakeMessage::Increment => *state += 1,
         }
-        Vec::new()
+        vec![SurfaceCommand::RequestRedraw(surface)]
     }
 
     fn surface_event(
@@ -409,6 +411,102 @@ fn suspended_redraw_requests_are_safe_and_unknown_targets_are_rejected() {
         runtime.set_surface_visibility(unknown, false),
         Err(MultiWindowRunError::UnknownLogicalSurface(id)) if id == unknown
     ));
+}
+
+#[test]
+fn external_delivery_uses_normal_update_and_commands_but_skips_retired_surfaces() {
+    let surface = SurfaceId::PRIMARY;
+    let mut runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
+    runtime
+        .surface_configs
+        .insert(surface, WindowConfig::default());
+    runtime.surface_runners.insert(
+        surface,
+        runtime
+            .build_surface_runner(&SurfaceRequest::new(surface, WindowConfig::default()))
+            .unwrap(),
+    );
+
+    let commands = runtime
+        .deliver_external_message(surface, FakeMessage::Increment)
+        .unwrap();
+    assert_eq!(commands, Some(vec![SurfaceCommand::RequestRedraw(surface)]));
+    assert_eq!(runtime.canonical_state, 1);
+    assert_eq!(runtime.revision, 1);
+    assert!(runtime.request_surface_redraw(surface).is_ok());
+
+    runtime.close_surface(surface).unwrap();
+    assert_eq!(
+        runtime
+            .deliver_external_message(surface, FakeMessage::Increment)
+            .unwrap(),
+        None
+    );
+    assert_eq!(runtime.canonical_state, 1);
+    assert_eq!(
+        runtime
+            .deliver_external_message(SurfaceId::new(99), FakeMessage::Increment)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn ordinary_multi_window_startup_does_not_require_send_messages() {
+    struct LocalMessageApp;
+    impl MultiWindowAppLogic for LocalMessageApp {
+        type State = ();
+        type Message = Rc<()>;
+
+        fn new(_: &mut FontSystem) -> Self::State {}
+
+        fn view<'a>(_: &'a mut Self::State, _: SurfaceId) -> Widget<'a, Self::Message> {
+            Widget::Spacer {
+                style: Style::default(),
+            }
+        }
+
+        fn update(
+            _: &mut Self::State,
+            _: SurfaceId,
+            _: Self::Message,
+            _: &mut Clipboard,
+        ) -> Vec<SurfaceCommand> {
+            Vec::new()
+        }
+    }
+
+    let runtime = MultiWindowRunner::<LocalMessageApp>::initialize().unwrap();
+    assert!(runtime.message_ingress.is_none());
+}
+
+#[test]
+fn invalid_ingress_configuration_fails_before_worker_installation() {
+    let installed = Cell::new(false);
+    let config = crate::MessageIngressConfig {
+        capacity: NonZeroUsize::new(crate::MAX_MESSAGE_INGRESS_CAPACITY + 1).unwrap(),
+        maximum_messages_per_wakeup: NonZeroUsize::new(1).unwrap(),
+    };
+    let result = MultiWindowRunner::<FakeMultiWindowApp>::try_run_with_state_and_message_ingress(
+        0,
+        vec![SurfaceRequest::new(
+            SurfaceId::PRIMARY,
+            WindowConfig::default(),
+        )],
+        config,
+        |_| {
+            installed.set(true);
+            Ok::<_, std::convert::Infallible>(())
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(MultiWindowRunError::MessageIngressConfig(
+            crate::MessageIngressConfigError::CapacityTooLarge { .. }
+        ))
+    ));
+    assert!(!installed.get());
 }
 
 #[test]

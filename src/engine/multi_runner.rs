@@ -24,8 +24,9 @@ use super::RutterEngine;
 use super::gpu::BackendType;
 use super::runner::RutterRunner;
 use crate::multi_window::{
-    CloseBehavior, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand, SurfaceEvent,
-    SurfaceId, SurfaceRequest, SurfaceRouteRegistrationError, SurfaceRoutes, WindowConfig,
+    CloseBehavior, MessageIngress, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand,
+    SurfaceEvent, SurfaceId, SurfaceRequest, SurfaceRouteRegistrationError, SurfaceRoutes,
+    WindowConfig,
 };
 
 type SurfaceRunner<A> = RutterRunner<SurfaceAppAdapter<A>>;
@@ -60,6 +61,7 @@ pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
     fatal_error: Option<MultiWindowRunError>,
     accessibility_waker: Option<EventLoopProxy<()>>,
     application_wakeup_scheduler: ApplicationWakeupScheduler,
+    message_ingress: Option<MessageIngress<A::Message>>,
 }
 
 impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
@@ -186,6 +188,38 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         };
         if let Err(error) = self.apply_surface_commands(event_loop, commands) {
             self.terminate_for_error(event_loop, error);
+        }
+    }
+
+    /// Returns no commands for a retired surface, without exposing it to the application.
+    fn deliver_external_message(
+        &mut self,
+        surface: SurfaceId,
+        message: A::Message,
+    ) -> Result<Option<Vec<SurfaceCommand>>, MultiWindowRunError> {
+        if !self.surface_configs.contains_key(&surface) {
+            return Ok(None);
+        }
+        self.runner_for_mut(surface)?.deliver_message(message);
+        self.synchronize_surface_state(surface).map(Some)
+    }
+
+    fn drain_external_messages(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(ingress) = &self.message_ingress else {
+            return;
+        };
+        for (surface, message) in ingress.drain_batch() {
+            let commands = match self.deliver_external_message(surface, message) {
+                Ok(Some(commands)) => commands,
+                Ok(None) => continue,
+                Err(error) => return self.terminate_for_error(event_loop, error),
+            };
+            if let Err(error) = self.apply_surface_commands(event_loop, commands) {
+                return self.terminate_for_error(event_loop, error);
+            }
+            if schedule_iteration_stops(event_loop.exiting(), self.fatal_error.is_some()) {
+                return;
+            }
         }
     }
 
@@ -369,6 +403,12 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
                 return;
             }
         }
+        if self.native_surfaces_active {
+            self.drain_external_messages(event_loop);
+        }
+        if schedule_iteration_stops(event_loop.exiting(), self.fatal_error.is_some()) {
+            return;
+        }
         self.schedule_after_event(event_loop);
     }
 
@@ -385,6 +425,9 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
         match result {
             Ok(()) => {
                 self.native_surfaces_active = true;
+                if let Some(ingress) = &self.message_ingress {
+                    ingress.rearm();
+                }
                 self.schedule_after_event(event_loop);
             }
             Err(error) => self.terminate_for_error(event_loop, error),
@@ -423,6 +466,12 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
         self.schedule_after_event(event_loop);
     }
 
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        if let Some(ingress) = &self.message_ingress {
+            ingress.close();
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, native: WindowId, event: WindowEvent) {
         let Some(surface) = self.routes.surface_for(native) else {
             return;
@@ -433,6 +482,14 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
             event => self.dispatch_surface_event(event_loop, surface, native, event),
         }
         self.schedule_after_event(event_loop);
+    }
+}
+
+impl<A: MultiWindowAppLogic> Drop for MultiWindowRunner<A> {
+    fn drop(&mut self) {
+        if let Some(ingress) = &self.message_ingress {
+            ingress.close();
+        }
     }
 }
 

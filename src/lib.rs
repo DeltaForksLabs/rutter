@@ -41,9 +41,10 @@ pub use engine::runner::RutterRunner;
 pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};
 pub use input_limits::{InputKind, InputLimitError, InputLimits};
 pub use multi_window::{
-    CloseBehavior, MultiWindowAppLogic, MultiWindowRunError, SurfaceCommand, SurfaceEvent,
-    SurfaceId, SurfaceRequest, WindowConfig, WindowConfigError, WindowLevel, WindowPosition,
-    WindowSize,
+    CloseBehavior, MAX_MESSAGE_INGRESS_CAPACITY, MessageIngressConfig, MessageIngressConfigError,
+    MessageIngressError, MultiWindowAppLogic, MultiWindowMessageSender, MultiWindowRunError,
+    SurfaceCommand, SurfaceEvent, SurfaceId, SurfaceRequest, WindowConfig, WindowConfigError,
+    WindowLevel, WindowPosition, WindowSize,
 };
 pub use pointer::{
     DragBadge, DragBadgeError, DragBadgeIcon, DragCancelReason, DragEvent, DragPayload,

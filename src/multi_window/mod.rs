@@ -17,7 +17,13 @@ use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::Hash;
 use std::time::Instant;
 use winit::error::EventLoopError;
+mod ingress;
 mod window_config;
+pub(crate) use ingress::MessageIngress;
+pub use ingress::{
+    MAX_MESSAGE_INGRESS_CAPACITY, MessageIngressConfig, MessageIngressConfigError,
+    MessageIngressError, MultiWindowMessageSender,
+};
 pub use window_config::{
     CloseBehavior, WindowConfig, WindowConfigError, WindowLevel, WindowPosition, WindowSize,
 };
@@ -280,6 +286,7 @@ pub trait MultiWindowAppLogic {
 pub enum MultiWindowRunError {
     EventLoop(EventLoopError),
     Surface(SurfaceId, RutterRunError),
+    MessageIngressConfig(MessageIngressConfigError),
     DuplicateLogicalSurface(SurfaceId),
     NativeRouteConflict { surface: SurfaceId, native: String },
     UnknownLogicalSurface(SurfaceId),
@@ -294,6 +301,9 @@ impl Display for MultiWindowRunError {
                 formatter,
                 "surface {surface:?} failed: {error}; expected successful initialization or an operation on its isolated runtime"
             ),
+            Self::MessageIngressConfig(error) => {
+                write!(formatter, "invalid message ingress configuration: {error}")
+            }
             Self::DuplicateLogicalSurface(surface) => write!(
                 formatter,
                 "surface {surface:?} is already registered; expected each logical surface ID to have one owner"
@@ -321,6 +331,7 @@ impl Error for MultiWindowRunError {
         match self {
             Self::EventLoop(error) => Some(error),
             Self::Surface(_, error) => Some(error),
+            Self::MessageIngressConfig(error) => Some(error),
             Self::Startup(error) => Some(error.as_ref()),
             _ => None,
         }
@@ -329,6 +340,11 @@ impl Error for MultiWindowRunError {
 impl From<EventLoopError> for MultiWindowRunError {
     fn from(error: EventLoopError) -> Self {
         Self::EventLoop(error)
+    }
+}
+impl From<MessageIngressConfigError> for MultiWindowRunError {
+    fn from(error: MessageIngressConfigError) -> Self {
+        Self::MessageIngressConfig(error)
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

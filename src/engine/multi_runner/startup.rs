@@ -118,6 +118,52 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         Self::try_run_with(move |_| Ok::<_, std::convert::Infallible>(state), surfaces)
     }
 
+    /// Runs with an opt-in bounded worker ingress, installed after the private event-loop waker.
+    ///
+    /// Workers own only cloneable, surface-targeted senders. Installation failures use the same
+    /// typed startup error path as an injected state factory. Retired surfaces discard messages.
+    ///
+    /// ```no_run
+    /// use rutter::{MessageIngressConfig, MultiWindowAppLogic, MultiWindowRunner, SurfaceId, SurfaceRequest};
+    /// # fn launch<A: MultiWindowAppLogic + 'static>(state: A::State, surfaces: Vec<SurfaceRequest>, message: A::Message) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    /// # where A::Message: Send + 'static {
+    /// let config = MessageIngressConfig::try_new(128, 16)?;
+    /// MultiWindowRunner::<A>::try_run_with_state_and_message_ingress(
+    ///     state, surfaces, config, move |sender| {
+    ///         std::thread::spawn(move || {
+    ///             if let Err(error) = sender.try_send(SurfaceId::PRIMARY, message) {
+    ///                 eprintln!("platform snapshot was not delivered: {error}");
+    ///             }
+    ///         });
+    ///         Ok::<_, std::io::Error>(())
+    ///     },
+    /// )?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn try_run_with_state_and_message_ingress<Install, InstallError>(
+        state: A::State,
+        surfaces: Vec<SurfaceRequest>,
+        config: crate::MessageIngressConfig,
+        install: Install,
+    ) -> Result<(), MultiWindowRunError>
+    where
+        A::Message: Send + 'static,
+        Install: FnOnce(crate::MultiWindowMessageSender<A::Message>) -> Result<(), InstallError>,
+        InstallError: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        config.validate()?;
+        validate_initial_surfaces(&surfaces)?;
+        let event_loop = EventLoop::new().map_err(MultiWindowRunError::from)?;
+        event_loop.set_control_flow(ControlFlow::Wait);
+        let mut runtime =
+            Self::initialize_with(move |_| Ok::<_, std::convert::Infallible>(state), surfaces)?;
+        let (ingress, sender) = MessageIngress::new(config, event_loop.create_proxy());
+        runtime.message_ingress = Some(ingress);
+        install(sender).map_err(|error| MultiWindowRunError::Startup(error.into()))?;
+        Self::run_initialized_runtime(event_loop, runtime)
+    }
+
     fn launch_runtime<CreateRuntime>(
         create_runtime: CreateRuntime,
     ) -> Result<(), MultiWindowRunError>
@@ -142,8 +188,12 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     ) -> Result<(), MultiWindowRunError> {
         runtime.accessibility_waker = Some(event_loop.create_proxy());
         let event_result = event_loop.run_app(&mut runtime);
+        if let Some(ingress) = &runtime.message_ingress {
+            ingress.close();
+        }
         runtime
             .fatal_error
+            .take()
             .map_or_else(|| event_result.map_err(MultiWindowRunError::from), Err)
     }
 
@@ -189,6 +239,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             fatal_error: None,
             accessibility_waker: None,
             application_wakeup_scheduler: ApplicationWakeupScheduler::default(),
+            message_ingress: None,
         })
     }
 }

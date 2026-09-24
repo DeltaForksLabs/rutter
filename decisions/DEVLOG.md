@@ -1,5 +1,19 @@
 # Development Log
 
+## [2026-09-24T00:48:40-03:00] - Bounded Multi-Window Worker Ingress - 0.39.0
+
+**Context:** Let application-owned platform watchers deliver typed, surface-targeted updates without polling or exposing Winit/graphics resources to workers.
+
+**Challenge:** Enforce a bounded nonblocking queue and coalesced native wakeups while preserving FIFO delivery, event-loop-only application callbacks, deterministic shutdown, and existing non-`Send` multi-window callers.
+
+**Alternatives:** A periodic application deadline would delay platform event delivery and cannot wake the loop when a worker finishes. A public Winit proxy or unbounded channel would leak event-loop details or permit uncontrolled queue growth. An opt-in, preallocated, count-bounded queue keeps these concerns inside Rutter, while applications remain responsible for bounding payload sizes.
+
+**Decision:** Create an opt-in `try_run_with_state_and_message_ingress` startup path after constructing the private Winit proxy. Sender clones use a nonblocking queue-lock attempt, return `Busy`/`Full`/`Closed`, and emit one native event per queued burst. The runner drains at most a configured budget per event, invokes the existing surface adapter update/command route after releasing the queue lock, discards retired-surface messages, and closes/discards ingress before destroying UI state. The ordinary startup path has no queue or additional `Send` bound.
+
+**Files Changed:** `src/multi_window/ingress.rs`, `src/multi_window/mod.rs`, `src/engine/multi_runner.rs`, `src/engine/multi_runner/startup.rs`, `src/engine/runner.rs`, `src/lib.rs`, `tests/unit/multi_runner_unit_tests.rs`, `README.md`, `Cargo.toml`, `Cargo.lock`, `decisions/DEVLOG.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --offline --all-targets` (synchronized `Cargo.lock` to 0.39.0); `cargo test --locked --lib ingress -- --test-threads=2` (9 passed); `cargo test --locked --lib external_delivery -- --test-threads=2` (1 passed); `cargo test --locked --lib ordinary_multi_window_startup -- --test-threads=2` (1 passed); `cargo test --locked --lib invalid_ingress_configuration -- --test-threads=2` (1 passed); `cargo test --locked -- --test-threads=2` (609 library tests, 43 binary tests, integration suites, 302 doctests passed; repeated at 0.39.0); `cargo clippy --locked --all-targets -- -D warnings`; `cargo check --locked --all-targets --features image-rs-decoder`; `git diff --check`. No interactive native-window/worker integration run was performed.
+
 ## [2026-09-23T19:12:08-03:00] - Disabled Interactive Widgets - 0.38.0
 
 **Context:** Let applications declare unavailable built-in controls without no-op messages, while retaining accessible labels and default enabled behavior.
