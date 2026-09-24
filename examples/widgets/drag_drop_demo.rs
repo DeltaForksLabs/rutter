@@ -6,7 +6,7 @@ use cosmic_text::FontSystem;
 use rutter::{
     AppLogic, ButtonVariant, DragBadge, DragBadgeIcon, DragEvent, DragPayload, DragPayloadKind,
     DragPhase, DragSource, DropTarget, InputState, LogicalPointerPosition, PointerEvent,
-    PointerRegionConfig, RutterRunner, Theme, Widget, WidgetId,
+    PointerRegionConfig, RutterRunner, SelectedTextDrag, Theme, Widget, WidgetId,
 };
 use skia_safe::Color;
 use taffy::prelude::*;
@@ -28,7 +28,6 @@ const TARGET_REGION: u64 = 512;
 const CARD_SCROLL_ID: u64 = 514;
 const EMERALD_REGION: u64 = 515;
 const CORAL_REGION: u64 = 516;
-const TEXT_REGION: u64 = 517;
 const TEXT_INPUT_ID: u64 = 518;
 const AMBER_COLOR: Color = Color::from_rgb(255, 191, 0);
 const BLUE_COLOR: Color = Color::from_rgb(31, 93, 190);
@@ -121,7 +120,7 @@ pub enum Msg {
     Target(DragEvent),
     Place(u64),
     TextChanged(String),
-    SelectText,
+    TextSelected(String),
     Reset,
 }
 
@@ -172,6 +171,17 @@ impl AppLogic for DragDropDemo {
     fn theme_for(state: &Self::State) -> Theme {
         state.theme.resolve()
     }
+
+    fn selected_text_drag(_state: &Self::State, id: u64) -> Option<SelectedTextDrag<Msg>> {
+        (id == TEXT_INPUT_ID).then(|| SelectedTextDrag {
+            source: DragSource {
+                payload: DragPayload::new(ITEM_KIND, TEXT_VALUE),
+                on_drag: Msg::Source,
+            },
+            on_selected: Msg::TextSelected,
+            badge: DragBadge::new(TEXT_COLOR, Color::WHITE),
+        })
+    }
 }
 
 fn apply_demo_message(state: &mut DragDropDemoState, message: Msg) {
@@ -182,7 +192,7 @@ fn apply_demo_message(state: &mut DragDropDemoState, message: Msg) {
         Msg::Target(event) => update_target(state, event),
         Msg::Place(item) => place_item(state, item),
         Msg::TextChanged(value) => state.text_draft = value,
-        Msg::SelectText => select_text(state),
+        Msg::TextSelected(text) => select_text(state, &text),
         Msg::Reset => {
             state.selected = None;
             state.placed_text = None;
@@ -245,10 +255,19 @@ fn update_target(state: &mut DragDropDemoState, event: DragEvent) {
 
 fn place_item(state: &mut DragDropDemoState, item: u64) {
     if item == TEXT_VALUE {
-        let Some(text) = state.dragging_text.as_ref().or(state.armed_text.as_ref()) else {
+        let text = state
+            .dragging_text
+            .as_deref()
+            .unwrap_or(state.text_draft.trim());
+        if text.trim().is_empty()
+            || DragBadge::new(TEXT_COLOR, Color::WHITE)
+                .with_text(text)
+                .is_err()
+        {
+            state.status = "Enter 1–64 printable UTF-8 bytes to place text.".into();
             return;
-        };
-        state.placed_text = Some(text.clone());
+        }
+        state.placed_text = Some(text.into());
         state.selected = Some(TEXT_VALUE);
         state.status = "Selected text placed in the drop zone.".into();
         return;
@@ -261,18 +280,18 @@ fn place_item(state: &mut DragDropDemoState, item: u64) {
     state.status = format!("{} placed in the drop zone.", item_label(item));
 }
 
-fn select_text(state: &mut DragDropDemoState) {
-    let text = state.text_draft.trim();
-    if DragBadge::new(TEXT_COLOR, Color::WHITE)
-        .with_text(text)
-        .is_err()
+fn select_text(state: &mut DragDropDemoState, text: &str) {
+    if text.trim().is_empty()
+        || DragBadge::new(TEXT_COLOR, Color::WHITE)
+            .with_text(text)
+            .is_err()
     {
         state.armed_text = None;
-        state.status = "Enter 1–64 printable UTF-8 bytes, then select text.".into();
+        state.status = "Select 1–64 printable UTF-8 bytes to drag.".into();
         return;
     }
     state.armed_text = Some(text.into());
-    state.status = "Text selected. Drag its handle or use Place Text.".into();
+    state.status = "Dragging the selected text.".into();
 }
 
 fn item_label(item: u64) -> &'static str {
@@ -305,7 +324,7 @@ fn source_grid<'a>(state: &DragDropDemoState) -> Widget<'a, Msg> {
                         .iter()
                         .copied()
                         .map(|card| source_card(card, &state.coral_badge))
-                        .chain(std::iter::once(text_tile(state)))
+                        .chain(std::iter::once(text_tile()))
                         .collect(),
                     style: Style {
                         flex_wrap: FlexWrap::Wrap,
@@ -386,32 +405,14 @@ fn grid_tile_style() -> Style {
     }
 }
 
-fn text_tile<'a>(state: &DragDropDemoState) -> Widget<'a, Msg> {
-    let drag_source = match state.armed_text.as_deref() {
-        Some(text) => Widget::pointer_region(
-            WidgetId::manual(TEXT_REGION).expect("demo text drag ID must be manual"),
-            colored_card("Drag selected text", TEXT_COLOR, Color::WHITE, 38.0),
-            PointerRegionConfig::new(Msg::Pointer)
-                .with_drag_source(DragSource {
-                    payload: DragPayload::new(ITEM_KIND, TEXT_VALUE),
-                    on_drag: Msg::Source,
-                })
-                .with_drag_badge(
-                    DragBadge::new(TEXT_COLOR, Color::WHITE)
-                        .with_text(text)
-                        .expect("selected text was validated before arming the drag source"),
-                ),
-            responsive_width(300.0, Dimension::length(38.0)),
-        ),
-        None => label("Type text, then select it to drag.", 12.0),
-    };
+fn text_tile<'a>() -> Widget<'a, Msg> {
     Widget::Container {
         child: Box::new(Widget::Column {
             children: vec![
                 Widget::TextInput {
                     id: TEXT_INPUT_ID,
                     on_change: Msg::TextChanged,
-                    on_submit: Some(Msg::SelectText),
+                    on_submit: None,
                     style: responsive_width(300.0, Dimension::length(40.0)),
                     label: "Text to drag",
                     placeholder: "Enter text",
@@ -419,8 +420,7 @@ fn text_tile<'a>(state: &DragDropDemoState) -> Widget<'a, Msg> {
                     error_msg: None,
                     is_password: false,
                 },
-                action_button("Select text", Msg::SelectText),
-                drag_source,
+                label("Double-click a word, then drag the selection.", 12.0),
             ],
             style: Style {
                 size: Size::percent(1.0_f32),
@@ -755,26 +755,22 @@ mod tests {
     }
 
     #[test]
-    fn typed_text_must_be_selected_and_drag_preserves_its_snapshot() {
+    fn selected_substring_drag_preserves_its_snapshot_and_keyboard_placement_uses_the_draft() {
         let mut state = state();
         apply_demo_message(&mut state, Msg::Place(TEXT_VALUE));
         assert_eq!(state.selected, None);
-        apply_demo_message(&mut state, Msg::TextChanged("x".repeat(65)));
-        apply_demo_message(&mut state, Msg::SelectText);
+        apply_demo_message(&mut state, Msg::TextSelected("x".repeat(65)));
         assert!(state.armed_text.is_none());
-        apply_demo_message(&mut state, Msg::TextChanged("unsafe\u{202e}name".into()));
-        apply_demo_message(&mut state, Msg::SelectText);
+        apply_demo_message(&mut state, Msg::TextSelected("unsafe\u{202e}name".into()));
         assert!(state.armed_text.is_none());
-        apply_demo_message(&mut state, Msg::TextChanged(" ".into()));
-        apply_demo_message(&mut state, Msg::SelectText);
+        apply_demo_message(&mut state, Msg::TextSelected(" ".into()));
         assert!(state.armed_text.is_none());
 
-        apply_demo_message(&mut state, Msg::TextChanged("  River  ".into()));
-        apply_demo_message(&mut state, Msg::SelectText);
+        apply_demo_message(&mut state, Msg::TextChanged("River and Forest".into()));
+        apply_demo_message(&mut state, Msg::TextSelected("River".into()));
         assert_eq!(state.armed_text.as_deref(), Some("River"));
         update_source(&mut state, event(DragPhase::Started, TEXT_VALUE, None));
         apply_demo_message(&mut state, Msg::TextChanged("Forest".into()));
-        apply_demo_message(&mut state, Msg::SelectText);
         update_target(
             &mut state,
             event(DragPhase::Entered, TEXT_VALUE, Some(TARGET_REGION)),
@@ -792,32 +788,41 @@ mod tests {
         assert_eq!(drop_zone_title(&state), "Drop zone: River");
         apply_demo_message(&mut state, Msg::Place(TEXT_VALUE));
         assert_eq!(state.placed_text.as_deref(), Some("Forest"));
+        apply_demo_message(&mut state, Msg::TextChanged("  Moss  ".into()));
+        apply_demo_message(&mut state, Msg::Place(TEXT_VALUE));
+        assert_eq!(state.placed_text.as_deref(), Some("Moss"));
+        apply_demo_message(&mut state, Msg::TextChanged("x".repeat(65)));
+        apply_demo_message(&mut state, Msg::Place(TEXT_VALUE));
+        assert_eq!(state.placed_text.as_deref(), Some("Moss"));
         apply_demo_message(&mut state, Msg::Place(AMBER));
         assert!(state.placed_text.is_none());
     }
 
     #[test]
-    fn text_input_and_select_button_do_not_get_swallowed_by_drag_region() {
+    fn text_input_keeps_editor_hits_without_a_separate_drag_handle() {
         let mut transition_state = state();
         let before = WidgetIdSnapshot::capture(&DragDropDemo::view(&mut transition_state)).unwrap();
         apply_demo_message(&mut transition_state, Msg::TextChanged("Waterfall".into()));
-        apply_demo_message(&mut transition_state, Msg::SelectText);
+        apply_demo_message(&mut transition_state, Msg::TextSelected("Waterfall".into()));
         let after = WidgetIdSnapshot::capture(&DragDropDemo::view(&mut transition_state)).unwrap();
         before.validate_transition_to(&after).unwrap();
-        let Widget::Container { child, .. } = text_tile(&state()) else {
+        let Widget::Container { child, .. } = text_tile() else {
             panic!("text entry must be an independent tile");
         };
         let Widget::Column { children, .. } = *child else {
-            panic!("text tile must expose input and selection separately");
+            panic!("text tile must expose its input");
         };
         assert!(
-            matches!(&children[0], Widget::TextInput { on_change, on_submit: Some(Msg::SelectText), .. }
+            matches!(&children[0], Widget::TextInput { on_change, on_submit: None, .. }
             if matches!(on_change("River".into()), Msg::TextChanged(value) if value == "River"))
         );
-        assert!(matches!(&children[2], Widget::Text { .. }));
+        assert_eq!(children.len(), 2);
+        assert!(matches!(&children[1], Widget::Text { .. }));
         let mut state = state();
         apply_demo_message(&mut state, Msg::TextChanged("Waterfall".into()));
-        apply_demo_message(&mut state, Msg::SelectText);
+        apply_demo_message(&mut state, Msg::TextSelected("Waterfall".into()));
+        assert!(DragDropDemo::selected_text_drag(&state, TEXT_INPUT_ID).is_some());
+        assert!(DragDropDemo::selected_text_drag(&state, TEXT_INPUT_ID + 1).is_none());
         let view = DragDropDemo::view(&mut state);
         let mut states =
             HashMap::from([(CARD_SCROLL_ID, WidgetState::Scroll(ScrollState::default()))]);
@@ -880,16 +885,9 @@ mod tests {
             )
         };
         assert!(matches!(control_hit(0), Some(HitResult::InputFocus { .. })));
-        assert!(matches!(
+        assert!(!matches!(
             control_hit(1),
-            Some(HitResult::Message {
-                msg: Msg::SelectText,
-                ..
-            })
-        ));
-        assert!(matches!(
-            control_hit(2),
-            Some(HitResult::PointerRegion(TEXT_REGION))
+            Some(HitResult::PointerRegion(_)) | Some(HitResult::Message { .. })
         ));
     }
 

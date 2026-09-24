@@ -491,6 +491,19 @@ fn logical_cursor_position(physical: PhysicalPosition<f64>, scale_factor: f32) -
     )
 }
 
+fn is_double_click(
+    now: Instant,
+    last_click_time: Instant,
+    cursor: Point,
+    last_click_pos: Point,
+    last_click_was_double: bool,
+) -> bool {
+    !last_click_was_double
+        && now.duration_since(last_click_time) < Duration::from_millis(300)
+        && (cursor.x - last_click_pos.x).abs() < 5.0
+        && (cursor.y - last_click_pos.y).abs() < 5.0
+}
+
 pub struct RutterRunner<A: AppLogic> {
     engine: RutterEngine<A>,
     active_window_id: Option<WindowId>,
@@ -500,10 +513,12 @@ pub struct RutterRunner<A: AppLogic> {
     virtual_multi_pointer_capture: Option<u64>,
     custom_pointer_capture: Option<custom::CustomPointerCapture>,
     pointer_region_capture: Option<pointer_region::PointerRegionCapture<A::Message>>,
+    pending_selected_text_drag: Option<pointer_region::PendingSelectedTextDrag<A::Message>>,
     counter_hold_repeat: Option<counter::CounterHoldRepeat>,
     mouse_down: bool,
     last_click_time: std::time::Instant,
     last_click_pos: Point,
+    last_click_was_double: bool,
     focused_input_rect: Option<SkiaRect>,
     clock_redraw_at: Option<Instant>,
     fatal_error: Option<RutterRunError>,
@@ -520,10 +535,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             virtual_multi_pointer_capture: None,
             custom_pointer_capture: None,
             pointer_region_capture: None,
+            pending_selected_text_drag: None,
             counter_hold_repeat: None,
             mouse_down: false,
             last_click_time: Instant::now(),
             last_click_pos: Point::new(0.0, 0.0),
+            last_click_was_double: false,
             focused_input_rect: None,
             clock_redraw_at: None,
             fatal_error: None,
@@ -674,6 +691,17 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
 
                 if self.mouse_down {
+                    match self.advance_pending_selected_text_drag() {
+                        Ok(true) => {
+                            self.redraw();
+                            return;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            self.terminate_for_error(el, error.into());
+                            return;
+                        }
+                    }
                     if self.pointer_region_capture.is_some() {
                         match self.dispatch_captured_pointer_region_move() {
                             Ok(true) => {
@@ -758,12 +786,16 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.counter_hold_repeat = None;
                 }
                 let now = std::time::Instant::now();
-                let is_double = now.duration_since(self.last_click_time)
-                    < Duration::from_millis(300)
-                    && (self.cursor_pos.x - self.last_click_pos.x).abs() < 5.0
-                    && (self.cursor_pos.y - self.last_click_pos.y).abs() < 5.0;
+                let is_double = is_double_click(
+                    now,
+                    self.last_click_time,
+                    self.cursor_pos,
+                    self.last_click_pos,
+                    self.last_click_was_double,
+                );
                 self.last_click_time = now;
                 self.last_click_pos = self.cursor_pos;
+                self.last_click_was_double = is_double;
 
                 let size = self.engine.window.as_ref().unwrap().inner_size();
                 if let Err(error) = self.engine.try_ensure_widget_states() {
@@ -1090,11 +1122,24 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             width,
                             height,
                         } => {
-                            let rect_left = cursor.x - local_x;
-                            let rect_top = cursor.y - local_y;
-                            self.focused_input_rect =
-                                Some(SkiaRect::from_xywh(rect_left, rect_top, width, height));
-                            self.focus_input_at(id, local_x, local_y, width, height, is_double);
+                            let selected_drag = button == MouseButton::Left
+                                && !is_double
+                                && self.arm_selected_text_drag(
+                                    id,
+                                    cursor,
+                                    Point::new(local_x, local_y),
+                                    width,
+                                    height,
+                                );
+                            if !selected_drag {
+                                // An armed selection stays highlighted until the pointer moves
+                                // far enough to drag or the release collapses it to a caret.
+                                let rect_left = cursor.x - local_x;
+                                let rect_top = cursor.y - local_y;
+                                self.focused_input_rect =
+                                    Some(SkiaRect::from_xywh(rect_left, rect_top, width, height));
+                                self.focus_input_at(id, local_x, local_y, width, height, is_double);
+                            }
                         }
                         HitResult::SliderPress {
                             id,
@@ -1344,6 +1389,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             } => {
                 self.mouse_down = false;
                 self.counter_hold_repeat = None;
+                let selected_text_clicked = self.release_pending_selected_text_drag();
                 let pointer_region_released = match self.release_pointer_region_capture() {
                     Ok(released) => released,
                     Err(error) => {
@@ -1353,7 +1399,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 };
                 self.dispatch_captured_custom_release();
                 self.end_virtual_multi_pointer_capture();
-                if self.scroll_drag.take().is_some() || pointer_region_released {
+                if self.scroll_drag.take().is_some()
+                    || pointer_region_released
+                    || selected_text_clicked
+                {
                     self.redraw();
                 }
                 if let Some(sid) = self.engine.drag_slider_id.take()
@@ -1366,6 +1415,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.mouse_down = false;
+                self.pending_selected_text_drag = None;
                 self.counter_hold_repeat = None;
                 let had_capture = self.pointer_region_capture.is_some();
                 self.cancel_pointer_region_capture(crate::DragCancelReason::CursorLeftSurface);
@@ -1376,6 +1426,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             }
             WindowEvent::Focused(false) => {
                 self.mouse_down = false;
+                self.pending_selected_text_drag = None;
                 self.counter_hold_repeat = None;
                 let had_capture = self.pointer_region_capture.is_some();
                 self.cancel_pointer_region_capture(crate::DragCancelReason::FocusLost);
@@ -2095,13 +2146,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             let click_y = ((local_y - pad_y) + ist.scroll_y).max(0.0);
 
             if is_double {
-                ist.editor.action(
-                    &mut fs,
-                    Action::DoubleClick {
-                        x: click_x as i32,
-                        y: click_y as i32,
-                    },
-                );
+                ist.double_click_word(&mut fs, click_x as i32, click_y as i32);
             } else {
                 ist.editor.action(
                     &mut fs,
@@ -3153,9 +3198,9 @@ mod tests {
         WindowEventDestination, animation_frame_deadline, apply_scrollbar_drag_offset,
         carousel_key_index, carousel_wheel_delta, classify_window_event, clock_tick_delay,
         collect_open_popover_dismissals, collect_toast_runtime_state, input_copy_is_blocked,
-        latch_search_suggestion_dismissals, logical_cursor_position, mapped_input_pointer_x,
-        sanitize_clipboard_text, sanitize_input_text, virtual_multi_pointer_index, wheel_deltas,
-        wheel_select_index,
+        is_double_click, latch_search_suggestion_dismissals, logical_cursor_position,
+        mapped_input_pointer_x, sanitize_clipboard_text, sanitize_input_text,
+        virtual_multi_pointer_index, wheel_deltas, wheel_select_index,
     };
     use crate::LayoutDirection;
     use crate::engine::widget_state::{
@@ -3165,6 +3210,22 @@ mod tests {
     use crate::input_limits::{InputKind, InputLimits};
     use crate::input_state::InputWidgetState;
     use crate::render::hit_test::{HitResult, ScrollbarAxis};
+    use skia_safe::Point;
+
+    #[test]
+    fn click_after_double_click_is_single_even_inside_double_click_interval() {
+        let first = Instant::now();
+        let cursor = Point::new(20.0, 10.0);
+        let second = first + Duration::from_millis(100);
+        assert!(is_double_click(second, first, cursor, cursor, false));
+        assert!(!is_double_click(
+            second + Duration::from_millis(100),
+            second,
+            cursor,
+            cursor,
+            true,
+        ));
+    }
 
     #[test]
     fn pointer_position_uses_logical_coordinates_at_fractional_scale() {

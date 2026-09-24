@@ -6,8 +6,8 @@ use skia_safe::Point;
 use super::RutterRunner;
 use crate::app::{AppLogic, LogicalPointerPosition};
 use crate::pointer::{
-    ActiveDragBadge, DragCancelReason, DragEvent, DragPhase, DragSource, DropTarget, PointerEvent,
-    PointerModifiers, PointerPhase,
+    ActiveDragBadge, DragBadge, DragCancelReason, DragEvent, DragPhase, DragSource, DropTarget,
+    PointerEvent, PointerModifiers, PointerPhase, SelectedTextDrag,
 };
 use crate::render::hit_test::{HitResult, hit_test};
 use crate::render::select_overlay::collector::{
@@ -17,9 +17,33 @@ use crate::widget::id::WidgetIdError;
 
 type DragTarget<Msg> = (u64, DropTarget<Msg>);
 
+pub(super) struct PendingSelectedTextDrag<Msg> {
+    id: u64,
+    press: Point,
+    local: Point,
+    width: f32,
+    height: f32,
+    config: SelectedTextDrag<Msg>,
+    selected: String,
+    badge: DragBadge,
+}
+
+enum CaptureOrigin<Msg> {
+    PointerRegion(fn(PointerEvent) -> Msg),
+    SelectedTextInput,
+}
+
+impl<Msg> Copy for CaptureOrigin<Msg> {}
+
+impl<Msg> Clone for CaptureOrigin<Msg> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 pub(super) struct PointerRegionCapture<Msg> {
     id: u64,
-    on_pointer: fn(PointerEvent) -> Msg,
+    origin: CaptureOrigin<Msg>,
     drag_source: Option<DragSource<Msg>>,
     target: Option<DragTarget<Msg>>,
 }
@@ -40,7 +64,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if runtime.capture_on_press || runtime.drag_source.is_some() {
             self.pointer_region_capture = Some(PointerRegionCapture {
                 id,
-                on_pointer: runtime.on_pointer,
+                origin: CaptureOrigin::PointerRegion(runtime.on_pointer),
                 drag_source: runtime.drag_source,
                 target: None,
             });
@@ -62,6 +86,160 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
     }
 
+    pub(super) fn arm_selected_text_drag(
+        &mut self,
+        id: u64,
+        press: Point,
+        local: Point,
+        width: f32,
+        height: f32,
+    ) -> bool {
+        let Some((config, selected, badge)) =
+            self.selected_text_drag_snapshot(id, local.x, local.y)
+        else {
+            return false;
+        };
+        self.pending_selected_text_drag = Some(PendingSelectedTextDrag {
+            id,
+            press,
+            local,
+            width,
+            height,
+            config,
+            selected,
+            badge,
+        });
+        true
+    }
+
+    /// Only movement beyond the click tolerance turns an armed selection into a drag.
+    pub(super) fn advance_pending_selected_text_drag(&mut self) -> Result<bool, WidgetIdError> {
+        let Some(pending) = self.pending_selected_text_drag.take() else {
+            return Ok(false);
+        };
+        let cursor = Point::new(
+            self.cursor_pos.x / self.engine.scale_factor,
+            self.cursor_pos.y / self.engine.scale_factor,
+        );
+        if (cursor.x - pending.press.x).hypot(cursor.y - pending.press.y) < 5.0 {
+            self.pending_selected_text_drag = Some(pending);
+            return Ok(true);
+        }
+        if self.engine.focused_input_id() != Some(pending.id)
+            || !self
+                .engine
+                .runtime_caches
+                .inputs
+                .get(&pending.id)
+                .is_some_and(|input| !input.is_password)
+            || self
+                .engine
+                .input_states
+                .get(&pending.id)
+                .is_none_or(|input| input.is_sensitive())
+            || (self.engine.window.is_some() && self.pointer_region_overlay_blocks())
+        {
+            return Ok(true);
+        }
+        self.start_selected_text_drag(pending);
+        self.dispatch_captured_pointer_region_move()
+    }
+
+    pub(super) fn release_pending_selected_text_drag(&mut self) -> bool {
+        let Some(pending) = self.pending_selected_text_drag.take() else {
+            return false;
+        };
+        if self.engine.focused_input_id() == Some(pending.id)
+            && self.engine.runtime_caches.inputs.contains_key(&pending.id)
+        {
+            self.focused_input_rect = Some(skia_safe::Rect::from_xywh(
+                pending.press.x - pending.local.x,
+                pending.press.y - pending.local.y,
+                pending.width,
+                pending.height,
+            ));
+            self.focus_input_at(
+                pending.id,
+                pending.local.x,
+                pending.local.y,
+                pending.width,
+                pending.height,
+                false,
+            );
+        }
+        true
+    }
+
+    /// An opted-in text input shares pointer-region drop routing without
+    /// changing the editor's selection while the drag is active.
+    fn start_selected_text_drag(&mut self, pending: PendingSelectedTextDrag<A::Message>) {
+        let PendingSelectedTextDrag {
+            id,
+            config,
+            selected,
+            badge,
+            ..
+        } = pending;
+        A::update(
+            &mut self.engine.app_state,
+            (config.on_selected)(selected),
+            &mut self.engine.clipboard,
+        );
+        self.engine.layout_dirty = true;
+        self.pointer_region_capture = Some(PointerRegionCapture {
+            id,
+            origin: CaptureOrigin::SelectedTextInput,
+            drag_source: Some(config.source),
+            target: None,
+        });
+        self.engine.active_drag_badge = Some(ActiveDragBadge {
+            appearance: badge,
+            can_drop: false,
+        });
+        self.dispatch_drag_message(
+            config.source.on_drag,
+            self.drag_event(DragPhase::Started, id, config.source, None),
+        );
+    }
+
+    fn selected_text_drag_snapshot(
+        &mut self,
+        id: u64,
+        local_x: f32,
+        local_y: f32,
+    ) -> Option<(SelectedTextDrag<A::Message>, String, DragBadge)> {
+        if self.engine.focused_input_id() != Some(id) {
+            return None;
+        }
+        if self.engine.window.is_some() && self.pointer_region_overlay_blocks() {
+            return None;
+        }
+        let config = A::selected_text_drag(&self.engine.app_state, id)?;
+        let input = self.engine.runtime_caches.inputs.get(&id)?;
+        if input.is_password {
+            return None;
+        }
+        let theme = A::theme_for(&self.engine.app_state);
+        if local_x < theme.spacing * 2.0 + input.leading_text_inset || local_y < theme.spacing {
+            return None;
+        }
+        let selected = self.engine.input_states.get(&id).and_then(|state| {
+            let x = super::mapped_input_pointer_x(
+                local_x,
+                theme.spacing * 2.0,
+                input.leading_text_inset,
+                state.scroll_x,
+            );
+            let y = (local_y - theme.spacing + state.scroll_y).max(0.0);
+            state.selected_text_at(x, y, 64)
+        })?;
+        if selected.trim().is_empty() {
+            return None;
+        }
+        let badge = config.badge.clone().with_text(selected.as_str()).ok()?;
+        Some((config, selected, badge))
+    }
+
     pub(super) fn dispatch_captured_pointer_region_move(&mut self) -> Result<bool, WidgetIdError> {
         let Some(capture) = self.pointer_region_capture else {
             return Ok(false);
@@ -71,14 +249,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.cancel_pointer_region_capture(DragCancelReason::BlockingOverlay);
             return Ok(true);
         }
-        if !self.pointer_region_is_live(capture.id) {
+        if !self.captured_source_is_live(capture) {
             self.cancel_pointer_region_capture(DragCancelReason::SourceRemoved);
             return Ok(true);
         }
-        self.dispatch_pointer_message(capture.on_pointer, PointerPhase::Moved);
+        if let CaptureOrigin::PointerRegion(on_pointer) = capture.origin {
+            self.dispatch_pointer_message(on_pointer, PointerPhase::Moved);
+        }
         if let Some(source) = capture.drag_source {
             let target = self.matching_drop_target(&source)?;
-            if !self.pointer_region_is_live(capture.id) {
+            if !self.captured_source_is_live(capture) {
                 self.cancel_pointer_region_capture(DragCancelReason::SourceRemoved);
                 return Ok(true);
             }
@@ -108,7 +288,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
         self.sync_pointer_region_layout()?;
         if let Some(capture) = self.pointer_region_capture {
-            if !self.pointer_region_is_live(capture.id) {
+            if !self.captured_source_is_live(capture) {
                 self.cancel_pointer_region_capture(DragCancelReason::SourceRemoved);
                 return Ok(true);
             }
@@ -125,7 +305,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             None => None,
         };
         if let Some(capture) = self.pointer_region_capture
-            && !self.pointer_region_is_live(capture.id)
+            && !self.captured_source_is_live(capture)
         {
             self.cancel_pointer_region_capture(DragCancelReason::SourceRemoved);
             return Ok(true);
@@ -141,7 +321,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.transition_drop_target(target);
         self.pointer_region_capture = None;
         self.engine.active_drag_badge = None;
-        self.dispatch_pointer_message(capture.on_pointer, PointerPhase::Released);
+        if let CaptureOrigin::PointerRegion(on_pointer) = capture.origin {
+            self.dispatch_pointer_message(on_pointer, PointerPhase::Released);
+        }
         let Some(source) = capture.drag_source else {
             return;
         };
@@ -167,7 +349,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return;
         };
         self.engine.active_drag_badge = None;
-        self.dispatch_pointer_message(capture.on_pointer, PointerPhase::Cancelled);
+        if let CaptureOrigin::PointerRegion(on_pointer) = capture.origin {
+            self.dispatch_pointer_message(on_pointer, PointerPhase::Cancelled);
+        }
         if let Some(source) = capture.drag_source {
             if let Some((id, target)) = capture.target {
                 self.dispatch_drag_message(
@@ -251,8 +435,20 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             || search_open
     }
 
-    fn pointer_region_is_live(&self, id: u64) -> bool {
-        self.engine.runtime_caches.pointer_regions.contains_key(&id)
+    fn captured_source_is_live(&self, capture: PointerRegionCapture<A::Message>) -> bool {
+        match capture.origin {
+            CaptureOrigin::SelectedTextInput => self
+                .engine
+                .runtime_caches
+                .inputs
+                .get(&capture.id)
+                .is_some_and(|input| !input.is_password),
+            CaptureOrigin::PointerRegion(_) => self
+                .engine
+                .runtime_caches
+                .pointer_regions
+                .contains_key(&capture.id),
+        }
     }
 
     fn sync_pointer_region_layout(&mut self) -> Result<(), WidgetIdError> {
@@ -388,13 +584,14 @@ fn drag_source_matches_target<Msg>(source: &DragSource<Msg>, target: DropTarget<
 #[cfg(test)]
 mod tests {
     use arboard::Clipboard;
-    use cosmic_text::FontSystem;
+    use cosmic_text::{Edit, FontSystem};
     use skia_safe::{Color, Point};
     use taffy::prelude::Style;
 
     use super::*;
-    use crate::engine::{PointerRegionRuntime, RutterEngine};
-    use crate::pointer::{DragBadge, DragPayload, DragPayloadKind};
+    use crate::engine::{InputRuntime, PointerRegionRuntime, RutterEngine};
+    use crate::input_limits::{InputKind, InputLimits};
+    use crate::pointer::{DragBadge, DragPayload, DragPayloadKind, SelectedTextDrag};
     use crate::widget::Widget;
 
     #[derive(Clone, Debug, PartialEq)]
@@ -402,6 +599,7 @@ mod tests {
         Pointer(PointerPhase),
         Source(DragPhase),
         Target(DragPhase, Option<u64>),
+        Selected(String),
     }
 
     struct PointerApp;
@@ -423,6 +621,17 @@ mod tests {
         fn update(state: &mut Self::State, message: Self::Message, _: &mut Clipboard) {
             state.push(message);
         }
+
+        fn selected_text_drag(_state: &Self::State, id: u64) -> Option<SelectedTextDrag<Message>> {
+            (id == 19).then(|| SelectedTextDrag {
+                source: DragSource {
+                    payload: DragPayload::new(DragPayloadKind::new(2), 7),
+                    on_drag: source_message,
+                },
+                on_selected: Message::Selected,
+                badge: DragBadge::new(Color::RED, Color::WHITE),
+            })
+        }
     }
 
     fn pointer_message(event: PointerEvent) -> Message {
@@ -435,6 +644,213 @@ mod tests {
 
     fn target_message(event: DragEvent) -> Message {
         Message::Target(event.phase, event.target_id)
+    }
+
+    fn runner_with_selected_word() -> RutterRunner<PointerApp> {
+        let engine = RutterEngine::<PointerApp>::new().unwrap();
+        let mut runner = RutterRunner::with_engine(engine);
+        runner.engine.runtime_caches.inputs.insert(
+            19,
+            InputRuntime {
+                on_change: Message::Selected,
+                on_submit: None,
+                is_password: false,
+                is_multiline: false,
+                leading_text_inset: 0.0,
+                visible_w: 240.0,
+                visible_h: 30.0,
+                limits: InputLimits::for_kind(InputKind::TextInput),
+            },
+        );
+        runner.engine.focused_widget_id = Some(19);
+        runner.engine.ensure_input_state(19);
+        let mut fs = runner.engine.font_system.borrow_mut();
+        let input = runner.engine.input_states.get_mut(&19).unwrap();
+        input.set_text(&mut fs, "River and Forest");
+        input.sync_layout(&mut fs, 240.0, 16.0, false);
+        input
+            .editor
+            .action(&mut fs, cosmic_text::Action::DoubleClick { x: 4, y: 8 });
+        input.sync_selection();
+        drop(fs);
+        runner
+    }
+
+    fn arm_word_drag(runner: &mut RutterRunner<PointerApp>, x: f32, y: f32) -> bool {
+        runner.arm_selected_text_drag(19, Point::new(x, y), Point::new(x, y), 240.0, 30.0)
+    }
+
+    fn begin_word_drag(runner: &mut RutterRunner<PointerApp>, x: f32, y: f32) -> bool {
+        if !arm_word_drag(runner, x, y) {
+            return false;
+        }
+        let pending = runner.pending_selected_text_drag.take().unwrap();
+        runner.start_selected_text_drag(pending);
+        true
+    }
+
+    #[test]
+    fn clicking_a_selection_collapses_it_at_the_press_without_starting_drag() {
+        let mut runner = runner_with_selected_word();
+        let theme = PointerApp::theme();
+        let x = theme.spacing * 2.0 + 20.0;
+        let y = theme.spacing + 8.0;
+        let expected_cursor = runner.engine.input_states[&19]
+            .editor
+            .with_buffer(|buffer| buffer.hit(20.0, 8.0).unwrap());
+
+        assert!(arm_word_drag(&mut runner, x, y));
+        runner.cursor_pos = Point::new(x + 2.0, y);
+        assert!(runner.advance_pending_selected_text_drag().unwrap());
+        assert!(runner.engine.app_state.is_empty());
+        assert!(runner.pointer_region_capture.is_none());
+        assert!(runner.release_pending_selected_text_drag());
+
+        let input = &runner.engine.input_states[&19];
+        assert_eq!(input.editor.cursor().index, expected_cursor.index);
+        assert_eq!(input.selection, None);
+        assert!(runner.engine.app_state.is_empty());
+        assert!(runner.engine.active_drag_badge.is_none());
+    }
+
+    #[test]
+    fn moving_outside_click_tolerance_starts_selected_text_drag_once() {
+        let mut runner = runner_with_selected_word();
+        let theme = PointerApp::theme();
+        let x = theme.spacing * 2.0 + 4.0;
+        let y = theme.spacing + 8.0;
+        assert!(arm_word_drag(&mut runner, x, y));
+        assert!(runner.engine.app_state.is_empty());
+
+        runner.cursor_pos = Point::new(x + 6.0, y);
+        assert!(runner.advance_pending_selected_text_drag().unwrap());
+        assert!(runner.pending_selected_text_drag.is_none());
+        assert_eq!(
+            runner.engine.app_state[0],
+            Message::Selected("River".into())
+        );
+        assert_eq!(
+            runner.engine.app_state[1],
+            Message::Source(DragPhase::Started)
+        );
+        assert!(runner.pointer_region_capture.is_some());
+        assert!(!runner.release_pending_selected_text_drag());
+        assert!(runner.engine.input_states[&19].selection.is_some());
+    }
+
+    #[test]
+    fn selected_text_drag_snapshots_the_word_without_swallowing_other_input_clicks() {
+        let mut runner = runner_with_selected_word();
+        let theme = PointerApp::theme();
+        let x = theme.spacing * 2.0 + 4.0;
+        let y = theme.spacing + 8.0;
+
+        assert!(!arm_word_drag(&mut runner, x + 170.0, y));
+        assert!(!arm_word_drag(&mut runner, x - 5.0, y));
+        assert!(!arm_word_drag(&mut runner, x, y - 9.0));
+        assert!(runner.engine.app_state.is_empty());
+        assert!(begin_word_drag(&mut runner, x, y));
+        assert_eq!(
+            runner.engine.app_state,
+            vec![
+                Message::Selected("River".into()),
+                Message::Source(DragPhase::Started)
+            ]
+        );
+        assert_eq!(runner.pointer_region_capture.unwrap().id, 19);
+        assert!(runner.engine.active_drag_badge.is_some());
+        assert_eq!(
+            runner.engine.input_states.get(&19).unwrap().text(),
+            "River and Forest"
+        );
+        assert!(
+            !runner
+                .engine
+                .input_states
+                .get(&19)
+                .unwrap()
+                .selection
+                .unwrap()
+                .is_empty()
+        );
+
+        runner.cancel_pointer_region_capture(DragCancelReason::FocusLost);
+        assert_eq!(
+            runner.engine.app_state.last(),
+            Some(&Message::Source(DragPhase::Cancelled(
+                DragCancelReason::FocusLost
+            )))
+        );
+        assert!(runner.engine.active_drag_badge.is_none());
+    }
+
+    #[test]
+    fn selected_text_drag_never_starts_for_passwords_or_removed_sources() {
+        let mut runner = runner_with_selected_word();
+        let theme = PointerApp::theme();
+        let x = theme.spacing * 2.0 + 4.0;
+        let y = theme.spacing + 8.0;
+        runner
+            .engine
+            .runtime_caches
+            .inputs
+            .get_mut(&19)
+            .unwrap()
+            .is_password = true;
+        assert!(!arm_word_drag(&mut runner, x, y));
+        runner
+            .engine
+            .runtime_caches
+            .inputs
+            .get_mut(&19)
+            .unwrap()
+            .is_password = false;
+        runner
+            .engine
+            .input_states
+            .get_mut(&19)
+            .unwrap()
+            .set_sensitive(true);
+        assert!(!arm_word_drag(&mut runner, x, y));
+
+        let mut runner = runner_with_selected_word();
+        assert!(begin_word_drag(&mut runner, x, y));
+        runner.engine.runtime_caches.inputs.remove(&19);
+        assert!(runner.dispatch_captured_pointer_region_move().unwrap());
+        assert!(runner.pointer_region_capture.is_none());
+        assert_eq!(
+            runner.engine.app_state.last(),
+            Some(&Message::Source(DragPhase::Cancelled(
+                DragCancelReason::SourceRemoved
+            )))
+        );
+    }
+
+    #[test]
+    fn selected_text_uses_the_existing_target_drop_lifecycle() {
+        let mut runner = runner_with_selected_word();
+        let theme = PointerApp::theme();
+        assert!(begin_word_drag(
+            &mut runner,
+            theme.spacing * 2.0 + 4.0,
+            theme.spacing + 8.0,
+        ));
+        let target = DropTarget {
+            accepted_kind: DragPayloadKind::new(2),
+            on_drag: target_message,
+        };
+        runner.finish_pointer_region_capture(Some((18, target)));
+
+        assert_eq!(
+            runner.engine.app_state,
+            vec![
+                Message::Selected("River".into()),
+                Message::Source(DragPhase::Started),
+                Message::Target(DragPhase::Entered, Some(18)),
+                Message::Source(DragPhase::Dropped),
+                Message::Target(DragPhase::Dropped, Some(18)),
+            ]
+        );
     }
 
     #[test]
@@ -507,7 +923,7 @@ mod tests {
         };
         runner.pointer_region_capture = Some(PointerRegionCapture {
             id: 17,
-            on_pointer: pointer_message,
+            origin: CaptureOrigin::PointerRegion(pointer_message),
             drag_source: Some(source),
             target: None,
         });
@@ -548,7 +964,7 @@ mod tests {
         };
         runner.pointer_region_capture = Some(PointerRegionCapture {
             id: 17,
-            on_pointer: pointer_message,
+            origin: CaptureOrigin::PointerRegion(pointer_message),
             drag_source: Some(source),
             target: None,
         });
@@ -573,7 +989,7 @@ mod tests {
         let mut runner = RutterRunner::with_engine(engine);
         runner.pointer_region_capture = Some(PointerRegionCapture {
             id: 17,
-            on_pointer: pointer_message,
+            origin: CaptureOrigin::PointerRegion(pointer_message),
             drag_source: Some(DragSource {
                 payload: DragPayload::new(DragPayloadKind::new(2), 7),
                 on_drag: source_message,

@@ -7,6 +7,7 @@ use crate::app::{
 use crate::engine::run_error::RutterRunError;
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
+use crate::pointer::SelectedTextDrag;
 use crate::render::text::TextShapeCacheLimits;
 use crate::widget::Widget;
 use arboard::Clipboard;
@@ -275,6 +276,16 @@ pub trait MultiWindowAppLogic {
     /// Returns limits for one resolved input.
     fn input_limits(_id: u64, kind: InputKind) -> InputLimits {
         InputLimits::for_kind(kind)
+    }
+
+    /// Opts one resolved input ID on a surface into dragging a highlighted substring.
+    /// Defaults to ordinary text selection with no drag source.
+    fn selected_text_drag(
+        _state: &Self::State,
+        _surface: SurfaceId,
+        _id: u64,
+    ) -> Option<SelectedTextDrag<Self::Message>> {
+        None
     }
     /// Returns the runtime's shaping-cache budget.
     fn text_shape_cache_limits() -> TextShapeCacheLimits {

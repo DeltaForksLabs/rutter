@@ -13,6 +13,7 @@ use crate::app::{
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
 use crate::multi_window::{MultiWindowAppLogic, SurfaceCommand, SurfaceId};
+use crate::pointer::SelectedTextDrag;
 use crate::render::text::TextShapeCacheLimits;
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -98,6 +99,10 @@ impl<A: MultiWindowAppLogic> AppLogic for SurfaceAppAdapter<A> {
         A::input_limits(id, kind)
     }
 
+    fn selected_text_drag(state: &Self::State, id: u64) -> Option<SelectedTextDrag<Self::Message>> {
+        A::selected_text_drag(&state.model, state.surface, id)
+    }
+
     fn text_shape_cache_limits() -> TextShapeCacheLimits {
         A::text_shape_cache_limits()
     }
@@ -115,6 +120,7 @@ fn retain_secondary_pointer_commands<A: MultiWindowAppLogic>(
 mod tests {
     use super::*;
     use crate::app::{ContextMenuVirtualItem, ShortcutKey};
+    use crate::pointer::{DragBadge, DragPayload, DragPayloadKind, DragSource};
 
     fn pointer_test_view<'a, State>(_: &'a mut State, _: SurfaceId) -> Widget<'a, ()> {
         Widget::Spacer {
@@ -156,6 +162,38 @@ mod tests {
             state.0 = Some((surface, context));
             vec![SurfaceCommand::RequestRedraw(surface)]
         }
+
+        fn selected_text_drag(
+            _state: &Self::State,
+            surface: SurfaceId,
+            id: u64,
+        ) -> Option<SelectedTextDrag<Self::Message>> {
+            (surface == SurfaceId::new(8) && id == 19).then(|| SelectedTextDrag {
+                source: DragSource {
+                    payload: DragPayload::new(DragPayloadKind::new(2), 7),
+                    on_drag: |_| (),
+                },
+                on_selected: |_| (),
+                badge: DragBadge::new(skia_safe::Color::RED, skia_safe::Color::WHITE),
+            })
+        }
+    }
+
+    #[test]
+    fn selected_text_drag_is_routed_only_to_the_source_surface() {
+        let mut state =
+            SurfaceAppState::<PointerApp>::new(SurfaceId::new(8), PointerState::default(), 0);
+        assert_eq!(
+            SurfaceAppAdapter::<PointerApp>::selected_text_drag(&state, 19)
+                .unwrap()
+                .source
+                .payload
+                .value(),
+            7
+        );
+        assert!(SurfaceAppAdapter::<PointerApp>::selected_text_drag(&state, 20).is_none());
+        state.surface = SurfaceId::new(9);
+        assert!(SurfaceAppAdapter::<PointerApp>::selected_text_drag(&state, 19).is_none());
     }
 
     #[derive(Clone, Debug, Default, PartialEq)]

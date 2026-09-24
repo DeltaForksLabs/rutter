@@ -49,7 +49,7 @@ pub use multi_window::{
 pub use pointer::{
     DragBadge, DragBadgeError, DragBadgeIcon, DragCancelReason, DragEvent, DragPayload,
     DragPayloadKind, DragPhase, DragSource, DropTarget, PointerEvent, PointerModifiers,
-    PointerPhase, PointerRegionConfig,
+    PointerPhase, PointerRegionConfig, SelectedTextDrag,
 };
 pub use render::text::TextShapeCacheLimits;
 pub use rich_text::{

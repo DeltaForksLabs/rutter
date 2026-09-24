@@ -1,5 +1,45 @@
 # Development Log
 
+## [2026-09-24T11:33:10-03:00] - Release Selected-Text Drag and Gesture Fixes - 0.40.0
+
+**Context:** Release the opt-in selected-text drag feature together with its word-selection and click-to-caret fixes.
+
+**Challenge:** Synchronize the package version and generated lockfile without changing dependency resolution or including unrelated local Git changes.
+
+**Decision:** Bump the minor version from 0.39.0 to 0.40.0 because the release adds a backward-compatible public API; keep the existing default behavior for applications that do not opt in. Regenerate the root package's lockfile version through Cargo and leave `.gitignore` outside the commit.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `decisions/DEVLOG.md`.
+
+**Validation:** `cargo check --offline --all-targets` (updated only the root package version in `Cargo.lock`); `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test --locked --quiet -- --test-threads=2` (621 library tests, 43 binary tests, integration suites and 302 doctests passed); `cargo clippy --locked --all-targets -- -D warnings`; `cargo check --locked --all-targets --features image-rs-decoder`; `git diff --check`. No interactive native-window gesture test was run.
+
+## [2026-09-24T11:20:44-03:00] - Correct Word Selection and Click-to-Caret Drag Gesture - Unreleased
+
+**Context:** Fix partial double-click selection of mixed-case words and allow a single click inside selected text to position the caret rather than start drag/drop.
+
+**Challenge:** The editor's Unicode word selection splits `chatGPT` at its case boundary, while the selected-text drag previously published application messages on mouse press before a click could be distinguished from movement.
+
+**Alternatives:** Starting drag on press and cancelling it on release would still expose spurious drag events and a badge. Waiting until movement to read the selection could lose the original text if application state changed. Capture the selection at press but defer side effects until movement exceeds the click tolerance instead.
+
+**Decision:** Expand the editor's double-click word selection over contiguous Unicode letters, numbers and underscores without crossing punctuation. Arm a selected-text snapshot on press, initiate the existing drag/drop lifecycle after five logical pixels of movement, and otherwise collapse the selection at the original press position on release. Treat the click immediately after a double-click as a single click; discard an armed gesture on focus or cursor loss.
+
+**Files Changed:** `src/input/state/mod.rs`, `src/engine/runner.rs`, `src/engine/runner/pointer_region.rs`, `src/app.rs`, `README.md`, `decisions/DEVLOG.md`.
+
+**Validation:** `cargo test --locked --lib double_click_in_middle_selects_entire_word -- --test-threads=2` (first reproduced failure, then passed); `cargo test --locked --lib selected_text -- --test-threads=2` (4 passed); `cargo test --locked --lib -- --test-threads=2` (620 passed); `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked --quiet -- --test-threads=2` (621 library tests, 43 binary tests, integration suites and 302 doctests passed); `cargo check --locked --all-targets --features image-rs-decoder`; `git diff --check`. No interactive native-window gesture test was run.
+
+## [2026-09-24T01:58:32-03:00] - Drag Highlighted Text Directly From Input - Unreleased
+
+**Context:** Replace the drag/drop demo's Select text button and separate handle with a drag that begins from a highlighted word in the editable text field.
+
+**Challenge:** Pointer regions take hits before their children, so wrapping the input would break cursor placement and double-click selection; the highlighted substring lives in engine-owned editor state rather than in application messages.
+
+**Alternatives:** Keeping a dedicated drag handle would retain the extra step the user wants removed. Wrapping the input in a normal pointer region would intercept editing. An opt-in application hook leaves ordinary editor hits untouched and reuses existing drag capture and target routing only when a press lands inside a valid selection.
+
+**Decision:** Add defaulted `selected_text_drag` hooks for single- and multi-window apps. On a press inside a selected range, check the editor's shaped hit position, UTF-8 boundaries and the 64-byte badge limit; never expose password selections. Send the owned substring to the application before starting drag capture, paint a text badge, and retain existing drop, cancellation and accessibility behavior. In the demo, drag the substring from the input itself and use the current validated draft for keyboard Place Text.
+
+**Files Changed:** `src/pointer.rs`, `src/app.rs`, `src/multi_window/mod.rs`, `src/engine/multi_runner/app_adapter.rs`, `src/input/state/mod.rs`, `src/engine/runner.rs`, `src/engine/runner/pointer_region.rs`, `src/lib.rs`, `examples/widgets/drag_drop_demo.rs`, `README.md`, `decisions/DEVLOG.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test --locked --lib selected_text -- --test-threads=2` (4 passed); `cargo test --locked --lib selected_drag -- --test-threads=2` (1 passed); `cargo test --locked --bin rutter drag_drop_demo -- --test-threads=2` (10 passed); `cargo test --locked -- --test-threads=2` (616 library tests, 43 binary tests, integration suites and 302 doctests passed); `cargo clippy --locked --all-targets -- -D warnings`; `cargo check --locked --all-targets --features image-rs-decoder`; `git diff --check`. No interactive visual drag was run.
+
 ## [2026-09-24T00:48:40-03:00] - Bounded Multi-Window Worker Ingress - 0.39.0
 
 **Context:** Let application-owned platform watchers deliver typed, surface-targeted updates without polling or exposing Winit/graphics resources to workers.

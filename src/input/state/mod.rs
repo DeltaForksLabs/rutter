@@ -7,8 +7,8 @@
 
 use crate::input_limits::InputLimits;
 use cosmic_text::{
-    Action, Attrs, Buffer, Cursor, Edit, Editor, FontSystem, LayoutRun, Metrics, Motion, Shaping,
-    Wrap,
+    Action, Attrs, Buffer, Cursor, Edit, Editor, FontSystem, LayoutRun, Metrics, Motion, Selection,
+    Shaping, Wrap,
 };
 
 mod buffer;
@@ -292,6 +292,62 @@ impl InputWidgetState {
         self.selection_anchor = Some(anchor_offset);
     }
 
+    /// Selects a whole identifier-like word, including transitions between
+    /// lower- and uppercase letters that the editor's Unicode word mode splits.
+    pub(crate) fn double_click_word(&mut self, fs: &mut FontSystem, x: i32, y: i32) {
+        self.editor.action(fs, Action::DoubleClick { x, y });
+        if let Some((start, end)) = self.editor.selection_bounds()
+            && start.line == end.line
+            && let Some((word_start, word_end)) = self.editor.with_buffer(|buffer| {
+                let text = buffer.lines.get(start.line)?.text();
+                let selected = text.get(start.index..end.index)?;
+                if selected.is_empty() || !selected.chars().all(is_word_character) {
+                    return None;
+                }
+                let word_start = text[..start.index]
+                    .char_indices()
+                    .rev()
+                    .take_while(|(_, ch)| is_word_character(*ch))
+                    .last()
+                    .map_or(start.index, |(index, _)| index);
+                let word_end = end.index
+                    + text[end.index..]
+                        .chars()
+                        .take_while(|ch| is_word_character(*ch))
+                        .map(char::len_utf8)
+                        .sum::<usize>();
+                Some((word_start, word_end))
+            })
+        {
+            self.editor
+                .set_selection(Selection::Normal(Cursor::new(start.line, word_start)));
+            self.editor.set_cursor(Cursor::new(end.line, word_end));
+        }
+        self.normalize_cursor();
+        self.sync_selection();
+    }
+
+    /// Snapshots selected bytes only when the press hits the highlighted text.
+    /// Password buffers never expose their contents through drag callbacks.
+    pub(crate) fn selected_text_at(&self, x: f32, y: f32, max_bytes: usize) -> Option<String> {
+        if self.sensitive {
+            return None;
+        }
+        let (start, end) = self
+            .selection
+            .filter(|selection| !selection.is_empty())?
+            .normalized();
+        if end.checked_sub(start)? > max_bytes {
+            return None;
+        }
+        let cursor = self.editor.with_buffer(|buffer| buffer.hit(x, y))?;
+        let offset = buffer::cursor_flattened_offset(&self.editor, cursor).ok()?;
+        if !(start..end).contains(&offset) {
+            return None;
+        }
+        self.text().get(start..end).map(str::to_owned)
+    }
+
     pub fn display_text(&self, is_password: bool) -> String {
         if is_password {
             "•".repeat(self.text_char_count())
@@ -441,6 +497,10 @@ impl InputWidgetState {
             }
         });
     }
+}
+
+fn is_word_character(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
 }
 
 fn floor_char_boundary(text: &str, index: usize) -> usize {
@@ -596,6 +656,95 @@ mod tests {
                 end: "••".len()
             })
         );
+    }
+
+    #[test]
+    fn double_click_selection_can_be_dragged_only_from_inside_the_selected_word() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_text(&mut fs, "River and Forest");
+        state.sync_layout(&mut fs, 240.0, 16.0, false);
+        state
+            .editor
+            .action(&mut fs, Action::DoubleClick { x: 4, y: 8 });
+        state.sync_selection();
+
+        assert_eq!(
+            state.selected_text_at(4.0, 8.0, 64).as_deref(),
+            Some("River")
+        );
+        assert_eq!(state.selected_text_at(170.0, 8.0, 64), None);
+        assert_eq!(state.selected_text_at(4.0, 8.0, 4), None);
+        assert_eq!(state.text(), "River and Forest");
+    }
+
+    #[test]
+    fn double_click_in_middle_selects_entire_word() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_text(&mut fs, "chatGPT follows");
+        state.sync_layout(&mut fs, 240.0, 16.0, false);
+        let middle_x = state.editor.with_buffer(|buffer| {
+            buffer
+                .layout_runs()
+                .find_map(|run| cursor_x_in_run(Cursor::new(0, 4), &run))
+                .unwrap()
+        });
+        state.double_click_word(&mut fs, middle_x as i32, 8);
+
+        assert_eq!(state.selection.unwrap().normalized(), (0, "chatGPT".len()));
+    }
+
+    #[test]
+    fn double_click_keeps_unicode_letters_and_stops_at_punctuation() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_text(&mut fs, "caféÉcole/next");
+        state.sync_layout(&mut fs, 240.0, 16.0, false);
+        let middle_x = state.editor.with_buffer(|buffer| {
+            buffer
+                .layout_runs()
+                .find_map(|run| cursor_x_in_run(Cursor::new(0, 5), &run))
+                .unwrap()
+        });
+        state.double_click_word(&mut fs, middle_x as i32, 8);
+
+        assert_eq!(
+            state.selection.unwrap().normalized(),
+            (0, "caféÉcole".len())
+        );
+    }
+
+    #[test]
+    fn sensitive_input_never_exposes_a_selected_snapshot() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_text(&mut fs, "secret");
+        state.sync_layout(&mut fs, 180.0, 16.0, false);
+        state.select_all(&mut fs);
+        state.set_sensitive(true);
+
+        assert_eq!(state.selected_text_at(3.0, 8.0, 64), None);
+    }
+
+    #[test]
+    fn selected_drag_preserves_utf8_boundaries_and_rejects_oversized_snapshots() {
+        let mut fs = fs();
+        let mut state = InputWidgetState::new(&mut fs);
+        state.set_text(&mut fs, "école and more");
+        state.sync_layout(&mut fs, 240.0, 16.0, false);
+        state.selection = Some(TextSelection {
+            start: 0,
+            end: "école".len(),
+        });
+
+        assert_eq!(
+            state.selected_text_at(4.0, 8.0, 64).as_deref(),
+            Some("école")
+        );
+        assert_eq!(state.selected_text_at(4.0, 8.0, 5), None);
+        state.selection = Some(TextSelection { start: 1, end: 6 });
+        assert_eq!(state.selected_text_at(4.0, 8.0, 64), None);
     }
 
     #[test]

@@ -151,6 +151,18 @@ impl<Msg> Clone for DragSource<Msg> {
     }
 }
 
+/// Opt-in source for dragging a highlighted substring from a non-password text input.
+///
+/// The application receives an owned snapshot through `on_selected` immediately before
+/// `source.on_drag` reports [`DragPhase::Started`]. The same snapshot remains available to
+/// the application even if the input changes before the drag ends. Rutter validates the
+/// snapshot with the existing drag-badge text limits before starting a capture.
+pub struct SelectedTextDrag<Msg> {
+    pub source: DragSource<Msg>,
+    pub on_selected: fn(String) -> Msg,
+    pub badge: DragBadge,
+}
+
 /// Declares an explicit matching drop target for a [`PointerRegionConfig`].
 pub struct DropTarget<Msg> {
     pub accepted_kind: DragPayloadKind,

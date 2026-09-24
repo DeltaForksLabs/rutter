@@ -13,6 +13,7 @@ use cosmic_text::FontSystem;
 
 use crate::i18n::Locale;
 use crate::input_limits::{InputKind, InputLimits};
+use crate::pointer::SelectedTextDrag;
 use crate::render::text::TextShapeCacheLimits;
 use crate::widget::Widget;
 
@@ -445,6 +446,22 @@ pub trait AppLogic {
     /// ```
     fn input_limits(_id: u64, kind: InputKind) -> InputLimits {
         InputLimits::for_kind(kind)
+    }
+
+    /// Enables dragging an existing highlighted selection from one resolved text-input ID.
+    ///
+    /// By default inputs keep normal click, double-click, and drag-to-select behavior. An
+    /// opted-in, non-password input starts a drag only when a subsequent press falls *inside*
+    /// its nonempty selection and moves at least five logical pixels. A click without dragging
+    /// clears the selection and places the caret at the pressed position. The selected substring
+    /// is passed to `on_selected` before the drag starts; the application keeps the snapshot for
+    /// its drop callback. Selections that cannot be shown in a bounded text badge keep normal
+    /// editing behavior instead.
+    fn selected_text_drag(
+        _state: &Self::State,
+        _id: u64,
+    ) -> Option<SelectedTextDrag<Self::Message>> {
+        None
     }
 
     /// Returns the shaping-cache budget used by the runtime.
