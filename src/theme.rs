@@ -47,6 +47,12 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Alpha applied to a disabled widget's composited subtree. This is a
+    /// method rather than a new field so existing `Theme` literals keep working.
+    pub const fn disabled_alpha(&self) -> u8 {
+        115
+    }
+
     /// Creates the project-owned light theme used by [`Theme::default`].
     ///
     /// ```rust

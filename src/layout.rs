@@ -141,6 +141,7 @@ impl LayoutBlueprint {
 
     fn from_widget_with_path<'a, Msg>(widget: &Widget<'a, Msg>, path: &mut Vec<usize>) -> Self {
         match widget {
+            Widget::Disabled { child } => Self::from_widget_with_path(child, path),
             Widget::Column { children, style } => {
                 let style = Style {
                     flex_direction: FlexDirection::Column,

@@ -183,10 +183,112 @@ fn validate_keyed_virtual_items(keys: &[VirtualItemKey]) -> Result<(), KeyedVirt
     Ok(())
 }
 
+/// Checks one keyed item on demand, without materializing the rest of a
+/// virtual collection during keyboard or accessibility activation.
+pub(crate) fn interactive_item_disabled<Msg>(
+    widget: &Widget<'_, Msg>,
+    collection_id: u64,
+    index: usize,
+) -> bool {
+    fn visit<Msg>(
+        widget: &Widget<'_, Msg>,
+        id: u64,
+        index: usize,
+        path: &mut Vec<usize>,
+    ) -> Option<bool> {
+        match widget {
+            Widget::InteractiveVirtualListContent { items, .. }
+            | Widget::InteractiveVirtualGridContent { items, .. }
+            | Widget::InteractiveCarouselView { items, .. }
+                if widget.resolved_id(path) == Some(id) =>
+            {
+                Some(
+                    items
+                        .build_item(index)
+                        .is_some_and(|item| matches!(item, Widget::Disabled { .. })),
+                )
+            }
+            Widget::Column { children, .. } | Widget::Row { children, .. } => {
+                for (slot, child) in children.iter().enumerate() {
+                    path.push(slot);
+                    let result = visit(child, id, index, path);
+                    path.pop();
+                    if result.is_some() {
+                        return result;
+                    }
+                }
+                None
+            }
+            Widget::Container { child, .. }
+            | Widget::ScrollView { child, .. }
+            | Widget::TableOfContents { child, .. }
+            | Widget::Tooltip { child, .. }
+            | Widget::PointerRegion { child, .. }
+            | Widget::ButtonContent { child, .. }
+            | Widget::Accordion { child, .. }
+            | Widget::Modal { child, .. }
+            | Widget::Dialog { child, .. }
+            | Widget::ContextMenu { child, .. } => {
+                path.push(0);
+                let result = visit(child, id, index, path);
+                path.pop();
+                result
+            }
+            Widget::Popover {
+                anchor, content, ..
+            } => {
+                path.push(0);
+                let result = visit(anchor, id, index, path);
+                path.pop();
+                if result.is_some() {
+                    return result;
+                }
+                path.push(1);
+                let result = visit(content, id, index, path);
+                path.pop();
+                result
+            }
+            _ => None,
+        }
+    }
+    visit(widget, collection_id, index, &mut Vec::new()).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use taffy::prelude::Style;
+
+    #[test]
+    fn keyed_virtual_item_availability_is_queried_lazily_by_collection_id() {
+        let keys = [
+            VirtualItemKey::new(1).unwrap(),
+            VirtualItemKey::new(2).unwrap(),
+        ];
+        let build = |index| {
+            Some(
+                Widget::Button {
+                    text: "Run",
+                    on_press: (),
+                    style: Style::default(),
+                    color: None,
+                    variant: Default::default(),
+                }
+                .enabled(index != 0),
+            )
+        };
+        let items = KeyedVirtualItems::try_new(&keys, &build).unwrap();
+        let list = Widget::Column {
+            style: Style::default(),
+            children: vec![
+                Widget::interactive_virtual_list_content(40.0, items, |_| (), Style::default())
+                    .with_id(80),
+            ],
+        };
+        assert!(interactive_item_disabled(&list, 80, 0));
+        assert!(!interactive_item_disabled(&list, 80, 1));
+        assert!(!interactive_item_disabled(&list, 81, 0));
+    }
 
     #[test]
     fn zero_key_is_rejected_with_the_offending_value() {

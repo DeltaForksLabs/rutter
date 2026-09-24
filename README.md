@@ -211,6 +211,22 @@ fn main() {
 }
 ```
 
+### Disabled controls
+
+All built-in interactive widgets can be declared with `.enabled(available)` after construction (and after `.with_id(...)`, when applicable). They remain enabled by default, so existing widget declarations need no changes. For example:
+
+```rust
+let launch = Widget::Button {
+    text: "Launch",
+    on_press: Msg::Launch,
+    style: Style::default(),
+    color: None,
+    variant: rutter::ButtonVariant::Primary,
+}.enabled(state.metadata_loaded && state.compositor_supported);
+```
+
+Disabled controls remain visible with a reduced-opacity theme treatment and retain their label and value in AccessKit, but expose no actions, take no pointer hits, and do not participate in Tab focus order. Wrap a composite (such as a select, dropdown, tab bar, or virtual collection) to disable its engine-owned interactions and descendants together. `.enabled(false)` is transparent to layout and widget IDs, including when a control changes state between views. Application-level shortcuts are independent of widget state and should check their own availability.
+
 ### Surface-local keyboard shortcuts
 
 `AppLogic::shortcut` receives normalized logical keys without exposing Winit types. Return `ShortcutOutcome::Message` to dispatch through the normal `update` path, `ShortcutOutcome::Consumed` to intentionally suppress an event such as a key repeat, or `ShortcutOutcome::Ignored` to keep Rutter's existing text editing, focus traversal, and focused-widget behavior.

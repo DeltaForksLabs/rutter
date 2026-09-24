@@ -698,6 +698,9 @@ fn hit_test_impl<Msg: Clone>(
     widget_states: &HashMap<u64, WidgetState>,
     path: &mut Vec<usize>,
 ) -> Option<HitResult<Msg>> {
+    if matches!(widget, Widget::Disabled { .. }) {
+        return None;
+    }
     let layout = taffy.layout(node_id).unwrap();
     let abs_pos = Point::new(abs.x + layout.location.x, abs.y + layout.location.y);
     let rect = SkiaRect::from_xywh(abs_pos.x, abs_pos.y, layout.size.width, layout.size.height);
@@ -1070,6 +1073,13 @@ fn hit_test_impl<Msg: Clone>(
                 pop_interactive_virtual_item_path(path);
                 result
             });
+            if let Some(index) = state.index_at(mouse.x - abs_pos.x, config, items.len(), direction)
+                && items
+                    .build_item(index)
+                    .is_some_and(|item| matches!(item, Widget::Disabled { .. }))
+            {
+                return None;
+            }
             hit.or_else(|| {
                 state
                     .index_at(mouse.x - abs_pos.x, config, items.len(), direction)
@@ -1126,6 +1136,13 @@ fn hit_test_impl<Msg: Clone>(
                 items.len(),
                 scroll_y,
             );
+            if index.is_some_and(|index| {
+                items
+                    .build_item(index)
+                    .is_some_and(|item| matches!(item, Widget::Disabled { .. }))
+            }) {
+                return None;
+            }
             let child_hit = index.and_then(|index| {
                 let item = items.build_item(index)?;
                 let key = items.key_at(index)?;
@@ -1216,6 +1233,13 @@ fn hit_test_impl<Msg: Clone>(
                 items.len(),
                 *columns,
             );
+            if index.is_some_and(|index| {
+                items
+                    .build_item(index)
+                    .is_some_and(|item| matches!(item, Widget::Disabled { .. }))
+            }) {
+                return None;
+            }
             let child_hit = index.and_then(|index| {
                 let item = items.build_item(index)?;
                 let key = items.key_at(index)?;
@@ -1618,6 +1642,7 @@ pub(crate) fn collect_input_ids_at_path<Msg>(
 
 fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &mut Vec<usize>) {
     match widget {
+        Widget::Disabled { child } => collect_input_ids_impl(child, ids, path),
         Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
             ids.push(widget.resolved_id(path).unwrap());
         }
@@ -1678,6 +1703,7 @@ fn collect_stateful_ids_impl<Msg>(
     path: &mut Vec<usize>,
 ) {
     match widget {
+        Widget::Disabled { child } => collect_stateful_ids_impl(child, out, path),
         Widget::Slider { .. } => out.push((widget.resolved_id(path).unwrap(), "slider")),
         Widget::Select { .. } => out.push((widget.resolved_id(path).unwrap(), "select")),
         Widget::SearchBar {
@@ -1799,6 +1825,7 @@ fn find_input_props_impl<Msg: Clone>(
     path: &mut Vec<usize>,
 ) -> Option<InputProperties<Msg>> {
     match widget {
+        Widget::Disabled { .. } => None,
         Widget::TextInput {
             on_change,
             on_submit,
@@ -4399,6 +4426,112 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn disabled_button_and_slider_do_not_accept_pointer_hits() {
+        let button = rich_button();
+        let states = HashMap::new();
+        let (taffy, root) = test_layout(&button, &states, PhysicalSize::new(120, 60));
+        assert!(matches!(
+            hit_test(
+                &button,
+                &taffy,
+                root,
+                Point::new(8.0, 8.0),
+                Point::new(0.0, 0.0),
+                &states
+            ),
+            Some(HitResult::Message { .. })
+        ));
+
+        let disabled = rich_button().enabled(false);
+        let (taffy, root) = test_layout(&disabled, &states, PhysicalSize::new(120, 60));
+        assert!(
+            hit_test(
+                &disabled,
+                &taffy,
+                root,
+                Point::new(8.0, 8.0),
+                Point::new(0.0, 0.0),
+                &states
+            )
+            .is_none()
+        );
+
+        let slider: Widget<'_, Msg> = Widget::Slider {
+            id: 71,
+            value: 0.5,
+            min: 0.0,
+            max: 1.0,
+            step: 0.1,
+            on_change: |_| Msg::Toggle,
+            style: Style {
+                size: taffy::geometry::Size {
+                    width: taffy::style::Dimension::length(120.0),
+                    height: taffy::style::Dimension::length(60.0),
+                },
+                ..Style::default()
+            },
+            label: "Volume",
+        }
+        .enabled(false);
+        let (taffy, root) = test_layout(&slider, &states, PhysicalSize::new(120, 60));
+        assert!(
+            hit_test(
+                &slider,
+                &taffy,
+                root,
+                Point::new(50.0, 30.0),
+                Point::new(0.0, 0.0),
+                &states
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn disabled_keyed_virtual_item_does_not_fall_back_to_collection_selection() {
+        let keys = [VirtualItemKey::new(1).unwrap()];
+        let build = |_| {
+            Some(
+                Widget::Button {
+                    text: "Run",
+                    on_press: Msg::Toggle,
+                    style: Style::default(),
+                    color: None,
+                    variant: ButtonVariant::Primary,
+                }
+                .enabled(false),
+            )
+        };
+        let items = KeyedVirtualItems::try_new(&keys, &build).unwrap();
+        let widget = Widget::interactive_virtual_list_content(
+            40.0,
+            items,
+            Msg::Usize,
+            Style {
+                size: Size {
+                    width: Dimension::length(160.0),
+                    height: Dimension::length(80.0),
+                },
+                ..Style::default()
+            },
+        )
+        .with_id(91);
+        let states = HashMap::new();
+        let (taffy, root) = test_layout(&widget, &states, PhysicalSize::new(160, 80));
+        assert!(
+            hit_test(
+                &widget,
+                &taffy,
+                root,
+                Point::new(30.0, 20.0),
+                Point::new(0.0, 0.0),
+                &states
+            )
+            .is_none()
+        );
     }
 
     #[test]

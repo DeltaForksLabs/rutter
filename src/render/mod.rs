@@ -1029,6 +1029,35 @@ fn draw_widgets_impl<'w, Msg>(
     scale: f32,
     path: &mut Vec<usize>,
 ) {
+    if let Widget::Disabled { child } = widget {
+        // Fade the composited subtree rather than individual primitives, so
+        // overlapping text and backgrounds retain their relative contrast.
+        canvas.save_layer_alpha(None, theme.disabled_alpha().into());
+        draw_widgets_impl(
+            canvas,
+            taffy,
+            node,
+            child,
+            fs,
+            swash,
+            mouse_pos,
+            None,
+            false,
+            input_states,
+            widget_states,
+            custom_widget_states,
+            font_cache,
+            text_cache,
+            image_cache,
+            layout_fs,
+            false,
+            theme,
+            scale,
+            path,
+        );
+        canvas.restore();
+        return;
+    }
     let layout = taffy.layout(node).unwrap();
     let pos = Point::new(layout.location.x, layout.location.y);
     let size = (layout.size.width, layout.size.height);
@@ -1040,6 +1069,7 @@ fn draw_widgets_impl<'w, Msg>(
     canvas.translate((pos.x, pos.y));
 
     match widget {
+        Widget::Disabled { .. } => unreachable!("disabled subtree handled before drawing"),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node).unwrap();
             for (i, child) in children.iter().enumerate() {

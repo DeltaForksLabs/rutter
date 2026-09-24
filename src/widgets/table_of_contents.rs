@@ -263,6 +263,9 @@ fn find_nested_heading_offset<Msg>(
     visited_entries: &mut usize,
 ) -> Option<f32> {
     match widget {
+        Widget::Disabled { child } => {
+            find_heading_offset(child, taffy, node, offset_y, entry_index, visited_entries)
+        }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             find_child_heading_offset(
                 children,
@@ -371,6 +374,7 @@ fn collect_entries_impl<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<TableOf
 
 fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<TableOfContentsEntry>) {
     match widget {
+        Widget::Disabled { child } => collect_entries_impl(child, entries),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for child in children {
                 collect_entries_impl(child, entries);

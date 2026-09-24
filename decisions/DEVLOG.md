@@ -1,5 +1,19 @@
 # Development Log
 
+## [2026-09-23T19:12:08-03:00] - Disabled Interactive Widgets - 0.38.0
+
+**Context:** Let applications declare unavailable built-in controls without no-op messages, while retaining accessible labels and default enabled behavior.
+
+**Challenge:** Public widget variants support struct literals, and input, overlay, focus, keyed virtual items, pointer capture, and AccessKit have separate interaction paths.
+
+**Alternatives:** Adding a required `enabled` field to each enum variant would break existing literals. A wrapper preserves existing declarations and ID/layout structure, at the cost of explicit disabled-subtree checks across render and runtime traversals.
+
+**Decision:** Add `Widget::enabled(bool)` as a transparent wrapper. Skip disabled subtrees in hit testing, runtime callback collection, overlay discovery and focus order, mark their AccessKit descendants disabled without actions, and draw them with the theme's composited disabled alpha. Close inactive select overlays, clear defunct slider drag and input focus on layout refresh, and suppress both direct and collection-fallback activation for individually disabled keyed virtual items. Rebuild only the addressed keyed item on keyboard selection to preserve lazy collection behavior.
+
+**Files Changed:** `src/widget/mod.rs`, `src/widget/virtual_items.rs`, `src/widget/id/`, `src/layout.rs`, `src/engine/mod.rs`, `src/engine/runner.rs`, `src/render/`, `src/accessibility/mod.rs`, `src/theme.rs`, `src/widgets/table_of_contents.rs`, `Cargo.toml`, `Cargo.lock`, `README.md`, `decisions/DEVLOG.md`.
+
+**Validation:** `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check --offline --all-targets` (regenerated the package version in `Cargo.lock`); `cargo check --locked --all-targets`; `cargo check --locked --all-targets --features image-rs-decoder`; `cargo test --locked --lib disabled_ -- --test-threads=2` (10 passed); `cargo test --locked -- --test-threads=2` (598 library tests, 43 binary tests, integration suites, 301 doctests passed); `cargo clippy --locked --all-targets -- -D warnings`; `git diff --check`. An earlier full test attempt failed at link time while the disk was full; after space was freed, the complete suite passed.
+
 ## [2026-09-23T13:12:28-03:00] - Fixed Placement Actions and Selectable Text Drag - Unreleased
 
 **Context:** Keep Place/Clear actions outside the grid scroll and replace the violet card with an editable, draggable text example.

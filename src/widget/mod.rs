@@ -34,6 +34,7 @@ pub use custom::{
     CustomPaintContext, CustomPoint, CustomPointerEvent, CustomSize, CustomWidgetState,
     CustomWidgetStateError, CustomWidgetV1, MAX_CUSTOM_WIDGET_STATE_BYTES,
 };
+pub(crate) use virtual_items::interactive_item_disabled;
 pub use virtual_items::{
     KeyedVirtualItems, KeyedVirtualItemsError, VirtualItemKey, VirtualItemKeyError,
 };
@@ -531,6 +532,11 @@ pub enum Widget<'a, Msg> {
         config: PointerRegionConfig<Msg>,
         style: Style,
     },
+    /// Keeps a control visible and accessible without allowing interaction.
+    /// The wrapper is layout- and ID-transparent, so toggling it preserves IDs.
+    Disabled {
+        child: Box<Widget<'a, Msg>>,
+    },
     Divider {
         style: Style,
         orientation: Orientation,
@@ -859,6 +865,31 @@ pub enum Widget<'a, Msg> {
 }
 
 impl<'a, Msg> Widget<'a, Msg> {
+    /// Declares whether this widget and its descendants can be interacted with.
+    ///
+    /// Controls are enabled by default. A disabled control cannot receive
+    /// pointer, keyboard, or accessibility actions; its existing label and
+    /// value remain available to assistive technology.
+    ///
+    /// ```rust
+    /// use rutter::Widget;
+    /// use taffy::prelude::Style;
+    /// let button = Widget::Button {
+    ///     text: "Launch", on_press: (), style: Style::default(),
+    ///     color: None, variant: Default::default(),
+    /// }.enabled(false);
+    /// assert!(matches!(button, Widget::Disabled { .. }));
+    /// ```
+    pub fn enabled(self, enabled: bool) -> Self {
+        if enabled {
+            self
+        } else {
+            Self::Disabled {
+                child: Box::new(self),
+            }
+        }
+    }
+
     /// Creates a framework-integrated custom leaf with a stable manual ID.
     ///
     /// The custom implementation receives only confined paint and event-loop

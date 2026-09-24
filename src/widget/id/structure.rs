@@ -127,6 +127,7 @@ impl WidgetStructureKind {
 pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStructureKind {
     use WidgetStructureKind as Kind;
     match widget {
+        Widget::Disabled { child } => widget_structure_kind(child),
         Widget::Column { .. } => Kind::Column,
         Widget::Row { .. } => Kind::Row,
         Widget::Container { .. } => Kind::Container,

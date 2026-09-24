@@ -181,6 +181,9 @@ impl WidgetIdVisitor {
     }
 
     fn visit<Msg>(&mut self, widget: &Widget<'_, Msg>) -> WidgetIdResult {
+        if let Widget::Disabled { child } = widget {
+            return self.visit(child);
+        }
         self.snapshot
             .structure
             .push((self.path.len(), widget_structure_kind(widget)));

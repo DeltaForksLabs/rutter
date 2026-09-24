@@ -2341,15 +2341,24 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(vlist) = self.engine.runtime_caches.vlists.get(&fid).cloned() {
             match key {
                 Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::ArrowUp) => {
+                    let current = self
+                        .engine
+                        .widget_states
+                        .get(&fid)
+                        .and_then(WidgetState::as_vlist)
+                        .and_then(|state| state.selected_row)
+                        .unwrap_or(0);
+                    let next = if matches!(key, Key::Named(NamedKey::ArrowDown)) {
+                        (current + 1).min(vlist.item_count.saturating_sub(1))
+                    } else {
+                        current.saturating_sub(1)
+                    };
+                    if self.disabled_virtual_item(fid, next) {
+                        return true;
+                    }
                     if let Some(ws) = self.engine.widget_states.get_mut(&fid)
                         && let Some(state) = ws.as_vlist_mut()
                     {
-                        let current = state.selected_row.unwrap_or(0);
-                        let next = if matches!(key, Key::Named(NamedKey::ArrowDown)) {
-                            (current + 1).min(vlist.item_count.saturating_sub(1))
-                        } else {
-                            current.saturating_sub(1)
-                        };
                         state.selected_row = Some(next);
                         state.scroll_to_index(next, vlist.item_height, vlist.item_count);
                         A::update(
@@ -2416,6 +2425,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 _ => None,
             };
             if let Some(next_index) = next_index {
+                if self.disabled_virtual_item(fid, next_index) {
+                    return true;
+                }
                 if let Some(ws) = self.engine.widget_states.get_mut(&fid)
                     && let Some(state) = ws.as_vgrid_mut()
                 {
@@ -2470,6 +2482,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         index: usize,
         runtime: &super::CarouselRuntime<A::Message>,
     ) {
+        if self.disabled_virtual_item(id, index) {
+            return;
+        }
         if let Some(WidgetState::Carousel(state)) = self.engine.widget_states.get_mut(&id) {
             state.select(index, &runtime.config, runtime.item_count);
         }
@@ -2480,6 +2495,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         );
         self.engine.layout_dirty = true;
         self.redraw();
+    }
+
+    fn disabled_virtual_item(&mut self, id: u64, index: usize) -> bool {
+        let widget = A::view(&mut self.engine.app_state);
+        crate::widget::interactive_item_disabled(&widget, id, index)
     }
 
     fn handle_key(&mut self, key: &Key, repeat: bool) {

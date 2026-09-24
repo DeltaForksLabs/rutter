@@ -144,6 +144,7 @@ fn contains_live_clock<Msg>(widget: &Widget<Msg>) -> bool {
 
 fn contains_live_clock_child<Msg>(widget: &Widget<Msg>) -> bool {
     match widget {
+        Widget::Disabled { child } => contains_live_clock(child),
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
         | Widget::ButtonContent { child, .. }
@@ -184,6 +185,7 @@ fn collect_toast_runtime_updates_impl<Msg>(
     path: &mut Vec<usize>,
 ) {
     match widget {
+        Widget::Disabled { child } => collect_toast_runtime_updates_impl(child, out, path),
         Widget::Toast {
             visible,
             duration_ms,
@@ -253,6 +255,7 @@ fn collect_overlay_focus_scope<Msg>(
     path: &mut Vec<usize>,
 ) -> bool {
     match widget {
+        Widget::Disabled { .. } => false,
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for (index, child) in children.iter().enumerate().rev() {
                 path.push(index);
@@ -343,6 +346,7 @@ fn collect_overlay_focus_scope<Msg>(
 
 fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path: &mut Vec<usize>) {
     match widget {
+        Widget::Disabled { .. } => {}
         Widget::Button { .. }
         | Widget::ButtonContent { .. }
         | Widget::Checkbox { .. }
@@ -761,6 +765,20 @@ fn runtime_focus_is_live<Msg: Clone>(caches: &WidgetRuntimeCaches<Msg>, id: u64)
         .is_some_and(|item| caches.visible_dropdown_menus.contains(&item.parent_id))
 }
 
+fn close_inactive_selects<Msg: Clone>(
+    caches: &WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+) {
+    for (id, state) in states {
+        if !caches.selects.contains_key(id)
+            && let Some(select) = state.as_select_mut()
+        {
+            select.is_open = false;
+            select.hovered_option = None;
+        }
+    }
+}
+
 fn close_suppressed_dropdowns(
     states: &mut HashMap<u64, WidgetState>,
     visible_dropdowns: &HashSet<u64>,
@@ -1106,6 +1124,7 @@ fn collect_interactive_virtual_children<Msg>(
     path: &mut Vec<usize>,
 ) {
     match widget {
+        Widget::Disabled { .. } => {}
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for (index, child) in children.iter().enumerate() {
                 path.push(index);
@@ -1296,6 +1315,7 @@ fn append_interactive_child_focuses<Msg>(
     path: &mut Vec<usize>,
 ) {
     match widget {
+        Widget::Disabled { .. } => {}
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for (index, child) in children.iter().enumerate() {
                 path.push(index);
@@ -2313,6 +2333,13 @@ impl<A: AppLogic> RutterEngine<A> {
                 .virtual_multi_selections
                 .contains_key(id)
         });
+        close_inactive_selects(&self.runtime_cache_scratch, &mut self.widget_states);
+        if self
+            .drag_slider_id
+            .is_some_and(|id| !self.runtime_cache_scratch.sliders.contains_key(&id))
+        {
+            self.drag_slider_id = None;
+        }
         let overlay_focus_scope =
             collect_focus_order(&widget_tree, &mut self.runtime_cache_scratch.focus_order);
         append_interactive_virtual_focus_order(
@@ -2389,10 +2416,12 @@ impl<A: AppLogic> RutterEngine<A> {
         std::mem::swap(&mut self.runtime_caches, &mut self.runtime_cache_scratch);
         drop(widget_tree);
         self.sync_input_buffers();
-        if self
-            .focused_widget_id
-            .is_some_and(|id| !runtime_focus_is_live(&self.runtime_caches, id))
+        if let Some(id) = self.focused_widget_id
+            && !runtime_focus_is_live(&self.runtime_caches, id)
         {
+            if let Some(input) = self.input_states.get_mut(&id) {
+                input.snapshot();
+            }
             self.focused_widget_id = None;
         }
         self.layout_dirty = false;
@@ -2433,6 +2462,9 @@ impl<A: AppLogic> RutterEngine<A> {
         traversal: RuntimeMetadataTraversal,
         path: &mut Vec<usize>,
     ) -> Result<(), WidgetIdError> {
+        if matches!(widget, Widget::Disabled { .. }) {
+            return Ok(());
+        }
         let layout = traversal
             .node
             .and_then(|node| sources.taffy.layout(node).ok());
@@ -3699,6 +3731,137 @@ mod tests {
         Indices(Vec<usize>),
         Submit,
         Dismiss,
+    }
+
+    #[test]
+    fn disabled_controls_keep_ids_but_leave_focus_order_and_runtime_callbacks() {
+        fn controls(disabled: bool) -> Widget<'static, Msg> {
+            Widget::Column {
+                style: Style::default(),
+                children: vec![
+                    Widget::Button {
+                        text: "Launch",
+                        on_press: Msg::Submit,
+                        style: base_style(120.0, 40.0),
+                        color: None,
+                        variant: crate::widget::ButtonVariant::Primary,
+                    }
+                    .enabled(!disabled),
+                    Widget::slider(
+                        0.5,
+                        0.0,
+                        1.0,
+                        0.1,
+                        Msg::Float,
+                        base_style(120.0, 40.0),
+                        "Level",
+                    )
+                    .with_id(43)
+                    .enabled(!disabled),
+                    Widget::text_input(
+                        Msg::Str,
+                        None,
+                        base_style(120.0, 40.0),
+                        "Name",
+                        "",
+                        InputState::Idle,
+                        None,
+                        false,
+                    )
+                    .with_id(44)
+                    .enabled(!disabled),
+                    Widget::select(
+                        &["One", "Two"],
+                        0,
+                        Msg::Usize,
+                        base_style(120.0, 40.0),
+                        "Pick",
+                        "",
+                    )
+                    .with_id(45)
+                    .enabled(!disabled),
+                    Widget::TabBar {
+                        id: 46,
+                        tabs: &["A", "B"],
+                        active: 0,
+                        on_change: Msg::Usize,
+                        style: base_style(120.0, 40.0),
+                    }
+                    .enabled(!disabled),
+                    Widget::Checkbox {
+                        checked: false,
+                        on_change: |_| Msg::Submit,
+                        label: "Accept",
+                        style: base_style(120.0, 40.0),
+                    }
+                    .enabled(!disabled),
+                    Widget::Switch {
+                        checked: false,
+                        on_change: |_| Msg::Submit,
+                        style: base_style(120.0, 40.0),
+                    }
+                    .enabled(!disabled),
+                    Widget::counter(2, 0, 5, 1, Msg::Integer, base_style(120.0, 40.0), "Count")
+                        .with_id(47)
+                        .enabled(!disabled),
+                ],
+            }
+        }
+        let enabled = controls(false);
+        let disabled = controls(true);
+        let enabled_snapshot = validate_widget_id_snapshot(&enabled).unwrap();
+        let disabled_snapshot = validate_widget_id_snapshot(&disabled).unwrap();
+        enabled_snapshot
+            .validate_transition_to(&disabled_snapshot)
+            .unwrap();
+        let mut focus_order = Vec::new();
+        collect_focus_order(&enabled, &mut focus_order);
+        assert!(!focus_order.is_empty());
+        let mut disabled_order = Vec::new();
+        collect_focus_order(&disabled, &mut disabled_order);
+        assert!(disabled_order.is_empty());
+
+        let mut taffy = TaffyTree::new();
+        let states = HashMap::new();
+        let root = build_taffy_tree(&mut taffy, &disabled, fs(), &states);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(300, 300),
+            fs(),
+            &crate::render::RichTextRenderer::default(),
+        );
+        let mut caches = WidgetRuntimeCaches::default();
+        RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
+            &mut caches,
+            &mut HashMap::new(),
+            &HashMap::new(),
+            &taffy,
+            &disabled,
+            root,
+            DummyApp::theme().spacing,
+        );
+        assert!(caches.buttons.is_empty());
+        assert!(caches.sliders.is_empty());
+        assert!(caches.inputs.is_empty());
+        assert!(caches.selects.is_empty());
+        assert!(caches.tabs.is_empty());
+        assert!(caches.checkboxes.is_empty());
+        assert!(caches.switches.is_empty());
+        assert!(caches.counters.is_empty());
+        assert!(!runtime_focus_is_live(&caches, 43));
+        assert!(!runtime_focus_is_live(&caches, 44));
+        let mut states = HashMap::from([(
+            45,
+            WidgetState::Select(SelectState {
+                is_open: true,
+                hovered_option: Some(1),
+            }),
+        )]);
+        close_inactive_selects(&caches, &mut states);
+        let select = states.get(&45).and_then(WidgetState::as_select).unwrap();
+        assert!(!select.is_open);
+        assert!(select.hovered_option.is_none());
     }
 
     struct DummyApp;

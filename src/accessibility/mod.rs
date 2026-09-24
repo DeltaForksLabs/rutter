@@ -191,7 +191,11 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
             .focused_widget_id
             .map(access_node_id)
             .unwrap_or(root);
-        if self.nodes.iter().any(|(id, _)| *id == candidate) {
+        if self
+            .nodes
+            .iter()
+            .any(|(id, node)| *id == candidate && !node.is_disabled())
+        {
             candidate
         } else {
             root
@@ -207,6 +211,15 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
     ) -> Vec<NodeId> {
         let frame = LayoutFrame::from_taffy(self.taffy, node, abs);
         match widget {
+            Widget::Disabled { child } => {
+                let start = self.nodes.len();
+                let children = self.collect(child, node, abs, path);
+                for (_, node) in &mut self.nodes[start..] {
+                    node.set_disabled();
+                    node.clear_actions();
+                }
+                children
+            }
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
                 self.collect_children(children, node, frame.origin, path)
             }
@@ -1517,6 +1530,38 @@ mod tests {
 
     fn build_update(widget: &Widget<'_, ()>) -> TreeUpdate {
         build_update_with_inputs(widget, &HashMap::new())
+    }
+
+    #[test]
+    fn disabled_button_retains_semantics_without_actions_or_accessibility_focus() {
+        let make_button = || Widget::Button {
+            text: "Launch",
+            on_press: (),
+            style: base_style(120.0, 40.0),
+            color: None,
+            variant: ButtonVariant::Primary,
+        };
+        let focus_id = make_button().keyboard_focus_id(&[]).unwrap();
+        let enabled = build_update(&make_button());
+        let enabled_node = enabled
+            .nodes
+            .iter()
+            .find(|(id, _)| id.0 == focus_id)
+            .unwrap();
+        assert!(!enabled_node.1.is_disabled());
+        assert!(enabled_node.1.supports_action(Action::Click));
+
+        let disabled_widget = make_button().enabled(false);
+        let disabled = build_update(&disabled_widget);
+        let disabled_node = disabled
+            .nodes
+            .iter()
+            .find(|(id, _)| id.0 == focus_id)
+            .unwrap();
+        assert!(disabled_node.1.is_disabled());
+        assert!(!disabled_node.1.supports_action(Action::Click));
+        assert!(!disabled_node.1.supports_action(Action::Focus));
+        assert_eq!(disabled_node.1.label(), Some("Launch"));
     }
 
     const SEARCH_ID: u64 = 91;
