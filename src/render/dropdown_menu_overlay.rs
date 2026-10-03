@@ -6,24 +6,57 @@ use std::collections::HashMap;
 use skia_safe::{Contains, Font, Paint, Point, RRect, Rect as SkiaRect, canvas::Canvas, paint};
 use taffy::prelude::{NodeId, TaffyTree};
 
+use super::ImageRenderCache;
+use super::NativeMenuKind;
 use super::control_icons::{ControlChevronDirection, draw_control_chevron};
+#[cfg(test)]
+use super::menu_row::dropdown_entry_label_clip;
+use super::menu_row::{MenuColumns, MenuRowPainter};
 use super::overlay_canvas::logical_canvas_size;
 use super::select_overlay::collector::{DropdownOverlay, collect_open_dropdown_overlays};
-use super::text::{draw_single_line_text, get_cached_font, measure_single_line_text};
+use super::text::get_cached_font;
 use crate::engine::widget_state::WidgetState;
 use crate::i18n::LayoutDirection;
 use crate::layout::RutterContext;
 use crate::theme::Theme;
 use crate::widget::Widget;
 use crate::widgets::dropdown_menu::{
-    DropdownMenuEntry, DropdownMenuEntryKind, DropdownMenuState, DropdownMenuSurface, MENU_PADDING,
-    build_open_menu_surfaces, entries_at_level, point_to_entry, row_rect,
+    DropdownMenuEntryAccess, DropdownMenuEntryKind, DropdownMenuState, DropdownMenuSurface,
+    MENU_PADDING, build_open_menu_surfaces, entries_at_level, point_to_entry, row_rect,
 };
 
 type FontCache = HashMap<(String, u32), Font>;
-const MENU_LABEL_START_PADDING: f32 = 30.0;
-const MENU_LABEL_END_PADDING: f32 = 10.0;
-const SUBMENU_LABEL_END_PADDING: f32 = 24.0;
+
+struct MenuContent<'a, Entry> {
+    entries: &'a [Entry],
+    state: &'a DropdownMenuState,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_context_menu<Msg>(
+    canvas: &Canvas,
+    menu: &super::ContextMenuOverlay<'_, Msg>,
+    viewport: (f32, f32),
+    mouse: Point,
+    font: &Font,
+    image_cache: &mut ImageRenderCache,
+    theme: &Theme,
+    scale: f32,
+    direction: LayoutDirection,
+) {
+    let surfaces = super::context_menu_overlay::context_surfaces(menu, viewport, direction, font);
+    let content = MenuContent {
+        entries: menu.entries,
+        state: &menu.state,
+    };
+    let hover = hover_path(content.entries, &surfaces, mouse);
+    let mut painter = MenuPainter::new(canvas, font, theme, direction, true);
+    painter.image_cache = Some(image_cache);
+    painter.scale = scale;
+    for surface in &surfaces {
+        painter.draw_surface(&content, surface, hover.as_deref());
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DropdownMenuOverlayHit {
@@ -67,6 +100,7 @@ pub(crate) fn draw_dropdown_menu_overlays<'a, Msg>(
     theme: &Theme,
     scale: f32,
     direction: LayoutDirection,
+    native_menu: Option<NativeMenuKind>,
 ) {
     let viewport = logical_canvas_size(canvas, scale);
     let overlays = collect_open_dropdown_overlays(widget, taffy, root, states, viewport);
@@ -76,6 +110,10 @@ pub(crate) fn draw_dropdown_menu_overlays<'a, Msg>(
     canvas.save();
     canvas.reset_matrix();
     canvas.scale((scale, scale));
+    let overlays = overlays
+        .into_iter()
+        .filter(|overlay| native_menu != Some(NativeMenuKind::Dropdown(overlay.id)))
+        .collect::<Vec<_>>();
     draw_collected_overlays(
         canvas,
         &overlays,
@@ -87,6 +125,23 @@ pub(crate) fn draw_dropdown_menu_overlays<'a, Msg>(
         direction,
     );
     canvas.restore();
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_native_dropdown<Msg>(
+    canvas: &Canvas,
+    overlays: &[DropdownOverlay<'_, Msg>],
+    id: u64,
+    viewport: (f32, f32),
+    mouse: Point,
+    fonts: &mut FontCache,
+    theme: &Theme,
+    direction: LayoutDirection,
+) {
+    if let Some(menu) = overlays.iter().find(|menu| menu.id == id) {
+        let font = get_cached_font(fonts, "sans-serif", theme.font_body);
+        MenuPainter::new(canvas, &font, theme, direction, true).draw_menu(menu, viewport, mouse);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -235,7 +290,8 @@ fn draw_collected_overlays<Msg>(
     theme: &Theme,
     direction: LayoutDirection,
 ) {
-    let mut painter = MenuPainter::new(canvas, fonts, theme, direction, shows_interaction_effects);
+    let font = get_cached_font(fonts, "sans-serif", theme.font_body);
+    let mut painter = MenuPainter::new(canvas, &font, theme, direction, shows_interaction_effects);
     for menu in overlays {
         painter.draw_menu(menu, viewport, mouse);
     }
@@ -243,26 +299,30 @@ fn draw_collected_overlays<Msg>(
 
 struct MenuPainter<'a> {
     canvas: &'a Canvas,
-    fonts: &'a mut FontCache,
+    font: &'a Font,
     theme: &'a Theme,
     direction: LayoutDirection,
     shows_interaction_effects: bool,
+    image_cache: Option<&'a mut ImageRenderCache>,
+    scale: f32,
 }
 
 impl<'a> MenuPainter<'a> {
     fn new(
         canvas: &'a Canvas,
-        fonts: &'a mut FontCache,
+        font: &'a Font,
         theme: &'a Theme,
         direction: LayoutDirection,
         shows_interaction_effects: bool,
     ) -> Self {
         Self {
             canvas,
-            fonts,
+            font,
             theme,
             direction,
             shows_interaction_effects,
+            image_cache: None,
+            scale: 1.0,
         }
     }
 
@@ -273,15 +333,19 @@ impl<'a> MenuPainter<'a> {
         mouse: Point,
     ) {
         let surfaces = overlay_surfaces(menu, viewport, self.direction);
-        let hover = hover_path(menu, &surfaces, mouse);
+        let hover = hover_path(menu.entries, &surfaces, mouse);
+        let content = MenuContent {
+            entries: menu.entries,
+            state: &menu.state,
+        };
         for surface in &surfaces {
-            self.draw_surface(menu, surface, hover.as_deref());
+            self.draw_surface(&content, surface, hover.as_deref());
         }
     }
 
-    fn draw_surface<Msg>(
+    fn draw_surface<Entry: DropdownMenuEntryAccess>(
         &mut self,
-        menu: &DropdownOverlay<'_, Msg>,
+        menu: &MenuContent<'_, Entry>,
         surface: &DropdownMenuSurface,
         hover: Option<&[usize]>,
     ) {
@@ -299,44 +363,54 @@ impl<'a> MenuPainter<'a> {
         self.canvas.draw_rrect(self.rounded(surface.rect), &border);
     }
 
-    fn draw_entries<Msg>(
+    fn draw_entries<Entry: DropdownMenuEntryAccess>(
         &mut self,
-        menu: &DropdownOverlay<'_, Msg>,
+        menu: &MenuContent<'_, Entry>,
         surface: &DropdownMenuSurface,
         hover: Option<&[usize]>,
     ) {
         let Some(entries) = entries_at_level(menu.entries, &surface.level_path) else {
             return;
         };
-        let font = get_cached_font(self.fonts, "sans-serif", self.theme.font_body);
+        let font = self.font;
+        let columns = MenuColumns::measure(entries, font);
         for (index, entry) in entries.iter().enumerate() {
             let Some(rect) = row_rect(surface, entries, index) else {
                 continue;
             };
             let mut path = surface.level_path.clone();
             path.push(index);
-            self.draw_entry(rect, entry, &path, hover, &menu.state, &font);
+            if entry.entry_kind() != DropdownMenuEntryKind::Separator {
+                self.draw_entry_background(rect, &path, hover, menu.state);
+            }
+            self.draw_entry(rect, entry, font, columns);
         }
     }
 
-    fn draw_entry<Msg>(
-        &self,
+    fn draw_entry<Entry: DropdownMenuEntryAccess>(
+        &mut self,
         rect: SkiaRect,
-        entry: &DropdownMenuEntry<'_, Msg>,
-        path: &[usize],
-        hover: Option<&[usize]>,
-        state: &DropdownMenuState,
+        entry: &Entry,
         font: &Font,
+        columns: MenuColumns,
     ) {
-        if entry.kind() == DropdownMenuEntryKind::Separator {
+        if entry.entry_kind() == DropdownMenuEntryKind::Separator {
             self.draw_separator(rect);
             return;
         }
-        self.draw_entry_background(rect, path, hover, state);
         self.draw_entry_mark(rect, entry);
-        self.draw_entry_label(rect, entry, font);
-        if entry.kind() == DropdownMenuEntryKind::Submenu {
-            self.draw_submenu_arrow(rect, entry.is_disabled());
+        MenuRowPainter {
+            canvas: self.canvas,
+            font,
+            theme: self.theme,
+            direction: self.direction,
+            columns,
+            image_cache: self.image_cache.as_deref_mut(),
+            scale: self.scale,
+        }
+        .draw(rect, entry);
+        if entry.entry_kind() == DropdownMenuEntryKind::Submenu && rect.width() >= 54.0 {
+            self.draw_submenu_arrow(rect, entry.entry_is_disabled());
         }
     }
 
@@ -363,39 +437,14 @@ impl<'a> MenuPainter<'a> {
         }
     }
 
-    fn draw_entry_label<Msg>(
-        &self,
-        rect: SkiaRect,
-        entry: &DropdownMenuEntry<'_, Msg>,
-        font: &Font,
-    ) {
-        let Some(label) = entry.label() else { return };
-        let paint = filled_paint(self.entry_color(entry.is_disabled()));
-        let width = measure_single_line_text(font, label, &paint);
-        let x = match self.direction {
-            LayoutDirection::Ltr => rect.left + MENU_LABEL_START_PADDING,
-            LayoutDirection::Rtl => rect.right - MENU_LABEL_START_PADDING - width,
-        };
-        let baseline = rect.center_y() + self.theme.font_body / 3.0;
-        let clip = dropdown_entry_label_clip(
-            rect,
-            self.direction,
-            entry.kind() == DropdownMenuEntryKind::Submenu,
-        );
-        self.canvas.save();
-        self.canvas.clip_rect(clip, None, true);
-        draw_single_line_text(self.canvas, label, (x, baseline), font, &paint);
-        self.canvas.restore();
-    }
-
-    fn draw_entry_mark<Msg>(&self, rect: SkiaRect, entry: &DropdownMenuEntry<'_, Msg>) {
+    fn draw_entry_mark<Entry: DropdownMenuEntryAccess>(&self, rect: SkiaRect, entry: &Entry) {
         let x = match self.direction {
             LayoutDirection::Ltr => rect.left + 15.0,
             LayoutDirection::Rtl => rect.right - 15.0,
         };
         let center = Point::new(x, rect.center_y());
-        let color = self.entry_color(entry.is_disabled());
-        if entry.checked() == Some(true) {
+        let color = self.entry_color(entry.entry_is_disabled());
+        if entry.entry_checked() == Some(true) {
             let paint = stroked_paint(color, 1.8);
             draw_segments(
                 self.canvas,
@@ -405,7 +454,7 @@ impl<'a> MenuPainter<'a> {
                 &paint,
             );
         }
-        if let Some(selected) = entry.selected() {
+        if let Some(selected) = entry.entry_selected() {
             self.canvas
                 .draw_circle(center, 5.0, &stroked_paint(color, 1.5));
             if selected {
@@ -453,7 +502,11 @@ impl<'a> MenuPainter<'a> {
             .min(track);
         let travel = (track - thumb).max(0.0);
         let top = surface.rect.top + MENU_PADDING + travel * surface.scroll_y / surface.max_scroll;
-        let rect = SkiaRect::from_xywh(surface.rect.right - 7.0, top, 4.0, thumb);
+        let x = match self.direction {
+            LayoutDirection::Ltr => surface.rect.right - 7.0,
+            LayoutDirection::Rtl => surface.rect.left + 3.0,
+        };
+        let rect = SkiaRect::from_xywh(x, top, 4.0, thumb);
         self.canvas.draw_rrect(
             RRect::new_rect_xy(rect, 2.0, 2.0),
             &filled_paint(Theme::alpha(self.theme.on_surface, 95)),
@@ -473,35 +526,13 @@ impl<'a> MenuPainter<'a> {
     }
 }
 
-fn dropdown_entry_label_clip(
-    rect: SkiaRect,
-    direction: LayoutDirection,
-    has_submenu: bool,
-) -> SkiaRect {
-    let end_padding = if has_submenu {
-        SUBMENU_LABEL_END_PADDING
-    } else {
-        MENU_LABEL_END_PADDING
-    };
-    let (left_padding, right_padding) = match direction {
-        LayoutDirection::Ltr => (MENU_LABEL_START_PADDING, end_padding),
-        LayoutDirection::Rtl => (end_padding, MENU_LABEL_START_PADDING),
-    };
-    SkiaRect::from_ltrb(
-        rect.left + left_padding,
-        rect.top,
-        rect.right - right_padding,
-        rect.bottom,
-    )
-}
-
-fn hover_path<Msg>(
-    menu: &DropdownOverlay<'_, Msg>,
+fn hover_path<Entry: DropdownMenuEntryAccess>(
+    root_entries: &[Entry],
     surfaces: &[DropdownMenuSurface],
     mouse: Point,
 ) -> Option<Vec<usize>> {
     surfaces.iter().rev().find_map(|surface| {
-        let entries = entries_at_level(menu.entries, &surface.level_path)?;
+        let entries = entries_at_level(root_entries, &surface.level_path)?;
         let index = point_to_entry(surface, entries, mouse)?;
         let mut path = surface.level_path.clone();
         path.push(index);

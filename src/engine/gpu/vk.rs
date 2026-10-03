@@ -133,7 +133,7 @@ impl Drop for VkInitGuard {
 }
 
 pub struct VkBackend {
-    window: Rc<Window>,
+    window: Rc<dyn Window>,
     entry: Entry,
     instance: Instance,
     surface_loader: khr::surface::Instance,
@@ -159,11 +159,11 @@ pub struct VkBackend {
 
 impl VkBackend {
     pub fn try_new(
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         attrs: WindowAttributes,
     ) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
         let transparent = attrs.transparent();
-        let window = Rc::new(
+        let window: Rc<dyn Window> = Rc::from(
             event_loop
                 .create_window(attrs)
                 .map_err(|err| Self::init_failure(err.to_string()))?,
@@ -297,7 +297,7 @@ impl VkBackend {
         let skia_context = cleanup.skia_context.as_mut().unwrap();
 
         let swapchain_bundle = Self::create_swapchain_bundle(
-            window.inner_size(),
+            window.surface_size(),
             SwapchainBuildContext {
                 surface_loader,
                 surface,
@@ -530,7 +530,7 @@ impl VkBackend {
         let (image_index, _suboptimal) = match acquire {
             Ok(result) => result,
             Err(avk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                self.recreate_swapchain(self.window.inner_size())?;
+                self.recreate_swapchain(self.window.surface_size())?;
                 unsafe {
                     self.device
                         .reset_fences(std::slice::from_ref(&self.acquire_fence))
@@ -721,11 +721,11 @@ impl GraphicsBackend for VkBackend {
         } {
             Ok(suboptimal) => {
                 if suboptimal {
-                    self.recreate_swapchain(self.window.inner_size())?;
+                    self.recreate_swapchain(self.window.surface_size())?;
                 }
             }
             Err(avk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                self.recreate_swapchain(self.window.inner_size())?;
+                self.recreate_swapchain(self.window.surface_size())?;
             }
             Err(err) => {
                 return Err(Self::frame_error(format!(
@@ -741,7 +741,7 @@ impl GraphicsBackend for VkBackend {
         self.recreate_swapchain(size)
     }
 
-    fn window(&self) -> &Rc<Window> {
+    fn window(&self) -> &Rc<dyn Window> {
         &self.window
     }
 

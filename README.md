@@ -75,7 +75,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 ### Overlays
 
 - Dialogs with floating positions: top, center, and bottom.
-- Context menus triggered from right-click interactions.
+- Context menus triggered from right-click interactions, with recursive submenus, keyboard navigation and per-panel scrolling.
 - Generic popovers anchored to a widget and capable of rendering arbitrary widget content.
 - Accessible dropdown menus with viewport-aware submenus and independent scrolling surfaces.
 - Toast notifications with independent placement and timers.
@@ -100,6 +100,22 @@ The framework is still evolving, but it already includes a broad set of widgets,
 ## Project Status
 
 Rutter is under active development. APIs may change while the framework settles.
+
+Rutter now uses the local [rutter-winit](vendor/rutter-winit/RUTTER_FORK.md) fork at `0.31.0-beta.3`, [AccessKit Winit adapter](vendor/rutter-accesskit-winit/README.md) at `0.34.1` (with `accesskit 0.25.1`), and [glutin-winit bridge](vendor/rutter-glutin-winit/README.md) at `0.5.0`. The core `glutin 0.32.3` remains unchanged. These path dependencies require the `vendor/` directories when building from source and are not suitable for publishing Rutter as-is.
+
+The integration handles the new event-loop surface lifecycle, boxed windows, native pointer events, and wake-only proxies. `WindowConfig::with_inner_size` remains a public compatibility name for the drawable surface dimensions. Built-in `DropdownMenu` and `ContextMenu` now use parented `WindowType::Popup` surfaces when the native backend can create, locate and present transparent menus, with the existing in-window painting as fallback. The parent retains widget state, layout, keyboard focus and message handling; both kinds of menu share a single native surface across their submenu chain. `Select`, search suggestions and generic popovers (including date/time pickers) remain in-window overlays. Isolated X11 tests exercise real menus, GL presentation and XTEST selection/dismissal. Headless Weston tests exercise Wayland dropdown popup geometry, OpenGL submenu expansion/selection and the CPU overlay fallback through synthetic runner events; other platforms and live assistive-technology clients remain unvalidated.
+
+On a **disposable** X11 display with XTEST and an EGL/GLX driver (for example, Xephyr `:98`), run the native integration test with `DISPLAY=:98 cargo test --locked --offline --lib native_mouse_selects_a_rendered_rutter_widget_with_accessibility_adapter -- --ignored`. It moves the server's pointer and must not run on a user's regular desktop display.
+
+Run each menu test in its **own Cargo test process** on the same disposable display (Winit does not support recreating an X11 event loop in one process): `native_dropdown_selects_a_rutter_entry_on_its_popup_window`, `native_dropdown_submenu_selects_a_rutter_entry`, `native_dropdown_dismisses_on_outside_click_without_selection`, and `native_context_menu_selects_a_rutter_entry_on_its_popup_window`. For example, use `DISPLAY=:98 cargo test --locked --offline --lib native_dropdown_submenu_selects_a_rutter_entry -- --ignored`. X11 popup grabs consume outside presses rather than replaying them to underlying windows. Menu geometry remains constrained to the parent viewport, and the popup shares its backend type; if creation or positioning is unsupported, the runner logs one failure and restores the in-window overlay for that surface.
+
+Two additional X11 checks use the same isolated setup and separate-process rule: `native_context_menu_submenus_hover_select_and_restore_keyboard_focus` exercises two submenu levels, nested selection, dismissal, focus retention and popup modifier routing; `native_context_menu_opening_reconciles_changed_disabled_status_and_submenu_structure` verifies that an opening callback can update the menu before it is shown. Context fixtures include SVG icons and shortcut labels in their native popup frames. Dedicated ContextMenu submenu input/presentation on Wayland has not been tested live; the Weston checks below remain DropdownMenu regression tests.
+
+Native menu placement uses an explicit top-left positioner relative to the parent's content area, with matching origins for painting and hit testing. During asynchronous popup resizing, the parent keeps painting the overlay until the popup has sufficient space. Configuration has a two-second deadline; a timeout, clipped popup, or excessive compositor displacement restores the overlay rather than hiding or clipping menu content.
+
+Native menu frames clear to transparent and paint only their menu panels, not the parent layout. This keeps the rectangular union's gaps and rounded corners from obscuring the parent and removes residual pixels after a submenu collapses. Alpha-capable presentation and compositor transparency are required. The CPU/softbuffer backend presents RGB only and therefore retains menus as in-window overlays instead of creating opaque native popups. Raster regression tests check transparent gaps in both themes, LTR/RTL placement, fractional scale, and cleanup of collapsed submenu pixels.
+
+On a **disposable** Wayland compositor with an alpha-capable EGL driver (validated using software GL with Weston headless/pixman at 800×600), run `WAYLAND_DISPLAY=<test-socket> LIBGL_ALWAYS_SOFTWARE=1 cargo test --locked --offline --lib native_wayland_dropdown_stays_at_parent_anchor_during_submenu_expansion -- --ignored`. It also verifies that initial popup size is independent of the 1×1 anchor rectangle. In a **separate process**, run `WAYLAND_DISPLAY=<test-socket> cargo test --locked --offline --lib wayland_cpu_dropdown_falls_back_to_overlay_and_selects_submenu -- --ignored` on a compositor with `wl_shm` support to exercise CPU fallback and submenu selection. Native tests do not compare compositor screenshot pixels or validate compositor-delivered Wayland pointer/grab behavior. Wayland Vulkan, screen-reader behavior inside the separate native popup, graphical multirunner menus, and Windows/macOS behavior need additional testing.
 
 Current focus areas include:
 
@@ -138,6 +154,7 @@ cargo run -- modal_toast
 cargo run -- vlist
 cargo run -- vgrid
 cargo run -- popover
+cargo run -- context_menu
 cargo run -- dropdown_menu
 cargo run -- calendar
 cargo run -- time
@@ -152,6 +169,28 @@ cargo run -- table_of_contents
 Every widget example starts in Dark mode and exposes an accessible SVG sun/moon toggle in the upper-right corner. Applications can preserve the static `theme()` API or implement `theme_for(state)` when the active palette depends on application state; opaque windows are cleared with the resolved `theme.surface` color.
 
 The widget demos live in `examples/widgets` and are intended to exercise isolated widgets and interaction patterns. The `examples/apps` directory is reserved for future complete example applications built with Rutter.
+
+### ContextMenu widget example
+
+`cargo run -- context_menu` opens an isolated widget demonstration, not a complete example application. Right-click the highlighted area, then try **Copy — CTRL+C** or **Organize → Move to → Projects**. The menu includes SVG icons, an aligned shortcut column, ordinary actions, a separator, a disabled item and a disabled submenu. Selecting an action updates the last-action text only: no files are opened, moved, renamed or deleted, and Copy does not modify the clipboard. The example includes the shared Dark/Light toggle.
+
+Once the menu is open, Up/Down and Home/End navigate the current panel, Enter/Space activates an entry, and the inline arrow opens or closes a submenu (Right/Left in LTR; reversed in RTL). Escape, Tab or an outside click dismisses the menu. Navigation retains the invoking widget's focus. Each overflowing panel scrolls independently. Opening callbacks may replace entries before the menu is displayed; hiding, disabling or removing the owner closes its menu.
+
+Build nested entries with `ContextMenuEntry::submenu(label, Vec<ContextMenuEntry>)` or `disabled_submenu`. The existing `Widget::context_menu(child, &entries, style)` constructor still borrows its entry slice, so retain entries in application state as the example does.
+
+The example builds its Copy row with presentation-only builders:
+
+```rust
+ContextMenuEntry::item("Copy", Msg::Action("Copy"))
+    .with_svg_icon(COPY_ICON_SVG)
+    .with_shortcut_label("CTRL+C")
+```
+
+`with_svg_icon` borrows SVG bytes, and `with_shortcut_label` borrows display text. They work on enabled/disabled items and submenus; separators ignore them. Icons preserve their source colors in a 16×16 logical-pixel gutter, with reduced opacity for disabled entries. Shortcut labels align to the panel's inline end; icon and text columns mirror in RTL. Long labels are clipped into separate columns, and very narrow panels suppress decorations rather than overlapping content. Native popups and overlays share the bounded SVG validator/cache; invalid or resource-limit-rejected SVGs leave an empty gutter without disabling the command.
+
+Shortcut labels **do not register or parse bindings**. Applications define bindings through `AppLogic::shortcut`. The example maps CTRL+C, CTRL+O, F2 and Delete to the same status-only messages as Copy, Open, Rename and Delete. CTRL+V remains unbound because Paste is disabled. These are surface-local shortcuts, not desktop-wide hotkeys. SVG/shortcut metadata does not affect typeahead, submenu paths or command identity.
+
+**Source compatibility:** `ContextMenuEntry` includes new `Submenu` and `Decorated` variants, and `ContextMenuOverlayHit` includes `Submenu`; downstream exhaustive matches must handle them. Existing constructors and original variant field shapes remain unchanged. Use `label()`, `action_message()`, `submenu_entries()` and `is_disabled()` to inspect decorated entries semantically instead of matching only `Item`/`Submenu`. `ContextMenuState` gains `navigation`; use `..Default::default()` or initialize it when constructing the state explicitly. No configuration or stored-data migration is required.
 
 ## Quick Start
 
@@ -516,7 +555,7 @@ Use an application-owned wall-clock or timezone source to calculate a desired bo
 
 For applications with platform watchers, use `MultiWindowRunner::try_run_with_state_and_message_ingress(state, surfaces, config, install)`. This opt-in startup path creates a private event-loop waker and a bounded, cloneable `MultiWindowMessageSender<A::Message>` before calling `install`, where the application can start its workers. Only this path requires `A::Message: Send + 'static`; existing multi-window startup and message types are unchanged. For example, a taskbar watcher can send an owned application-catalog snapshot or active-window snapshot to a panel's `SurfaceId`, then `MultiWindowAppLogic::update` can return `SurfaceCommand::RequestRedraw(surface)`.
 
-Create limits with `MessageIngressConfig::try_new(capacity, maximum_messages_per_wakeup)`; both must be nonzero and at most `MAX_MESSAGE_INGRESS_CAPACITY` (4096). Capacity bounds the **number** of queued messages; applications must bound the size of their own payloads. `sender.try_send(surface, message)` never waits for queue space or a contended lock: it returns `Full { capacity }`, `Busy`, or `Closed` on failure, consuming the message. Workers should explicitly retry, coalesce replaceable snapshots, or reconcile on a later application wakeup. Messages are delivered FIFO on the owning event-loop thread with a per-user-event budget; bursts coalesce native wakeups. Each delivered message takes the existing `update` + surface-command path, without calling application code under the queue lock. Messages for closed or unknown surfaces are discarded rather than delivered to retired UI state. An installation failure is returned as `MultiWindowRunError::Startup`, and outstanding sender clones return `Closed` after shutdown. Worker cancellation and joining remain the application's responsibility.
+Create limits with `MessageIngressConfig::try_new(capacity, maximum_messages_per_wakeup)`; both must be nonzero and at most `MAX_MESSAGE_INGRESS_CAPACITY` (4096). Capacity bounds the **number** of queued messages; applications must bound the size of their own payloads. `sender.try_send(surface, message)` never waits for queue space or a contended lock: it returns `Full { capacity }`, `Busy`, or `Closed` on failure, consuming the message. Workers should explicitly retry, coalesce replaceable snapshots, or reconcile on a later application wakeup. Messages are delivered FIFO on the owning event-loop thread with a per-wakeup budget; bursts coalesce native wakeups. Each delivered message takes the existing `update` + surface-command path, without calling application code under the queue lock. Messages for closed or unknown surfaces are discarded rather than delivered to retired UI state. An installation failure is returned as `MultiWindowRunError::Startup`, and outstanding sender clones return `Closed` when the runtime closes its ingress on drop. The Winit wake-only proxy cannot detect a closed event loop before its handler is dropped. Worker cancellation and joining remain the application's responsibility.
 
 An in-surface context-menu target first reaches `AppLogic::context_menu_opening` (or `MultiWindowAppLogic::context_menu_opening`), which can return a typed selection message for `update` before the overlay opens. `ContextMenuTarget::id()` is the resolved menu ID; assign stable manual IDs when mapping a target to application-owned items. When a menu wraps a virtual list or grid, `ContextMenuTarget::virtual_item()` exposes `ContextMenuVirtualItem::List` or `ContextMenuVirtualItem::Grid` with the resolved collection ID and pressed index, including the collection's current scroll offset. Unclaimed right-button presses reach `secondary_pointer_pressed_with_context` only after open select, dropdown, context-menu, and popover overlays have had dismissal priority; visible modals and dialogs consume the press. `SecondaryPointerContext` contains logical client coordinates, the source scale factor, and optional physical desktop coordinates. Absolute coordinates are unavailable on Wayland, Android, iOS, and Web, where `desktop_position()` returns `None` and applications should retain an in-surface overlay fallback. The original `secondary_pointer_pressed` callback remains supported through the default compatibility bridge. Track a fixed popup surface's lifecycle—as in the example—to avoid opening a duplicate `SurfaceId`.
 

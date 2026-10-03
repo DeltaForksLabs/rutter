@@ -5,11 +5,11 @@
 
 use std::collections::HashMap;
 
-use skia_safe::{Contains, Point, Rect as SkiaRect};
+use skia_safe::{Contains, Font, Point, Rect as SkiaRect};
 use taffy::prelude::{NodeId, TaffyTree};
 
 use super::dropdown_menu_overlay::{DropdownMenuOverlayHit, hit_test_dropdown_menu_overlay};
-use super::hit_test::{context_menu_rect, popover_rect};
+use super::hit_test::popover_rect;
 use super::search_overlay::search_popup_layout;
 use super::select_overlay::collector::{
     collect_open_dropdown_overlays, collect_open_search_overlays, collect_open_select_overlays,
@@ -55,7 +55,7 @@ where
     pub(crate) focused_id: Option<u64>,
     pub(crate) mouse: Point,
     pub(crate) viewport: (f32, f32),
-    pub(crate) font_size: f32,
+    pub(crate) context_font: Option<&'render Font>,
     pub(crate) direction: LayoutDirection,
 }
 
@@ -132,12 +132,21 @@ fn hover_point(mouse: Point, covered: bool) -> Point {
 }
 
 fn context_menu_captures_hover<Msg>(input: &OverlayHoverInput<'_, '_, Msg>) -> bool {
+    let Some(context_font) = input.context_font else {
+        return false;
+    };
     let mut menus = Vec::new();
     let mut path = Vec::new();
     super::collect_open_context_menus(input.widget, input.widget_states, &mut path, &mut menus);
     menus.into_iter().any(|menu| {
-        context_menu_rect(menu.entries, menu.anchor, input.viewport, input.font_size)
-            .contains(input.mouse)
+        super::context_menu_overlay::context_surfaces(
+            &menu,
+            input.viewport,
+            input.direction,
+            context_font,
+        )
+        .iter()
+        .any(|surface| surface.rect.contains(input.mouse))
     })
 }
 

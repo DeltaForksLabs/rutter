@@ -50,7 +50,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         &mut self,
         blockers: SecondaryPointerBlockers,
         context_menu_target: Option<ContextMenuTarget>,
-    ) {
+    ) -> Result<(), crate::engine::run_error::RutterRunError> {
         let destination = secondary_pointer_destination(blockers, context_menu_target);
         match destination {
             SecondaryPointerDestination::DismissSelect => {
@@ -63,17 +63,35 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             SecondaryPointerDestination::DismissPopover => {
                 self.engine.close_all_popovers();
             }
-            SecondaryPointerDestination::ConsumeBlockingOverlay => return,
+            SecondaryPointerDestination::ConsumeBlockingOverlay => return Ok(()),
             SecondaryPointerDestination::OpenContextMenu(target) => {
                 self.dispatch_context_menu_open_message(target);
-                self.engine
-                    .open_context_menu(target.id(), self.engine.last_mouse_pos);
+                // The opening callback may replace entries or remove/disable
+                // the owner. Reconcile its new runtime before retaining an open
+                // menu, so topology invalidation cannot close a fresh opening.
+                self.refresh_layout_before_keyboard_input()?;
+                if self
+                    .engine
+                    .runtime_caches
+                    .visible_context_menu_owners
+                    .contains(&target.id())
+                    && self
+                        .engine
+                        .runtime_caches
+                        .dropdown_menus
+                        .contains_key(&target.id())
+                {
+                    self.engine
+                        .open_context_menu(target.id(), self.engine.last_mouse_pos);
+                }
             }
             SecondaryPointerDestination::DispatchApplication => {
-                return self.dispatch_secondary_pointer_pressed();
+                self.dispatch_secondary_pointer_pressed();
+                return Ok(());
             }
         }
         self.redraw();
+        Ok(())
     }
 
     fn dispatch_secondary_pointer_pressed(&mut self) {
@@ -103,20 +121,28 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .expect("active pointer event requires a committed native window");
         resolve_secondary_pointer_context(
             self.cursor_physical,
-            desktop_client_origin(window),
+            desktop_client_origin(window.as_ref()),
             window.scale_factor(),
         )
     }
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "ios"))]
-fn desktop_client_origin(_: &Window) -> Option<PhysicalPosition<i32>> {
+fn desktop_client_origin(_: &dyn Window) -> Option<PhysicalPosition<i32>> {
     None
 }
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
-fn desktop_client_origin(window: &Window) -> Option<PhysicalPosition<i32>> {
-    window.inner_position().ok()
+fn desktop_client_origin(window: &dyn Window) -> Option<PhysicalPosition<i32>> {
+    if window.window_type() != winit::window::WindowType::Window {
+        return None;
+    }
+    let outer = window.outer_position().ok()?;
+    let surface = window.surface_position();
+    Some(PhysicalPosition::new(
+        outer.x.checked_add(surface.x)?,
+        outer.y.checked_add(surface.y)?,
+    ))
 }
 
 fn secondary_pointer_destination(

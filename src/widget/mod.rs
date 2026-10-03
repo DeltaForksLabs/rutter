@@ -257,13 +257,32 @@ pub enum DialogPosition {
     Bottom,
 }
 
+/// A context-menu command, separator, or recursively owned submenu with borrowed labels.
+///
+/// Icons and shortcut labels are presentation-only and preserve navigation paths.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContextMenuEntry<'a, Msg> {
     Item {
         label: &'a str,
         on_select: Option<Msg>,
     },
+    /// Opens child entries without emitting an action itself.
+    Submenu {
+        label: &'a str,
+        entries: Vec<Self>,
+        /// Disabled submenus remain keyboard-focusable but cannot open children.
+        enabled: bool,
+    },
     Separator,
+    /// Presentation metadata for a command or submenu, without another navigation level.
+    ///
+    /// Downstream exhaustive matches must account for this variant. Prefer the
+    /// semantic accessors when inspecting entries that may be decorated.
+    Decorated {
+        entry: Box<Self>,
+        svg_icon: Option<&'a [u8]>,
+        shortcut_label: Option<&'a str>,
+    },
 }
 
 impl<'a, Msg> ContextMenuEntry<'a, Msg> {
@@ -285,51 +304,181 @@ impl<'a, Msg> ContextMenuEntry<'a, Msg> {
         Self::Separator
     }
 
-    pub(crate) fn label(&self) -> Option<&'a str> {
-        match self {
-            Self::Item { label, .. } => Some(label),
-            Self::Separator => None,
+    /// Creates an enabled submenu. Child labels retain their borrowed lifetimes.
+    ///
+    /// ```
+    /// use rutter::ContextMenuEntry;
+    /// let entries = [ContextMenuEntry::submenu("Edit", vec![
+    ///     ContextMenuEntry::submenu("Copy as", vec![ContextMenuEntry::item("Text", 1_u8)]),
+    /// ])];
+    /// ```
+    pub fn submenu(label: &'a str, entries: Vec<Self>) -> Self {
+        Self::Submenu {
+            label,
+            entries,
+            enabled: true,
         }
+    }
+
+    /// Creates a submenu whose children cannot be opened by pointer or keyboard.
+    ///
+    /// ```
+    /// use rutter::ContextMenuEntry;
+    /// let entry = ContextMenuEntry::<u8>::disabled_submenu("Unavailable", Vec::new());
+    /// assert!(matches!(entry, ContextMenuEntry::Submenu { enabled: false, .. }));
+    /// ```
+    pub fn disabled_submenu(label: &'a str, entries: Vec<Self>) -> Self {
+        Self::Submenu {
+            label,
+            entries,
+            enabled: false,
+        }
+    }
+
+    /// Adds a borrowed, color-preserving SVG icon. Separators ignore decoration.
+    ///
+    /// SVGs use the renderer's bounded validation and image cache. Rejected or
+    /// invalid SVGs leave an empty icon gutter; the command remains usable.
+    ///
+    /// ```
+    /// use rutter::ContextMenuEntry;
+    /// let svg: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#5086E7"/></svg>"##;
+    /// let copy = ContextMenuEntry::item("Copy", 1_u8).with_svg_icon(svg);
+    /// assert_eq!(copy.svg_icon(), Some(svg));
+    /// assert_eq!(copy.action_message(), Some(&1));
+    /// ```
+    pub fn with_svg_icon(self, svg_icon: &'a [u8]) -> Self {
+        if self.label().is_none() {
+            return self;
+        }
+        match self {
+            Self::Decorated {
+                entry,
+                shortcut_label,
+                ..
+            } => Self::Decorated {
+                entry,
+                svg_icon: Some(svg_icon),
+                shortcut_label,
+            },
+            entry => Self::Decorated {
+                entry: Box::new(entry),
+                svg_icon: Some(svg_icon),
+                shortcut_label: None,
+            },
+        }
+    }
+
+    /// Adds a borrowed display label in the shortcut column. This does not
+    /// register or interpret a keyboard binding. Separators ignore decoration.
+    ///
+    /// ```
+    /// use rutter::ContextMenuEntry;
+    /// let copy = ContextMenuEntry::item("Copy", 1_u8).with_shortcut_label("CTRL+C");
+    /// assert_eq!(copy.label(), Some("Copy"));
+    /// assert_eq!(copy.shortcut_label(), Some("CTRL+C"));
+    /// ```
+    pub fn with_shortcut_label(self, shortcut_label: &'a str) -> Self {
+        if self.label().is_none() {
+            return self;
+        }
+        match self {
+            Self::Decorated {
+                entry, svg_icon, ..
+            } => Self::Decorated {
+                entry,
+                svg_icon,
+                shortcut_label: Some(shortcut_label),
+            },
+            entry => Self::Decorated {
+                entry: Box::new(entry),
+                svg_icon: None,
+                shortcut_label: Some(shortcut_label),
+            },
+        }
+    }
+
+    /// Returns the command or submenu label through any presentation wrappers.
+    pub fn label(&self) -> Option<&'a str> {
+        match self.undecorated() {
+            Self::Item { label, .. } | Self::Submenu { label, .. } => Some(label),
+            _ => None,
+        }
+    }
+
+    /// Returns the leaf command message, without cloning it.
+    pub fn action_message(&self) -> Option<&Msg> {
+        match self.undecorated() {
+            Self::Item { on_select, .. } => on_select.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Returns submenu children, including those of a disabled submenu.
+    pub fn submenu_entries(&self) -> Option<&[Self]> {
+        match self.undecorated() {
+            Self::Submenu { entries, .. } => Some(entries),
+            _ => None,
+        }
+    }
+
+    /// Whether a command cannot activate or a submenu cannot open.
+    pub fn is_disabled(&self) -> bool {
+        match self.undecorated() {
+            Self::Item { on_select, .. } => on_select.is_none(),
+            Self::Submenu { enabled, .. } => !enabled,
+            _ => false,
+        }
+    }
+
+    /// Returns the borrowed SVG source, if supplied.
+    pub fn svg_icon(&self) -> Option<&'a [u8]> {
+        match self {
+            Self::Decorated {
+                entry, svg_icon, ..
+            } => svg_icon.or_else(|| entry.svg_icon()),
+            _ => None,
+        }
+    }
+
+    /// Returns the borrowed presentation-only shortcut label, if supplied.
+    pub fn shortcut_label(&self) -> Option<&'a str> {
+        match self {
+            Self::Decorated {
+                entry,
+                shortcut_label,
+                ..
+            } => shortcut_label.or_else(|| entry.shortcut_label()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn undecorated(&self) -> &Self {
+        let mut entry = self;
+        while let Self::Decorated { entry: inner, .. } = entry {
+            entry = inner;
+        }
+        entry
     }
 }
 
 pub(crate) const CONTEXT_MENU_ITEM_H: f32 = 32.0;
 pub(crate) const CONTEXT_MENU_SEPARATOR_H: f32 = 10.0;
 pub(crate) const CONTEXT_MENU_MIN_W: f32 = 168.0;
-pub(crate) const CONTEXT_MENU_PAD_X: f32 = 12.0;
 pub(crate) const CONTEXT_MENU_PAD_Y: f32 = 6.0;
-pub(crate) const CONTEXT_MENU_VIEWPORT_MARGIN: f32 = 8.0;
 pub(crate) const POPOVER_GAP: f32 = 8.0;
 pub(crate) const POPOVER_VIEWPORT_MARGIN: f32 = 8.0;
 
 pub(crate) fn estimate_context_menu_width<Msg>(
     entries: &[ContextMenuEntry<'_, Msg>],
-    font_size: f32,
+    font: &skia_safe::Font,
 ) -> f32 {
-    let mut max_w = CONTEXT_MENU_MIN_W;
-    for entry in entries {
-        if let Some(label) = entry.label() {
-            let label = crate::text_controls::normalize_text_controls(
-                label,
-                crate::text_controls::TextControlPolicy::FlattenLineBreaks,
-            );
-            let estimate =
-                label.chars().count() as f32 * font_size * 0.62 + CONTEXT_MENU_PAD_X * 2.0 + 24.0;
-            max_w = max_w.max(estimate);
-        }
-    }
-    max_w
+    crate::render::menu_row::context_panel_width(entries, font).max(CONTEXT_MENU_MIN_W)
 }
 
-pub(crate) fn estimate_context_menu_height<Msg>(entries: &[ContextMenuEntry<'_, Msg>]) -> f32 {
-    entries
-        .iter()
-        .map(|entry| match entry {
-            ContextMenuEntry::Item { .. } => CONTEXT_MENU_ITEM_H,
-            ContextMenuEntry::Separator => CONTEXT_MENU_SEPARATOR_H,
-        })
-        .sum()
-}
+#[cfg(test)]
+#[path = "../../tests/unit/context_menu_entry_unit_tests.rs"]
+mod context_menu_entry_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WidgetIdTag {
@@ -1516,6 +1665,23 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Wraps a child with a right-click menu anchored at the pointer position.
+    ///
+    /// Entries and labels remain borrowed. Enabled submenus open on hover or
+    /// activation; arrow navigation follows the application's layout direction.
+    /// Leaf activation emits its message and dismisses the entire menu chain.
+    ///
+    /// ```
+    /// use rutter::{ContextMenuEntry, Widget};
+    /// use taffy::prelude::Style;
+    /// let entries = [ContextMenuEntry::submenu("Edit", vec![
+    ///     ContextMenuEntry::item("Copy", 1_u8),
+    ///     ContextMenuEntry::disabled("Paste"),
+    /// ])];
+    /// let menu = Widget::context_menu(
+    ///     Widget::Spacer { style: Style::default() }, &entries, Style::default(),
+    /// );
+    /// ```
     pub fn context_menu(
         child: Widget<'a, Msg>,
         entries: &'a [ContextMenuEntry<'a, Msg>],

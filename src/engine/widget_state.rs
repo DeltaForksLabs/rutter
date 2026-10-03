@@ -212,6 +212,8 @@ pub struct ContextMenuState {
     pub is_open: bool,
     pub anchor_x: f32,
     pub anchor_y: f32,
+    /// Recursive navigation shared with DropdownMenu; the anchor remains pointer-based.
+    pub navigation: crate::dropdown_menu::DropdownMenuState,
 }
 
 impl ContextMenuState {
@@ -219,10 +221,13 @@ impl ContextMenuState {
         self.is_open = true;
         self.anchor_x = anchor_x;
         self.anchor_y = anchor_y;
+        self.navigation.reset();
+        self.navigation.open_at_index(None);
     }
 
     pub fn close(&mut self) {
         self.is_open = false;
+        self.navigation.close();
     }
 }
 
@@ -497,6 +502,23 @@ pub enum WidgetState {
 }
 
 impl WidgetState {
+    pub(crate) fn menu_navigation(&self) -> Option<&crate::dropdown_menu::DropdownMenuState> {
+        match self {
+            Self::DropdownMenu(state) => Some(state),
+            Self::ContextMenu(state) if state.is_open => Some(&state.navigation),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn menu_navigation_mut(
+        &mut self,
+    ) -> Option<&mut crate::dropdown_menu::DropdownMenuState> {
+        match self {
+            Self::DropdownMenu(state) => Some(state),
+            Self::ContextMenu(state) if state.is_open => Some(&mut state.navigation),
+            _ => None,
+        }
+    }
     pub fn as_slider(&self) -> Option<&SliderState> {
         if let Self::Slider(s) = self {
             Some(s)

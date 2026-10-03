@@ -16,7 +16,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .engine
             .window
             .as_ref()
-            .map(|window| window.inner_size())
+            .map(|window| window.surface_size())
         else {
             return;
         };

@@ -456,7 +456,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .engine
             .window
             .as_ref()
-            .map(|window| window.inner_size())
+            .map(|window| window.surface_size())
         else {
             return Ok(());
         };
@@ -518,7 +518,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn pointer_region_logical_viewport(&self) -> Option<(f32, f32)> {
-        let size = self.engine.window.as_ref()?.inner_size();
+        let size = self.engine.window.as_ref()?.surface_size();
         let scale = self.engine.scale_factor;
         Some((size.width as f32 / scale, size.height as f32 / scale))
     }
@@ -529,7 +529,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             modifiers.shift_key(),
             modifiers.control_key(),
             modifiers.alt_key(),
-            modifiers.super_key(),
+            modifiers.meta_key(),
         )
     }
 

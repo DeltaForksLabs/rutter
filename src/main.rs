@@ -11,6 +11,7 @@
 //   cargo run -- button_content
 //   cargo run -- calendar
 //   cargo run -- carousel
+//   cargo run -- context_menu
 //   cargo run -- controls
 //   cargo run -- counter
 //   cargo run -- dialog
@@ -50,6 +51,7 @@ fn main() {
         "button_content" => widget_examples::button_content_demo::run(),
         "calendar" => widget_examples::calendar_demo::run(),
         "carousel" => widget_examples::carousel_demo::run(),
+        "context_menu" => widget_examples::context_menu_demo::run(),
         "controls" => widget_examples::controls_demo::run(),
         "counter" => widget_examples::counter_demo::run(),
         "dialog" => widget_examples::dialog_demo::run(),

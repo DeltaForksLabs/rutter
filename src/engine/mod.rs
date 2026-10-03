@@ -30,7 +30,7 @@ use taffy::{
 use winit::{
     dpi::PhysicalSize,
     event::{Modifiers, WindowEvent},
-    window::Window,
+    window::{Window, WindowAttributes},
 };
 
 use self::cursor::CursorBlink;
@@ -655,6 +655,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     dropdown_menu_items: HashMap<u64, DropdownMenuItemRuntime>,
     visible_dropdown_menus: HashSet<u64>,
     visible_dropdown_triggers: HashSet<u64>,
+    visible_context_menu_owners: HashSet<u64>,
     visible_search_suggestion_ids: HashSet<u64>,
     tabs: HashMap<u64, TabRuntime<Msg>>,
     tab_items: HashMap<u64, TabFocusRuntime>,
@@ -701,6 +702,7 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
             dropdown_menu_items: HashMap::new(),
             visible_dropdown_menus: HashSet::new(),
             visible_dropdown_triggers: HashSet::new(),
+            visible_context_menu_owners: HashSet::new(),
             visible_search_suggestion_ids: HashSet::new(),
             tabs: HashMap::new(),
             tab_items: HashMap::new(),
@@ -736,6 +738,7 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
         self.dropdown_menu_items.clear();
         self.visible_dropdown_menus.clear();
         self.visible_dropdown_triggers.clear();
+        self.visible_context_menu_owners.clear();
         self.visible_search_suggestion_ids.clear();
         self.tabs.clear();
         self.tab_items.clear();
@@ -814,12 +817,41 @@ fn close_changed_dropdown_topologies<Msg: Clone>(
     for id in &changed {
         if let Some(menu) = states
             .get_mut(id)
+            .and_then(WidgetState::as_context_menu_mut)
+        {
+            menu.close();
+            continue;
+        }
+        if let Some(menu) = states
+            .get_mut(id)
             .and_then(WidgetState::as_dropdown_menu_mut)
         {
             menu.close();
         }
     }
     changed
+}
+
+fn reconcile_context_menu_owners<Msg: Clone>(
+    caches: &WidgetRuntimeCaches<Msg>,
+    states: &mut HashMap<u64, WidgetState>,
+) {
+    for (id, state) in states {
+        let Some(menu) = state.as_context_menu_mut().filter(|menu| menu.is_open) else {
+            continue;
+        };
+        let runtime = caches.dropdown_menus.get(id);
+        if !caches.visible_context_menu_owners.contains(id) || runtime.is_none() {
+            menu.close();
+        } else if !menu.navigation.is_open() {
+            // Preserve the public is_open flag as an independent way to open
+            // a flat context menu, while initializing recursive navigation.
+            let first = runtime
+                .and_then(|runtime| runtime.first_root_path())
+                .and_then(|path| path.first().copied());
+            menu.navigation.open_at_index(first);
+        }
+    }
 }
 
 fn focused_changed_dropdown<Msg: Clone>(
@@ -1674,7 +1706,7 @@ fn sync_virtual_multi_selection_active(
 }
 
 pub struct RutterEngine<A: AppLogic> {
-    pub window: Option<Rc<Window>>,
+    pub window: Option<Rc<dyn Window>>,
     accessibility_adapter: Option<accesskit_winit::Adapter>,
     accessibility_actions: AccessibilityActionInbox,
     graphics_backend: Option<Box<dyn GraphicsBackend>>,
@@ -1712,15 +1744,17 @@ pub struct RutterEngine<A: AppLogic> {
     surface_config: SurfaceConfig,
 }
 
+type InitializedSurface = (Box<dyn GraphicsBackend>, Rc<dyn Window>);
+
 fn initial_window_attributes(surface_config: SurfaceConfig) -> winit::window::WindowAttributes {
-    Window::default_attributes()
+    WindowAttributes::default()
         .with_title("Rutter")
         .with_visible(true)
         .with_transparent(surface_config.is_transparent())
 }
 
 fn create_surface_backend(
-    event_loop: &winit::event_loop::ActiveEventLoop,
+    event_loop: &dyn winit::event_loop::ActiveEventLoop,
     attributes: winit::window::WindowAttributes,
     required_backend: Option<BackendType>,
 ) -> Result<Box<dyn GraphicsBackend>, GraphicsError> {
@@ -1812,7 +1846,7 @@ impl<A: AppLogic> RutterEngine<A> {
 
     pub fn handle_resumed(
         &mut self,
-        el: &winit::event_loop::ActiveEventLoop,
+        el: &dyn winit::event_loop::ActiveEventLoop,
     ) -> Result<(), GraphicsError> {
         let attrs = initial_window_attributes(self.surface_config);
         self.handle_resumed_with_attributes(el, attrs, None)
@@ -1820,7 +1854,7 @@ impl<A: AppLogic> RutterEngine<A> {
 
     pub(crate) fn handle_resumed_with_attributes(
         &mut self,
-        el: &winit::event_loop::ActiveEventLoop,
+        el: &dyn winit::event_loop::ActiveEventLoop,
         attrs: winit::window::WindowAttributes,
         required_backend: Option<BackendType>,
     ) -> Result<(), GraphicsError> {
@@ -1832,10 +1866,10 @@ impl<A: AppLogic> RutterEngine<A> {
 
     fn create_initialized_backend(
         &mut self,
-        el: &winit::event_loop::ActiveEventLoop,
+        el: &dyn winit::event_loop::ActiveEventLoop,
         attrs: winit::window::WindowAttributes,
         required_backend: Option<BackendType>,
-    ) -> Result<(Box<dyn GraphicsBackend>, Rc<Window>), GraphicsError> {
+    ) -> Result<InitializedSurface, GraphicsError> {
         let theme = A::theme_for(&self.app_state);
         let mut backend = create_surface_backend(el, attrs, required_backend)?;
         if cfg!(debug_assertions) {
@@ -1843,7 +1877,7 @@ impl<A: AppLogic> RutterEngine<A> {
         }
         let window = backend.window().clone();
         self.scale_factor = window.scale_factor() as f32;
-        backend.resize(window.inner_size())?;
+        backend.resize(window.surface_size())?;
         {
             let canvas = backend.begin_frame()?;
             prepare_top_level_canvas(canvas, self.surface_config, &theme, self.scale_factor);
@@ -1854,14 +1888,14 @@ impl<A: AppLogic> RutterEngine<A> {
 
     fn commit_surface_backend(
         &mut self,
-        el: &winit::event_loop::ActiveEventLoop,
+        el: &dyn winit::event_loop::ActiveEventLoop,
         backend: Box<dyn GraphicsBackend>,
-        window: Rc<Window>,
+        window: Rc<dyn Window>,
         desired_visibility: bool,
     ) {
         self.accessibility_adapter = Some(accesskit_winit::Adapter::with_direct_handlers(
             el,
-            &window,
+            window.as_ref(),
             LazyActivationHandler,
             self.accessibility_actions.handler(),
             IgnoredDeactivationHandler,
@@ -1896,16 +1930,16 @@ impl<A: AppLogic> RutterEngine<A> {
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
-        adapter.process_event(&window, event);
+        adapter.process_event(window.as_ref(), event);
     }
 
     pub(crate) fn take_accessibility_actions(&self) -> Vec<accesskit::ActionRequest> {
         self.accessibility_actions.drain()
     }
 
-    pub(crate) fn set_accessibility_waker(&self, proxy: winit::event_loop::EventLoopProxy<()>) {
+    pub(crate) fn set_accessibility_waker(&self, proxy: winit::event_loop::EventLoopProxy) {
         self.accessibility_actions.set_waker(move || {
-            let _ = proxy.send_event(());
+            proxy.wake_up();
         });
     }
 
@@ -2148,15 +2182,23 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn open_context_menu(&mut self, id: u64, anchor: Point) {
+        let first = self
+            .runtime_caches
+            .dropdown_menus
+            .get(&id)
+            .and_then(|runtime| runtime.first_root_path())
+            .and_then(|path| path.first().copied());
         for (&widget_id, state) in self.widget_states.iter_mut() {
             if let Some(menu) = state.as_context_menu_mut() {
                 if widget_id == id {
                     menu.open_at(anchor.x, anchor.y);
+                    menu.navigation.open_at_index(first);
                 } else {
                     menu.close();
                 }
             }
         }
+        self.layout_dirty = true;
     }
 
     pub fn any_popover_open(&self) -> bool {
@@ -2291,6 +2333,9 @@ impl<A: AppLogic> RutterEngine<A> {
 
     pub fn try_ensure_layout(&mut self, size: PhysicalSize<u32>) -> Result<(), WidgetIdError> {
         if !self.layout_dirty {
+            // Retained flags can be changed directly without changing the view.
+            // Cached ownership still governs keyboard/native-menu liveness.
+            reconcile_context_menu_owners(&self.runtime_caches, &mut self.widget_states);
             return Ok(());
         }
         let logical = PhysicalSize::new(
@@ -2368,6 +2413,17 @@ impl<A: AppLogic> RutterEngine<A> {
         .into_iter()
         .map(|overlay| overlay.id)
         .collect();
+        self.runtime_cache_scratch.visible_context_menu_owners =
+            crate::render::select_overlay::collector::collect_context_menu_owners(
+                &widget_tree,
+                &self.taffy,
+                root,
+                &self.widget_states,
+                (logical.width as f32, logical.height as f32),
+            )
+            .into_keys()
+            .collect();
+        reconcile_context_menu_owners(&self.runtime_cache_scratch, &mut self.widget_states);
         let suppressed_dropdowns = close_suppressed_dropdowns(
             &mut self.widget_states,
             &self.runtime_cache_scratch.visible_dropdown_menus,
@@ -2476,6 +2532,14 @@ impl<A: AppLogic> RutterEngine<A> {
                 )
             })
             .unwrap_or(traversal.abs);
+        if let Widget::ContextMenu { entries, .. } = widget {
+            insert_runtime_entry(
+                &mut runtime_caches.dropdown_menus,
+                widget.resolved_id(path).unwrap(),
+                DropdownMenuRuntime::from_context_entries(entries),
+                "context menus",
+            )?;
+        }
         match widget {
             Widget::Button { on_press, .. } | Widget::ButtonContent { on_press, .. } => {
                 insert_runtime_entry(
@@ -3411,11 +3475,19 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn try_redraw(&mut self, cursor_pos: Point) -> Result<(), RutterRunError> {
+        self.try_redraw_with_native_menu(cursor_pos, None)
+    }
+
+    pub(crate) fn try_redraw_with_native_menu(
+        &mut self,
+        cursor_pos: Point,
+        native_menu: Option<crate::render::NativeMenuKind>,
+    ) -> Result<(), RutterRunError> {
         let window = match self.window.as_ref() {
             Some(w) => w.clone(),
             None => return Ok(()),
         };
-        let phys = window.inner_size();
+        let phys = window.surface_size();
         if phys.width == 0 || phys.height == 0 {
             return Ok(());
         }
@@ -3431,27 +3503,24 @@ impl<A: AppLogic> RutterEngine<A> {
             cursor_pos.x / self.scale_factor,
             cursor_pos.y / self.scale_factor,
         );
-        let accessibility_update = self.accessibility_adapter.is_some().then(|| {
-            build_accessibility_update(
-                &self.taffy,
-                &widget_tree,
-                self.last_root_node,
-                AccessibilityInputs {
-                    input_states: &self.input_states,
-                    widget_states: &self.widget_states,
-                    focused_widget_id: self.focused_widget_id,
-                    viewport: (
-                        phys.width as f32 / self.scale_factor,
-                        phys.height as f32 / self.scale_factor,
-                    ),
-                    direction: A::locale().direction(),
-                },
-            )
-        });
-        if let (Some(adapter), Some(update)) =
-            (self.accessibility_adapter.as_mut(), accessibility_update)
-        {
-            adapter.update_if_active(|| update);
+        if let Some(adapter) = self.accessibility_adapter.as_mut() {
+            adapter.update_if_active(|| {
+                build_accessibility_update(
+                    &self.taffy,
+                    &widget_tree,
+                    self.last_root_node,
+                    AccessibilityInputs {
+                        input_states: &self.input_states,
+                        widget_states: &self.widget_states,
+                        focused_widget_id: self.focused_widget_id,
+                        viewport: (
+                            phys.width as f32 / self.scale_factor,
+                            phys.height as f32 / self.scale_factor,
+                        ),
+                        direction: A::locale().direction(),
+                    },
+                )
+            });
         }
 
         {
@@ -3482,6 +3551,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 self.cursor_blink.is_visible(),
                 &theme,
                 self.scale_factor,
+                native_menu,
             );
             if let Some(badge) = &self.active_drag_badge {
                 crate::render::drag_badge::draw_drag_badge(
@@ -3506,11 +3576,60 @@ impl<A: AppLogic> RutterEngine<A> {
         backend.end_frame()?;
         Ok(())
     }
+
+    pub(crate) fn try_redraw_native_menu(
+        &mut self,
+        backend: &mut dyn GraphicsBackend,
+        menu: crate::render::NativeMenuKind,
+        origin: Point,
+    ) -> Result<(), RutterRunError> {
+        let parent_size = self
+            .window
+            .as_ref()
+            .ok_or(GraphicsError::BackendUnavailable {
+                operation: "painting native menu without a parent window",
+            })?
+            .surface_size();
+        self.try_ensure_widget_states()?;
+        self.try_ensure_layout(parent_size)?;
+        let theme = A::theme_for(&self.app_state);
+        let widget = A::view(&mut self.app_state);
+        validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget)?;
+        // Menu geometry is computed in parent logical coordinates. Even if the
+        // popup straddles a monitor boundary, paint at the parent's pixel scale.
+        let scale = self.scale_factor;
+        let canvas = backend.begin_frame()?;
+        crate::render::draw_native_menu(
+            canvas,
+            &self.taffy,
+            self.last_root_node,
+            &widget,
+            &self.widget_states,
+            menu,
+            origin,
+            (
+                parent_size.width as f32 / self.scale_factor,
+                parent_size.height as f32 / self.scale_factor,
+            ),
+            self.last_mouse_pos,
+            &mut self.font_cache,
+            &mut self.image_cache,
+            &theme,
+            scale,
+            A::locale().direction(),
+        );
+        backend.end_frame()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 #[path = "../../tests/unit/theme_propagation_engine_unit_tests.rs"]
 mod theme_propagation_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/context_menu_engine_unit_tests.rs"]
+mod context_menu_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/dropdown_menu_engine_unit_tests.rs"]

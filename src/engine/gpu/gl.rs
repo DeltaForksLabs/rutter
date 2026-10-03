@@ -44,7 +44,7 @@ pub struct GlBackend {
     skia_context: DirectContext,
     gl_surface: GlutinSurface<WindowSurface>,
     gl_context: PossiblyCurrentContext,
-    window: Rc<Window>,
+    window: Rc<dyn Window>,
     fb_info: FramebufferInfo,
     sample_count: usize,
     stencil_size: usize,
@@ -138,7 +138,7 @@ fn ensure_backend_context_not_current(
 
 impl GlBackend {
     pub fn try_new(
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         attrs: WindowAttributes,
     ) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
         let transparent = attrs.transparent();
@@ -150,7 +150,7 @@ impl GlBackend {
         )
         .map_err(|reason| BackendFailure::new(BackendType::OpenGl, reason))?;
 
-        let window = Rc::new(window.ok_or_else(|| {
+        let window: Rc<dyn Window> = Rc::from(window.ok_or_else(|| {
             BackendFailure::new(
                 BackendType::OpenGl,
                 "glutin did not create a compatible window",
@@ -183,7 +183,7 @@ impl GlBackend {
             })?,
         };
 
-        let size = window.inner_size();
+        let size = window.surface_size();
         let surface_attributes = SurfaceAttributesBuilder::<WindowSurface>::new().build(
             raw_window_handle,
             NonZeroU32::new(size.width.max(1)).unwrap(),
@@ -262,10 +262,10 @@ impl GlBackend {
 }
 
 fn build_gl_window(
-    event_loop: &ActiveEventLoop,
+    event_loop: &dyn ActiveEventLoop,
     attrs: WindowAttributes,
     transparent: bool,
-) -> Result<(Option<Window>, Config), BackendFailure> {
+) -> Result<(Option<Box<dyn Window>>, Config), BackendFailure> {
     let builder = DisplayBuilder::new().with_window_attributes(Some(attrs));
     // glutin-winit 0.5 makes the picker infallible, so a private sentinel is
     // recovered here to preserve backend fallback when EGL reports zero configs.
@@ -461,7 +461,7 @@ impl GraphicsBackend for GlBackend {
         Ok(())
     }
 
-    fn window(&self) -> &Rc<Window> {
+    fn window(&self) -> &Rc<dyn Window> {
         &self.window
     }
 }

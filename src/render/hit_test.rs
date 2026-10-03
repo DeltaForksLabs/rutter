@@ -23,9 +23,7 @@ use crate::layout::{
 use crate::render::RichTextRenderer;
 use crate::render::counter::{CounterSegment, counter_segment_at};
 use crate::widget::{
-    CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
-    CONTEXT_MENU_VIEWPORT_MARGIN, ContextMenuEntry, DialogAction, DialogPosition, POPOVER_GAP,
-    POPOVER_VIEWPORT_MARGIN, Widget, estimate_context_menu_height, estimate_context_menu_width,
+    DialogAction, DialogPosition, POPOVER_GAP, POPOVER_VIEWPORT_MARGIN, Widget,
     pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
 };
 use crate::widgets::carousel::geometry::carousel_item_frames;
@@ -156,6 +154,7 @@ pub struct InputGeometry {
 
 pub enum ContextMenuOverlayHit<Msg> {
     Item { id: u64, msg: Msg },
+    Submenu { id: u64, path: Vec<usize> },
     Consume,
     Dismiss,
 }
@@ -164,27 +163,6 @@ pub enum PopoverOverlayHit<Msg> {
     Content(HitResult<Msg>),
     Consume,
     Dismiss { id: u64, on_dismiss: Option<Msg> },
-}
-
-pub(crate) fn context_menu_rect<Msg>(
-    entries: &[ContextMenuEntry<'_, Msg>],
-    anchor: Point,
-    viewport_size: (f32, f32),
-    font_size: f32,
-) -> SkiaRect {
-    let width = estimate_context_menu_width(entries, font_size)
-        .min((viewport_size.0 - CONTEXT_MENU_VIEWPORT_MARGIN * 2.0).max(1.0));
-    let height = (estimate_context_menu_height(entries) + CONTEXT_MENU_PAD_Y * 2.0)
-        .min((viewport_size.1 - CONTEXT_MENU_VIEWPORT_MARGIN * 2.0).max(1.0));
-    let x = anchor.x.clamp(
-        CONTEXT_MENU_VIEWPORT_MARGIN,
-        (viewport_size.0 - width - CONTEXT_MENU_VIEWPORT_MARGIN).max(CONTEXT_MENU_VIEWPORT_MARGIN),
-    );
-    let y = anchor.y.clamp(
-        CONTEXT_MENU_VIEWPORT_MARGIN,
-        (viewport_size.1 - height - CONTEXT_MENU_VIEWPORT_MARGIN).max(CONTEXT_MENU_VIEWPORT_MARGIN),
-    );
-    SkiaRect::from_xywh(x, y, width, height)
 }
 
 pub(crate) fn popover_rect(
@@ -256,6 +234,10 @@ pub(crate) fn modal_card_rect(content_height: f32, viewport_size: (f32, f32)) ->
     SkiaRect::from_xywh(x, y, width, height)
 }
 
+/// Tests context-menu overlays with a sans-serif font at the supplied size.
+///
+/// This compatibility convenience API resolves its font for each call. Engine
+/// input paths use the internal retained-font API to share painting metrics.
 pub fn hit_test_context_menu_overlay<Msg: Clone>(
     widget: &Widget<Msg>,
     mouse: Point,
@@ -263,158 +245,57 @@ pub fn hit_test_context_menu_overlay<Msg: Clone>(
     widget_states: &HashMap<u64, WidgetState>,
     font_size: f32,
 ) -> Option<ContextMenuOverlayHit<Msg>> {
-    let mut path = Vec::new();
-    let mut any_open = false;
-    let hit = hit_test_context_menu_overlay_impl(
+    // Compatibility boundary for callers without a retained render cache.
+    // Engine input paths inject their cached font into the internal API below.
+    let font = super::text::get_cached_font(&mut HashMap::new(), "sans-serif", font_size);
+    hit_test_context_menu_overlay_with_direction(
         widget,
         mouse,
         viewport_size,
         widget_states,
-        font_size,
-        &mut path,
-        &mut any_open,
-    );
-    hit.or_else(|| any_open.then_some(ContextMenuOverlayHit::Dismiss))
+        &font,
+        crate::i18n::LayoutDirection::Ltr,
+    )
 }
 
-fn hit_test_context_menu_overlay_impl<Msg: Clone>(
+pub(crate) fn hit_test_context_menu_overlay_with_direction<Msg: Clone>(
     widget: &Widget<Msg>,
     mouse: Point,
     viewport_size: (f32, f32),
     widget_states: &HashMap<u64, WidgetState>,
-    font_size: f32,
-    path: &mut Vec<usize>,
-    any_open: &mut bool,
+    font: &skia_safe::Font,
+    direction: crate::i18n::LayoutDirection,
 ) -> Option<ContextMenuOverlayHit<Msg>> {
-    match widget {
-        Widget::ContextMenu { child, entries, .. } => {
-            let resolved_id = widget.resolved_id(path).unwrap();
-            let menu_state = widget_states
-                .get(&resolved_id)
-                .and_then(|s| s.as_context_menu());
-            if let Some(state) = menu_state
-                && state.is_open
-            {
-                *any_open = true;
-                let rect = context_menu_rect(
-                    entries,
-                    Point::new(state.anchor_x, state.anchor_y),
-                    viewport_size,
-                    font_size,
-                );
-                if rect.contains(mouse) {
-                    let mut y = rect.top + CONTEXT_MENU_PAD_Y;
-                    for entry in entries.iter() {
-                        let item_h = match entry {
-                            ContextMenuEntry::Item { .. } => CONTEXT_MENU_ITEM_H,
-                            ContextMenuEntry::Separator => CONTEXT_MENU_SEPARATOR_H,
-                        };
-                        let item_rect = SkiaRect::from_xywh(rect.left, y, rect.width(), item_h);
-                        if item_rect.contains(mouse) {
-                            return match entry {
-                                ContextMenuEntry::Item {
-                                    on_select: Some(msg),
-                                    ..
-                                } => Some(ContextMenuOverlayHit::Item {
-                                    id: resolved_id,
-                                    msg: msg.clone(),
-                                }),
-                                _ => Some(ContextMenuOverlayHit::Consume),
-                            };
-                        }
-                        y += item_h;
-                    }
-                    return Some(ContextMenuOverlayHit::Consume);
-                }
+    use crate::widgets::dropdown_menu::{entries_at_level, point_to_entry};
+    let mut menus = Vec::new();
+    super::collect_open_context_menus(widget, widget_states, &mut Vec::new(), &mut menus);
+    for menu in menus.iter().rev() {
+        let surfaces =
+            super::context_menu_overlay::context_surfaces(menu, viewport_size, direction, font);
+        for surface in surfaces.iter().rev() {
+            if !surface.rect.contains(mouse) {
+                continue;
             }
-            path.push(0);
-            let hit = hit_test_context_menu_overlay_impl(
-                child,
-                mouse,
-                viewport_size,
-                widget_states,
-                font_size,
-                path,
-                any_open,
-            );
-            path.pop();
-            hit
-        }
-        Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for (index, child) in children.iter().enumerate().rev() {
+            let level = entries_at_level(menu.entries, &surface.level_path)?;
+            let Some(index) = point_to_entry(surface, level, mouse) else {
+                return Some(ContextMenuOverlayHit::Consume);
+            };
+            let entry = &level[index];
+            return Some(if let Some(msg) = entry.action_message() {
+                ContextMenuOverlayHit::Item {
+                    id: menu.id,
+                    msg: msg.clone(),
+                }
+            } else if entry.submenu_entries().is_some() && !entry.is_disabled() {
+                let mut path = surface.level_path.clone();
                 path.push(index);
-                let hit = hit_test_context_menu_overlay_impl(
-                    child,
-                    mouse,
-                    viewport_size,
-                    widget_states,
-                    font_size,
-                    path,
-                    any_open,
-                );
-                path.pop();
-                if hit.is_some() {
-                    return hit;
-                }
-            }
-            None
+                ContextMenuOverlayHit::Submenu { id: menu.id, path }
+            } else {
+                ContextMenuOverlayHit::Consume
+            });
         }
-        Widget::Container { child, .. }
-        | Widget::PointerRegion { child, .. }
-        | Widget::Tooltip { child, .. }
-        | Widget::ScrollView { child, .. }
-        | Widget::TableOfContents { child, .. } => {
-            path.push(0);
-            let hit = hit_test_context_menu_overlay_impl(
-                child,
-                mouse,
-                viewport_size,
-                widget_states,
-                font_size,
-                path,
-                any_open,
-            );
-            path.pop();
-            hit
-        }
-        Widget::Accordion {
-            expanded, child, ..
-        } => {
-            if !expanded {
-                return None;
-            }
-            path.push(0);
-            let hit = hit_test_context_menu_overlay_impl(
-                child,
-                mouse,
-                viewport_size,
-                widget_states,
-                font_size,
-                path,
-                any_open,
-            );
-            path.pop();
-            hit
-        }
-        Widget::Modal { visible, child, .. } | Widget::Dialog { visible, child, .. } => {
-            if !visible {
-                return None;
-            }
-            path.push(0);
-            let hit = hit_test_context_menu_overlay_impl(
-                child,
-                mouse,
-                viewport_size,
-                widget_states,
-                font_size,
-                path,
-                any_open,
-            );
-            path.pop();
-            hit
-        }
-        _ => None,
     }
+    (!menus.is_empty()).then_some(ContextMenuOverlayHit::Dismiss)
 }
 
 pub fn hit_test_popover_overlay<Msg: Clone>(

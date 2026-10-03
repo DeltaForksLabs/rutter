@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::window::{Window, WindowAttributes, WindowLevel as WinitWindowLevel};
+use winit::window::{WindowAttributes, WindowLevel as WinitWindowLevel};
 
 /// Positive physical dimensions requested for a window's inner surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,7 +334,7 @@ impl WindowConfig {
     }
 
     pub(crate) fn window_attributes(&self) -> WindowAttributes {
-        let attributes = Window::default_attributes()
+        let attributes = WindowAttributes::default()
             .with_title(self.title.clone())
             .with_visible(self.visible)
             .with_transparent(self.transparent)
@@ -352,9 +352,9 @@ impl WindowConfig {
     }
 
     fn apply_geometry(&self, mut attributes: WindowAttributes) -> WindowAttributes {
-        attributes.inner_size = self.inner_size.map(window_size_to_winit);
-        attributes.min_inner_size = self.min_inner_size.map(window_size_to_winit);
-        attributes.max_inner_size = self.max_inner_size.map(window_size_to_winit);
+        attributes.surface_size = self.inner_size.map(window_size_to_winit);
+        attributes.min_surface_size = self.min_inner_size.map(window_size_to_winit);
+        attributes.max_surface_size = self.max_inner_size.map(window_size_to_winit);
         attributes.position = self.position.map(window_position_to_winit);
         attributes
     }

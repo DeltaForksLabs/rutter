@@ -135,13 +135,16 @@ pub(crate) fn shortcut_event_from_winit(
         control: modifiers.control_key(),
         alt: modifiers.alt_key(),
         shift: modifiers.shift_key(),
-        super_key: modifiers.super_key(),
+        super_key: modifiers.meta_key(),
         repeat,
     }
 }
 
 fn shortcut_key_from_winit(logical_key: &Key) -> ShortcutKey {
     match logical_key {
+        Key::Character(character) if character == " " => {
+            ShortcutKey::Named(ShortcutNamedKey::Space)
+        }
         Key::Character(character) => ShortcutKey::Character(character.to_string()),
         Key::Named(named_key) => ShortcutKey::Named(shortcut_named_key_from_winit(*named_key)),
         Key::Dead(character) => ShortcutKey::Dead(*character),
@@ -149,12 +152,11 @@ fn shortcut_key_from_winit(logical_key: &Key) -> ShortcutKey {
     }
 }
 
-const PORTABLE_NAMED_KEYS: [(NamedKey, ShortcutNamedKey); 15] = [
+const PORTABLE_NAMED_KEYS: [(NamedKey, ShortcutNamedKey); 14] = [
     (NamedKey::Backspace, ShortcutNamedKey::Backspace),
     (NamedKey::Tab, ShortcutNamedKey::Tab),
     (NamedKey::Enter, ShortcutNamedKey::Enter),
     (NamedKey::Escape, ShortcutNamedKey::Escape),
-    (NamedKey::Space, ShortcutNamedKey::Space),
     (NamedKey::ArrowUp, ShortcutNamedKey::ArrowUp),
     (NamedKey::ArrowDown, ShortcutNamedKey::ArrowDown),
     (NamedKey::ArrowLeft, ShortcutNamedKey::ArrowLeft),
@@ -223,7 +225,7 @@ mod tests {
     #[test]
     fn normalizes_portable_named_keys_without_character_fallback() {
         let event =
-            shortcut_event_from_winit(&Key::Named(NamedKey::Escape), ModifiersState::SUPER, false);
+            shortcut_event_from_winit(&Key::Named(NamedKey::Escape), ModifiersState::META, false);
 
         assert_eq!(event.key, ShortcutKey::Named(ShortcutNamedKey::Escape));
         assert!(event.super_key);
@@ -235,5 +237,12 @@ mod tests {
             shortcut_event_from_winit(&Key::Named(NamedKey::F5), ModifiersState::empty(), false);
 
         assert_eq!(event.key, ShortcutKey::Named(ShortcutNamedKey::Function(5)));
+    }
+
+    #[test]
+    fn space_remains_a_portable_named_shortcut() {
+        let event =
+            shortcut_event_from_winit(&Key::Character(" ".into()), ModifiersState::empty(), false);
+        assert_eq!(event.key, ShortcutKey::Named(ShortcutNamedKey::Space));
     }
 }

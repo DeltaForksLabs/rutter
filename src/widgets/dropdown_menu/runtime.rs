@@ -121,6 +121,30 @@ pub(crate) trait DropdownMenuEntryAccess: Sized {
     fn entry_kind(&self) -> DropdownMenuEntryKind;
     fn child_entries(&self) -> Option<&[Self]>;
 
+    fn entry_svg_icon(&self) -> Option<&[u8]> {
+        None
+    }
+    fn entry_shortcut_label(&self) -> Option<&str> {
+        None
+    }
+
+    fn entry_checked(&self) -> Option<bool> {
+        None
+    }
+    fn entry_selected(&self) -> Option<bool> {
+        None
+    }
+    fn entry_height(&self) -> f32 {
+        if self.entry_is_focusable() {
+            super::ITEM_ROW_HEIGHT
+        } else {
+            super::SEPARATOR_HEIGHT
+        }
+    }
+    fn level_padding() -> f32 {
+        super::MENU_PADDING
+    }
+
     fn entry_is_focusable(&self) -> bool {
         self.entry_kind() != DropdownMenuEntryKind::Separator
     }
@@ -131,6 +155,12 @@ pub(crate) trait DropdownMenuEntryAccess: Sized {
 }
 
 impl<Msg> DropdownMenuEntryAccess for DropdownMenuEntry<'_, Msg> {
+    fn entry_checked(&self) -> Option<bool> {
+        self.checked()
+    }
+    fn entry_selected(&self) -> Option<bool> {
+        self.selected()
+    }
     fn entry_label(&self) -> Option<&str> {
         self.label()
     }
@@ -145,6 +175,68 @@ impl<Msg> DropdownMenuEntryAccess for DropdownMenuEntry<'_, Msg> {
 
     fn child_entries(&self) -> Option<&[Self]> {
         self.submenu_entries()
+    }
+}
+
+impl<Msg> DropdownMenuEntryAccess for crate::widget::ContextMenuEntry<'_, Msg> {
+    fn entry_label(&self) -> Option<&str> {
+        self.label()
+    }
+    fn entry_is_disabled(&self) -> bool {
+        self.is_disabled()
+    }
+    fn entry_kind(&self) -> DropdownMenuEntryKind {
+        match self.undecorated() {
+            Self::Item { .. } => DropdownMenuEntryKind::Item,
+            Self::Submenu { .. } => DropdownMenuEntryKind::Submenu,
+            _ => DropdownMenuEntryKind::Separator,
+        }
+    }
+    fn child_entries(&self) -> Option<&[Self]> {
+        self.submenu_entries()
+    }
+    fn entry_svg_icon(&self) -> Option<&[u8]> {
+        self.svg_icon()
+    }
+    fn entry_shortcut_label(&self) -> Option<&str> {
+        self.shortcut_label()
+    }
+    fn entry_height(&self) -> f32 {
+        if self.entry_is_focusable() {
+            crate::widget::CONTEXT_MENU_ITEM_H
+        } else {
+            crate::widget::CONTEXT_MENU_SEPARATOR_H
+        }
+    }
+    fn level_padding() -> f32 {
+        crate::widget::CONTEXT_MENU_PAD_Y
+    }
+}
+
+pub(crate) fn to_owned_context_entries<Msg: Clone>(
+    entries: &[crate::widget::ContextMenuEntry<'_, Msg>],
+) -> Vec<OwnedDropdownMenuEntry<Msg>> {
+    entries.iter().map(to_owned_context_entry).collect()
+}
+
+fn to_owned_context_entry<Msg: Clone>(
+    entry: &crate::widget::ContextMenuEntry<'_, Msg>,
+) -> OwnedDropdownMenuEntry<Msg> {
+    use crate::widget::ContextMenuEntry;
+    match entry {
+        ContextMenuEntry::Item { label, on_select } => owned_item(label, on_select, None),
+        ContextMenuEntry::Submenu {
+            label,
+            entries,
+            enabled,
+        } => OwnedDropdownMenuEntry::Submenu {
+            label: (*label).to_owned(),
+            entries: to_owned_context_entries(entries),
+            enabled: *enabled,
+            key: None,
+        },
+        ContextMenuEntry::Separator => OwnedDropdownMenuEntry::Separator,
+        ContextMenuEntry::Decorated { entry, .. } => to_owned_context_entry(entry.undecorated()),
     }
 }
 

@@ -9,7 +9,7 @@ use std::{
 
 use accesskit::{
     Action, ActivationHandler, DeactivationHandler, Node, NodeId, Orientation as AccessOrientation,
-    Rect, Role, Toggled, Tree, TreeId, TreeUpdate,
+    Rect, Role, Toggled, TreeId, TreeInfo, TreeUpdate,
 };
 use cosmic_text::FontSystem;
 use skia_safe::{Point, Rect as SkiaRect};
@@ -179,7 +179,7 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
         let focus = self.focus_node_id(root);
         TreeUpdate {
             nodes: self.nodes,
-            tree: Some(Tree::new(root)),
+            tree: Some(TreeInfo::new(root)),
             tree_id: TreeId::ROOT,
             focus,
         }

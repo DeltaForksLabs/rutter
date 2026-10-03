@@ -14,15 +14,15 @@ keywords = ["rutter", "graphics", "gui"]
 readme = "README.md"
 
 [dependencies]
-winit       = "0.30.13"
+winit       = { version = "=0.31.0-beta.3", path = "vendor/rutter-winit/winit" }
 taffy       = "0.10.1"
 skia-safe   = { version = "0.93.1", features = ["gl", "svg", "vulkan", "textlayout"] }
 cosmic-text = "0.18.2"
 arboard     = "3.6.1"
 chrono      = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz   = "0.10.4"
-accesskit   = "0.24.0"
-accesskit_winit = "0.32.2"
+accesskit   = "0.25.1"
+accesskit_winit = { version = "=0.34.1", path = "vendor/rutter-accesskit-winit" }
 fluent      = "0.17.0"
 unic-langid = "0.9.6"
 unicode-segmentation = "1.12.0"
@@ -34,15 +34,16 @@ ash-window = "0.13.0"
 
 # --- Backend OpenGL ---
 glutin = "0.32.3"
-glutin-winit = "0.5.0"
+glutin-winit = { version = "=0.5.0", path = "vendor/rutter-glutin-winit" }
 raw-window-handle = "0.6.2"
 
 # --- Backend CPU ---
 softbuffer  = "0.4.8"
 zeroize     = "1.8.2"
 
-[dev-dependencies]
-# sem deps extras — testes usam apenas a stdlib + deps acima
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Native X11 integration exercises a real Rutter widget with XTEST input.
+x11rb = { version = "0.13.2", features = ["xtest"] }
 
 [lib]
 crate-type = ["rlib", "cdylib"]

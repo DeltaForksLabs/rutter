@@ -64,15 +64,15 @@ fn config_defaults_and_attributes_are_independent() {
     assert!(!attributes.decorations);
     assert!(!attributes.resizable);
     assert_eq!(
-        attributes.inner_size,
+        attributes.surface_size,
         Some(Size::Physical(PhysicalSize::new(900, 700)))
     );
     assert_eq!(
-        attributes.min_inner_size,
+        attributes.min_surface_size,
         Some(Size::Physical(PhysicalSize::new(500, 400)))
     );
     assert_eq!(
-        attributes.max_inner_size,
+        attributes.max_surface_size,
         Some(Size::Physical(PhysicalSize::new(1200, 900)))
     );
     assert_eq!(

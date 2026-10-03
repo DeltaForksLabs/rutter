@@ -8,12 +8,19 @@ use super::*;
 impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     pub(super) fn dispatch_surface_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         surface: SurfaceId,
         native: WindowId,
         event: WindowEvent,
     ) {
-        let surface_event = translate_surface_event(&event);
+        let surface_event = routed_surface_event(
+            &event,
+            self.routes.surface_for(native) == Some(surface),
+            self.surface_runners
+                .get(&surface)
+                .and_then(|runner| runner.native_menu_window_id())
+                .is_some(),
+        );
         if !self.forward_native_surface_event(event_loop, surface, native, event) {
             return;
         }
@@ -31,7 +38,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn forward_native_surface_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         surface: SurfaceId,
         native: WindowId,
         event: WindowEvent,
@@ -53,7 +60,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn dispatch_application_surface_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         surface: SurfaceId,
         event: SurfaceEvent,
     ) {
@@ -112,6 +119,19 @@ pub(super) fn translate_surface_event(event: &WindowEvent) -> Option<SurfaceEven
     }
 }
 
+fn routed_surface_event(
+    event: &WindowEvent,
+    is_primary_window: bool,
+    native_popup_open: bool,
+) -> Option<SurfaceEvent> {
+    // The popup is owned by its parent surface. Activating it must not close
+    // an application surface configured to close on focus loss.
+    if !is_primary_window || native_popup_open && matches!(event, WindowEvent::Focused(false)) {
+        return None;
+    }
+    translate_surface_event(event)
+}
+
 pub(super) fn commands_end_surface_lifecycle(
     commands: &[SurfaceCommand],
     surface: SurfaceId,
@@ -120,4 +140,25 @@ pub(super) fn commands_end_surface_lifecycle(
         matches!(command, SurfaceCommand::Close(target) if *target == surface)
             || matches!(command, SurfaceCommand::Exit)
     })
+}
+
+#[cfg(test)]
+mod native_menu_tests {
+    use super::*;
+
+    #[test]
+    fn popup_focus_does_not_close_its_application_surface() {
+        assert_eq!(
+            routed_surface_event(&WindowEvent::Focused(false), true, true),
+            None
+        );
+        assert_eq!(
+            routed_surface_event(&WindowEvent::Focused(true), false, true),
+            None
+        );
+        assert_eq!(
+            routed_surface_event(&WindowEvent::Focused(false), true, false),
+            Some(SurfaceEvent::FocusChanged(false)),
+        );
+    }
 }

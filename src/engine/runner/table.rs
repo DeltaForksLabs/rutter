@@ -263,7 +263,7 @@ fn table_interaction_modifiers(modifiers: ModifiersState) -> TableInteractionMod
 
 fn primary_table_modifier(modifiers: ModifiersState) -> bool {
     if cfg!(target_os = "macos") {
-        return modifiers.super_key();
+        return modifiers.meta_key();
     }
     modifiers.control_key()
 }

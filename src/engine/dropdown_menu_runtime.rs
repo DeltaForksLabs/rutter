@@ -23,7 +23,96 @@ pub(super) struct DropdownMenuItemRuntime {
     pub(super) path: Vec<usize>,
 }
 
+pub(super) enum MenuActivation<Msg> {
+    Focus(Vec<usize>),
+    Action(Msg),
+    Ignored,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum MenuHoverOutcome {
+    #[default]
+    Ignored,
+    Unchanged,
+    Changed {
+        geometry_changed: bool,
+    },
+}
+
+impl MenuHoverOutcome {
+    pub(super) fn changed(self) -> bool {
+        matches!(self, Self::Changed { .. })
+    }
+}
+
 impl<Msg: Clone> DropdownMenuRuntime<Msg> {
+    pub(super) fn hover_entry(
+        &self,
+        state: &mut crate::dropdown_menu::DropdownMenuState,
+        path: Vec<usize>,
+    ) -> MenuHoverOutcome {
+        if !state.is_open()
+            || !self.path_is_reachable(&path, state.open_submenu_path())
+            || self.entry_kind(&path) == Some(DropdownMenuEntryKind::Separator)
+        {
+            return MenuHoverOutcome::Ignored;
+        }
+        let opens_submenu = self.entry_kind(&path) == Some(DropdownMenuEntryKind::Submenu)
+            && !self.is_disabled(&path);
+        let open_path = state.open_submenu_path();
+        let retained_depth = open_path
+            .iter()
+            .zip(&path)
+            .take_while(|(open, active)| open == active)
+            .count();
+        let next_open_path = if opens_submenu {
+            path.as_slice()
+        } else {
+            &open_path[..retained_depth]
+        };
+        let chain_changed = open_path != next_open_path;
+        let geometry_changed = chain_changed || !state.should_reveal_active();
+        if state.active_path() == Some(path.as_slice()) && !geometry_changed {
+            return MenuHoverOutcome::Unchanged;
+        }
+        // Reopening an already-open branch resets deeper retained scrolling.
+        // Only expand when the chain actually changes; activation still restores
+        // reveal-after-scroll and collapses keyboard-open descendants as needed.
+        if opens_submenu && chain_changed {
+            state.expand_submenu(path.clone(), None);
+        }
+        state.activate_path(path);
+        MenuHoverOutcome::Changed { geometry_changed }
+    }
+    pub(super) fn activate_entry(
+        &self,
+        state: &mut crate::dropdown_menu::DropdownMenuState,
+        path: Vec<usize>,
+    ) -> MenuActivation<Msg> {
+        if !state.is_open() || !self.path_is_reachable(&path, state.open_submenu_path()) {
+            return MenuActivation::Ignored;
+        }
+        if self.is_disabled(&path) {
+            return MenuActivation::Focus(path);
+        }
+        if self.entry_kind(&path) == Some(DropdownMenuEntryKind::Submenu) {
+            let child = self.first_child_path(&path);
+            let index = child.as_ref().and_then(|path| path.last()).copied();
+            state.expand_submenu(path.clone(), index);
+            return MenuActivation::Focus(child.unwrap_or(path));
+        }
+        self.action_message(&path)
+            .map(MenuActivation::Action)
+            .unwrap_or(MenuActivation::Ignored)
+    }
+    pub(super) fn from_context_entries(
+        entries: &[crate::widget::ContextMenuEntry<'_, Msg>],
+    ) -> Self {
+        Self {
+            entries: crate::widgets::dropdown_menu::to_owned_context_entries(entries),
+            item_ids: HashMap::new(),
+        }
+    }
     pub(super) fn from_widget(
         widget: &Widget<'_, Msg>,
         widget_path: &[usize],

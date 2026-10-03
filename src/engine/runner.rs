@@ -6,7 +6,9 @@
 // ============================================================
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
+    rc::Rc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -15,7 +17,10 @@ use skia_safe::{Point, Rect as SkiaRect};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
-    event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent},
+    event::{
+        ButtonSource, ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, PointerKind,
+        PointerSource, StartCause, WindowEvent,
+    },
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::{WindowAttributes, WindowId},
@@ -37,9 +42,9 @@ use crate::render::dropdown_menu_overlay::{
     DropdownMenuOverlayHit, hit_test_dropdown_menu_overlay,
 };
 use crate::render::hit_test::{
-    ContextMenuOverlayHit, HitResult, PopoverOverlayHit, ScrollbarAxis,
-    find_context_menu_target_with_metadata, find_scroll_focus, find_scrollbar_drag_hit, hit_test,
-    hit_test_context_menu_overlay, hit_test_popover_overlay,
+    HitResult, PopoverOverlayHit, ScrollbarAxis, find_context_menu_target_with_metadata,
+    find_scroll_focus, find_scrollbar_drag_hit, hit_test,
+    hit_test_context_menu_overlay_with_direction, hit_test_popover_overlay,
 };
 use crate::render::search_overlay::{
     SearchOverlayHit, SearchOverlayHitInput, hit_test_search_overlay,
@@ -57,6 +62,9 @@ mod counter;
 mod custom;
 mod dropdown_keyboard;
 mod dropdown_pointer;
+#[cfg(all(test, target_os = "linux"))]
+mod native_integration;
+mod native_menu;
 mod pointer_region;
 mod search;
 mod secondary_pointer;
@@ -269,8 +277,7 @@ fn map_key(key: &Key, ctrl: bool) -> Option<Action> {
 }
 
 fn is_activation_key(key: &Key) -> bool {
-    matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space))
-        || matches!(key, Key::Character(ch) if ch == " ")
+    matches!(key, Key::Named(NamedKey::Enter)) || matches!(key, Key::Character(ch) if ch == " ")
 }
 
 fn collect_toast_runtime_state(widget_states: &HashMap<u64, WidgetState>) -> (Vec<u64>, bool) {
@@ -337,6 +344,7 @@ fn wheel_deltas(delta: MouseScrollDelta) -> (f32, f32) {
     match delta {
         MouseScrollDelta::LineDelta(x, y) => (-x * 40.0, -y * 40.0),
         MouseScrollDelta::PixelDelta(point) => (-point.x as f32, -point.y as f32),
+        _ => (0.0, 0.0),
     }
 }
 
@@ -507,6 +515,8 @@ fn is_double_click(
 pub struct RutterRunner<A: AppLogic> {
     engine: RutterEngine<A>,
     active_window_id: Option<WindowId>,
+    native_menu: Option<native_menu::NativeMenuSurface>,
+    native_menus_unavailable: bool,
     cursor_pos: Point,
     cursor_physical: PhysicalPosition<f64>,
     scroll_drag: Option<ScrollDrag>,
@@ -522,6 +532,7 @@ pub struct RutterRunner<A: AppLogic> {
     focused_input_rect: Option<SkiaRect>,
     clock_redraw_at: Option<Instant>,
     fatal_error: Option<RutterRunError>,
+    completion_error: Option<Rc<RefCell<Option<RutterRunError>>>>,
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
@@ -529,6 +540,8 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         Self {
             engine,
             active_window_id: None,
+            native_menu: None,
+            native_menus_unavailable: false,
             cursor_pos: Point::new(0.0, 0.0),
             cursor_physical: PhysicalPosition::new(0.0, 0.0),
             scroll_drag: None,
@@ -544,7 +557,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             focused_input_rect: None,
             clock_redraw_at: None,
             fatal_error: None,
+            completion_error: None,
         }
+    }
+
+    fn update_cursor_position(&mut self, position: PhysicalPosition<f64>) {
+        self.cursor_physical = position;
+        self.cursor_pos = Point::new(position.x as f32, position.y as f32);
+        self.engine.last_mouse_pos = logical_cursor_position(position, self.engine.scale_factor);
     }
 
     /// Runs the application and reports startup failures to standard error.
@@ -570,23 +590,35 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         el.set_control_flow(ControlFlow::Wait);
         let mut r = Self::with_engine(RutterEngine::new()?);
         r.engine.set_accessibility_waker(el.create_proxy());
-        let event_result = el.run_app(&mut r);
-        if let Some(error) = r.fatal_error {
+        let completion_error = Rc::new(RefCell::new(None));
+        r.completion_error = Some(completion_error.clone());
+        let event_result = el.run_app(r);
+        if let Some(error) = completion_error.borrow_mut().take() {
             return Err(error);
         }
         event_result.map_err(RutterRunError::from)
     }
 }
 
+impl<A: AppLogic> Drop for RutterRunner<A> {
+    fn drop(&mut self) {
+        // Popup raw handles refer to the parent; destroy them before engine fields.
+        self.native_menu = None;
+        if let Some(completion_error) = &self.completion_error {
+            *completion_error.borrow_mut() = self.fatal_error.take();
+        }
+    }
+}
+
 impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.process_accessibility_actions();
         if self.fatal_error.is_some() {
             event_loop.exit();
         }
     }
 
-    fn resumed(&mut self, el: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
         if self.active_window_id.is_some() {
             return;
         }
@@ -596,11 +628,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         }
     }
 
-    fn suspended(&mut self, _: &ActiveEventLoop) {
+    fn destroy_surfaces(&mut self, _: &dyn ActiveEventLoop) {
         self.release_surface();
     }
 
-    fn new_events(&mut self, el: &ActiveEventLoop, _: StartCause) {
+    fn new_events(&mut self, el: &dyn ActiveEventLoop, _: StartCause) {
         if self.fatal_error.is_some() {
             el.exit();
             return;
@@ -611,17 +643,36 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         }
     }
 
-    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        if self.fatal_error.is_some() {
+            return;
+        }
+        if let Err(error) = self.sync_native_menu(el) {
+            self.terminate_for_error(el, error);
+            return;
+        }
         // Input handlers run after `new_events`, so this schedules a newly started scroll.
-        let deadline = self.next_smooth_scroll_deadline(Instant::now());
+        let deadline = self
+            .next_smooth_scroll_deadline(Instant::now())
+            .into_iter()
+            .chain(self.pending_native_menu_deadline())
+            .min();
         if let Some(deadline) = deadline {
             el.set_control_flow(ControlFlow::WaitUntil(deadline));
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, el: &dyn ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
         if self.fatal_error.is_some() {
             el.exit();
+            return;
+        }
+        if self
+            .native_menu
+            .as_ref()
+            .is_some_and(|popup| popup.id() == window_id)
+        {
+            self.native_menu_event(el, event);
             return;
         }
         if classify_window_event(self.active_window_id.as_ref(), &window_id)
@@ -638,10 +689,11 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         }
         match event {
             WindowEvent::CloseRequested => {
+                self.native_menu = None;
                 self.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
                 el.exit();
             }
-            WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
+            WindowEvent::SurfaceResized(size) if size.width > 0 && size.height > 0 => {
                 if let Err(error) = self.engine.handle_resize(size) {
                     self.terminate_for_error(el, error.into());
                 }
@@ -653,11 +705,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
             }
             WindowEvent::ModifiersChanged(m) => self.engine.modifiers = m,
             WindowEvent::Ime(Ime::Commit(text)) => self.insert_text_commit(&text),
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_physical = position;
-                self.cursor_pos = Point::new(position.x as f32, position.y as f32);
-                self.engine.last_mouse_pos =
-                    logical_cursor_position(self.cursor_physical, self.engine.scale_factor);
+            WindowEvent::PointerMoved {
+                position,
+                source: PointerSource::Mouse,
+                ..
+            } => {
+                self.update_cursor_position(position);
 
                 if let Some(drag) = &self.scroll_drag {
                     let id = drag.id;
@@ -772,15 +825,17 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
                 self.redraw();
             }
-            WindowEvent::MouseInput {
+            WindowEvent::PointerButton {
                 state: ElementState::Pressed,
-                button,
+                button: ButtonSource::Mouse(button),
+                position,
                 ..
             } if matches!(
                 button,
                 winit::event::MouseButton::Left | winit::event::MouseButton::Right
             ) =>
             {
+                self.update_cursor_position(position);
                 self.mouse_down = button == winit::event::MouseButton::Left;
                 if button == winit::event::MouseButton::Left {
                     self.counter_hold_repeat = None;
@@ -797,7 +852,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 self.last_click_pos = self.cursor_pos;
                 self.last_click_was_double = is_double;
 
-                let size = self.engine.window.as_ref().unwrap().inner_size();
+                let size = self.engine.window.as_ref().unwrap().surface_size();
                 if let Err(error) = self.engine.try_ensure_widget_states() {
                     self.terminate_for_error(el, error.into());
                     return;
@@ -841,12 +896,18 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         return;
                     }
                     let context_menu_overlay_hit = if button == MouseButton::Left {
-                        hit_test_context_menu_overlay(
+                        let font = crate::render::text::get_cached_font(
+                            &mut self.engine.font_cache,
+                            "sans-serif",
+                            theme.font_body,
+                        );
+                        hit_test_context_menu_overlay_with_direction(
                             &wt,
                             cursor,
                             viewport_size,
                             &self.engine.widget_states,
-                            theme.font_body,
+                            &font,
+                            A::locale().direction(),
                         )
                     } else {
                         None
@@ -998,17 +1059,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 if let Some(menu_hit) = context_menu_overlay_hit {
                     self.close_all_selects();
                     self.close_all_dropdown_menus();
-                    match menu_hit {
-                        ContextMenuOverlayHit::Item { msg, .. } => {
-                            self.engine.close_all_context_menus();
-                            A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
-                            self.engine.layout_dirty = true;
-                        }
-                        ContextMenuOverlayHit::Consume => {}
-                        ContextMenuOverlayHit::Dismiss => {
-                            self.engine.close_all_context_menus();
-                        }
-                    }
+                    self.handle_context_menu_hit(menu_hit);
                     self.redraw();
                     return;
                 }
@@ -1071,10 +1122,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
 
                 if button == MouseButton::Right {
-                    self.route_secondary_pointer_press(
+                    if let Err(error) = self.route_secondary_pointer_press(
                         secondary_pointer_blockers,
                         context_menu_target,
-                    );
+                    ) {
+                        self.terminate_for_error(el, error);
+                    }
                     return;
                 } else if self.engine.any_context_menu_open() {
                     self.engine.close_all_context_menus();
@@ -1382,11 +1435,13 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.redraw();
                 }
             }
-            WindowEvent::MouseInput {
+            WindowEvent::PointerButton {
                 state: ElementState::Released,
-                button: winit::event::MouseButton::Left,
+                button: ButtonSource::Mouse(MouseButton::Left),
+                position,
                 ..
             } => {
+                self.update_cursor_position(position);
                 self.mouse_down = false;
                 self.counter_hold_repeat = None;
                 let selected_text_clicked = self.release_pending_selected_text_drag();
@@ -1413,7 +1468,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     self.redraw();
                 }
             }
-            WindowEvent::CursorLeft { .. } => {
+            WindowEvent::PointerLeft {
+                kind: PointerKind::Mouse,
+                ..
+            } => {
                 self.mouse_down = false;
                 self.pending_selected_text_drag = None;
                 self.counter_hold_repeat = None;
@@ -1466,17 +1524,23 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if self.handle_application_shortcut(&event) || self.handle_text_commit(&event) {
-                    return;
-                }
                 if let Err(error) = self.refresh_layout_before_keyboard_input() {
                     self.terminate_for_error(el, error);
+                    return;
+                }
+                if self.handle_application_shortcut(&event) || self.handle_text_commit(&event) {
                     return;
                 }
                 self.handle_key(&event.logical_key, event.repeat);
             }
             WindowEvent::RedrawRequested => {
-                if let Err(error) = self.engine.try_redraw(self.cursor_pos) {
+                if let Err(error) = self.engine.try_redraw_with_native_menu(
+                    self.cursor_pos,
+                    self.native_menu
+                        .as_ref()
+                        .filter(|popup| popup.ready)
+                        .map(|popup| popup.kind),
+                ) {
                     self.terminate_for_error(el, error);
                 }
             }
@@ -1491,7 +1555,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .engine
             .window
             .as_ref()
-            .map(|window| window.inner_size())
+            .map(|window| window.surface_size())
         else {
             return Ok(());
         };
@@ -1502,7 +1566,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
     pub(crate) fn resume_surface(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         attributes: Option<WindowAttributes>,
         required_backend: Option<BackendType>,
     ) -> Result<(WindowId, BackendType), GraphicsError> {
@@ -1537,6 +1601,8 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     pub(crate) fn release_surface(&mut self) {
+        self.native_menu = None;
+        self.native_menus_unavailable = false;
         self.active_window_id = None;
         self.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
         self.scroll_drag = None;
@@ -1667,7 +1733,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         Some(self.engine.cursor_blink.next_tick_at())
     }
 
-    fn terminate_for_error(&mut self, event_loop: &ActiveEventLoop, error: RutterRunError) {
+    fn terminate_for_error(&mut self, event_loop: &dyn ActiveEventLoop, error: RutterRunError) {
         if self.fatal_error.is_none() {
             self.fatal_error = Some(error);
         }
@@ -1675,6 +1741,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn handle_text_commit(&mut self, event: &KeyEvent) -> bool {
+        if self.engine.any_context_menu_open() {
+            return false;
+        }
         if self.engine.focused_input_id().is_none() || self.engine.modifiers.state().control_key() {
             return false;
         }
@@ -1692,6 +1761,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn insert_text_commit(&mut self, text: &str) {
+        if self.engine.any_context_menu_open() {
+            return;
+        }
         let Some(fid) = self.engine.focused_input_id() else {
             return;
         };
@@ -1774,6 +1846,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(w) = self.engine.window.as_ref() {
             w.request_redraw();
         }
+        if let Some(popup) = &self.native_menu {
+            popup.backend.window().request_redraw();
+        }
     }
 
     fn focus_widget(&mut self, focus_id: Option<u64>) {
@@ -1826,7 +1901,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     .engine
                     .window
                     .as_ref()
-                    .map(|w| w.inner_size().width as f32 / self.engine.scale_factor)
+                    .map(|w| w.surface_size().width as f32 / self.engine.scale_factor)
                     .unwrap_or(800.0);
                 if let Some(state) = ws.as_tab_mut() {
                     state.set_active(index, size_ref / tab.tab_count.max(1) as f32);
@@ -1852,7 +1927,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .engine
             .window
             .as_ref()
-            .map(|window| window.inner_size())
+            .map(|window| window.surface_size())
         else {
             return Ok(false);
         };
@@ -1889,7 +1964,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     fn refresh_scroll_target_at_cursor(
         &mut self,
     ) -> Result<Option<WheelPopupTarget>, RutterRunError> {
-        let size = self.engine.window.as_ref().unwrap().inner_size();
+        let size = self.engine.window.as_ref().unwrap().surface_size();
         self.engine.try_ensure_widget_states()?;
         self.engine.try_ensure_layout(size)?;
         let widget = A::view(&mut self.engine.app_state);
@@ -2556,6 +2631,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn handle_key(&mut self, key: &Key, repeat: bool) {
+        if self.handle_context_menu_key(key) {
+            return;
+        }
         if self.engine.focused_widget_id.is_none()
             && let Some(sid) = self.engine.active_scroll_id
         {

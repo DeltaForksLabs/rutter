@@ -1,6 +1,7 @@
 use skia_safe::{Color, surfaces};
 
 use super::*;
+use crate::DropdownMenuEntry;
 use crate::render::select_overlay::collector::OverlayOwner;
 
 struct NonClone;
@@ -179,6 +180,61 @@ fn raster_draw_changes_pixels_inside_menu_surface() {
 
     let point = (menu_rect.left as i32 + 2, menu_rect.top as i32 + 2);
     assert_ne!(surface.peek_pixels().unwrap().get_color(point), Color::RED);
+}
+
+#[test]
+fn checkbox_and_radio_marks_survive_shared_menu_row_rendering() {
+    for direction in [LayoutDirection::Ltr, LayoutDirection::Rtl] {
+        for theme in [Theme::light(), Theme::dark()] {
+            let entries = [
+                DropdownMenuEntry::checkbox("Checked", true, NonClone),
+                DropdownMenuEntry::checkbox("Unchecked", false, NonClone),
+                DropdownMenuEntry::radio("Selected", true, NonClone),
+                DropdownMenuEntry::radio("Unselected", false, NonClone),
+            ];
+            let mut state = DropdownMenuState::default();
+            state.open_at_index(None);
+            let menu = overlay(&entries, state);
+            let panel = &overlay_surfaces(&menu, viewport(), direction)[0];
+            let mut output = surfaces::raster_n32_premul((500, 400)).unwrap();
+            draw_collected_overlays(
+                output.canvas(),
+                &[menu],
+                viewport(),
+                Point::new(-1.0, -1.0),
+                true,
+                &mut HashMap::new(),
+                &theme,
+                direction,
+            );
+            let pixels = output.peek_pixels().unwrap();
+            let mut ink_counts = Vec::new();
+            for index in 0..entries.len() {
+                let row = row_rect(panel, &entries, index).unwrap();
+                let x = match direction {
+                    LayoutDirection::Ltr => row.left + 15.0,
+                    LayoutDirection::Rtl => row.right - 15.0,
+                };
+                let mut count = 0;
+                for y in (row.center_y() - 7.0) as i32..(row.center_y() + 7.0) as i32 {
+                    for x in (x - 7.0) as i32..(x + 7.0) as i32 {
+                        count += usize::from(pixels.get_color((x, y)) != theme.surface);
+                    }
+                }
+                ink_counts.push(count);
+            }
+            assert!(ink_counts[0] > 0, "checked item must paint its tick");
+            assert_eq!(
+                ink_counts[1], 0,
+                "unchecked item must leave its mark gutter empty"
+            );
+            assert!(ink_counts[3] > 0, "unselected radio must paint its outline");
+            assert!(
+                ink_counts[2] > ink_counts[3],
+                "selected radio must also paint its center"
+            );
+        }
+    }
 }
 
 #[test]

@@ -6,6 +6,7 @@
 // ============================================================
 
 pub(crate) mod clock;
+pub(crate) mod context_menu_overlay;
 mod control_icons;
 pub(crate) mod counter;
 mod custom;
@@ -15,6 +16,7 @@ pub mod hit_test;
 pub mod image;
 mod image_cache;
 mod image_headers;
+pub(crate) mod menu_row;
 mod overlay_canvas;
 mod overlay_hover;
 pub mod pipeline;
@@ -26,6 +28,18 @@ mod table;
 mod table_of_contents;
 pub mod text;
 mod text_cache;
+
+#[cfg(test)]
+#[path = "../../tests/unit/native_menu_render_unit_tests.rs"]
+mod native_menu_render_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/context_menu_decoration_render_unit_tests.rs"]
+mod context_menu_decoration_render_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/focus_ring_render_unit_tests.rs"]
+mod focus_ring_render_tests;
 
 use std::{
     cell::RefCell,
@@ -71,12 +85,11 @@ use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{
     RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction, compute_layout,
 };
-use crate::render::hit_test::{context_menu_rect, dialog_card_rect, modal_card_rect, popover_rect};
+use crate::render::hit_test::{dialog_card_rect, modal_card_rect, popover_rect};
 use crate::text_controls::TextControlPolicy;
 use crate::theme::Theme;
 use crate::widget::{
-    ButtonVariant, CONTEXT_MENU_ITEM_H, CONTEXT_MENU_PAD_Y, CONTEXT_MENU_SEPARATOR_H,
-    ContextMenuEntry, CustomWidgetState, DialogAction, DialogPosition, InputState,
+    ButtonVariant, ContextMenuEntry, CustomWidgetState, DialogAction, DialogPosition, InputState,
     KeyedVirtualItems, Orientation, ToastKind, ToastPosition, VirtualSelection, Widget,
     is_interactive_virtual_item_path, pop_interactive_virtual_item_path,
     push_interactive_virtual_item_path,
@@ -105,10 +118,18 @@ struct ToastOverlay<'a> {
     created_at: Instant,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct ContextMenuOverlay<'a, Msg> {
-    entries: &'a [ContextMenuEntry<'a, Msg>],
-    anchor: Point,
+pub(crate) struct ContextMenuOverlay<'a, Msg> {
+    pub(crate) id: u64,
+    pub(crate) entries: &'a [ContextMenuEntry<'a, Msg>],
+    pub(crate) anchor: Point,
+    pub(crate) state: crate::dropdown_menu::DropdownMenuState,
+}
+
+/// The menu rendered in a separate native surface, if one is available.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeMenuKind {
+    Dropdown(u64),
+    Context(u64),
 }
 
 fn color_luminance(color: SkiaColor) -> f32 {
@@ -148,17 +169,17 @@ fn draw_focus_outline_with_colors(
 
     let mut outer = Paint::default();
     outer.set_style(paint::Style::Stroke);
-    outer.set_stroke_width(4.0);
+    outer.set_stroke_width(2.0);
     outer.set_color(outer_color);
     outer.set_anti_alias(true);
     canvas.draw_rrect(
-        RRect::new_rect_xy(outset_rect(rect, 1.5), radius + 1.5, radius + 1.5),
+        RRect::new_rect_xy(outset_rect(rect, 0.75), radius + 0.75, radius + 0.75),
         &outer,
     );
 
     let mut inner = Paint::default();
     inner.set_style(paint::Style::Stroke);
-    inner.set_stroke_width(2.0);
+    inner.set_stroke_width(1.0);
     inner.set_color(Theme::alpha(accent, 235));
     inner.set_anti_alias(true);
     canvas.draw_rrect(RRect::new_rect_xy(rect, radius, radius), &inner);
@@ -245,6 +266,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         cursor_visible,
         theme,
         scale,
+        None,
     );
 }
 
@@ -267,7 +289,14 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
+    native_menu: Option<NativeMenuKind>,
 ) {
+    // Image-only or closed-menu scenes do not need a system font merely to
+    // compute context-menu coverage. Resolve it only for retained open menus.
+    let context_font = widget_states
+        .values()
+        .any(|state| state.as_context_menu().is_some_and(|menu| menu.is_open))
+        .then(|| get_cached_font(font_cache, "sans-serif", theme.font_body));
     let hover_routes = overlay_hover_routes(OverlayHoverInput {
         taffy,
         root: node,
@@ -277,7 +306,7 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
         focused_id,
         mouse: mouse_pos,
         viewport: overlay_canvas::logical_canvas_size(canvas, scale),
-        font_size: theme.font_body,
+        context_font: context_font.as_ref(),
         direction: node_layout_direction(taffy, node),
     });
     let mut path = Vec::new();
@@ -368,17 +397,23 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
         theme,
         scale,
         node_layout_direction(taffy, node),
+        native_menu,
     );
     draw_toast_overlays(canvas, widget, widget_states, font_cache, theme, scale);
-    draw_context_menu_overlays(
-        canvas,
-        widget,
-        widget_states,
-        hover_routes.context_menu.mouse,
-        font_cache,
-        theme,
-        scale,
-    );
+    if let Some(context_font) = context_font.as_ref() {
+        draw_context_menu_overlays(
+            canvas,
+            widget,
+            widget_states,
+            hover_routes.context_menu.mouse,
+            context_font,
+            image_cache,
+            theme,
+            scale,
+            native_menu,
+            node_layout_direction(taffy, node),
+        );
+    }
     text_cache.clear_transient_buffer();
 }
 
@@ -801,14 +836,18 @@ fn draw_popover_overlays<'w, Msg>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_context_menu_overlays<'w, Msg>(
     canvas: &Canvas,
     widget: &Widget<'w, Msg>,
     widget_states: &HashMap<u64, WidgetState>,
     mouse_pos: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
+    font: &Font,
+    image_cache: &mut ImageRenderCache,
     theme: &Theme,
     scale: f32,
+    native_menu: Option<NativeMenuKind>,
+    direction: LayoutDirection,
 ) {
     let mut overlays = Vec::new();
     let mut path = Vec::new();
@@ -827,14 +866,19 @@ fn draw_context_menu_overlays<'w, Msg>(
     canvas.reset_matrix();
     canvas.scale((scale, scale));
     for overlay in overlays {
-        draw_context_menu(
+        if native_menu == Some(NativeMenuKind::Context(overlay.id)) {
+            continue;
+        }
+        dropdown_menu_overlay::draw_context_menu(
             canvas,
-            overlay.entries,
-            overlay.anchor,
+            &overlay,
             viewport_size,
             mouse_pos,
-            font_cache,
+            font,
+            image_cache,
             theme,
+            scale,
+            direction,
         );
     }
     canvas.restore();
@@ -925,7 +969,7 @@ fn collect_visible_toasts<'w, Msg>(
     }
 }
 
-pub(super) fn collect_open_context_menus<'w, Msg>(
+pub(crate) fn collect_open_context_menus<'w, Msg>(
     widget: &Widget<'w, Msg>,
     widget_states: &HashMap<u64, WidgetState>,
     path: &mut Vec<usize>,
@@ -939,9 +983,15 @@ pub(super) fn collect_open_context_menus<'w, Msg>(
                 .and_then(|state| state.as_context_menu())
                 && menu.is_open
             {
+                let mut navigation = menu.navigation.clone();
+                if !navigation.is_open() {
+                    navigation.open_at_index(None);
+                }
                 out.push(ContextMenuOverlay {
+                    id: resolved_id,
                     entries,
                     anchor: Point::new(menu.anchor_x, menu.anchor_y),
+                    state: navigation,
                 });
             }
             path.push(0);
@@ -1004,6 +1054,64 @@ pub(super) fn collect_open_context_menus<'w, Msg>(
         }
         _ => {}
     }
+}
+
+/// Clears a popup frame to transparent and paints only its menu in parent layout coordinates.
+///
+/// A popup's rectangular bounds can include gaps between submenu panels. Clearing
+/// them every frame preserves the parent underneath and removes closed submenus.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_native_menu<Msg>(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    root: NodeId,
+    widget: &Widget<'_, Msg>,
+    states: &HashMap<u64, WidgetState>,
+    menu: NativeMenuKind,
+    origin: Point,
+    viewport: (f32, f32),
+    mouse: Point,
+    fonts: &mut HashMap<(String, u32), Font>,
+    image_cache: &mut ImageRenderCache,
+    theme: &Theme,
+    scale: f32,
+    direction: LayoutDirection,
+) {
+    canvas.restore_to_count(1);
+    canvas.clear(SkiaColor::TRANSPARENT);
+    canvas.save();
+    canvas.reset_matrix();
+    canvas.scale((scale, scale));
+    canvas.translate((-origin.x, -origin.y));
+    match menu {
+        NativeMenuKind::Dropdown(id) => {
+            let overlays = select_overlay::collector::collect_open_dropdown_overlays(
+                widget, taffy, root, states, viewport,
+            );
+            dropdown_menu_overlay::draw_native_dropdown(
+                canvas, &overlays, id, viewport, mouse, fonts, theme, direction,
+            );
+        }
+        NativeMenuKind::Context(id) => {
+            let mut overlays = Vec::new();
+            collect_open_context_menus(widget, states, &mut Vec::new(), &mut overlays);
+            if let Some(overlay) = overlays.iter().find(|overlay| overlay.id == id) {
+                let font = get_cached_font(fonts, "sans-serif", theme.font_body);
+                dropdown_menu_overlay::draw_context_menu(
+                    canvas,
+                    overlay,
+                    viewport,
+                    mouse,
+                    &font,
+                    image_cache,
+                    theme,
+                    scale,
+                    direction,
+                );
+            }
+        }
+    }
+    canvas.restore();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3470,87 +3578,6 @@ fn draw_toast(input: ToastRenderInput<'_>) {
         pp.set_color(Theme::alpha(accent, 100));
         pp.set_anti_alias(true);
         canvas.draw_rect(SkiaRect::from_xywh(x, y + h - 3.0, bar_w, 3.0), &pp);
-    }
-}
-
-fn draw_context_menu<Msg>(
-    canvas: &Canvas,
-    entries: &[ContextMenuEntry<'_, Msg>],
-    anchor: Point,
-    viewport_size: (f32, f32),
-    mouse_pos: Point,
-    font_cache: &mut HashMap<(String, u32), Font>,
-    theme: &Theme,
-) {
-    let rect = context_menu_rect(entries, anchor, viewport_size, theme.font_body);
-
-    let mut bg = Paint::default();
-    bg.set_color(Theme::alpha(SkiaColor::from_rgb(28, 28, 28), 248));
-    bg.set_anti_alias(true);
-    canvas.draw_rrect(RRect::new_rect_xy(rect, 8.0, 8.0), &bg);
-
-    let mut border = Paint::default();
-    border.set_style(paint::Style::Stroke);
-    border.set_stroke_width(1.0);
-    border.set_color(Theme::alpha(theme.primary, 70));
-    border.set_anti_alias(true);
-    canvas.draw_rrect(RRect::new_rect_xy(rect, 8.0, 8.0), &border);
-
-    let mut y = rect.top + CONTEXT_MENU_PAD_Y;
-    for entry in entries {
-        match entry {
-            ContextMenuEntry::Separator => {
-                let mut sep = Paint::default();
-                sep.set_color(Theme::alpha(theme.on_surface, 28));
-                sep.set_style(paint::Style::Stroke);
-                sep.set_stroke_width(1.0);
-                canvas.draw_line(
-                    (rect.left + 8.0, y + CONTEXT_MENU_SEPARATOR_H / 2.0),
-                    (rect.right - 8.0, y + CONTEXT_MENU_SEPARATOR_H / 2.0),
-                    &sep,
-                );
-                y += CONTEXT_MENU_SEPARATOR_H;
-            }
-            ContextMenuEntry::Item { label, on_select } => {
-                let item_rect =
-                    SkiaRect::from_xywh(rect.left, y, rect.width(), CONTEXT_MENU_ITEM_H);
-                let hovered = item_rect.contains(mouse_pos);
-                if hovered {
-                    let mut hp = Paint::default();
-                    hp.set_color(Theme::alpha(theme.primary, 34));
-                    hp.set_anti_alias(true);
-                    canvas.draw_rrect(
-                        RRect::new_rect_xy(
-                            SkiaRect::from_xywh(
-                                item_rect.left + 4.0,
-                                item_rect.top + 2.0,
-                                (item_rect.width() - 8.0).max(0.0),
-                                (item_rect.height() - 4.0).max(0.0),
-                            ),
-                            6.0,
-                            6.0,
-                        ),
-                        &hp,
-                    );
-                }
-
-                let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
-                let mut tp = Paint::default();
-                tp.set_color(if on_select.is_some() {
-                    if hovered {
-                        theme.primary
-                    } else {
-                        theme.on_surface
-                    }
-                } else {
-                    Theme::alpha(theme.on_surface, 100)
-                });
-                tp.set_anti_alias(true);
-                let text_y = item_rect.top + item_rect.height() / 2.0 + theme.font_body / 3.0;
-                draw_single_line_text(canvas, label, (rect.left + 12.0, text_y), &f, &tp);
-                y += CONTEXT_MENU_ITEM_H;
-            }
-        }
     }
 }
 

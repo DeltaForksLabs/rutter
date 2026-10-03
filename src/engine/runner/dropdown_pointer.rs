@@ -7,20 +7,29 @@ use winit::event::MouseButton;
 use super::super::{DropdownMenuRuntime, validate_runtime_reconstruction};
 use super::RutterRunner;
 use crate::app::AppLogic;
+use crate::engine::dropdown_menu_runtime::MenuHoverOutcome;
 use crate::engine::run_error::RutterRunError;
 use crate::engine::widget_state::WidgetState;
 use crate::render::dropdown_menu_overlay::{
     DropdownMenuOverlayHit, DropdownMenuScrollTarget, dropdown_menu_entry_hover_at,
     dropdown_menu_scroll_target_at,
 };
-use crate::render::hit_test::{ContextMenuOverlayHit, hit_test_context_menu_overlay};
+use crate::render::hit_test::ContextMenuOverlayHit;
 use crate::render::select_overlay::collector::collect_open_dropdown_overlays;
-use crate::widgets::dropdown_menu::DropdownMenuEntryKind;
 
 #[derive(Debug, Clone, Default)]
 struct DropdownCursorTargets {
     hover: Option<DropdownMenuOverlayHit>,
+    previous_hover: Option<DropdownMenuOverlayHit>,
     scroll: Option<DropdownMenuScrollTarget>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct DropdownHoverUpdate {
+    pub(super) hover: Option<DropdownMenuOverlayHit>,
+    pub(super) previous_hover: Option<DropdownMenuOverlayHit>,
+    pub(super) scroll_target: Option<DropdownMenuScrollTarget>,
+    pub(super) outcome: MenuHoverOutcome,
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
@@ -74,7 +83,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.engine
             .widget_states
             .get(&id)
-            .and_then(WidgetState::as_dropdown_menu)
+            .and_then(WidgetState::menu_navigation)
             .is_some_and(|state| state.is_open())
     }
 
@@ -100,21 +109,32 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     pub(super) fn activate_dropdown_entry(&mut self, id: u64, path: Vec<usize>) {
-        let Some(runtime) = self.engine.runtime_caches.dropdown_menus.get(&id).cloned() else {
+        let Some(runtime) = self.engine.runtime_caches.dropdown_menus.get(&id) else {
             return;
         };
-        if !self.dropdown_path_is_reachable(id, &path, &runtime) {
+        let Some(state) = self
+            .engine
+            .widget_states
+            .get_mut(&id)
+            .and_then(WidgetState::menu_navigation_mut)
+        else {
             return;
+        };
+        match runtime.activate_entry(state, path) {
+            super::super::dropdown_menu_runtime::MenuActivation::Focus(path) => {
+                self.focus_dropdown_path(id, path)
+            }
+            super::super::dropdown_menu_runtime::MenuActivation::Action(message) => {
+                self.close_dropdown_menu(id, true);
+                A::update(
+                    &mut self.engine.app_state,
+                    message,
+                    &mut self.engine.clipboard,
+                );
+                self.engine.layout_dirty = true;
+            }
+            super::super::dropdown_menu_runtime::MenuActivation::Ignored => {}
         }
-        if runtime.is_disabled(&path) {
-            self.focus_dropdown_path(id, path);
-            return;
-        }
-        if runtime.entry_kind(&path) == Some(DropdownMenuEntryKind::Submenu) {
-            self.expand_dropdown_submenu(id, path, &runtime);
-            return;
-        }
-        self.dispatch_dropdown_action(id, &path, &runtime);
     }
 
     pub(super) fn dropdown_path_is_reachable(
@@ -127,54 +147,36 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .engine
             .widget_states
             .get(&id)
-            .and_then(WidgetState::as_dropdown_menu)
+            .and_then(WidgetState::menu_navigation)
         else {
             return false;
         };
         state.is_open() && runtime.path_is_reachable(path, state.open_submenu_path())
     }
 
-    fn expand_dropdown_submenu(
-        &mut self,
-        id: u64,
-        path: Vec<usize>,
-        runtime: &DropdownMenuRuntime<A::Message>,
-    ) {
-        let child = runtime.first_child_path(&path);
-        let child_index = child.as_ref().and_then(|path| path.last()).copied();
-        if let Some(state) = self.dropdown_state_mut(id) {
-            state.expand_submenu(path.clone(), child_index);
-        }
-        self.focus_dropdown_path(id, child.unwrap_or(path));
-    }
-
-    fn dispatch_dropdown_action(
-        &mut self,
-        id: u64,
-        path: &[usize],
-        runtime: &DropdownMenuRuntime<A::Message>,
-    ) {
-        let Some(message) = runtime.action_message(path) else {
-            return;
-        };
-        self.close_dropdown_menu(id, true);
-        A::update(
-            &mut self.engine.app_state,
-            message,
-            &mut self.engine.clipboard,
-        );
-        self.engine.layout_dirty = true;
-    }
-
     pub(super) fn focus_dropdown_path(&mut self, id: u64, path: Vec<usize>) {
+        if let Some(state) = self.dropdown_state_mut(id) {
+            state.activate_path(path.clone());
+        }
+        self.focus_dropdown_entry_widget(id, &path);
+    }
+
+    fn focus_dropdown_entry_widget(&mut self, id: u64, path: &[usize]) {
         let focus_id = self
             .engine
             .runtime_caches
             .dropdown_menus
             .get(&id)
-            .and_then(|runtime| runtime.item_id(&path));
-        if let Some(state) = self.dropdown_state_mut(id) {
-            state.activate_path(path);
+            .and_then(|runtime| runtime.item_id(path));
+        // Context menus capture keys while preserving the invoking widget's focus.
+        if self
+            .engine
+            .widget_states
+            .get(&id)
+            .and_then(WidgetState::as_context_menu)
+            .is_some()
+        {
+            return;
         }
         self.focus_widget(focus_id.or(Some(id)));
     }
@@ -186,10 +188,21 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.engine
             .widget_states
             .get_mut(&id)
-            .and_then(WidgetState::as_dropdown_menu_mut)
+            .and_then(WidgetState::menu_navigation_mut)
     }
 
     pub(super) fn close_dropdown_menu(&mut self, id: u64, restore_focus: bool) {
+        if let Some(menu) = self
+            .engine
+            .widget_states
+            .get_mut(&id)
+            .and_then(WidgetState::as_context_menu_mut)
+        {
+            menu.close();
+            // Context navigation never moves focus away from the invoking widget.
+            self.engine.layout_dirty = true;
+            return;
+        }
         if let Some(state) = self.dropdown_state_mut(id) {
             state.close();
         }
@@ -249,60 +262,77 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     fn first_open_dropdown_id(&self) -> Option<u64> {
         self.engine.widget_states.iter().find_map(|(id, state)| {
             state
-                .as_dropdown_menu()
+                .menu_navigation()
                 .is_some_and(|menu| menu.is_open())
                 .then_some(*id)
         })
     }
 
     pub(super) fn refresh_dropdown_hover(&mut self) -> Result<(), RutterRunError> {
-        if !self.any_dropdown_menu_open() {
-            return Ok(());
-        }
-        let Some(DropdownMenuOverlayHit::Entry {
-            id,
-            path,
-            kind,
-            disabled,
-        }) = self.dropdown_cursor_targets()?.hover
-        else {
-            return Ok(());
-        };
-        self.apply_dropdown_hover(id, path, kind, disabled);
-        Ok(())
+        self.refresh_dropdown_hover_from(None).map(|_| ())
     }
 
-    fn any_dropdown_menu_open(&self) -> bool {
+    pub(super) fn refresh_dropdown_hover_from(
+        &mut self,
+        previous_point: Option<skia_safe::Point>,
+    ) -> Result<DropdownHoverUpdate, RutterRunError> {
+        if !self.any_dropdown_menu_open() {
+            return Ok(DropdownHoverUpdate::default());
+        }
+        let targets = self.dropdown_cursor_targets(previous_point)?;
+        let outcome = match &targets.hover {
+            Some(DropdownMenuOverlayHit::Entry { id, path, .. }) => {
+                self.apply_dropdown_hover(*id, path.clone())
+            }
+            _ => MenuHoverOutcome::Ignored,
+        };
+        Ok(DropdownHoverUpdate {
+            hover: targets.hover,
+            previous_hover: targets.previous_hover,
+            scroll_target: targets.scroll,
+            outcome,
+        })
+    }
+
+    pub(super) fn any_dropdown_menu_open(&self) -> bool {
         self.engine
             .widget_states
             .values()
-            .any(|state| state.as_dropdown_menu().is_some_and(|menu| menu.is_open()))
+            .any(|state| state.menu_navigation().is_some_and(|menu| menu.is_open()))
     }
 
-    fn apply_dropdown_hover(
-        &mut self,
-        id: u64,
-        path: Vec<usize>,
-        kind: DropdownMenuEntryKind,
-        disabled: bool,
-    ) {
-        if kind == DropdownMenuEntryKind::Submenu
-            && !disabled
-            && let Some(state) = self.dropdown_state_mut(id)
-        {
-            state.expand_submenu(path.clone(), None);
+    fn apply_dropdown_hover(&mut self, id: u64, path: Vec<usize>) -> MenuHoverOutcome {
+        let Some(runtime) = self.engine.runtime_caches.dropdown_menus.get(&id) else {
+            return MenuHoverOutcome::Ignored;
+        };
+        let Some(state) = self
+            .engine
+            .widget_states
+            .get_mut(&id)
+            .and_then(WidgetState::menu_navigation_mut)
+        else {
+            return MenuHoverOutcome::Ignored;
+        };
+        let outcome = runtime.hover_entry(state, path.clone());
+        if outcome != MenuHoverOutcome::Ignored {
+            // Navigation was already updated by hover_entry. Ordinary dropdowns
+            // still need input focus/accessibility updates even for a settled row.
+            self.focus_dropdown_entry_widget(id, &path);
         }
-        self.focus_dropdown_path(id, path);
+        outcome
     }
 
     pub(super) fn refresh_dropdown_scroll_target(
         &mut self,
     ) -> Result<Option<DropdownMenuScrollTarget>, RutterRunError> {
-        Ok(self.dropdown_cursor_targets()?.scroll)
+        Ok(self.dropdown_cursor_targets(None)?.scroll)
     }
 
-    fn dropdown_cursor_targets(&mut self) -> Result<DropdownCursorTargets, RutterRunError> {
-        let size = self.engine.window.as_ref().unwrap().inner_size();
+    fn dropdown_cursor_targets(
+        &mut self,
+        previous_point: Option<skia_safe::Point>,
+    ) -> Result<DropdownCursorTargets, RutterRunError> {
+        let size = self.engine.window.as_ref().unwrap().surface_size();
         self.engine.try_ensure_widget_states()?;
         self.engine.try_ensure_layout(size)?;
         let viewport = self.logical_viewport(size);
@@ -311,14 +341,33 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let font_size = A::theme_for(&self.engine.app_state).font_body;
         let widget = A::view(&mut self.engine.app_state);
         validate_runtime_reconstruction(self.engine.widget_id_snapshot.as_ref(), &widget)?;
-        if context_menu_captures_dropdown_hover(hit_test_context_menu_overlay(
+        let mut contexts = Vec::new();
+        crate::render::collect_open_context_menus(
             &widget,
-            point,
-            viewport,
             &self.engine.widget_states,
-            font_size,
-        )) {
-            return Ok(DropdownCursorTargets::default());
+            &mut Vec::new(),
+            &mut contexts,
+        );
+        if !contexts.is_empty() {
+            let font = crate::render::text::get_cached_font(
+                &mut self.engine.font_cache,
+                "sans-serif",
+                font_size,
+            );
+            let (hover, scroll) = crate::render::context_menu_overlay::context_cursor_targets(
+                &contexts, point, viewport, direction, &font,
+            );
+            let previous_hover = previous_point.and_then(|previous| {
+                crate::render::context_menu_overlay::context_cursor_targets(
+                    &contexts, previous, viewport, direction, &font,
+                )
+                .0
+            });
+            return Ok(DropdownCursorTargets {
+                hover,
+                previous_hover,
+                scroll,
+            });
         }
         let overlays = collect_open_dropdown_overlays(
             &widget,
@@ -329,6 +378,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         );
         Ok(DropdownCursorTargets {
             hover: dropdown_menu_entry_hover_at(&overlays, point, viewport, direction),
+            previous_hover: None,
             scroll: dropdown_menu_scroll_target_at(&overlays, point, viewport, direction),
         })
     }
@@ -362,20 +412,31 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 }
 
-fn context_menu_captures_dropdown_hover<Msg>(hit: Option<ContextMenuOverlayHit<Msg>>) -> bool {
-    matches!(
-        hit,
-        Some(ContextMenuOverlayHit::Item { .. } | ContextMenuOverlayHit::Consume)
-    )
-}
-
 fn dropdown_right_click_consumes(_: &DropdownMenuOverlayHit) -> bool {
     true
+}
+
+impl<A: AppLogic + 'static> RutterRunner<A> {
+    pub(super) fn handle_context_menu_hit(&mut self, hit: ContextMenuOverlayHit<A::Message>) {
+        match hit {
+            ContextMenuOverlayHit::Item { id, msg } => {
+                self.close_dropdown_menu(id, true);
+                A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
+                self.engine.layout_dirty = true;
+            }
+            ContextMenuOverlayHit::Submenu { id, path } => self.activate_dropdown_entry(id, path),
+            ContextMenuOverlayHit::Consume => {}
+            ContextMenuOverlayHit::Dismiss => {
+                self.engine.close_all_context_menus();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::dropdown_menu::DropdownMenuEntryKind;
 
     #[test]
     fn open_dropdown_consumes_every_right_click_while_dismissing() {
@@ -397,11 +458,33 @@ mod tests {
 
     #[test]
     fn context_menu_surface_blocks_dropdown_hover_refresh() {
-        assert!(context_menu_captures_dropdown_hover(Some(
-            ContextMenuOverlayHit::<()>::Consume
-        )));
-        assert!(!context_menu_captures_dropdown_hover(Some(
-            ContextMenuOverlayHit::<()>::Dismiss
-        )));
+        let entries = [crate::ContextMenuEntry::<()>::disabled("Locked")];
+        let mut state = crate::dropdown_menu::DropdownMenuState::default();
+        state.open_at_index(None);
+        let menus = [crate::render::ContextMenuOverlay {
+            id: 42,
+            entries: &entries,
+            anchor: skia_safe::Point::new(20.0, 20.0),
+            state,
+        }];
+        let (hover, _) = crate::render::context_menu_overlay::context_cursor_targets(
+            &menus,
+            skia_safe::Point::new(40.0, 40.0),
+            (500.0, 400.0),
+            crate::i18n::LayoutDirection::Ltr,
+            &crate::render::text::get_cached_font(
+                &mut std::collections::HashMap::new(),
+                "sans-serif",
+                14.0,
+            ),
+        );
+        assert!(matches!(
+            hover,
+            Some(DropdownMenuOverlayHit::Entry {
+                id: 42,
+                disabled: true,
+                ..
+            })
+        ));
     }
 }

@@ -7,8 +7,56 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{RutterRunner, is_activation_key};
 use crate::app::AppLogic;
+use crate::dropdown_menu::DropdownMenuState;
+use crate::engine::DropdownMenuRuntime;
 use crate::i18n::LayoutDirection;
 use crate::widgets::dropdown_menu::DropdownMenuEntryKind;
+
+enum MenuKeyOutcome {
+    Focus(Vec<usize>),
+    Activate(Vec<usize>),
+    Ignored,
+}
+
+/// Pure retained navigation used by both trigger- and pointer-anchored menus.
+fn navigate_menu_key<Msg: Clone>(
+    runtime: &DropdownMenuRuntime<Msg>,
+    state: &mut DropdownMenuState,
+    path: Vec<usize>,
+    key: &Key,
+    direction: LayoutDirection,
+    control: bool,
+) -> MenuKeyOutcome {
+    let next = match key {
+        Key::Named(NamedKey::ArrowDown) => runtime.adjacent_path(&path, true),
+        Key::Named(NamedKey::ArrowUp) => runtime.adjacent_path(&path, false),
+        Key::Named(NamedKey::Home) => runtime.boundary_path(&path, true),
+        Key::Named(NamedKey::End) => runtime.boundary_path(&path, false),
+        _ if is_activation_key(key) => return MenuKeyOutcome::Activate(path),
+        Key::Named(NamedKey::ArrowRight | NamedKey::ArrowLeft) => {
+            if dropdown_inline_forward(key, direction) {
+                return if runtime.entry_kind(&path) == Some(DropdownMenuEntryKind::Submenu) {
+                    MenuKeyOutcome::Activate(path)
+                } else {
+                    MenuKeyOutcome::Ignored
+                };
+            }
+            if !state.collapse_submenu() {
+                return MenuKeyOutcome::Ignored;
+            }
+            state.active_path().map(<[usize]>::to_vec)
+        }
+        Key::Character(text) if !control && !text.chars().all(char::is_control) => {
+            let prefix = state.update_typeahead(text, Instant::now());
+            runtime
+                .typeahead_path(&path, prefix)
+                .or_else(|| runtime.typeahead_path(&path, text))
+        }
+        _ => None,
+    };
+    next.map(MenuKeyOutcome::Focus)
+        .unwrap_or(MenuKeyOutcome::Ignored)
+}
 
 fn dropdown_inline_forward(key: &Key, direction: LayoutDirection) -> bool {
     matches!(
@@ -19,6 +67,31 @@ fn dropdown_inline_forward(key: &Key, direction: LayoutDirection) -> bool {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    pub(super) fn handle_context_menu_key(&mut self, key: &Key) -> bool {
+        let Some(id) = self.engine.widget_states.iter().find_map(|(id, state)| {
+            state
+                .as_context_menu()
+                .filter(|menu| menu.is_open)
+                .map(|_| *id)
+        }) else {
+            return false;
+        };
+        if matches!(key, Key::Named(NamedKey::Escape | NamedKey::Tab)) {
+            self.close_dropdown_menu(id, true);
+            self.redraw();
+            return !matches!(key, Key::Named(NamedKey::Tab));
+        }
+        let path = self
+            .dropdown_state_mut(id)
+            .and_then(|state| state.active_path().map(<[usize]>::to_vec))
+            .or_else(|| self.dropdown_boundary_path(id, true));
+        if let Some(path) = path {
+            self.handle_dropdown_item_key(id, path, key);
+            self.redraw();
+        }
+        // Open context menus own keyboard navigation even if their entries are empty.
+        true
+    }
     pub(super) fn handle_dropdown_key(&mut self, focus_id: u64, key: &Key) -> bool {
         let Some((parent_id, path)) = self.dropdown_focus_target(focus_id) else {
             return false;
@@ -59,7 +132,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
     fn handle_dropdown_root_key(&mut self, id: u64, key: &Key) -> bool {
         match key {
-            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+            _ if is_activation_key(key) => {
                 self.toggle_dropdown_menu(id, false);
                 true
             }
@@ -87,110 +160,33 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn handle_dropdown_item_key(&mut self, id: u64, path: Vec<usize>, key: &Key) -> bool {
-        match key {
-            Key::Named(NamedKey::ArrowDown) => self.move_dropdown_adjacent(id, path, true),
-            Key::Named(NamedKey::ArrowUp) => self.move_dropdown_adjacent(id, path, false),
-            Key::Named(NamedKey::Home) => self.move_dropdown_boundary(id, path, true),
-            Key::Named(NamedKey::End) => self.move_dropdown_boundary(id, path, false),
-            _ if is_activation_key(key) => {
-                self.activate_dropdown_entry(id, path);
-                true
-            }
-            Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowLeft) => {
-                self.handle_dropdown_inline_key(id, path, key)
-            }
-            Key::Character(text) => self.handle_dropdown_typeahead(id, path, text),
-            _ => false,
-        }
-    }
-
-    fn move_dropdown_adjacent(&mut self, id: u64, path: Vec<usize>, forward: bool) -> bool {
-        let next = self
-            .engine
-            .runtime_caches
-            .dropdown_menus
-            .get(&id)
-            .and_then(|runtime| runtime.adjacent_path(&path, forward));
-        self.focus_optional_dropdown_path(id, next)
-    }
-
-    fn move_dropdown_boundary(&mut self, id: u64, path: Vec<usize>, first: bool) -> bool {
-        let next = self
-            .engine
-            .runtime_caches
-            .dropdown_menus
-            .get(&id)
-            .and_then(|runtime| runtime.boundary_path(&path, first));
-        self.focus_optional_dropdown_path(id, next)
-    }
-
-    fn focus_optional_dropdown_path(&mut self, id: u64, path: Option<Vec<usize>>) -> bool {
-        let Some(path) = path else { return false };
-        self.focus_dropdown_path(id, path);
-        self.redraw();
-        true
-    }
-
-    fn handle_dropdown_inline_key(&mut self, id: u64, path: Vec<usize>, key: &Key) -> bool {
-        let forward = dropdown_inline_forward(key, A::locale().direction());
-        if forward {
-            let is_submenu = self
-                .engine
-                .runtime_caches
-                .dropdown_menus
-                .get(&id)
-                .is_some_and(|runtime| {
-                    runtime.entry_kind(&path) == Some(DropdownMenuEntryKind::Submenu)
-                });
-            if !is_submenu {
-                return false;
-            }
-            self.activate_dropdown_entry(id, path);
-            self.redraw();
-            return true;
-        }
-        self.collapse_dropdown_submenu(id)
-    }
-
-    fn collapse_dropdown_submenu(&mut self, id: u64) -> bool {
-        let parent_path = self.dropdown_state_mut(id).and_then(|state| {
-            if !state.collapse_submenu() {
-                return None;
-            }
-            state.active_path().map(<[usize]>::to_vec)
-        });
-        let Some(parent_path) = parent_path else {
+        let control = self.engine.modifiers.state().control_key();
+        let Some(runtime) = self.engine.runtime_caches.dropdown_menus.get(&id) else {
             return false;
         };
-        self.focus_dropdown_path(id, parent_path);
+        let Some(state) = self
+            .engine
+            .widget_states
+            .get_mut(&id)
+            .and_then(crate::engine::widget_state::WidgetState::menu_navigation_mut)
+        else {
+            return false;
+        };
+        let outcome =
+            navigate_menu_key(runtime, state, path, key, A::locale().direction(), control);
+        match outcome {
+            MenuKeyOutcome::Focus(path) => self.focus_dropdown_path(id, path),
+            MenuKeyOutcome::Activate(path) => self.activate_dropdown_entry(id, path),
+            MenuKeyOutcome::Ignored => return false,
+        }
         self.redraw();
         true
     }
-
-    fn handle_dropdown_typeahead(&mut self, id: u64, path: Vec<usize>, text: &str) -> bool {
-        if text.chars().all(char::is_control) || self.engine.modifiers.state().control_key() {
-            return false;
-        }
-        let prefix = self.dropdown_typeahead_prefix(id, text);
-        let next = self
-            .engine
-            .runtime_caches
-            .dropdown_menus
-            .get(&id)
-            .and_then(|runtime| {
-                runtime
-                    .typeahead_path(&path, &prefix)
-                    .or_else(|| runtime.typeahead_path(&path, text))
-            });
-        self.focus_optional_dropdown_path(id, next)
-    }
-
-    fn dropdown_typeahead_prefix(&mut self, id: u64, text: &str) -> String {
-        self.dropdown_state_mut(id)
-            .map(|state| state.update_typeahead(text, Instant::now()).to_owned())
-            .unwrap_or_default()
-    }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/context_menu_navigation_unit_tests.rs"]
+mod context_menu_tests;
 
 #[cfg(test)]
 mod tests {

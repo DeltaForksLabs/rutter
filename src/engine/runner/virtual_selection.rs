@@ -328,13 +328,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
 fn primary_selection_modifier(modifiers: ModifiersState) -> bool {
     if cfg!(target_os = "macos") {
-        return modifiers.super_key();
+        return modifiers.meta_key();
     }
     modifiers.control_key()
 }
 
 fn non_primary_control_modifier(modifiers: ModifiersState) -> bool {
-    cfg!(target_os = "macos") && modifiers.control_key() && !modifiers.super_key()
+    cfg!(target_os = "macos") && modifiers.control_key() && !modifiers.meta_key()
 }
 
 fn is_select_all_key(key: &Key) -> bool {

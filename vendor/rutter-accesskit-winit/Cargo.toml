@@ -1,0 +1,43 @@
+# Modified for the local rutter-winit integration: standalone trait-window adapter dependencies.
+# See README.md for upstream provenance and adapter changes.
+
+[package]
+name = "accesskit_winit"
+version = "0.34.1"
+authors = ["The AccessKit contributors"]
+license = "Apache-2.0"
+description = "AccessKit UI accessibility infrastructure: winit adapter"
+categories = ["gui"]
+keywords = ["gui", "ui", "accessibility", "winit"]
+repository = "https://github.com/AccessKit/accesskit"
+readme = "README.md"
+edition = "2024"
+rust-version = "1.87"
+
+[features]
+default = ["accesskit_unix", "async-io", "winit/x11", "winit/wayland"]
+async-io = ["accesskit_unix/async-io"]
+tokio = ["accesskit_unix/tokio"]
+
+[dependencies]
+accesskit = "0.25.1"
+winit = { version = "=0.31.0-beta.3", path = "../rutter-winit/winit", default-features = false }
+rwh_06 = { package = "raw-window-handle", version = "0.6.2", features = ["std"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+accesskit_windows = "0.35.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accesskit_macos = "0.27.1"
+
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
+accesskit_unix = { version = "0.24.0", optional = true, default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+accesskit_android = { version = "0.9.0", optional = true, features = ["embedded-dex"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+accesskit_ios = "0.2.1"
+
+[dev-dependencies]
+winit = { version = "=0.31.0-beta.3", path = "../rutter-winit/winit", default-features = false, features = ["x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }

@@ -137,7 +137,7 @@ pub trait GraphicsBackend {
     fn begin_frame(&mut self) -> Result<&Canvas, GraphicsError>;
     fn end_frame(&mut self) -> Result<(), GraphicsError>;
     fn resize(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError>;
-    fn window(&self) -> &Rc<Window>;
+    fn window(&self) -> &Rc<dyn Window>;
     #[deprecated(
         note = "borrowed Skia contexts cannot preserve backend activation across multiple surfaces"
     )]
@@ -147,7 +147,7 @@ pub trait GraphicsBackend {
 }
 
 pub fn create_best_backend(
-    event_loop: &ActiveEventLoop,
+    event_loop: &dyn ActiveEventLoop,
     attrs: WindowAttributes,
 ) -> Result<Box<dyn GraphicsBackend>, GraphicsError> {
     let mut failures = Vec::new();
@@ -176,7 +176,7 @@ pub fn create_best_backend(
 }
 
 pub(crate) fn create_required_backend(
-    event_loop: &ActiveEventLoop,
+    event_loop: &dyn ActiveEventLoop,
     attrs: WindowAttributes,
     required_backend: BackendType,
 ) -> Result<Box<dyn GraphicsBackend>, GraphicsError> {
@@ -201,7 +201,7 @@ fn initialize_required_backend<Backend>(
 }
 
 fn create_backend_candidate(
-    event_loop: &ActiveEventLoop,
+    event_loop: &dyn ActiveEventLoop,
     attrs: WindowAttributes,
     backend: BackendType,
 ) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
@@ -213,13 +213,13 @@ fn create_backend_candidate(
 }
 
 fn try_cpu_backend(
-    event_loop: &ActiveEventLoop,
+    event_loop: &dyn ActiveEventLoop,
     attrs: WindowAttributes,
 ) -> Result<Box<dyn GraphicsBackend>, BackendFailure> {
     validate_cpu_surface_transparency(attrs.transparent())?;
     let window = event_loop
         .create_window(attrs)
-        .map(Rc::new)
+        .map(Rc::from)
         .map_err(|error| BackendFailure::new(BackendType::CpuSoftbuffer, error.to_string()))?;
     let backend = CpuBackend::new(window).map_err(cpu_backend_failure)?;
     Ok(Box::new(backend))

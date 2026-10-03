@@ -177,6 +177,22 @@ fn initialization_pauses_scheduled_work_until_native_resume() {
 }
 
 #[test]
+fn consumed_multi_window_handler_preserves_typed_fatal_error_on_drop() {
+    let completion_error = Rc::new(RefCell::new(None));
+    let mut runtime = MultiWindowRunner::<FakeMultiWindowApp>::initialize().unwrap();
+    runtime.completion_error = Some(completion_error.clone());
+    runtime.fatal_error = Some(MultiWindowRunError::DuplicateLogicalSurface(
+        SurfaceId::new(17),
+    ));
+    drop(runtime);
+
+    assert!(matches!(
+        completion_error.borrow_mut().take(),
+        Some(MultiWindowRunError::DuplicateLogicalSurface(id)) if id == SurfaceId::new(17)
+    ));
+}
+
+#[test]
 fn injected_bootstrap_uses_factory_state_and_dynamic_surface_order() {
     let factory_calls = Cell::new(0);
     let surfaces = vec![

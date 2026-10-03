@@ -93,6 +93,21 @@ where
     collector.finish_dropdown_triggers()
 }
 
+pub(crate) fn collect_context_menu_owners<Msg>(
+    widget: &Widget<'_, Msg>,
+    taffy: &TaffyTree<RutterContext>,
+    root: NodeId,
+    widget_states: &HashMap<u64, WidgetState>,
+    viewport: (f32, f32),
+) -> HashMap<u64, OverlayOwner> {
+    let mut collector = SelectOverlayCollector::new(taffy, widget_states, viewport);
+    collector.visit(widget, root, Point::new(0.0, 0.0));
+    collector
+        .context_menu_owners
+        .retain(|_, owner| *owner == collector.top_owner);
+    collector.context_menu_owners
+}
+
 struct SelectOverlayCollector<'tree, 'widget, 'entry, Msg> {
     taffy: &'tree TaffyTree<RutterContext>,
     widget_states: &'tree HashMap<u64, WidgetState>,
@@ -100,6 +115,7 @@ struct SelectOverlayCollector<'tree, 'widget, 'entry, Msg> {
     overlays: Vec<SelectOverlay<'entry>>,
     dropdowns: Vec<DropdownOverlay<'widget, Msg>>,
     dropdown_triggers: Vec<DropdownTrigger>,
+    context_menu_owners: HashMap<u64, OverlayOwner>,
     searches: Vec<SearchOverlay<'entry>>,
     search_context: Option<(&'tree HashMap<u64, InputWidgetState>, Option<u64>)>,
     path: Vec<usize>,
@@ -122,6 +138,7 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             overlays: Vec::new(),
             dropdowns: Vec::new(),
             dropdown_triggers: Vec::new(),
+            context_menu_owners: HashMap::new(),
             searches: Vec::new(),
             search_context: None,
             path: Vec::new(),
@@ -167,6 +184,13 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             Widget::DropdownMenu { entries, .. } => {
                 self.capture_dropdown(widget, entries, absolute, size)
             }
+            Widget::ContextMenu { child, .. } => {
+                // A context menu has no visible trigger: ownership is independent
+                // of its retained open flag and of the child's trigger geometry.
+                self.context_menu_owners
+                    .insert(widget.resolved_id(&self.path).unwrap(), self.active_owner);
+                self.visit_first(child, node, absolute, 0);
+            }
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
                 self.visit_children(children, node, absolute)
             }
@@ -189,7 +213,6 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             Widget::Container { child, .. }
             | Widget::PointerRegion { child, .. }
             | Widget::Tooltip { child, .. }
-            | Widget::ContextMenu { child, .. }
             | Widget::ButtonContent { child, .. } => self.visit_first(child, node, absolute, 0),
             _ => {}
         }

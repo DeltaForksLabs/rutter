@@ -55,14 +55,14 @@ fn validate_frame_size(size: PhysicalSize<u32>) -> Result<(i32, i32), GraphicsEr
 }
 
 pub struct CpuBackend {
-    window: Rc<Window>,
-    _context: Context<Rc<Window>>,
-    surface: Surface<Rc<Window>, Rc<Window>>,
+    window: Rc<dyn Window>,
+    _context: Context<Rc<dyn Window>>,
+    surface: Surface<Rc<dyn Window>, Rc<dyn Window>>,
     skia_surface: SkiaSurface,
 }
 
 impl CpuBackend {
-    pub fn new(window: Rc<Window>) -> Result<Self, GraphicsError> {
+    pub fn new(window: Rc<dyn Window>) -> Result<Self, GraphicsError> {
         let context = Context::new(window.clone()).map_err(|err| {
             GraphicsError::BackendInit(BackendFailure::new(
                 BackendType::CpuSoftbuffer,
@@ -75,7 +75,7 @@ impl CpuBackend {
                 err.to_string(),
             ))
         })?;
-        let size = window.inner_size();
+        let size = window.surface_size();
         let raster_size = validate_frame_size(size)?;
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
@@ -170,7 +170,7 @@ impl GraphicsBackend for CpuBackend {
         Ok(())
     }
 
-    fn window(&self) -> &Rc<Window> {
+    fn window(&self) -> &Rc<dyn Window> {
         &self.window
     }
 }

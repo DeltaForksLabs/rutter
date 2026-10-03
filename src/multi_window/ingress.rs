@@ -19,7 +19,7 @@ pub const MAX_MESSAGE_INGRESS_CAPACITY: usize = 4096;
 pub struct MessageIngressConfig {
     /// Maximum number of messages waiting across all sender clones.
     pub capacity: NonZeroUsize,
-    /// Maximum number of messages delivered in one native user-event callback.
+    /// Maximum number of messages delivered in one native proxy wake-up callback.
     pub maximum_messages_per_wakeup: NonZeroUsize,
 }
 
@@ -114,12 +114,12 @@ impl Display for MessageIngressError {
 impl Error for MessageIngressError {}
 
 trait IngressWaker: Send + Sync {
-    fn wake(&self) -> bool;
+    fn wake(&self);
 }
 
-impl IngressWaker for EventLoopProxy<()> {
-    fn wake(&self) -> bool {
-        self.send_event(()).is_ok()
+impl IngressWaker for EventLoopProxy {
+    fn wake(&self) {
+        self.wake_up();
     }
 }
 
@@ -142,8 +142,9 @@ struct SharedIngress<Message> {
 
 /// Cloneable, surface-targeted sender; it exposes neither UI state nor Winit handles.
 ///
-/// Clones return [`MessageIngressError::Closed`] after the runtime exits. Senders do not keep
-/// surface state alive; queued messages addressed to retired surfaces are dropped on delivery.
+/// Clones return [`MessageIngressError::Closed`] after the runtime closes its ingress on drop.
+/// Winit's wake-only proxy cannot detect an event loop that has exited but whose handler has not
+/// yet dropped. Senders do not keep surface state alive; messages for retired surfaces are dropped.
 pub struct MultiWindowMessageSender<Message> {
     shared: Arc<SharedIngress<Message>>,
 }
@@ -180,11 +181,7 @@ impl<Message: Send + 'static> MultiWindowMessageSender<Message> {
         state.queue.push_back(QueuedMessage { surface, message });
         if !state.wake_pending {
             state.wake_pending = true;
-            if !self.shared.waker.wake() {
-                state.queue.clear();
-                state.closed = true;
-                return Err(MessageIngressError::Closed);
-            }
+            self.shared.waker.wake();
         }
         Ok(())
     }
@@ -199,7 +196,7 @@ pub(crate) struct MessageIngress<Message> {
 impl<Message> MessageIngress<Message> {
     pub(crate) fn new(
         config: MessageIngressConfig,
-        proxy: EventLoopProxy<()>,
+        proxy: EventLoopProxy,
     ) -> (Self, MultiWindowMessageSender<Message>) {
         Self::with_waker(config, Box::new(proxy))
     }
@@ -226,7 +223,7 @@ impl<Message> MessageIngress<Message> {
         )
     }
 
-    /// Takes a bounded FIFO batch and schedules one more native event if messages remain.
+    /// Takes a bounded FIFO batch and requests another wake-up if messages remain.
     /// Application callbacks must run only after this method releases the queue mutex.
     pub(crate) fn drain_batch(&self) -> Vec<(SurfaceId, Message)> {
         let mut state = self.shared.state.lock().expect("ingress queue poisoned");
@@ -239,20 +236,17 @@ impl<Message> MessageIngress<Message> {
             .collect();
         if state.queue.is_empty() {
             state.wake_pending = false;
-        } else if !self.shared.waker.wake() {
-            state.closed = true;
-            state.queue.clear();
-            return Vec::new();
+        } else {
+            self.shared.waker.wake();
         }
         batch
     }
 
     /// Ensures messages sent during startup or suspension get an event after resume.
     pub(crate) fn rearm(&self) {
-        let mut state = self.shared.state.lock().expect("ingress queue poisoned");
-        if !state.closed && !state.queue.is_empty() && !self.shared.waker.wake() {
-            state.closed = true;
-            state.queue.clear();
+        let state = self.shared.state.lock().expect("ingress queue poisoned");
+        if !state.closed && !state.queue.is_empty() {
+            self.shared.waker.wake();
         }
     }
 
@@ -266,23 +260,18 @@ impl<Message> MessageIngress<Message> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
     #[derive(Default)]
     struct WakeCounter {
         count: AtomicUsize,
-        closed: AtomicBool,
     }
 
     impl IngressWaker for Arc<WakeCounter> {
-        fn wake(&self) -> bool {
-            if self.closed.load(Ordering::SeqCst) {
-                return false;
-            }
+        fn wake(&self) {
             self.count.fetch_add(1, Ordering::SeqCst);
-            true
         }
     }
 
@@ -391,18 +380,14 @@ mod tests {
     }
 
     #[test]
-    fn closed_native_event_loop_closes_and_discards_the_queue() {
+    fn spurious_wake_up_does_not_drop_pending_messages() {
         let (ingress, sender, waker) = fixture(2, 1);
-        waker.closed.store(true, Ordering::SeqCst);
-        assert_eq!(
-            sender.try_send(SurfaceId::PRIMARY, 1),
-            Err(MessageIngressError::Closed)
-        );
+        sender.try_send(SurfaceId::PRIMARY, 1).unwrap();
+        sender.try_send(SurfaceId::PRIMARY, 2).unwrap();
+        assert_eq!(ingress.drain_batch(), vec![(SurfaceId::PRIMARY, 1)]);
+        assert_eq!(ingress.drain_batch(), vec![(SurfaceId::PRIMARY, 2)]);
         assert!(ingress.drain_batch().is_empty());
-        assert_eq!(
-            sender.try_send(SurfaceId::PRIMARY, 2),
-            Err(MessageIngressError::Closed)
-        );
+        assert_eq!(waker.count.load(Ordering::SeqCst), 2);
     }
 
     #[test]

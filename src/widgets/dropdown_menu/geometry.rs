@@ -1,7 +1,7 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
 
-use skia_safe::{Contains, Point, Rect};
+use skia_safe::{Contains, Font, Point, Rect};
 
 use super::DropdownMenuState;
 use super::runtime::{DropdownMenuEntryAccess, entries_at_level};
@@ -29,6 +29,12 @@ pub(crate) struct DropdownMenuSurface {
     pub(crate) max_scroll: f32,
 }
 
+struct SubmenuGeometry<'a, Entry> {
+    viewport: Rect,
+    direction: LayoutDirection,
+    estimate_width: &'a dyn Fn(&[Entry]) -> f32,
+}
+
 pub(crate) fn estimate_level_width<Entry: DropdownMenuEntryAccess>(entries: &[Entry]) -> f32 {
     let label_width = entries
         .iter()
@@ -45,14 +51,11 @@ fn estimated_label_width(label: &str) -> f32 {
 
 pub(crate) fn estimate_content_height<Entry: DropdownMenuEntryAccess>(entries: &[Entry]) -> f32 {
     let rows = entries.iter().map(entry_height).sum::<f32>();
-    rows + MENU_PADDING * 2.0
+    rows + Entry::level_padding() * 2.0
 }
 
 fn entry_height<Entry: DropdownMenuEntryAccess>(entry: &Entry) -> f32 {
-    if entry.entry_is_focusable() {
-        return ITEM_ROW_HEIGHT;
-    }
-    SEPARATOR_HEIGHT
+    entry.entry_height()
 }
 
 pub(crate) fn place_root_surface(
@@ -192,7 +195,8 @@ pub(crate) fn row_rect<Entry: DropdownMenuEntryAccess>(
     index: usize,
 ) -> Option<Rect> {
     let entry = entries.get(index)?;
-    let y = surface.rect.top + MENU_PADDING + row_content_top(entries, index) - surface.scroll_y;
+    let y = surface.rect.top + Entry::level_padding() + row_content_top(entries, index)
+        - surface.scroll_y;
     Some(Rect::from_xywh(
         surface.rect.left,
         y,
@@ -230,7 +234,16 @@ pub(crate) fn build_open_menu_surfaces<Entry: DropdownMenuEntryAccess>(
         return Vec::new();
     }
     let root = build_root_surface(anchor, entries, state, viewport, direction);
-    append_submenu_surfaces(vec![root], entries, state, viewport, direction)
+    append_submenu_surfaces(
+        vec![root],
+        entries,
+        state,
+        &SubmenuGeometry {
+            viewport,
+            direction,
+            estimate_width: &estimate_level_width::<Entry>,
+        },
+    )
 }
 
 fn build_root_surface<Entry: DropdownMenuEntryAccess>(
@@ -256,8 +269,7 @@ fn append_submenu_surfaces<Entry: DropdownMenuEntryAccess>(
     mut surfaces: Vec<DropdownMenuSurface>,
     root_entries: &[Entry],
     state: &DropdownMenuState,
-    viewport: Rect,
-    direction: LayoutDirection,
+    geometry: &SubmenuGeometry<'_, Entry>,
 ) -> Vec<DropdownMenuSurface> {
     let mut level_path = Vec::new();
     for index in state.open_submenu_path() {
@@ -267,8 +279,7 @@ fn append_submenu_surfaces<Entry: DropdownMenuEntryAccess>(
             &level_path,
             *index,
             state,
-            viewport,
-            direction,
+            geometry,
         ) else {
             break;
         };
@@ -278,29 +289,78 @@ fn append_submenu_surfaces<Entry: DropdownMenuEntryAccess>(
     surfaces
 }
 
+/// Context menus start at the pointer, without dropdown trigger height or gap.
+/// All open levels measure with the same retained font used to paint their rows.
+pub(crate) fn build_context_menu_surfaces<Msg>(
+    anchor: Point,
+    entries: &[crate::widget::ContextMenuEntry<'_, Msg>],
+    state: &DropdownMenuState,
+    viewport: Rect,
+    direction: LayoutDirection,
+    font: &Font,
+) -> Vec<DropdownMenuSurface> {
+    if !state.is_open() {
+        return Vec::new();
+    }
+    let estimate_width = |entries: &[crate::widget::ContextMenuEntry<'_, Msg>]| {
+        crate::widget::estimate_context_menu_width(entries, font)
+    };
+    let width = effective_width(estimate_width(entries), viewport);
+    let content_height = estimate_content_height(entries);
+    let height = effective_height(content_height, viewport);
+    let x = match direction {
+        LayoutDirection::Ltr => anchor.x,
+        LayoutDirection::Rtl => anchor.x - width,
+    };
+    let rect = Rect::from_xywh(
+        clamp_axis(x, width, viewport.left, viewport.right),
+        clamp_axis(anchor.y, height, viewport.top, viewport.bottom),
+        width,
+        height,
+    );
+    let root = build_surface(Vec::new(), rect, content_height, entries, state);
+    append_submenu_surfaces(
+        vec![root],
+        entries,
+        state,
+        &SubmenuGeometry {
+            viewport,
+            direction,
+            estimate_width: &estimate_width,
+        },
+    )
+}
+
 fn build_child_surface<Entry: DropdownMenuEntryAccess>(
     surfaces: &[DropdownMenuSurface],
     root_entries: &[Entry],
     level_path: &[usize],
     submenu_index: usize,
     state: &DropdownMenuState,
-    viewport: Rect,
-    direction: LayoutDirection,
+    geometry: &SubmenuGeometry<'_, Entry>,
 ) -> Option<DropdownMenuSurface> {
     let parent_entries = entries_at_level(root_entries, level_path)?;
     let submenu = parent_entries.get(submenu_index)?;
     let child_entries = enabled_children(submenu)?;
     let parent_row = row_rect(surfaces.last()?, parent_entries, submenu_index)?;
     let child_path = appended_path(level_path, submenu_index);
-    let child_direction = submenu_chain_direction(surfaces, direction);
-    Some(position_child_surface(
+    let child_direction = submenu_chain_direction(surfaces, geometry.direction);
+    let content_height = estimate_content_height(child_entries);
+    let height = effective_height(content_height, geometry.viewport);
+    let rect = place_submenu_surface(
         surfaces.last()?.rect,
         parent_row,
+        (geometry.estimate_width)(child_entries),
+        height,
+        geometry.viewport,
+        child_direction,
+    );
+    Some(build_surface(
         child_path,
+        rect,
+        content_height,
         child_entries,
         state,
-        viewport,
-        child_direction,
     ))
 }
 
@@ -331,28 +391,6 @@ fn appended_path(level_path: &[usize], index: usize) -> Vec<usize> {
     let mut path = level_path.to_vec();
     path.push(index);
     path
-}
-
-fn position_child_surface<Entry: DropdownMenuEntryAccess>(
-    parent_rect: Rect,
-    parent_row: Rect,
-    level_path: Vec<usize>,
-    entries: &[Entry],
-    state: &DropdownMenuState,
-    viewport: Rect,
-    direction: LayoutDirection,
-) -> DropdownMenuSurface {
-    let content_height = estimate_content_height(entries);
-    let height = effective_height(content_height, viewport);
-    let rect = place_submenu_surface(
-        parent_rect,
-        parent_row,
-        estimate_level_width(entries),
-        height,
-        viewport,
-        direction,
-    );
-    build_surface(level_path, rect, content_height, entries, state)
 }
 
 fn build_surface<Entry: DropdownMenuEntryAccess>(
@@ -402,7 +440,7 @@ fn effective_scroll<Entry: DropdownMenuEntryAccess>(
         retained,
         row_content_top(entries, index),
         entry_height(entry),
-        surface_height,
+        surface_height - (Entry::level_padding() - MENU_PADDING) * 2.0,
     );
     clamp_scroll(target, max_scroll)
 }

@@ -143,7 +143,11 @@ fn popover_surface_masks_base_hover() {
         focused_id: None,
         mouse: pointer,
         viewport: (320.0, 240.0),
-        font_size: Theme::light().font_body,
+        context_font: Some(&crate::render::get_cached_font(
+            &mut HashMap::new(),
+            "sans-serif",
+            Theme::light().font_body,
+        )),
         direction: LayoutDirection::Ltr,
     });
 

@@ -59,7 +59,8 @@ pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
     backend_preference: MultiWindowBackendPreference,
     native_surfaces_active: bool,
     fatal_error: Option<MultiWindowRunError>,
-    accessibility_waker: Option<EventLoopProxy<()>>,
+    accessibility_waker: Option<EventLoopProxy>,
+    completion_error: Option<Rc<RefCell<Option<MultiWindowRunError>>>>,
     application_wakeup_scheduler: ApplicationWakeupScheduler,
     message_ingress: Option<MessageIngress<A::Message>>,
 }
@@ -67,7 +68,7 @@ pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
 impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     fn open_surface(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         request: SurfaceRequest,
     ) -> Result<(), MultiWindowRunError> {
         self.ensure_surface_is_available(request.surface)?;
@@ -128,7 +129,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn resume_registered_surfaces(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
     ) -> Result<(), MultiWindowRunError> {
         let surfaces: Vec<SurfaceId> = self.surface_configs.keys().copied().collect();
         for surface in surfaces {
@@ -139,7 +140,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn resume_registered_surface(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         surface: SurfaceId,
     ) -> Result<(), MultiWindowRunError> {
         let attributes = self.config_for(surface)?.window_attributes();
@@ -157,7 +158,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn start_pending_surfaces(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
     ) -> Result<(), MultiWindowRunError> {
         let requests = std::mem::take(&mut self.pending_surfaces);
         for request in requests {
@@ -181,7 +182,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             .ok_or(MultiWindowRunError::UnknownLogicalSurface(surface))
     }
 
-    fn synchronize_and_apply(&mut self, event_loop: &ActiveEventLoop, surface: SurfaceId) {
+    fn synchronize_and_apply(&mut self, event_loop: &dyn ActiveEventLoop, surface: SurfaceId) {
         let commands = match self.synchronize_surface_state(surface) {
             Ok(commands) => commands,
             Err(error) => return self.terminate_for_error(event_loop, error),
@@ -204,7 +205,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         self.synchronize_surface_state(surface).map(Some)
     }
 
-    fn drain_external_messages(&mut self, event_loop: &ActiveEventLoop) {
+    fn drain_external_messages(&mut self, event_loop: &dyn ActiveEventLoop) {
         let Some(ingress) = &self.message_ingress else {
             return;
         };
@@ -276,7 +277,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         self.publish_surface_state(model, self.revision);
     }
 
-    fn handle_close_request(&mut self, event_loop: &ActiveEventLoop, surface: SurfaceId) {
+    fn handle_close_request(&mut self, event_loop: &dyn ActiveEventLoop, surface: SurfaceId) {
         let behavior = match self.config_for(surface) {
             Ok(config) => config.close_behavior(),
             Err(error) => return self.terminate_for_error(event_loop, error),
@@ -293,7 +294,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         }
     }
 
-    fn handle_destroyed(&mut self, event_loop: &ActiveEventLoop, native: WindowId) {
+    fn handle_destroyed(&mut self, event_loop: &dyn ActiveEventLoop, native: WindowId) {
         let Some(surface) = self.routes.remove_native(native) else {
             return;
         };
@@ -307,7 +308,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         self.exit_if_no_surfaces(event_loop);
     }
 
-    fn process_all_schedules(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
+    fn process_all_schedules(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant> {
         let surfaces: Vec<SurfaceId> = self.surface_runners.keys().copied().collect();
         let mut earliest = None;
         for surface in surfaces {
@@ -325,7 +326,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn process_application_wakeup(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         now: Instant,
     ) -> Option<Instant> {
         let poll = self
@@ -350,7 +351,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             .min()
     }
 
-    fn schedule_after_event(&mut self, event_loop: &ActiveEventLoop) {
+    fn schedule_after_event(&mut self, event_loop: &dyn ActiveEventLoop) {
         if !self.native_surfaces_active || self.fatal_error.is_some() {
             return;
         }
@@ -372,13 +373,17 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         self.native_surfaces_active = false;
     }
 
-    fn exit_if_no_surfaces(&self, event_loop: &ActiveEventLoop) {
+    fn exit_if_no_surfaces(&self, event_loop: &dyn ActiveEventLoop) {
         if self.surface_runners.is_empty() {
             event_loop.exit();
         }
     }
 
-    fn terminate_for_error(&mut self, event_loop: &ActiveEventLoop, error: MultiWindowRunError) {
+    fn terminate_for_error(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        error: MultiWindowRunError,
+    ) {
         if self.fatal_error.is_none() {
             self.fatal_error = Some(error);
         }
@@ -387,7 +392,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 }
 
 impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<A> {
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         let surfaces: Vec<SurfaceId> = self.surface_runners.keys().copied().collect();
         for surface in surfaces {
             let Some(runner) = self.surface_runners.get_mut(&surface) else {
@@ -412,7 +417,7 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
         self.schedule_after_event(event_loop);
     }
 
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.fatal_error.is_some() || self.native_surfaces_active {
             return;
         }
@@ -434,11 +439,11 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
         }
     }
 
-    fn suspended(&mut self, _: &ActiveEventLoop) {
+    fn destroy_surfaces(&mut self, _: &dyn ActiveEventLoop) {
         self.release_native_surfaces();
     }
 
-    fn new_events(&mut self, event_loop: &ActiveEventLoop, _: StartCause) {
+    fn new_events(&mut self, event_loop: &dyn ActiveEventLoop, _: StartCause) {
         self.application_wakeup_scheduler.begin_event_cycle();
         if self.fatal_error.is_some() {
             event_loop.exit();
@@ -462,20 +467,56 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
         );
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if self.fatal_error.is_some() {
+            return;
+        }
+        if self.native_surfaces_active {
+            let surfaces: Vec<_> = self.surface_runners.keys().copied().collect();
+            for surface in surfaces {
+                let result = self
+                    .surface_runners
+                    .get_mut(&surface)
+                    .expect("registered surface must retain its runner")
+                    .sync_native_menu(event_loop);
+                if let Err(error) = result {
+                    self.terminate_for_error(event_loop, surface_error(surface, error));
+                    return;
+                }
+            }
+        }
         self.schedule_after_event(event_loop);
-    }
-
-    fn exiting(&mut self, _: &ActiveEventLoop) {
-        if let Some(ingress) = &self.message_ingress {
-            ingress.close();
+        if let Some(deadline) = self
+            .surface_runners
+            .values()
+            .filter_map(RutterRunner::pending_native_menu_deadline)
+            .min()
+        {
+            let deadline = match event_loop.control_flow() {
+                ControlFlow::WaitUntil(scheduled) => deadline.min(scheduled),
+                _ => deadline,
+            };
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, native: WindowId, event: WindowEvent) {
-        let Some(surface) = self.routes.surface_for(native) else {
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        native: WindowId,
+        event: WindowEvent,
+    ) {
+        let popup_surface = self.surface_runners.iter().find_map(|(surface, runner)| {
+            (runner.native_menu_window_id() == Some(native)).then_some(*surface)
+        });
+        let Some(surface) = popup_surface.or_else(|| self.routes.surface_for(native)) else {
             return;
         };
+        if popup_surface.is_some() {
+            self.dispatch_surface_event(event_loop, surface, native, event);
+            self.schedule_after_event(event_loop);
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => self.handle_close_request(event_loop, surface),
             WindowEvent::Destroyed => self.handle_destroyed(event_loop, native),
@@ -489,6 +530,9 @@ impl<A: MultiWindowAppLogic> Drop for MultiWindowRunner<A> {
     fn drop(&mut self) {
         if let Some(ingress) = &self.message_ingress {
             ingress.close();
+        }
+        if let Some(completion_error) = &self.completion_error {
+            *completion_error.borrow_mut() = self.fatal_error.take();
         }
     }
 }
@@ -544,7 +588,7 @@ fn schedule_iteration_stops(event_loop_exiting: bool, fatal_error: bool) -> bool
     event_loop_exiting || fatal_error
 }
 
-fn set_wait_deadline(event_loop: &ActiveEventLoop, deadline: Option<Instant>) {
+fn set_wait_deadline(event_loop: &dyn ActiveEventLoop, deadline: Option<Instant>) {
     event_loop.set_control_flow(control_flow_for(deadline));
 }
 

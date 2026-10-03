@@ -6,7 +6,7 @@ use super::*;
 impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     pub(super) fn apply_surface_commands(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         commands: Vec<SurfaceCommand>,
     ) -> Result<(), MultiWindowRunError> {
         for command in commands {
@@ -20,7 +20,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn apply_surface_command(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         command: SurfaceCommand,
     ) -> Result<bool, MultiWindowRunError> {
         match command {

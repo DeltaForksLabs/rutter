@@ -183,18 +183,15 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     }
 
     fn run_initialized_runtime(
-        event_loop: EventLoop<()>,
+        event_loop: EventLoop,
         mut runtime: Self,
     ) -> Result<(), MultiWindowRunError> {
         runtime.accessibility_waker = Some(event_loop.create_proxy());
-        let event_result = event_loop.run_app(&mut runtime);
-        if let Some(ingress) = &runtime.message_ingress {
-            ingress.close();
-        }
-        runtime
-            .fatal_error
-            .take()
-            .map_or_else(|| event_result.map_err(MultiWindowRunError::from), Err)
+        let completion_error = Rc::new(RefCell::new(None));
+        runtime.completion_error = Some(completion_error.clone());
+        let event_result = event_loop.run_app(runtime);
+        let fatal_error = completion_error.borrow_mut().take();
+        fatal_error.map_or_else(|| event_result.map_err(MultiWindowRunError::from), Err)
     }
 
     pub(super) fn initialize() -> Result<Self, MultiWindowRunError> {
@@ -238,6 +235,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             native_surfaces_active: false,
             fatal_error: None,
             accessibility_waker: None,
+            completion_error: None,
             application_wakeup_scheduler: ApplicationWakeupScheduler::default(),
             message_ingress: None,
         })
