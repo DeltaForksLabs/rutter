@@ -13,9 +13,9 @@ pub use state::DropdownMenuState;
 pub(crate) use geometry::{
     DropdownMenuSurface, ITEM_ROW_HEIGHT, MAX_HEIGHT, MENU_PADDING, MIN_WIDTH, ROOT_GAP,
     SEPARATOR_HEIGHT, SUBMENU_OVERLAP, VIEWPORT_MARGIN, build_context_menu_surfaces,
-    build_open_menu_surfaces, clamp_scroll, estimate_content_height, estimate_level_width,
-    maximum_scroll, place_root_surface, place_submenu_surface, point_to_entry, row_rect,
-    scroll_to_reveal,
+    build_native_menu_surfaces, build_open_menu_surfaces, clamp_scroll, estimate_content_height,
+    estimate_level_width, maximum_scroll, place_root_surface, place_submenu_surface,
+    point_to_entry, resolve_native_menu_surfaces, row_rect, scroll_to_reveal,
 };
 #[allow(unused_imports)]
 pub(crate) use runtime::{

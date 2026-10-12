@@ -3,8 +3,11 @@
 
 pub mod cpu;
 pub mod gl;
+mod popup_limits;
 pub mod vk;
+pub(crate) use popup_limits::validate_native_popup_size;
 
+use raw_window_handle::HasWindowHandle;
 use std::fmt;
 use std::rc::Rc;
 
@@ -144,6 +147,18 @@ pub trait GraphicsBackend {
     fn skia_context(&mut self) -> Option<&mut DirectContext> {
         None
     }
+}
+
+// A retained frontend can outlive compositor-forced retirement. Backing native
+// allocations remain valid for destruction, but must never be presented again.
+fn validate_native_lifetime(
+    window: &dyn Window,
+    operation: &'static str,
+) -> Result<(), GraphicsError> {
+    window
+        .window_handle()
+        .map(|_| ())
+        .map_err(|_| GraphicsError::BackendUnavailable { operation })
 }
 
 pub fn create_best_backend(

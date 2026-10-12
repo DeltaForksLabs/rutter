@@ -156,6 +156,9 @@ impl GlBackend {
                 "glutin did not create a compatible window",
             )
         })?);
+        let size = window.surface_size();
+        super::popup_limits::validate_popup_allocation(window.window_type(), size)
+            .map_err(|reason| BackendFailure::new(BackendType::OpenGl, reason))?;
 
         let window_handle = window
             .window_handle()
@@ -183,7 +186,6 @@ impl GlBackend {
             })?,
         };
 
-        let size = window.surface_size();
         let surface_attributes = SurfaceAttributesBuilder::<WindowSurface>::new().build(
             raw_window_handle,
             NonZeroU32::new(size.width.max(1)).unwrap(),
@@ -410,11 +412,13 @@ impl GraphicsBackend for GlBackend {
     }
 
     fn begin_frame(&mut self) -> Result<&Canvas, GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "begin frame")?;
         self.ensure_current("begin frame", GlOperationFailure::Frame)?;
         Ok(self.skia_surface.canvas())
     }
 
     fn end_frame(&mut self) -> Result<(), GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "present frame")?;
         self.ensure_current("end frame", GlOperationFailure::Frame)?;
         self.ensure_current("flush and submit frame", GlOperationFailure::Frame)?;
         self.skia_context
@@ -429,6 +433,13 @@ impl GraphicsBackend for GlBackend {
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "resize")?;
+        super::popup_limits::validate_popup_allocation(self.window.window_type(), size).map_err(
+            |reason| GraphicsError::Resize {
+                backend: BackendType::OpenGl,
+                reason,
+            },
+        )?;
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }

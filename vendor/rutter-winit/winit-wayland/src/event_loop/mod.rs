@@ -119,6 +119,7 @@ impl EventLoop {
                 let result = queue.dispatch_pending(winit_state);
                 if result.is_ok()
                     && (!winit_state.events_sink.is_empty()
+                        || !winit_state.terminal_layers.is_empty()
                         || !winit_state.window_compositor_updates.is_empty())
                 {
                     winit_state.dispatched_events = true;
@@ -362,6 +363,8 @@ impl EventLoop {
         let mut buffer_sink = std::mem::take(&mut self.buffer_sink);
         let mut window_ids = std::mem::take(&mut self.window_ids);
 
+        // Revoke native lifetimes before any application callback can render.
+        let mut terminal_windows = self.with_state(WinitState::retire_terminal_layers);
         app.new_events(&self.active_event_loop, cause);
 
         // NB: For consistency all platforms must call `can_create_surfaces` even though Wayland
@@ -375,11 +378,27 @@ impl EventLoop {
             app.proxy_wake_up(&self.active_event_loop);
         }
 
+        // Constructors may dispatch terminal events during can_create_surfaces.
+        terminal_windows.extend(self.with_state(WinitState::retire_terminal_layers));
+        for window_id in terminal_windows {
+            app.window_event(&self.active_event_loop, window_id, WindowEvent::CloseRequested);
+            app.window_event(&self.active_event_loop, window_id, WindowEvent::Destroyed);
+        }
+
         // Drain the pending compositor updates.
         self.with_state(|state| compositor_updates.append(&mut state.window_compositor_updates));
 
         for mut compositor_update in compositor_updates.drain(..) {
             let window_id = compositor_update.window_id;
+            if self.with_state(|state| {
+                state
+                    .window_requests
+                    .borrow()
+                    .get(&window_id)
+                    .is_none_or(|requests| requests.is_terminal())
+            }) {
+                continue;
+            }
             if compositor_update.scale_changed {
                 let (physical_size, scale_factor) = self.with_state(|state| {
                     let windows = state.windows.get_mut();
@@ -457,7 +476,15 @@ impl EventLoop {
         for event in buffer_sink.drain() {
             match event {
                 Event::WindowEvent { window_id, event } => {
-                    app.window_event(&self.active_event_loop, window_id, event)
+                    if self.with_state(|state| {
+                        state
+                            .window_requests
+                            .borrow()
+                            .get(&window_id)
+                            .is_some_and(|requests| !requests.is_terminal())
+                    }) {
+                        app.window_event(&self.active_event_loop, window_id, event)
+                    }
                 },
                 Event::DeviceEvent { event } => {
                     app.device_event(&self.active_event_loop, None, event)
@@ -472,7 +499,15 @@ impl EventLoop {
         for event in buffer_sink.drain() {
             match event {
                 Event::WindowEvent { window_id, event } => {
-                    app.window_event(&self.active_event_loop, window_id, event)
+                    if self.with_state(|state| {
+                        state
+                            .window_requests
+                            .borrow()
+                            .get(&window_id)
+                            .is_some_and(|requests| !requests.is_terminal())
+                    }) {
+                        app.window_event(&self.active_event_loop, window_id, event)
+                    }
                 },
                 Event::DeviceEvent { event } => {
                     app.device_event(&self.active_event_loop, None, event)
@@ -486,7 +521,13 @@ impl EventLoop {
         });
 
         for window_id in window_ids.iter() {
-            if self.with_state(|state| state.window_requests.get_mut().get(window_id).is_none()) {
+            if self.with_state(|state| {
+                state
+                    .window_requests
+                    .get_mut()
+                    .get(window_id)
+                    .is_none_or(|requests| requests.is_terminal())
+            }) {
                 continue; // The element might not exist anymore so just ignore
             }
             let mut windows_to_close = Vec::new();
@@ -504,6 +545,16 @@ impl EventLoop {
 
                         let window_requests = state.window_requests.get_mut();
                         window_requests.get(&w).unwrap().take_closed();
+                        // Popup frontends retain their surface for renderer
+                        // cleanup; removal must still destroy the native role.
+                        let window = state.windows.get_mut().get(&w).unwrap();
+                        if matches!(
+                            window.lock().unwrap().window,
+                            crate::window::state::WindowType::Popup { .. }
+                        ) {
+                            window_requests.get(&w).unwrap().mark_terminal();
+                            window.lock().unwrap().retire_native();
+                        }
                         mem::drop(window_requests.remove(&w));
                         mem::drop(state.windows.get_mut().remove(&w));
                     });
@@ -546,7 +597,7 @@ impl EventLoop {
         app.about_to_wait(&self.active_event_loop);
 
         // Update the window frames and schedule redraws.
-        let mut wake_up = false;
+        let mut wake_up = self.with_state(|state| !state.terminal_layers.is_empty());
         for window_id in window_ids.drain(..) {
             wake_up |= self.with_state(|state| match state.windows.get_mut().get_mut(&window_id) {
                 Some(window) => {
@@ -746,8 +797,27 @@ impl RootActiveEventLoop for ActiveEventLoop {
         &self,
         window_attributes: winit_core::window::WindowAttributes,
     ) -> Result<Box<dyn winit_core::window::Window>, RequestError> {
+        if window_attributes.layer_shell.is_some()
+            && window_attributes.window_type() == WindowType::Popup
+        {
+            return Err(NotSupportedError::new("layer-shell role cannot also be a popup").into());
+        }
+        if window_attributes.window_type() == WindowType::LayerShell
+            && window_attributes.layer_shell.is_none()
+        {
+            return Err(NotSupportedError::new(
+                "layer-shell role requires validated layer-shell settings",
+            )
+            .into());
+        }
+        if window_attributes.layer_shell.is_some() && window_attributes.parent_window().is_some() {
+            return Err(NotSupportedError::new(
+                "layer-shell surfaces do not have native window parents",
+            )
+            .into());
+        }
         match window_attributes.window_type() {
-            WindowType::Window => {
+            WindowType::Window | WindowType::LayerShell => {
                 let window = crate::Window::new(self, window_attributes)?;
                 Ok(Box::new(window))
             },
@@ -757,6 +827,18 @@ impl RootActiveEventLoop for ActiveEventLoop {
             },
             _ => Err(RequestError::NotSupported(NotSupportedError::new("Unsupported window type"))),
         }
+    }
+
+    fn layer_shell_version(&self) -> Option<u32> {
+        use sctk::reexports::protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
+        let state = self.state.borrow();
+        let shell = state.layer_shell.as_ref()?;
+        let global = <sctk::shell::wlr_layer::LayerShell as sctk::globals::ProvidesBoundGlobal<
+            ZwlrLayerShellV1,
+            1,
+        >>::bound_global(shell)
+        .ok()?;
+        Some(global.version())
     }
 
     fn available_monitors(&self) -> Box<dyn Iterator<Item = CoreMonitorHandle>> {

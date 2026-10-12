@@ -11,7 +11,6 @@ use sctk::compositor::SurfaceData;
 use sctk::reexports::client::Proxy;
 use sctk::reexports::client::protocol::wl_display::WlDisplay;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
-use sctk::shell::WaylandSurface;
 use sctk::shell::xdg::window::{Window as SctkWindow, WindowDecorations};
 use tracing::warn;
 use winit_core::cursor::Cursor;
@@ -35,12 +34,17 @@ pub use state::WindowState;
 pub(crate) mod handles;
 pub use handles::Handles;
 use handles::WindowRequests;
+mod lifetime;
+mod retirement;
+#[cfg(test)]
+mod retirement_tests;
 
 /// The Wayland window.
 #[derive(Debug)]
 pub struct Window {
     /// Reference to the underlying SCTK window.
-    window: SctkWindow,
+    window: Option<SctkWindow>,
+    surface: WlSurface,
 
     /// Window id.
     window_id: WindowId,
@@ -72,7 +76,12 @@ impl Window {
             state.xdg_activation.as_ref().map(|activation_state| activation_state.global().clone());
         let display = event_loop_window_target.handle.connection.display();
 
-        let size: Size = attributes.surface_size.unwrap_or(LogicalSize::new(800., 600.).into());
+        let size: Size = if let Some(config) = &attributes.layer_shell {
+            let (width, height) = config.logical_size();
+            LogicalSize::new(width.max(1), height.max(1)).into()
+        } else {
+            attributes.surface_size.unwrap_or(LogicalSize::new(800., 600.).into())
+        };
 
         // We prefer server side decorations, however to not have decorations we ask for client
         // side decorations instead.
@@ -82,8 +91,15 @@ impl Window {
             WindowDecorations::RequestClient
         };
 
-        let window =
-            state.xdg_shell.create_window(surface.clone(), default_decorations, &queue_handle);
+        let (window, role) = if let Some(config) = &attributes.layer_shell {
+            let role =
+                crate::layer_shell::create_layer(&state, &queue_handle, surface.clone(), config)?;
+            (None, role)
+        } else {
+            let window =
+                state.xdg_shell.create_window(surface.clone(), default_decorations, &queue_handle);
+            (Some(window.clone()), state::WindowType::Window { window, last_configure: None })
+        };
 
         let WindowAttributesWayland { name: app_name, activation_token, prefer_csd, .. } =
             *attributes
@@ -106,7 +122,7 @@ impl Window {
             event_loop_window_target,
             &state,
             size,
-            state::WindowType::Window { window: window.clone(), last_configure: None },
+            role,
             attributes.preferred_theme,
             prefer_csd,
             scale_factor,
@@ -125,7 +141,7 @@ impl Window {
         window_state.set_decorate(attributes.decorations);
 
         // Set the app_id.
-        if let Some(name) = app_name.map(|name| name.general) {
+        if let (Some(window), Some(name)) = (&window, app_name.map(|name| name.general)) {
             window.set_app_id(name);
         }
 
@@ -152,9 +168,15 @@ impl Window {
                     monitor.cast_ref::<output::MonitorHandle>().map(|handle| &handle.proxy)
                 });
 
-                window.set_fullscreen(output)
+                if let Some(window) = &window {
+                    window.set_fullscreen(output)
+                }
             },
-            _ if attributes.maximized => window.set_maximized(),
+            _ if attributes.maximized => {
+                if let Some(window) = &window {
+                    window.set_maximized()
+                }
+            },
             _ => (),
         };
 
@@ -175,7 +197,7 @@ impl Window {
         }
 
         // XXX Do initial commit.
-        window.commit();
+        surface.commit();
 
         // Add the window and window requests into the state.
         let window_state = Arc::new(Mutex::new(window_state));
@@ -183,6 +205,7 @@ impl Window {
         state.windows.get_mut().insert(window_id, window_state.clone());
 
         let window_requests = WindowRequests {
+            terminal: AtomicBool::new(false),
             redraw_requested: AtomicBool::new(true),
             closed: AtomicBool::new(false),
         };
@@ -196,11 +219,36 @@ impl Window {
         let event_queue = wayland_source.queue();
 
         // Do a roundtrip.
-        event_queue.roundtrip(&mut state).map_err(|err| os_error!(err))?;
-
-        // XXX Wait for the initial configure to arrive.
-        while !window_state.lock().unwrap().is_configured() {
-            event_queue.blocking_dispatch(&mut state).map_err(|err| os_error!(err))?;
+        let configure_result = (|| {
+            event_queue.roundtrip(&mut state).map_err(|err| RequestError::from(os_error!(err)))?;
+            loop {
+                if window_requests.is_terminal() {
+                    return Err(
+                        NotSupportedError::new("surface retired before initial configure").into()
+                    );
+                }
+                if state
+                    .window_compositor_updates
+                    .iter()
+                    .any(|update| update.window_id == window_id && update.close_window)
+                {
+                    return Err(
+                        NotSupportedError::new("surface closed before initial configure").into()
+                    );
+                }
+                if window_state.lock().unwrap().is_configured() {
+                    return Ok(());
+                }
+                event_queue
+                    .blocking_dispatch(&mut state)
+                    .map_err(|err| RequestError::from(os_error!(err)))?;
+            }
+        })();
+        if let Err(error) = configure_result {
+            state.windows.get_mut().remove(&window_id);
+            state.window_requests.get_mut().remove(&window_id);
+            state.window_compositor_updates.retain(|update| update.window_id != window_id);
+            return Err(error);
         }
 
         // Wake-up event loop, so it'll send initial redraw requested.
@@ -209,6 +257,7 @@ impl Window {
 
         Ok(Self {
             window,
+            surface,
             display,
 
             window_id,
@@ -230,12 +279,15 @@ impl Window {
     }
 
     pub(crate) fn xdg_toplevel(&self) -> Option<NonNull<c_void>> {
-        NonNull::new(self.window.xdg_toplevel().id().as_ptr().cast())
+        NonNull::new(self.window.as_ref()?.xdg_toplevel().id().as_ptr().cast())
     }
 }
 
 impl Window {
     pub fn request_activation_token(&self) -> Result<AsyncRequestSerial, RequestError> {
+        if !self.native_available() {
+            return Err(RequestError::Ignored);
+        }
         let xdg_activation = match self.handles.xdg_activation.as_ref() {
             Some(xdg_activation) => xdg_activation,
             None => return Err(NotSupportedError::new("xdg_activation_v1 is not available").into()),
@@ -253,8 +305,13 @@ impl Window {
     }
 
     #[inline]
+    /// The backing Wayland surface. After terminal layer closure this is retained
+    /// only for renderer cleanup; do not attach, commit or render through it.
+    /// Use `window_handle()` to check availability of a renderable native lifetime.
     pub fn surface(&self) -> &WlSurface {
-        self.window.wl_surface()
+        // After terminal closure this is a cleanup-only backing allocation.
+        // Do not commit/render through it; window_handle() is unavailable.
+        &self.surface
     }
 }
 
@@ -267,8 +324,11 @@ impl Drop for Window {
 
 impl rwh_06::HasWindowHandle for Window {
     fn window_handle(&self) -> Result<rwh_06::WindowHandle<'_>, rwh_06::HandleError> {
+        if !self.native_available() {
+            return Err(rwh_06::HandleError::Unavailable);
+        }
         let raw = rwh_06::WaylandWindowHandle::new({
-            let ptr = self.window.wl_surface().id().as_ptr();
+            let ptr = self.surface.id().as_ptr();
             std::ptr::NonNull::new(ptr as *mut _).expect("wl_surface will never be null")
         });
 
@@ -278,6 +338,9 @@ impl rwh_06::HasWindowHandle for Window {
 
 impl rwh_06::HasDisplayHandle for Window {
     fn display_handle(&self) -> Result<rwh_06::DisplayHandle<'_>, rwh_06::HandleError> {
+        if !self.native_available() {
+            return Err(rwh_06::HandleError::Unavailable);
+        }
         let raw = rwh_06::WaylandDisplayHandle::new({
             let ptr = self.display.id().as_ptr();
             std::ptr::NonNull::new(ptr as *mut _).expect("wl_proxy should never be null")
@@ -288,8 +351,38 @@ impl rwh_06::HasDisplayHandle for Window {
 }
 
 impl CoreWindow for Window {
+    fn surface_logical_size(&self) -> LogicalSize<f64> {
+        self.with_state(LogicalSize::default(), |state| state.surface_size().cast())
+    }
+    fn layer_shell_version(&self) -> Option<u32> {
+        self.with_state(None, |state| {
+            if let WindowType::Layer { layer, .. } = &state.window {
+                if let sctk::shell::wlr_layer::SurfaceKind::Wlr(role) = layer.kind() {
+                    return Some(role.version());
+                }
+            }
+            None
+        })
+    }
+    fn layer_output_name(&self) -> Option<String> {
+        if !self.native_available() {
+            return None;
+        }
+        let data = self.surface.data::<SurfaceData<()>>()?;
+        let mut outputs = data.outputs();
+        let output = outputs.next()?;
+        if outputs.next().is_some() {
+            return None;
+        }
+        let data = output.data::<sctk::output::OutputData>()?;
+        data.with_output_info(|info| info.name.clone())
+    }
     fn window_type(&self) -> winit_core::window::WindowType {
-        winit_core::window::WindowType::Window
+        if self.window.is_none() {
+            winit_core::window::WindowType::LayerShell
+        } else {
+            winit_core::window::WindowType::Window
+        }
     }
 
     fn id(&self) -> WindowId {
@@ -302,11 +395,11 @@ impl CoreWindow for Window {
 
     #[inline]
     fn title(&self) -> String {
-        self.window_state.lock().unwrap().title().to_owned()
+        self.with_state(String::new(), |state| state.title().to_owned())
     }
 
     fn pre_present_notify(&self) {
-        self.window_state.lock().unwrap().request_frame_callback();
+        self.with_state((), WindowState::request_frame_callback);
     }
 
     fn reset_dead_keys(&self) {
@@ -327,22 +420,26 @@ impl CoreWindow for Window {
     }
 
     fn surface_size(&self) -> PhysicalSize<u32> {
-        let window_state = self.window_state.lock().unwrap();
-        let scale_factor = window_state.scale_factor();
-        super::logical_to_physical_rounded(window_state.surface_size(), scale_factor)
+        self.with_state(PhysicalSize::default(), |state| {
+            super::logical_to_physical_rounded(state.surface_size(), state.scale_factor())
+        })
     }
 
     fn request_surface_size(&self, size: Size) -> Option<PhysicalSize<u32>> {
-        let mut window_state = self.window_state.lock().unwrap();
-        let new_size = window_state.request_surface_size(size);
+        let new_size = self.with_state(None, |state| {
+            if matches!(state.window, WindowType::Layer { .. }) {
+                return None;
+            }
+            Some(state.request_surface_size(size))
+        })?;
         self.request_redraw();
         Some(new_size)
     }
 
     fn outer_size(&self) -> PhysicalSize<u32> {
-        let window_state = self.window_state.lock().unwrap();
-        let scale_factor = window_state.scale_factor();
-        super::logical_to_physical_rounded(window_state.outer_size(), scale_factor)
+        self.with_state(PhysicalSize::default(), |state| {
+            super::logical_to_physical_rounded(state.outer_size(), state.scale_factor())
+        })
     }
 
     fn safe_area(&self) -> PhysicalInsets<u32> {
@@ -352,7 +449,7 @@ impl CoreWindow for Window {
     fn set_min_surface_size(&self, min_size: Option<Size>) {
         let scale_factor = self.scale_factor();
         let min_size = min_size.map(|size| size.to_logical(scale_factor));
-        self.window_state.lock().unwrap().set_min_surface_size(min_size);
+        self.with_state((), |state| state.set_min_surface_size(min_size));
         // NOTE: Requires commit to be applied.
         self.request_redraw();
     }
@@ -362,34 +459,34 @@ impl CoreWindow for Window {
     fn set_max_surface_size(&self, max_size: Option<Size>) {
         let scale_factor = self.scale_factor();
         let max_size = max_size.map(|size| size.to_logical(scale_factor));
-        self.window_state.lock().unwrap().set_max_surface_size(max_size);
+        self.with_state((), |state| state.set_max_surface_size(max_size));
         // NOTE: Requires commit to be applied.
         self.request_redraw();
     }
 
     fn surface_resize_increments(&self) -> Option<PhysicalSize<u32>> {
-        let window_state = self.window_state.lock().unwrap();
-        let scale_factor = window_state.scale_factor();
-        window_state
-            .resize_increments()
-            .map(|size| super::logical_to_physical_rounded(size, scale_factor))
+        self.with_state(None, |state| {
+            state
+                .resize_increments()
+                .map(|size| super::logical_to_physical_rounded(size, state.scale_factor()))
+        })
     }
 
     fn set_surface_resize_increments(&self, increments: Option<Size>) {
-        let mut window_state = self.window_state.lock().unwrap();
-        let scale_factor = window_state.scale_factor();
-        let increments = increments.map(|size| size.to_logical(scale_factor));
-        window_state.set_resize_increments(increments);
+        self.with_state((), |state| {
+            let increments = increments.map(|size| size.to_logical(state.scale_factor()));
+            state.set_resize_increments(increments);
+        });
     }
 
     fn set_title(&self, title: &str) {
         let new_title = title.to_string();
-        self.window_state.lock().unwrap().set_title(new_title);
+        self.with_state((), |state| state.set_title(new_title));
     }
 
     #[inline]
     fn set_transparent(&self, transparent: bool) {
-        self.window_state.lock().unwrap().set_transparent(transparent);
+        self.with_state((), |state| state.set_transparent(transparent));
     }
 
     fn set_visible(&self, _visible: bool) {
@@ -401,14 +498,14 @@ impl CoreWindow for Window {
     }
 
     fn set_resizable(&self, resizable: bool) {
-        if self.window_state.lock().unwrap().set_resizable(resizable) {
+        if self.with_state(false, |state| state.set_resizable(resizable)) {
             // NOTE: Requires commit to be applied.
             self.request_redraw();
         }
     }
 
     fn is_resizable(&self) -> bool {
-        self.window_state.lock().unwrap().resizable()
+        self.with_state(false, |state| state.resizable())
     }
 
     fn set_enabled_buttons(&self, _buttons: WindowButtons) {
@@ -427,7 +524,9 @@ impl CoreWindow for Window {
             return;
         }
 
-        self.window.set_minimized();
+        if let Some(window) = &self.window {
+            window.set_minimized();
+        }
     }
 
     fn is_minimized(&self) -> Option<bool> {
@@ -436,19 +535,18 @@ impl CoreWindow for Window {
     }
 
     fn set_maximized(&self, maximized: bool) {
-        if maximized { self.window.set_maximized() } else { self.window.unset_maximized() }
+        if let Some(window) = &self.window {
+            if maximized { window.set_maximized() } else { window.unset_maximized() }
+        }
     }
 
     fn is_maximized(&self) -> bool {
-        if let WindowType::Window { last_configure, .. } = &self.window_state.lock().unwrap().window
-        {
-            last_configure
-                .as_ref()
-                .map(|last_configure| last_configure.is_maximized())
-                .unwrap_or_default()
-        } else {
-            false
-        }
+        self.with_state(false, |state| match &state.window {
+            WindowType::Window { last_configure, .. } => {
+                last_configure.as_ref().is_some_and(|configure| configure.is_maximized())
+            },
+            _ => false,
+        })
     }
 
     fn set_fullscreen(&self, fullscreen: Option<Fullscreen>) {
@@ -458,26 +556,28 @@ impl CoreWindow for Window {
                     monitor.cast_ref::<output::MonitorHandle>().map(|handle| &handle.proxy)
                 });
 
-                self.window.set_fullscreen(output)
+                if let Some(window) = &self.window {
+                    window.set_fullscreen(output)
+                }
             },
             Some(_) => {
                 warn!("this fullscreen mode is ignored on Wayland");
             },
-            None => self.window.unset_fullscreen(),
+            None => {
+                if let Some(window) = &self.window {
+                    window.unset_fullscreen()
+                }
+            },
         }
     }
 
     fn fullscreen(&self) -> Option<Fullscreen> {
-        let is_fullscreen = if let WindowType::Window { last_configure, .. } =
-            &self.window_state.lock().unwrap().window
-        {
-            last_configure
-                .as_ref()
-                .map(|last_configure| last_configure.is_fullscreen())
-                .unwrap_or_default()
-        } else {
-            false
-        };
+        let is_fullscreen = self.with_state(false, |state| match &state.window {
+            WindowType::Window { last_configure, .. } => {
+                last_configure.as_ref().is_some_and(|configure| configure.is_fullscreen())
+            },
+            _ => false,
+        });
 
         if is_fullscreen {
             let current_monitor = self.current_monitor();
@@ -489,35 +589,41 @@ impl CoreWindow for Window {
 
     #[inline]
     fn scale_factor(&self) -> f64 {
-        self.window_state.lock().unwrap().scale_factor()
+        self.with_state(1.0, |state| state.scale_factor())
     }
 
     #[inline]
     fn set_blur(&self, blur: bool) {
-        if self.window_state.lock().unwrap().set_blur(blur) {
+        if self.with_state(false, |state| state.set_blur(blur)) {
             self.request_redraw();
         }
     }
 
     #[inline]
     fn set_decorations(&self, decorate: bool) {
-        self.window_state.lock().unwrap().set_decorate(decorate)
+        self.with_state((), |state| state.set_decorate(decorate))
     }
 
     #[inline]
     fn is_decorated(&self) -> bool {
-        self.window_state.lock().unwrap().is_decorated()
+        self.with_state(false, WindowState::is_decorated)
     }
 
     fn set_window_level(&self, _level: WindowLevel) {}
 
     fn set_window_icon(&self, window_icon: Option<winit_core::icon::Icon>) {
-        self.window_state.lock().unwrap().set_window_icon(window_icon)
+        self.with_state((), |state| state.set_window_icon(window_icon))
     }
 
     #[inline]
     fn request_ime_update(&self, request: ImeRequest) -> Result<(), ImeRequestError> {
-        let state_changed = self.window_state.lock().unwrap().request_ime_update(request)?;
+        let unavailable = if matches!(request, ImeRequest::Disable) {
+            Ok(None)
+        } else {
+            Err(ImeRequestError::NotSupported)
+        };
+        let state_changed =
+            self.with_state(unavailable, |state| state.request_ime_update(request))?;
 
         if let Some(allowed) = state_changed {
             let event = WindowEvent::Ime(if allowed { Ime::Enabled } else { Ime::Disabled });
@@ -529,77 +635,81 @@ impl CoreWindow for Window {
 
     #[inline]
     fn ime_capabilities(&self) -> Option<ImeCapabilities> {
-        self.window_state.lock().unwrap().ime_allowed()
+        self.with_state(None, |state| state.ime_allowed())
     }
 
     fn focus_window(&self) {}
 
     fn has_focus(&self) -> bool {
-        self.window_state.lock().unwrap().has_focus()
+        self.with_state(false, |state| state.has_focus())
     }
 
     fn request_user_attention(&self, request_type: Option<UserAttentionType>) {
+        if !self.native_available() {
+            return;
+        }
         self.handles.request_user_attention(self.surface(), request_type);
     }
 
     fn set_theme(&self, theme: Option<Theme>) {
-        self.window_state.lock().unwrap().set_theme(theme)
+        self.with_state((), |state| state.set_theme(theme))
     }
 
     fn theme(&self) -> Option<Theme> {
-        self.window_state.lock().unwrap().theme()
+        self.with_state(None, |state| state.theme())
     }
 
     fn set_content_protected(&self, _protected: bool) {}
 
     fn set_cursor(&self, cursor: Cursor) {
-        let window_state = &mut self.window_state.lock().unwrap();
-
-        match cursor {
-            Cursor::Icon(icon) => window_state.set_cursor(icon),
-            Cursor::Custom(cursor) => window_state.set_custom_cursor(cursor),
-        }
+        self.with_state((), |state| match cursor {
+            Cursor::Icon(icon) => state.set_cursor(icon),
+            Cursor::Custom(cursor) => state.set_custom_cursor(cursor),
+        });
     }
 
     fn set_cursor_position(&self, position: Position) -> Result<(), RequestError> {
         let scale_factor = self.scale_factor();
         let position = position.to_logical(scale_factor);
-        self.window_state
-            .lock()
-            .unwrap()
-            .set_cursor_position(position)
+        self.with_state(Err(RequestError::Ignored), |state| state.set_cursor_position(position))
             // Request redraw on success, since the state is double buffered.
             .map(|_| self.request_redraw())
     }
 
     fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
-        self.window_state.lock().unwrap().set_cursor_grab(mode)
+        self.with_state(Err(RequestError::Ignored), |state| state.set_cursor_grab(mode))
     }
 
     fn set_cursor_visible(&self, visible: bool) {
-        self.window_state.lock().unwrap().set_cursor_visible(visible);
+        self.with_state((), |state| state.set_cursor_visible(visible));
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
-        self.window_state.lock().unwrap().drag_window()
+        self.with_state(Err(RequestError::Ignored), |state| state.drag_window())
     }
 
     fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), RequestError> {
-        self.window_state.lock().unwrap().drag_resize_window(direction)
+        self.with_state(Err(RequestError::Ignored), |state| state.drag_resize_window(direction))
     }
 
     fn show_window_menu(&self, position: Position) {
         let scale_factor = self.scale_factor();
         let position = position.to_logical(scale_factor);
-        self.window_state.lock().unwrap().show_window_menu(position);
+        self.with_state((), |state| state.show_window_menu(position));
     }
 
     fn set_cursor_hittest(&self, hittest: bool) -> Result<(), RequestError> {
+        if !self.native_available() {
+            return Err(RequestError::Ignored);
+        }
         self.handles.set_cursor_hittest(self.surface(), hittest)
     }
 
     fn current_monitor(&self) -> Option<CoreMonitorHandle> {
-        let data = self.window.wl_surface().data::<SurfaceData<()>>()?;
+        if !self.native_available() {
+            return None;
+        }
+        let data = self.surface.data::<SurfaceData<()>>()?;
         data.outputs()
             .next()
             .map(MonitorHandle::new)

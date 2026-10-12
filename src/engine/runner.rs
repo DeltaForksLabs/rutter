@@ -1581,6 +1581,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.register_resumed_window()
     }
 
+    pub(crate) fn native_window(&self) -> Option<&dyn winit::window::Window> {
+        self.engine.window.as_deref()
+    }
+
     fn register_resumed_window(&mut self) -> Result<(WindowId, BackendType), GraphicsError> {
         let backend = self
             .engine
@@ -1603,6 +1607,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     pub(crate) fn release_surface(&mut self) {
         self.native_menu = None;
         self.native_menus_unavailable = false;
+        self.engine.native_menu_layout = None;
         self.active_window_id = None;
         self.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
         self.scroll_drag = None;

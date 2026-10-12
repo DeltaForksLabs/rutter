@@ -127,6 +127,54 @@ fn dropdown_surface_masks_lower_overlay_hover_routes() {
 }
 
 #[test]
+fn native_menu_hover_coverage_uses_configured_panels_and_transparent_gaps() {
+    let entries = [ContextMenuEntry::item("Open", ())];
+    let widget = context_menu_button(&entries);
+    let states = HashMap::from([(
+        CONTEXT_MENU_ID,
+        WidgetState::ContextMenu(context_menu_state(true)),
+    )]);
+    let (taffy, root) = layout_widget(&widget, &states, PhysicalSize::new(320, 30));
+    let native = (
+        crate::render::NativeMenuKind::Context(CONTEXT_MENU_ID),
+        vec![crate::widgets::dropdown_menu::DropdownMenuSurface {
+            level_path: Vec::new(),
+            rect: SkiaRect::from_xywh(-100.0, -80.0, 120.0, 44.0),
+            content_height: 44.0,
+            scroll_y: 0.0,
+            max_scroll: 0.0,
+        }],
+    );
+    for (pointer, covered) in [
+        (Point::new(-60.0, -60.0), true),
+        (Point::new(25.0, 20.0), false),
+        (Point::new(25.0, -60.0), false),
+    ] {
+        let routes = overlay_hover_routes_with_native(
+            OverlayHoverInput {
+                taffy: &taffy,
+                root,
+                widget: &widget,
+                widget_states: &states,
+                input_states: &HashMap::new(),
+                focused_id: None,
+                mouse: pointer,
+                viewport: (320.0, 30.0),
+                context_font: None,
+                direction: LayoutDirection::Ltr,
+            },
+            Some(&native),
+        );
+        assert_eq!(routes.base.shows_interaction_effects, !covered);
+        if covered {
+            assert_hidden(routes.context_menu.mouse);
+        } else {
+            assert_eq!(routes.context_menu.mouse, pointer);
+        }
+    }
+}
+
+#[test]
 fn popover_surface_masks_base_hover() {
     let widget = popover_widget();
     let states = HashMap::from([(POPOVER_ID, WidgetState::Popover(open_popover_state()))]);

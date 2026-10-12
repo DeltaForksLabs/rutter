@@ -113,6 +113,7 @@ pub enum CloseBehavior {
 /// Startup and lifecycle settings for one native window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowConfig {
+    layer_shell: Option<winit::window::LayerShellConfig>,
     title: String,
     transparent: bool,
     decorations: bool,
@@ -130,6 +131,7 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
+            layer_shell: None,
             title: "Rutter".to_string(),
             transparent: false,
             decorations: true,
@@ -161,6 +163,22 @@ macro_rules! bool_window_setting {
 }
 
 impl WindowConfig {
+    /// Requests a real Wayland layer surface. Creation fails if unavailable;
+    /// ordinary window position/size/decorations hints do not define this role.
+    /// ```
+    /// use rutter::{LayerAnchors, LayerShellConfig, WindowConfig};
+    /// let layer = LayerShellConfig::new("panel", LayerAnchors::TOP, 640, 32).unwrap();
+    /// let window = WindowConfig::default().with_layer_shell(layer);
+    /// assert_eq!(window.layer_shell().unwrap().logical_size(), (640, 32));
+    /// ```
+    pub fn with_layer_shell(mut self, config: winit::window::LayerShellConfig) -> Self {
+        self.layer_shell = Some(config);
+        self
+    }
+    /// Returns the native layer role request, if any.
+    pub fn layer_shell(&self) -> Option<&winit::window::LayerShellConfig> {
+        self.layer_shell.as_ref()
+    }
     /// Sets the native window title.
     /// ```
     /// assert_eq!(rutter::WindowConfig::default().with_title("Editor").title(), "Editor");
@@ -352,6 +370,9 @@ impl WindowConfig {
     }
 
     fn apply_geometry(&self, mut attributes: WindowAttributes) -> WindowAttributes {
+        if let Some(layer) = self.layer_shell.clone() {
+            attributes = attributes.with_layer_shell(layer);
+        }
         attributes.surface_size = self.inner_size.map(window_size_to_winit);
         attributes.min_surface_size = self.min_inner_size.map(window_size_to_winit);
         attributes.max_surface_size = self.max_inner_size.map(window_size_to_winit);
@@ -413,3 +434,46 @@ impl Display for WindowConfigError {
 }
 
 impl Error for WindowConfigError {}
+
+#[cfg(test)]
+mod layer_shell_tests {
+    use super::*;
+    use crate::{LayerAnchors, LayerExclusiveZone, LayerMargins, LayerOutput, LayerShellConfig};
+
+    #[test]
+    fn layer_shell_role_survives_geometry_hints_and_cloning() {
+        let role = LayerShellConfig::new("quasar-panel", LayerAnchors::BOTTOM, 420, 32)
+            .unwrap()
+            .with_output(LayerOutput::Name("DP-2".into()))
+            .unwrap()
+            .with_margins(LayerMargins {
+                bottom: 8,
+                left: -4,
+                ..Default::default()
+            })
+            .with_exclusive_zone(LayerExclusiveZone::Reserve(40))
+            .unwrap();
+        let window = WindowConfig::default()
+            .with_layer_shell(role.clone())
+            .with_inner_size(800, 600)
+            .unwrap();
+        assert_eq!(window.layer_shell(), Some(&role));
+        assert_eq!(
+            window.window_attributes().window_type(),
+            winit::window::WindowType::LayerShell
+        );
+        assert_eq!(window.clone().window_attributes().layer_shell, Some(role));
+        assert_eq!(window.layer_shell().unwrap().logical_size(), (420, 32));
+    }
+
+    #[test]
+    fn ordinary_settings_keep_default_native_role() {
+        assert!(WindowConfig::default().layer_shell().is_none());
+        assert!(
+            WindowConfig::default()
+                .window_attributes()
+                .layer_shell
+                .is_none()
+        );
+    }
+}

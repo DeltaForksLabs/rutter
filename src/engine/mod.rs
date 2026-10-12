@@ -47,7 +47,7 @@ use self::widget_state::{
 };
 use crate::accessibility::{
     AccessibilityActionInbox, AccessibilityInputs, IgnoredDeactivationHandler,
-    LazyActivationHandler, build_accessibility_update,
+    LazyActivationHandler,
 };
 use crate::app::{AppLogic, SurfaceConfig};
 use crate::input_limits::{InputKind, InputLimits};
@@ -1738,6 +1738,10 @@ pub struct RutterEngine<A: AppLogic> {
     pub snapshot_scheduled: bool,
     pub scale_factor: f32,
     pub last_mouse_pos: Point,
+    pub(crate) native_menu_layout: Option<(
+        crate::render::NativeMenuKind,
+        Vec<crate::widgets::dropdown_menu::DropdownMenuSurface>,
+    )>,
     pub(crate) active_drag_badge: Option<ActiveDragBadge>,
     pub has_animated: bool,
     pub has_live_clock: bool,
@@ -1837,6 +1841,7 @@ impl<A: AppLogic> RutterEngine<A> {
             snapshot_scheduled: false,
             scale_factor: 1.0,
             last_mouse_pos: Point::new(0.0, 0.0),
+            native_menu_layout: None,
             active_drag_badge: None,
             has_animated: false,
             has_live_clock: false,
@@ -3505,7 +3510,7 @@ impl<A: AppLogic> RutterEngine<A> {
         );
         if let Some(adapter) = self.accessibility_adapter.as_mut() {
             adapter.update_if_active(|| {
-                build_accessibility_update(
+                crate::accessibility::build_accessibility_update_with_native(
                     &self.taffy,
                     &widget_tree,
                     self.last_root_node,
@@ -3519,6 +3524,9 @@ impl<A: AppLogic> RutterEngine<A> {
                         ),
                         direction: A::locale().direction(),
                     },
+                    self.native_menu_layout
+                        .as_ref()
+                        .filter(|(kind, _)| Some(*kind) == native_menu),
                 )
             });
         }
@@ -3551,7 +3559,9 @@ impl<A: AppLogic> RutterEngine<A> {
                 self.cursor_blink.is_visible(),
                 &theme,
                 self.scale_factor,
-                native_menu,
+                self.native_menu_layout
+                    .as_ref()
+                    .filter(|(kind, _)| Some(*kind) == native_menu),
             );
             if let Some(badge) = &self.active_drag_badge {
                 crate::render::drag_badge::draw_drag_badge(
@@ -3595,11 +3605,9 @@ impl<A: AppLogic> RutterEngine<A> {
         let theme = A::theme_for(&self.app_state);
         let widget = A::view(&mut self.app_state);
         validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget)?;
-        // Menu geometry is computed in parent logical coordinates. Even if the
-        // popup straddles a monitor boundary, paint at the parent's pixel scale.
-        let scale = self.scale_factor;
+        let scale = backend.window().scale_factor() as f32;
         let canvas = backend.begin_frame()?;
-        crate::render::draw_native_menu(
+        crate::render::draw_native_menu_with_surfaces(
             canvas,
             &self.taffy,
             self.last_root_node,
@@ -3617,6 +3625,9 @@ impl<A: AppLogic> RutterEngine<A> {
             &theme,
             scale,
             A::locale().direction(),
+            self.native_menu_layout
+                .as_ref()
+                .map(|(_, surfaces)| surfaces.as_slice()),
         );
         backend.end_frame()?;
         Ok(())

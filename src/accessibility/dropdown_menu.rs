@@ -72,6 +72,12 @@ fn menu_surfaces<Msg>(
     entries: &[DropdownMenuEntry<'_, Msg>],
     state: &DropdownMenuState,
 ) -> Vec<DropdownMenuSurface> {
+    if let Some((crate::render::NativeMenuKind::Dropdown(native_id), surfaces)) =
+        &builder.native_menu_layout
+        && *native_id == id
+    {
+        return surfaces.clone();
+    }
     let anchor = builder
         .dropdown_geometries
         .get(&id)

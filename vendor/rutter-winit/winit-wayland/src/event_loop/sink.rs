@@ -15,6 +15,9 @@ pub struct EventSink {
 }
 
 impl EventSink {
+    pub(crate) fn retire_windows(&mut self, retired: &[WindowId]) {
+        self.window_events.retain(|event| !matches!(event, Event::WindowEvent { window_id, .. } if retired.contains(window_id)));
+    }
     pub fn new() -> Self {
         Default::default()
     }

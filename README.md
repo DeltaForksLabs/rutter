@@ -52,6 +52,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Keyboard focus traversal for interactive widgets.
 - Versioned custom leaf widgets with confined Skia painting, typed input, bounded runtime state, and AccessKit semantics.
 - Audited multi-window runtime with stable surface IDs and per-window event routing.
+- Native Wayland layer-shell panels with validated output/edge anchoring, work-area reservations and layer-owned menus.
 - Clipboard paste sanitization for text inputs.
 - Safe image decoding limits to reduce malicious allocation risk.
 
@@ -103,19 +104,76 @@ Rutter is under active development. APIs may change while the framework settles.
 
 Rutter now uses the local [rutter-winit](vendor/rutter-winit/RUTTER_FORK.md) fork at `0.31.0-beta.3`, [AccessKit Winit adapter](vendor/rutter-accesskit-winit/README.md) at `0.34.1` (with `accesskit 0.25.1`), and [glutin-winit bridge](vendor/rutter-glutin-winit/README.md) at `0.5.0`. The core `glutin 0.32.3` remains unchanged. These path dependencies require the `vendor/` directories when building from source and are not suitable for publishing Rutter as-is.
 
-The integration handles the new event-loop surface lifecycle, boxed windows, native pointer events, and wake-only proxies. `WindowConfig::with_inner_size` remains a public compatibility name for the drawable surface dimensions. Built-in `DropdownMenu` and `ContextMenu` now use parented `WindowType::Popup` surfaces when the native backend can create, locate and present transparent menus, with the existing in-window painting as fallback. The parent retains widget state, layout, keyboard focus and message handling; both kinds of menu share a single native surface across their submenu chain. `Select`, search suggestions and generic popovers (including date/time pickers) remain in-window overlays. Isolated X11 tests exercise real menus, GL presentation and XTEST selection/dismissal. Headless Weston tests exercise Wayland dropdown popup geometry, OpenGL submenu expansion/selection and the CPU overlay fallback through synthetic runner events; other platforms and live assistive-technology clients remain unvalidated.
+The integration handles the new event-loop surface lifecycle, boxed windows, native pointer events, and wake-only proxies. `WindowConfig::with_inner_size` remains a public compatibility name for the drawable surface dimensions. Built-in `DropdownMenu` and `ContextMenu` use parented `WindowType::Popup` surfaces when the native backend can create, locate and present transparent menus. Native menus can extend beyond every parent edge, including negative parent-relative origins, without enlarging the parent's window or input region. The parent retains widget state, layout, keyboard focus and message handling; both kinds of menu share a single native surface across their submenu chain. `Select`, search suggestions and generic popovers (including date/time pickers) remain in-window overlays.
 
 On a **disposable** X11 display with XTEST and an EGL/GLX driver (for example, Xephyr `:98`), run the native integration test with `DISPLAY=:98 cargo test --locked --offline --lib native_mouse_selects_a_rendered_rutter_widget_with_accessibility_adapter -- --ignored`. It moves the server's pointer and must not run on a user's regular desktop display.
 
-Run each menu test in its **own Cargo test process** on the same disposable display (Winit does not support recreating an X11 event loop in one process): `native_dropdown_selects_a_rutter_entry_on_its_popup_window`, `native_dropdown_submenu_selects_a_rutter_entry`, `native_dropdown_dismisses_on_outside_click_without_selection`, and `native_context_menu_selects_a_rutter_entry_on_its_popup_window`. For example, use `DISPLAY=:98 cargo test --locked --offline --lib native_dropdown_submenu_selects_a_rutter_entry -- --ignored`. X11 popup grabs consume outside presses rather than replaying them to underlying windows. Menu geometry remains constrained to the parent viewport, and the popup shares its backend type; if creation or positioning is unsupported, the runner logs one failure and restores the in-window overlay for that surface.
+Run each menu test in its **own Cargo test process** on the same disposable display (Winit does not support recreating an X11 event loop in one process): `native_dropdown_selects_a_rutter_entry_on_its_popup_window`, `native_dropdown_submenu_selects_a_rutter_entry`, `native_dropdown_dismisses_on_outside_click_without_selection`, and `native_context_menu_selects_a_rutter_entry_on_its_popup_window`. For example, use `CARGO_BUILD_JOBS=2 DISPLAY=:98 cargo test --locked --offline --lib native_dropdown_submenu_selects_a_rutter_entry -- --ignored`. X11 popup grabs consume outside presses rather than replaying them to underlying windows. Popups share their parent's backend type.
 
-Two additional X11 checks use the same isolated setup and separate-process rule: `native_context_menu_submenus_hover_select_and_restore_keyboard_focus` exercises two submenu levels, nested selection, dismissal, focus retention and popup modifier routing; `native_context_menu_opening_reconciles_changed_disabled_status_and_submenu_structure` verifies that an opening callback can update the menu before it is shown. Context fixtures include SVG icons and shortcut labels in their native popup frames. Dedicated ContextMenu submenu input/presentation on Wayland has not been tested live; the Weston checks below remain DropdownMenu regression tests.
+Two additional X11 checks use the same isolated setup and separate-process rule: `native_context_menu_submenus_hover_select_and_restore_keyboard_focus` exercises two submenu levels, nested selection, dismissal, focus retention and popup modifier routing; `native_context_menu_opening_reconciles_changed_disabled_status_and_submenu_structure` verifies that an opening callback can update the menu before it is shown. Context fixtures include SVG icons and shortcut labels in their native popup frames.
 
-Native menu placement uses an explicit top-left positioner relative to the parent's content area, with matching origins for painting and hit testing. During asynchronous popup resizing, the parent keeps painting the overlay until the popup has sufficient space. Configuration has a two-second deadline; a timeout, clipped popup, or excessive compositor displacement restores the overlay rather than hiding or clipping menu content.
+**Native sizing and Wayland available-area contract:** Native content is measured independently of the parent, within a finite 1024×768 logical-pixel policy area local to the opening point; each panel is at most 320 logical pixels tall and scrolls independently. This budget is not an assertion about the output's usable desktop area. Core Wayland/Winit does not expose an authoritative work area accounting for shell reservations, nor an absolute top-level origin. Rutter therefore supplies a parent-inside 1×1 logical anchor plus an offset and permits compositor slide, flip and resize constraints. The configured popup rectangle is the authoritative drawable area. Resized panels retain logical row heights, clamp scrolling and reveal keyboard-focused rows. The resolved panel list is shared by drawing, pointer selection, hover, wheel targets, lower-layer hover coverage and dropdown accessibility; popup drawing and pointer conversion use the popup's actual scale. The overlay continues to use the parent's original viewport bounds.
 
-Native menu frames clear to transparent and paint only their menu panels, not the parent layout. This keeps the rectangular union's gaps and rounded corners from obscuring the parent and removes residual pixels after a submenu collapses. Alpha-capable presentation and compositor transparency are required. The CPU/softbuffer backend presents RGB only and therefore retains menus as in-window overlays instead of creating opaque native popups. Raster regression tests check transparent gaps in both themes, LTR/RTL placement, fractional scale, and cleanup of collapsed submenu pixels.
+During an asynchronous reposition, the parent retains its overlay until configuration is acknowledged, with a two-second deadline. Overflow or displacement alone does not trigger fallback. Creation, location, configuration or presentation failure disables native menus for that parent session and emits a diagnostic. `AppLogic::native_menu_unavailable(state, NativeMenuFailure)` and `MultiWindowAppLogic::native_menu_unavailable(state, source, failure)` are defaulted hooks returning an optional ordinary application message. `NativeMenuFailure` includes `menu_id`, `reason` and `overlay_usable`. A usable in-window overlay remains open; an overlay too small for a row (including 800×30 or 30×600 parents) is dismissed with focus retained/restored, and `overlay_usable` is false. Subsequent unusable opening attempts also notify the hook. Applications can offer another application-owned UI through the returned message; the default emits no message. A dismissed/clipped thin-parent overlay is never reported as ready native presentation. Resuming the parent starts a new capability session.
 
-On a **disposable** Wayland compositor with an alpha-capable EGL driver (validated using software GL with Weston headless/pixman at 800×600), run `WAYLAND_DISPLAY=<test-socket> LIBGL_ALWAYS_SOFTWARE=1 cargo test --locked --offline --lib native_wayland_dropdown_stays_at_parent_anchor_during_submenu_expansion -- --ignored`. It also verifies that initial popup size is independent of the 1×1 anchor rectangle. In a **separate process**, run `WAYLAND_DISPLAY=<test-socket> cargo test --locked --offline --lib wayland_cpu_dropdown_falls_back_to_overlay_and_selects_submenu -- --ignored` on a compositor with `wl_shm` support to exercise CPU fallback and submenu selection. Native tests do not compare compositor screenshot pixels or validate compositor-delivered Wayland pointer/grab behavior. Wayland Vulkan, screen-reader behavior inside the separate native popup, graphical multirunner menus, and Windows/macOS behavior need additional testing.
+Requested and configured native drawables are limited to 4096 physical pixels per axis and 4,194,304 physical pixels per buffer (16 MiB for RGBA8, excluding backend overhead and additional buffers). The runner and graphics backends enforce this budget before allocation/resizing, including Vulkan's selected swapchain extent. Scaling cannot bypass the physical budget. A configure alone never marks a popup ready: the parent overlay is suppressed only after a successful frame presentation for the current drawable/layout. Pointer and wheel input reconcile the latest configure and present changed geometry before using it. Resolved children follow their parent's revealed invoking row; chains that cannot retain usable columns are reported through the failure hook.
+
+Native menu frames clear to transparent and paint only their menu panels, not the parent layout. This keeps the rectangular union's gaps and rounded corners from obscuring the parent and removes residual pixels after a submenu collapses. Alpha-capable presentation and compositor transparency are required. The CPU/softbuffer backend presents RGB only and therefore keeps usable menus as in-window overlays, or reports/dismisses unusable overlays, instead of creating opaque native popups. Raster regression tests check transparent gaps in both themes, LTR/RTL placement, fractional scale, and cleanup of collapsed submenu pixels.
+
+On a **disposable** Wayland compositor with an alpha-capable EGL driver, run `CARGO_BUILD_JOBS=2 WAYLAND_DISPLAY=<test-socket> LIBGL_ALWAYS_SOFTWARE=1 cargo test --locked --offline --lib native_wayland_dropdown_stays_at_parent_anchor_during_submenu_expansion -- --ignored`. It also verifies that initial popup size is independent of the 1×1 anchor rectangle. In a **separate process**, run `wayland_cpu_dropdown_falls_back_to_overlay_and_selects_submenu` to exercise the usable CPU overlay. Arboard's default Linux backend also needs `DISPLAY` pointing to an isolated X server, even for these Wayland fixtures.
+
+Additional separate-process graphical filters:
+
+| Scenario | Test filters |
+| --- | --- |
+| Complete ContextMenu row outside horizontal/vertical parents | `native_wayland_context_overflows_horizontal_parent`, `native_wayland_context_overflows_vertical_parent`; XTEST equivalents `native_x11_context_selects_outside_horizontal_parent`, `native_x11_context_selects_outside_vertical_parent` |
+| Dropdown submenu outside horizontal/vertical parents | `native_wayland_dropdown_submenu_selects_outside_horizontal_parent`, `native_wayland_dropdown_submenu_selects_outside_vertical_parent`; equivalents starting `native_x11_dropdown_submenu_selects_outside_` |
+| Two ContextMenu submenu levels outside a thin parent | `native_wayland_nested_context_overflows_thin_parent`, `native_x11_nested_context_overflows_thin_parent` |
+| Smaller configure, wheel scrolling, End-key reveal and selection | `native_wayland_configured_resize_scrolls_and_selects_outside_parent` (explicitly requests a smaller native size) |
+| Unusable CPU overlay and failure hook | `wayland_cpu_thin_parent_reports_unusable_overlay_and_dismisses` |
+| Two parent surfaces, source-local selection/failure messages | `native_multi_window_thin_parents_route_selection_to_invoking_surface`, `native_multi_window_failures_route_to_invoking_surface` |
+| Presentation readiness and allocation limits | `native_first_frame_failure_keeps_overlay_pending_and_reports_failure`, `native_oversized_configure_is_reported_before_backend_resize`, `native_backend_rejects_oversized_initial_popup_before_gl_surface` |
+| Configure reconciled before queued resize/redraw delivery | `native_configure_before_redraw_pointer_selects_the_new_scrolled_row` (synthetic pointer input) |
+
+These fixtures passed on disposable Weston headless/pixman with software GL and a private rootful Xwayland `-shm` server. Thin ContextMenu, nested ContextMenu and multi-window fixtures also passed at integer output scale 2; deterministic geometry, pointer and raster tests cover fractional scale 1.5. Headless Wayland fixtures use synthetic runner input. The separate `native_wayland_compositor_pointer_selects_outside_thin_parent` fixture requires an external right-click at (20,20) in its titled parent, then a left-click in the Settings popup row within 20 seconds. It injects no runner input itself and asserts compositor-delivered parent/popup presses and selection outside the parent. It passed with XTEST delivered to a nested Weston's X11 host on the private Xwayland display, then routed by Weston as Wayland seat events; the scene graph confirmed an ARGB `xdg_popup` beyond the unchanged 800×30 parent.
+
+**Remaining live acceptance gaps:** Spontaneous output-boundary flip/slide/resize was not established on Weston (the short-output probe did not reduce the requested height); adjusted/negative geometry is covered deterministically, and a smaller compositor-delivered configure is tested explicitly. Fractional-output pointer input, compositor screenshot comparisons of union gaps, compositor-delivered nested/multi-window Wayland input, Wayland Vulkan, live assistive technology and non-Linux runtime remain unvalidated.
+
+### Wayland layer-shell panels
+
+`WindowConfig::with_layer_shell` creates a real `zwlr_layer_surface_v1` role before
+mapping, in the existing `MultiWindowRunner` and `SurfaceId` owner. Settings windows
+use ordinary `WindowConfig` values in the same runner. No extra event loop or
+compositor positioning IPC is required.
+
+```rust
+use rutter::{LayerAnchors, LayerExclusiveZone, LayerOutput, LayerShellConfig,
+    SurfaceId, SurfaceRequest, WindowConfig};
+
+fn panel_request() -> Result<SurfaceRequest, rutter::LayerShellConfigError> {
+    let panel = LayerShellConfig::new("quasar-panel", LayerAnchors::TOP, 640, 32)?
+        .with_output(LayerOutput::Compositor)?
+        .with_exclusive_zone(LayerExclusiveZone::Reserve(32))?;
+    Ok(SurfaceRequest::new(SurfaceId::new(1),
+        WindowConfig::default().with_layer_shell(panel)))
+}
+```
+
+Defaults are top layer, zero margins, no reservation and no keyboard focus.
+`LayerOutput::Name` resolves an exact compositor output name on Rutter's own
+connection; missing/ambiguous names fail. `Compositor` explicitly delegates output
+choice. Unsupported protocols/platforms fail rather than creating an ordinary
+toplevel. `MultiWindowAppLogic::surface_metrics_changed` is a defaulted hook for
+initial configured dimensions, scale, output name and negotiated role version;
+existing `surface_closed` observes removal. Native ContextMenu/DropdownMenu popups
+associate with layer parents through `get_popup`, retaining independent overflow.
+
+See [the layer-shell contract and live test guide](docs/WAYLAND_LAYER_SHELL.md)
+for valid anchors, compact lengths, margins/reservations, input regions and output
+removal. Live labwc checks establish edge pixels, reservation cleanup, actual
+Wayland menu input, resize/fractional scale and targeted output removal. The
+available FRAYM binary stalls on its first layer request; **FRAYM acceptance is
+still pending**, with the observed blocker described in that guide.
 
 Current focus areas include:
 

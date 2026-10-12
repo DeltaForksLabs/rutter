@@ -28,6 +28,10 @@ pub use ingress::{
 pub use window_config::{
     CloseBehavior, WindowConfig, WindowConfigError, WindowLevel, WindowPosition, WindowSize,
 };
+pub use winit::window::{
+    Layer, LayerAnchors, LayerExclusiveZone, LayerKeyboardInteractivity, LayerMargins, LayerOutput,
+    LayerShellConfig, LayerShellConfigError,
+};
 /// Stable application-owned identity for one logical surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SurfaceId(u64);
@@ -90,6 +94,21 @@ pub enum SurfaceEvent {
     FocusChanged(bool),
 }
 
+/// Actual configured drawable metrics, independent of requested panel geometry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceMetrics {
+    /// Actual physical buffer dimensions used by the renderer.
+    pub physical_size: (u32, u32),
+    /// Compositor-configured logical viewport, without fractional buffer rounding.
+    pub logical_size: (f64, f64),
+    /// Physical pixels per logical pixel.
+    pub scale_factor: f64,
+    /// Compositor's stable output name when advertised/entered; None is unknown.
+    pub output_name: Option<String>,
+    /// Negotiated native role version; None for ordinary Settings windows.
+    pub layer_shell_version: Option<u32>,
+}
+
 /// Elm-style application contract for a runtime with multiple native windows.
 pub trait MultiWindowAppLogic {
     type State: Clone;
@@ -112,6 +131,14 @@ pub trait MultiWindowAppLogic {
     fn view<'a>(state: &'a mut Self::State, surface: SurfaceId) -> Widget<'a, Self::Message>;
     /// Observes a surface after its native window and backend are committed.
     fn surface_created(_state: &mut Self::State, _surface: SurfaceId) {}
+    /// Observes initial configured size and subsequent size/scale/output changes.
+    /// Called on the existing runner thread; invalidate renderer-neutral layout here.
+    fn surface_metrics_changed(
+        _state: &mut Self::State,
+        _surface: SurfaceId,
+        _metrics: SurfaceMetrics,
+    ) {
+    }
     /// Observes logical removal after the native route has been retired.
     fn surface_closed(_state: &mut Self::State, _surface: SurfaceId) {}
     /// Processes one native surface event and returns requested runtime operations.
@@ -194,6 +221,16 @@ pub trait MultiWindowAppLogic {
     ) -> Option<Self::Message> {
         None
     }
+    /// Native menu failure on the invoking surface, with the same fallback
+    /// contract as `AppLogic::native_menu_unavailable`.
+    fn native_menu_unavailable(
+        _state: &Self::State,
+        _surface: SurfaceId,
+        _failure: crate::app::NativeMenuFailure,
+    ) -> Option<Self::Message> {
+        None
+    }
+
     /// Matches a pressed key delivered to one focused Rutter surface.
     ///
     /// This hook is surface-local and does not register a global desktop shortcut. Return

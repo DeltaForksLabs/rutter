@@ -26,7 +26,7 @@ pub use input::{limits as input_limits, state as input_state};
 
 // ── Re-exports ergonômicos ───────────────────────────────────
 pub use app::{
-    AppLogic, ContextMenuTarget, ContextMenuVirtualItem, LogicalPointerPosition,
+    AppLogic, ContextMenuTarget, ContextMenuVirtualItem, LogicalPointerPosition, NativeMenuFailure,
     PhysicalDesktopPosition, SecondaryPointerContext, ShortcutEvent, ShortcutKey, ShortcutNamedKey,
     ShortcutOutcome, SurfaceConfig,
 };
@@ -41,10 +41,12 @@ pub use engine::runner::RutterRunner;
 pub use i18n::{FluentCatalog, I18nError, LayoutDirection, Locale};
 pub use input_limits::{InputKind, InputLimitError, InputLimits};
 pub use multi_window::{
-    CloseBehavior, MAX_MESSAGE_INGRESS_CAPACITY, MessageIngressConfig, MessageIngressConfigError,
+    CloseBehavior, Layer, LayerAnchors, LayerExclusiveZone, LayerKeyboardInteractivity,
+    LayerMargins, LayerOutput, LayerShellConfig, LayerShellConfigError,
+    MAX_MESSAGE_INGRESS_CAPACITY, MessageIngressConfig, MessageIngressConfigError,
     MessageIngressError, MultiWindowAppLogic, MultiWindowMessageSender, MultiWindowRunError,
-    SurfaceCommand, SurfaceEvent, SurfaceId, SurfaceRequest, WindowConfig, WindowConfigError,
-    WindowLevel, WindowPosition, WindowSize,
+    SurfaceCommand, SurfaceEvent, SurfaceId, SurfaceMetrics, SurfaceRequest, WindowConfig,
+    WindowConfigError, WindowLevel, WindowPosition, WindowSize,
 };
 pub use pointer::{
     DragBadge, DragBadgeError, DragBadgeIcon, DragCancelReason, DragEvent, DragPayload,

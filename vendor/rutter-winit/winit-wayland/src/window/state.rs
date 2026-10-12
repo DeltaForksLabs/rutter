@@ -58,6 +58,18 @@ const MIN_WINDOW_SIZE: LogicalSize<u32> = LogicalSize::new(2, 1);
 
 #[derive(Debug)]
 pub enum WindowType {
+    // SCTK owns wl_surface inside the role wrapper. Keep that owner after
+    // destroying the protocol role so existing renderer pointers remain valid
+    // for cleanup. No requests may be made through this tombstone.
+    Retired {
+        surface: WlSurface,
+        _owner: Option<Box<WindowType>>,
+    },
+    Layer {
+        layer: sctk::shell::wlr_layer::LayerSurface,
+        configured: bool,
+        output: Option<wayland_client::protocol::wl_output::WlOutput>,
+    },
     // The option is the last received configure
     Window {
         window: Window,
@@ -76,6 +88,8 @@ pub enum WindowType {
 impl WindowType {
     pub fn is_configured(&self) -> bool {
         match self {
+            Self::Retired { .. } => false,
+            Self::Layer { configured, .. } => *configured,
             Self::Window { last_configure, .. } => last_configure.is_some(),
             Self::Popup { last_configure, .. } => last_configure.is_some(),
         }
@@ -85,17 +99,22 @@ impl WindowType {
 impl WaylandSurface for WindowType {
     fn wl_surface(&self) -> &wayland_client::protocol::wl_surface::WlSurface {
         match self {
+            Self::Retired { surface, .. } => surface,
+            Self::Layer { layer, .. } => layer.wl_surface(),
             Self::Window { window, .. } => window.wl_surface(),
             Self::Popup { popup, .. } => popup.wl_surface(),
         }
     }
 }
 
-impl XdgSurface for WindowType {
-    fn xdg_surface(&self) -> &wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface {
+impl WindowType {
+    pub fn xdg_surface(
+        &self,
+    ) -> Option<&wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface> {
         match self {
-            Self::Window { window, .. } => window.xdg_surface(),
-            Self::Popup { popup, .. } => popup.xdg_surface(),
+            Self::Window { window, .. } => Some(window.xdg_surface()),
+            Self::Popup { popup, .. } => Some(popup.xdg_surface()),
+            Self::Layer { .. } | Self::Retired { .. } => None,
         }
     }
 }
@@ -224,6 +243,65 @@ pub struct WindowState {
 }
 
 impl WindowState {
+    pub(crate) fn retire_native(&mut self) {
+        if matches!(self.window, WindowType::Retired { .. } | WindowType::Window { .. }) {
+            return;
+        }
+        self.destroy_surface_extensions();
+        self.blur = None;
+        let surface = self.window.wl_surface().clone();
+        match &self.window {
+            WindowType::Layer { layer, .. } => {
+                let sctk::shell::wlr_layer::SurfaceKind::Wlr(role) = layer.kind() else {
+                    unreachable!("unknown layer role")
+                };
+                role.destroy();
+            },
+            WindowType::Popup { popup, .. } => {
+                popup.xdg_popup().destroy();
+                popup.xdg_surface().destroy();
+            },
+            WindowType::Window { .. } => return,
+            WindowType::Retired { .. } => unreachable!(),
+        }
+        let owner =
+            std::mem::replace(&mut self.window, WindowType::Retired { surface, _owner: None });
+        if let WindowType::Retired { _owner, .. } = &mut self.window {
+            // SCTK's eventual repeated role destroy is rejected locally by
+            // wayland-client for the dead ObjectId; only wl_surface remains live.
+            *_owner = Some(Box::new(owner));
+        }
+        self.frame = None;
+        self.pointers.clear();
+        self.text_inputs.clear();
+        self.text_input_state = None;
+        self.seat_focus.clear();
+        self.children.clear();
+        self.size = LogicalSize::default();
+        self.frame_callback_state = FrameCallbackState::None;
+    }
+
+    fn destroy_surface_extensions(&mut self) {
+        if let Some(fs) = self.fractional_scale.take() {
+            fs.destroy();
+        }
+        if let Some(viewport) = self.viewport.take() {
+            viewport.destroy();
+        }
+    }
+    /// SCTK acknowledges the configure before invoking this method.
+    pub fn configure_layer(&mut self, size: (u32, u32)) -> bool {
+        if let WindowType::Layer { configured, .. } = &mut self.window {
+            *configured = true;
+        }
+        let size = LogicalSize::new(
+            if size.0 == 0 { self.size.width } else { size.0 },
+            if size.1 == 0 { self.size.height } else { size.1 },
+        );
+        self.initial_size = None;
+        self.resize(size);
+        true
+    }
     /// Create new window state.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -333,6 +411,9 @@ impl WindowState {
 
     /// Request a frame callback if we don't have one for this window in flight.
     pub fn request_frame_callback(&mut self) {
+        if matches!(self.window, WindowType::Retired { .. }) {
+            return;
+        }
         let surface = self.window.wl_surface();
         match self.frame_callback_state {
             FrameCallbackState::None | FrameCallbackState::Received => {
@@ -361,6 +442,8 @@ impl WindowState {
             let kind = configure.kind.clone();
             *last_configure = Some(configure);
 
+            // Emit a surface configure even for a position-only reposition. Popup
+            // clients need an acknowledgement before adopting the resolved layout.
             // Always resize on the initial configure to properly initialize the viewport
             // destination and window geometry. This is required for fractional scaling
             // to work correctly: without calling resize(), viewport.set_destination()
@@ -371,7 +454,7 @@ impl WindowState {
                 self.resize(new_size);
                 true
             } else {
-                false
+                true
             }
         } else {
             tracing::error!(
@@ -573,9 +656,11 @@ impl WindowState {
 
                 Ok(())
             },
-            WindowType::Popup { .. } => Err(RequestError::NotSupported(NotSupportedError::new(
-                "Drag resize for popup not supported",
-            ))),
+            WindowType::Popup { .. } | WindowType::Layer { .. } | WindowType::Retired { .. } => {
+                Err(RequestError::NotSupported(NotSupportedError::new(
+                    "interactive resize requires an xdg_toplevel",
+                )))
+            },
         }
     }
 
@@ -594,9 +679,11 @@ impl WindowState {
 
                 Ok(())
             },
-            WindowType::Popup { .. } => Err(RequestError::NotSupported(NotSupportedError::new(
-                "Drag for popup not supported",
-            ))),
+            WindowType::Popup { .. } | WindowType::Layer { .. } | WindowType::Retired { .. } => {
+                Err(RequestError::NotSupported(NotSupportedError::new(
+                    "interactive move requires an xdg_toplevel",
+                )))
+            },
         }
     }
 
@@ -641,7 +728,9 @@ impl WindowState {
 
                 Some(false)
             },
-            WindowType::Popup { .. } => None,
+            WindowType::Popup { .. } | WindowType::Layer { .. } | WindowType::Retired { .. } => {
+                None
+            },
         }
     }
 
@@ -679,7 +768,9 @@ impl WindowState {
                     None
                 }
             },
-            WindowType::Popup { .. } => None,
+            WindowType::Popup { .. } | WindowType::Layer { .. } | WindowType::Retired { .. } => {
+                None
+            },
         }
     }
 
@@ -758,7 +849,9 @@ impl WindowState {
                     true
                 }
             },
-            WindowType::Popup { .. } => false, // Popup window does not have any decoration
+            WindowType::Popup { .. } | WindowType::Layer { .. } | WindowType::Retired { .. } => {
+                false
+            },
         }
     }
 
@@ -826,6 +919,9 @@ impl WindowState {
 
     /// Reissue the transparency hint to the compositor.
     pub fn reload_transparency_hint(&self) {
+        if matches!(self.window, WindowType::Retired { .. }) {
+            return;
+        }
         let surface = self.window.wl_surface();
 
         if self.transparent {
@@ -841,6 +937,9 @@ impl WindowState {
     /// Try to resize the window when the user can do so.
     pub fn request_surface_size(&mut self, surface_size: Size) -> PhysicalSize<u32> {
         match &self.window {
+            // Role settings are immutable: untyped Winit size hints cannot
+            // invalidate the validated zero-size/anchor combination.
+            WindowType::Layer { .. } | WindowType::Retired { .. } => (),
             WindowType::Window { last_configure, .. } => {
                 if last_configure.as_ref().map(Self::is_stateless).unwrap_or(true) {
                     self.resize(surface_size.to_logical(self.scale_factor()))
@@ -860,6 +959,9 @@ impl WindowState {
 
     /// Resize the window to the new surface size.
     fn resize(&mut self, surface_size: LogicalSize<u32>) {
+        if matches!(self.window, WindowType::Retired { .. }) {
+            return;
+        }
         self.size = surface_size;
 
         // Update the stateless size.
@@ -888,12 +990,14 @@ impl WindowState {
         self.reload_transparency_hint();
 
         // Set the window geometry.
-        self.window.xdg_surface().set_window_geometry(
-            x,
-            y,
-            outer_size.width as i32,
-            outer_size.height as i32,
-        );
+        if let Some(xdg_surface) = self.window.xdg_surface() {
+            xdg_surface.set_window_geometry(
+                x,
+                y,
+                outer_size.width as i32,
+                outer_size.height as i32,
+            );
+        }
 
         // Update the target viewport, this is used if and only if fractional scaling is in use.
         if let Some(viewport) = self.viewport.as_ref() {
@@ -1219,7 +1323,7 @@ impl WindowState {
                     self.resize(self.size);
                 }
             },
-            WindowType::Popup { .. } => (), // Popup does not have any decoration
+            WindowType::Popup { .. } | WindowType::Layer { .. } | WindowType::Retired { .. } => (),
         }
     }
 
@@ -1243,6 +1347,13 @@ impl WindowState {
         &mut self,
         request: ImeRequest,
     ) -> Result<Option<bool>, ImeRequestError> {
+        if matches!(self.window, WindowType::Retired { .. }) {
+            return if matches!(request, ImeRequest::Disable) {
+                Ok(None)
+            } else {
+                Err(ImeRequestError::NotSupported)
+            };
+        }
         let state_change = match request {
             ImeRequest::Enable(enable) => {
                 let (capabilities, request_data) = enable.into_raw();
@@ -1290,6 +1401,9 @@ impl WindowState {
     /// Set the scale factor for the given window.
     #[inline]
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        if matches!(self.window, WindowType::Retired { .. }) {
+            return;
+        }
         self.scale_factor = scale_factor;
 
         // NOTE: When fractional scaling is not used update the buffer scale.
@@ -1307,6 +1421,9 @@ impl WindowState {
     /// Returns `true` if redraw is required.
     #[must_use]
     pub fn set_blur(&mut self, blurred: bool) -> bool {
+        if matches!(self.window, WindowType::Retired { .. }) {
+            return false;
+        }
         if !blurred {
             self.blur = None;
             return true;
@@ -1357,7 +1474,7 @@ impl WindowState {
 
         match &self.window {
             WindowType::Window { window, .. } => window.set_title(&title),
-            WindowType::Popup { .. } => (), // Popup does not have any title
+            WindowType::Popup { .. } | WindowType::Layer { .. } | WindowType::Retired { .. } => (),
         }
         self.title = title;
     }
@@ -1451,13 +1568,7 @@ impl WindowState {
 
 impl Drop for WindowState {
     fn drop(&mut self) {
-        if let Some(fs) = self.fractional_scale.take() {
-            fs.destroy();
-        }
-
-        if let Some(viewport) = self.viewport.take() {
-            viewport.destroy();
-        }
+        self.destroy_surface_extensions();
 
         // NOTE: the wl_surface used by the window is being cleaned up when
         // dropping SCTK `Window`.

@@ -19,6 +19,16 @@ use crate::widget::Widget;
 
 mod shortcut;
 
+/// An unavailable native menu and the usability of its in-window fallback.
+/// Delivered on the owning event-loop thread; contains no native handles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeMenuFailure {
+    pub menu_id: u64,
+    pub reason: String,
+    /// False when the parent cannot contain a normal row. The menu is dismissed.
+    pub overlay_usable: bool,
+}
+
 pub(crate) use shortcut::shortcut_event_from_winit;
 pub use shortcut::{ShortcutEvent, ShortcutKey, ShortcutNamedKey, ShortcutOutcome};
 
@@ -377,6 +387,17 @@ pub trait AppLogic {
     fn context_menu_opening(
         _state: &Self::State,
         _target: ContextMenuTarget,
+    ) -> Option<Self::Message> {
+        None
+    }
+
+    /// Called when native menus become unavailable for this surface, and on
+    /// later opening attempts whose overlay is unusable.
+    /// Return a message to offer an application-owned fallback. An unusably
+    /// small overlay is dismissed before this callback; the default logs only.
+    fn native_menu_unavailable(
+        _state: &Self::State,
+        _failure: NativeMenuFailure,
     ) -> Option<Self::Message> {
         None
     }

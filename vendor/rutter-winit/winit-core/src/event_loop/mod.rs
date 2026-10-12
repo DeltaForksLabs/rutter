@@ -110,6 +110,11 @@ pub trait EventLoopProvider: fmt::Debug {
 }
 
 pub trait ActiveEventLoop: Any + fmt::Debug {
+    /// Negotiated wlr-layer-shell global version on this connection, or None.
+    /// This is a protocol capability, not a promise that a particular output exists.
+    fn layer_shell_version(&self) -> Option<u32> {
+        None
+    }
     /// Creates an [`EventLoopProxy`] that can be used to dispatch user events
     /// to the main event loop, possibly from another thread.
     fn create_proxy(&self) -> EventLoopProxy;

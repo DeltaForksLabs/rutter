@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use cosmic_text::FontSystem;
 use raw_window_handle::HasWindowHandle;
+use skia_safe::Contains;
 use taffy::prelude::{Dimension, Size, Style};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -22,6 +23,9 @@ use crate::app::SurfaceConfig;
 use crate::widget::{ButtonVariant, ContextMenuEntry, Widget};
 
 const CONTEXT_ICON_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect x="2" y="2" width="12" height="12" rx="2" fill="#5086E7"/></svg>"##;
+
+#[path = "native_overflow_integration.rs"]
+mod overflow;
 
 struct NativeButtonApp;
 
@@ -269,6 +273,7 @@ struct NativeDropdownTest {
     select_submenu: bool,
     moved_submenu: bool,
     deadline: Instant,
+    parent_size: PhysicalSize<u32>,
 }
 
 impl ApplicationHandler for NativeDropdownTest {
@@ -281,7 +286,7 @@ impl ApplicationHandler for NativeDropdownTest {
                         .with_title("Native Rutter dropdown")
                         .with_decorations(true)
                         .with_position(PhysicalPosition::new(190, 90))
-                        .with_surface_size(PhysicalSize::new(320, 220)),
+                        .with_surface_size(self.parent_size),
                 ),
                 Some(BackendType::OpenGl),
             )
@@ -302,6 +307,10 @@ impl ApplicationHandler for NativeDropdownTest {
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.runner.about_to_wait(event_loop);
+        assert_eq!(
+            self.runner.engine.window.as_ref().unwrap().surface_size(),
+            self.parent_size
+        );
         if self.dismiss_outside && self.pressed_popup && self.runner.native_menu.is_none() {
             assert_eq!(
                 self.selected.get(),
@@ -329,7 +338,7 @@ impl ApplicationHandler for NativeDropdownTest {
         assert!(self.runner.fatal_error.is_none());
         if id == parent && redraw && !self.opened {
             self.opened = true;
-            click_at(parent, 40, 20);
+            click_at(parent, 40.min(self.parent_size.width as i16 / 2), 20);
         } else if Some(id) == popup && redraw && !self.pressed_popup {
             let (connection, _) = x11rb::connect(None).unwrap();
             let native_popup = id.into_raw() as u32;
@@ -343,7 +352,7 @@ impl ApplicationHandler for NativeDropdownTest {
                 "menu must use an unconfined X11 popup window"
             );
             assert_ne!(id, parent);
-            assert_native_popup_fits_parent(&self.runner, id);
+            assert_native_popup_coordinates(&self.runner, id);
             if self.select_submenu && !self.moved_submenu {
                 self.moved_submenu = true;
                 move_at(id, 40, 52);
@@ -394,6 +403,14 @@ fn native_dropdown_dismisses_on_outside_click_without_selection() {
 }
 
 fn run_native_dropdown_test(dismiss_outside: bool, select_submenu: bool) {
+    run_native_dropdown_with_size(dismiss_outside, select_submenu, PhysicalSize::new(320, 220));
+}
+
+fn run_native_dropdown_with_size(
+    dismiss_outside: bool,
+    select_submenu: bool,
+    parent_size: PhysicalSize<u32>,
+) {
     let mut builder = EventLoop::builder();
     builder.with_x11();
     builder.with_any_thread(true);
@@ -416,6 +433,7 @@ fn run_native_dropdown_test(dismiss_outside: bool, select_submenu: bool) {
             select_submenu,
             moved_submenu: false,
             deadline: Instant::now() + Duration::from_secs(20),
+            parent_size,
         })
         .unwrap();
     assert_eq!(selected.get(), u32::from(!dismiss_outside));
@@ -607,7 +625,7 @@ impl ApplicationHandler for NativeContextTest {
                 .reply()
                 .unwrap();
             assert_eq!(tree.parent, tree.root);
-            assert_native_popup_fits_parent(&self.runner, id);
+            assert_native_popup_coordinates(&self.runner, id);
             self.pressed_popup = true;
             click_at(id, 40, 22);
         }
@@ -629,26 +647,19 @@ impl NativeContextTest {
         if menu.navigation.open_submenu_path().len() != self.hovered_levels {
             return;
         }
-        let scale = self.runner.engine.scale_factor;
-        let size = self.runner.engine.window.as_ref().unwrap().surface_size();
-        let font = crate::render::text::get_cached_font(
-            &mut self.runner.engine.font_cache,
-            "sans-serif",
-            NativeContextApp::theme_for(&self.runner.engine.app_state).font_body,
-        );
-        let surfaces = crate::widgets::dropdown_menu::build_context_menu_surfaces(
-            Point::new(menu.anchor_x, menu.anchor_y),
-            &self.runner.engine.app_state.entries,
-            &menu.navigation,
-            SkiaRect::from_xywh(
-                0.0,
-                0.0,
-                size.width as f32 / scale,
-                size.height as f32 / scale,
-            ),
-            NativeContextApp::locale().direction(),
-            &font,
-        );
+        let scale = self
+            .runner
+            .native_menu
+            .as_ref()
+            .unwrap()
+            .backend
+            .window()
+            .scale_factor() as f32;
+        let surfaces = &self.runner.engine.native_menu_layout.as_ref().unwrap().1;
+        if surfaces.len() != self.hovered_levels + 1 {
+            // A parent frame can arrive before the new chain's configure/frame.
+            return;
+        }
         let bounds = surfaces
             .iter()
             .skip(1)
@@ -678,7 +689,7 @@ impl NativeContextTest {
             .center();
         let x = (point.x * scale - (bounds.left * scale).floor()) as i16;
         let y = (point.y * scale - (bounds.top * scale).floor()) as i16;
-        assert_native_popup_fits_parent(&self.runner, id);
+        assert_native_popup_coordinates(&self.runner, id);
         if self.hovered_levels < 2 {
             self.hovered_levels += 1;
             move_at(id, x, y);
@@ -854,7 +865,7 @@ fn run_native_context_menu(nested: bool, opening_change: bool) {
     assert_eq!(selected.get(), 1);
 }
 
-fn assert_native_popup_fits_parent<A: AppLogic>(runner: &RutterRunner<A>, popup_id: WindowId) {
+fn assert_native_popup_coordinates<A: AppLogic>(runner: &RutterRunner<A>, popup_id: WindowId) {
     let (connection, _) = x11rb::connect(None).unwrap();
     let parent = runner.engine.window.as_ref().unwrap();
     let root = connection
@@ -882,19 +893,20 @@ fn assert_native_popup_fits_parent<A: AppLogic>(runner: &RutterRunner<A>, popup_
         popup_origin.dst_y as i32,
         parent_origin.dst_y as i32 + relative.y
     );
-    assert!(
-        relative.x >= 0 && relative.y >= 0,
-        "popup must not overflow the parent top/left"
+    let scale = popup.scale_factor() as f32;
+    let size = popup.surface_size();
+    let configured = SkiaRect::from_xywh(
+        relative.x as f32 / scale,
+        relative.y as f32 / scale,
+        size.width as f32 / scale,
+        size.height as f32 / scale,
     );
-    let (parent_size, popup_size) = (parent.surface_size(), popup.surface_size());
-    assert!(
-        relative.x as u32 + popup_size.width <= parent_size.width,
-        "menu extends past the right edge of the parent"
-    );
-    assert!(
-        relative.y as u32 + popup_size.height <= parent_size.height,
-        "menu extends past the bottom edge of the parent"
-    );
+    for panel in &runner.engine.native_menu_layout.as_ref().unwrap().1 {
+        assert!(
+            configured.contains(panel.rect),
+            "resolved panel must fit the popup, including outside its parent"
+        );
+    }
 }
 
 struct WaylandDropdownPositionTest {
@@ -905,6 +917,7 @@ struct WaylandDropdownPositionTest {
     hovered_submenu: bool,
     first_frame_at: Option<Instant>,
     deadline: Instant,
+    parent_size: PhysicalSize<u32>,
 }
 
 fn assert_wayland_initial_popup_geometry(event_loop: &dyn ActiveEventLoop, parent: &dyn Window) {
@@ -938,15 +951,17 @@ impl ApplicationHandler for WaylandDropdownPositionTest {
                 Some(
                     WindowAttributes::default()
                         .with_title("Wayland dropdown placement")
-                        .with_surface_size(PhysicalSize::new(400, 220)),
+                        .with_surface_size(self.parent_size),
                 ),
                 Some(self.backend),
             )
             .expect("create headless Wayland parent");
-        assert_wayland_initial_popup_geometry(
-            event_loop,
-            self.runner.engine.window.as_ref().unwrap().as_ref(),
-        );
+        if self.parent_size.width >= 400 && self.parent_size.height >= 220 {
+            assert_wayland_initial_popup_geometry(
+                event_loop,
+                self.runner.engine.window.as_ref().unwrap().as_ref(),
+            );
+        }
     }
 
     fn destroy_surfaces(&mut self, _: &dyn ActiveEventLoop) {
@@ -963,6 +978,10 @@ impl ApplicationHandler for WaylandDropdownPositionTest {
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.runner.about_to_wait(event_loop);
+        assert_eq!(
+            self.runner.engine.window.as_ref().unwrap().surface_size(),
+            self.parent_size
+        );
         if self.selected.get() == 1 {
             assert!(!self.runner.any_dropdown_menu_open());
             assert!(self.runner.native_menu.is_none());
@@ -982,7 +1001,10 @@ impl ApplicationHandler for WaylandDropdownPositionTest {
                 WindowEvent::PointerButton {
                     device_id: None,
                     state: ElementState::Pressed,
-                    position: PhysicalPosition::new(40.0, 20.0),
+                    position: PhysicalPosition::new(
+                        40.0_f64.min(f64::from(self.parent_size.width) / 2.0),
+                        20.0_f64.min(f64::from(self.parent_size.height) / 2.0),
+                    ),
                     primary: true,
                     button: ButtonSource::Mouse(MouseButton::Left),
                     is_macos_activation_click: false,
@@ -1027,16 +1049,23 @@ impl ApplicationHandler for WaylandDropdownPositionTest {
                 (0..=16).contains(&position.x) && position.y == 44,
                 "compositor must place popup near the trigger in parent content coordinates: {position:?}"
             );
+            let scale = window.scale_factor() as f32;
+            let size = window.surface_size();
+            let configured = SkiaRect::from_xywh(
+                position.x as f32 / scale,
+                position.y as f32 / scale,
+                size.width as f32 / scale,
+                size.height as f32 / scale,
+            );
             assert!(
-                window.surface_size().width
-                    <= self
-                        .runner
-                        .engine
-                        .window
-                        .as_ref()
-                        .unwrap()
-                        .surface_size()
-                        .width
+                self.runner
+                    .engine
+                    .native_menu_layout
+                    .as_ref()
+                    .unwrap()
+                    .1
+                    .iter()
+                    .all(|panel| configured.contains(panel.rect))
             );
             if !self.hovered_submenu {
                 self.hovered_submenu = true;
@@ -1099,6 +1128,10 @@ fn wayland_cpu_dropdown_falls_back_to_overlay_and_selects_submenu() {
 }
 
 fn run_wayland_dropdown_test(backend: BackendType) {
+    run_wayland_dropdown_with_size(backend, PhysicalSize::new(400, 220));
+}
+
+fn run_wayland_dropdown_with_size(backend: BackendType, parent_size: PhysicalSize<u32>) {
     let mut builder = EventLoop::builder();
     winit::platform::wayland::EventLoopBuilderExtWayland::with_wayland(&mut builder);
     winit::platform::wayland::EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
@@ -1120,9 +1153,34 @@ fn run_wayland_dropdown_test(backend: BackendType) {
             hovered_submenu: false,
             first_frame_at: None,
             deadline: Instant::now() + Duration::from_secs(20),
+            parent_size,
         })
         .unwrap();
     assert_eq!(selected.get(), 1);
+}
+
+#[test]
+#[ignore = "requires a disposable X11 display, alpha-capable GL, and XTEST"]
+fn native_x11_dropdown_submenu_selects_outside_horizontal_parent() {
+    run_native_dropdown_with_size(false, true, PhysicalSize::new(800, 30));
+}
+
+#[test]
+#[ignore = "requires a disposable X11 display, alpha-capable GL, and XTEST"]
+fn native_x11_dropdown_submenu_selects_outside_vertical_parent() {
+    run_native_dropdown_with_size(false, true, PhysicalSize::new(30, 600));
+}
+
+#[test]
+#[ignore = "requires a disposable Wayland compositor with alpha-capable EGL; synthetic runner input"]
+fn native_wayland_dropdown_submenu_selects_outside_horizontal_parent() {
+    run_wayland_dropdown_with_size(BackendType::OpenGl, PhysicalSize::new(800, 30));
+}
+
+#[test]
+#[ignore = "requires a disposable Wayland compositor with alpha-capable EGL; synthetic runner input"]
+fn native_wayland_dropdown_submenu_selects_outside_vertical_parent() {
+    run_wayland_dropdown_with_size(BackendType::OpenGl, PhysicalSize::new(30, 600));
 }
 
 #[test]

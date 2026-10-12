@@ -83,6 +83,13 @@ impl<A: MultiWindowAppLogic> AppLogic for SurfaceAppAdapter<A> {
         A::shortcut(&state.model, state.surface, event)
     }
 
+    fn native_menu_unavailable(
+        state: &Self::State,
+        failure: crate::app::NativeMenuFailure,
+    ) -> Option<Self::Message> {
+        A::native_menu_unavailable(&state.model, state.surface, failure)
+    }
+
     fn theme() -> Theme {
         A::theme()
     }
@@ -237,6 +244,10 @@ mod tests {
 
     #[derive(Clone, Debug, PartialEq)]
     enum ContextMenuMessage {
+        Failure {
+            surface: SurfaceId,
+            failure: crate::NativeMenuFailure,
+        },
         Select {
             surface: SurfaceId,
             target: ContextMenuTarget,
@@ -274,6 +285,14 @@ mod tests {
             target: ContextMenuTarget,
         ) -> Option<Self::Message> {
             Some(ContextMenuMessage::Select { surface, target })
+        }
+
+        fn native_menu_unavailable(
+            _: &Self::State,
+            surface: SurfaceId,
+            failure: crate::NativeMenuFailure,
+        ) -> Option<Self::Message> {
+            Some(ContextMenuMessage::Failure { surface, failure })
         }
     }
 
@@ -377,6 +396,28 @@ mod tests {
             message,
             Some(ContextMenuMessage::Select { surface, target })
         );
+    }
+
+    #[test]
+    fn native_menu_failure_routes_only_to_the_invoking_surface() {
+        let failure = crate::NativeMenuFailure {
+            menu_id: 48,
+            reason: "alpha presentation unavailable".into(),
+            overlay_usable: false,
+        };
+        for surface in [SurfaceId::new(12), SurfaceId::new(13)] {
+            let state = SurfaceAppState::new(surface, ContextMenuState, 0);
+            assert_eq!(
+                SurfaceAppAdapter::<ContextMenuApp>::native_menu_unavailable(
+                    &state,
+                    failure.clone()
+                ),
+                Some(ContextMenuMessage::Failure {
+                    surface,
+                    failure: failure.clone()
+                })
+            );
+        }
     }
 
     #[test]

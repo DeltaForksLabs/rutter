@@ -97,6 +97,72 @@ fn nodes_with_role(update: &TreeUpdate, role: Role) -> Vec<&accesskit::Node> {
 }
 
 #[test]
+fn native_dropdown_accessibility_uses_configured_scrolled_bounds_outside_parent() {
+    use crate::widgets::dropdown_menu::{
+        build_native_menu_surfaces, resolve_native_menu_surfaces, row_rect,
+    };
+    let entries: Vec<_> = (0..30)
+        .map(|_| DropdownMenuEntry::item("Row", ()))
+        .collect();
+    let mut state = DropdownMenuState::default();
+    state.open_at_index(Some(29));
+    let requested = build_native_menu_surfaces(
+        skia_safe::Point::new(20.0, 28.0),
+        &entries,
+        &state,
+        crate::i18n::LayoutDirection::Ltr,
+        &crate::widgets::dropdown_menu::estimate_level_width,
+    );
+    let configured = skia_safe::Rect::from_xywh(-100.0, -80.0, 120.0, 72.0);
+    let surfaces = resolve_native_menu_surfaces(
+        &requested,
+        &entries,
+        &state,
+        skia_safe::Point::new(20.0, 28.0),
+        configured,
+    )
+    .unwrap();
+    let expected_row = row_rect(&surfaces[0], &entries, 29).unwrap();
+    let native = (crate::render::NativeMenuKind::Dropdown(42), surfaces);
+    let widget = Widget::dropdown_menu("Actions", entries, trigger_style()).with_id(42);
+    let states = HashMap::from([(42, WidgetState::DropdownMenu(state))]);
+    let fonts = Rc::new(RefCell::new(FontSystem::new()));
+    let mut taffy = TaffyTree::new();
+    let root = build_taffy_tree(&mut taffy, &widget, fonts.clone(), &states);
+    compute_layout(
+        &mut taffy,
+        root,
+        PhysicalSize::new(800, 30),
+        fonts,
+        &crate::render::RichTextRenderer::default(),
+    );
+    let update = crate::accessibility::build_accessibility_update_with_native(
+        &taffy,
+        &widget,
+        root,
+        AccessibilityInputs {
+            input_states: &HashMap::new(),
+            widget_states: &states,
+            focused_widget_id: None,
+            viewport: (800.0, 30.0),
+            direction: crate::i18n::LayoutDirection::Ltr,
+        },
+        Some(&native),
+    );
+    assert_eq!(
+        nodes_with_role(&update, Role::Menu)[0].bounds(),
+        Some(crate::accessibility::access_rect(configured))
+    );
+    assert_eq!(
+        nodes_with_role(&update, Role::MenuItem)
+            .last()
+            .unwrap()
+            .bounds(),
+        Some(crate::accessibility::access_rect(expected_row))
+    );
+}
+
+#[test]
 fn closed_dropdown_exposes_collapsed_menu_button_only() {
     let update = closed_dropdown_update();
     let trigger = &nodes_with_role(&update, Role::Button)[0];

@@ -76,6 +76,12 @@ impl CpuBackend {
             ))
         })?;
         let size = window.surface_size();
+        super::popup_limits::validate_popup_allocation(window.window_type(), size).map_err(
+            |reason| GraphicsError::Resize {
+                backend: BackendType::CpuSoftbuffer,
+                reason,
+            },
+        )?;
         let raster_size = validate_frame_size(size)?;
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
@@ -110,10 +116,12 @@ impl GraphicsBackend for CpuBackend {
     }
 
     fn begin_frame(&mut self) -> Result<&Canvas, GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "begin frame")?;
         Ok(self.skia_surface.canvas())
     }
 
     fn end_frame(&mut self) -> Result<(), GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "present frame")?;
         let mut buffer = self
             .surface
             .buffer_mut()
@@ -149,6 +157,13 @@ impl GraphicsBackend for CpuBackend {
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "resize")?;
+        super::popup_limits::validate_popup_allocation(self.window.window_type(), size).map_err(
+            |reason| GraphicsError::Resize {
+                backend: BackendType::CpuSoftbuffer,
+                reason,
+            },
+        )?;
         let raster_size = validate_frame_size(size)?;
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))

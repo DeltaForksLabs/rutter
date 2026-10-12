@@ -64,6 +64,7 @@ pub struct WinitState {
 
     /// The XDG shell that is used for windows.
     pub xdg_shell: XdgShell,
+    pub layer_shell: Option<sctk::shell::wlr_layer::LayerShell>,
 
     /// The currently present windows.
     pub windows: RefCell<HashMap<WindowId, Arc<Mutex<WindowState>>>>,
@@ -76,6 +77,8 @@ pub struct WinitState {
 
     /// The update for the `windows` coming from the compositor.
     pub window_compositor_updates: Vec<WindowCompositorUpdate>,
+    /// Terminal layer roots awaiting child-first teardown after native dispatch.
+    pub terminal_layers: Vec<WindowId>,
 
     /// Currently handled seats.
     pub seats: HashMap<ObjectId, WinitSeatState>,
@@ -201,6 +204,7 @@ impl WinitState {
             shm,
 
             xdg_shell: XdgShell::bind(globals, queue_handle).map_err(|err| os_error!(err))?,
+            layer_shell: sctk::shell::wlr_layer::LayerShell::bind(globals, queue_handle).ok(),
             xdg_activation: XdgActivationState::bind(globals, queue_handle).ok(),
             xdg_toplevel_icon_manager: XdgToplevelIconManagerState::bind(globals, queue_handle)
                 .ok(),
@@ -210,6 +214,7 @@ impl WinitState {
             windows: Default::default(),
             window_requests: Default::default(),
             window_compositor_updates: Vec::new(),
+            terminal_layers: Vec::new(),
             window_events_sink: Default::default(),
             viewporter_state,
             data_device_manager_state,
@@ -248,6 +253,14 @@ impl WinitState {
         let window_id = super::make_wid(surface);
 
         if let Some(window) = self.windows.get_mut().get(&window_id) {
+            if self
+                .window_requests
+                .get_mut()
+                .get(&window_id)
+                .is_some_and(|requests| requests.is_terminal())
+            {
+                return;
+            }
             // Don't update the scaling factor, when legacy method is used.
             if is_legacy && self.fractional_scaling_manager.is_some() {
                 return;
@@ -315,6 +328,9 @@ impl WindowHandler for WinitState {
         _serial: u32,
     ) {
         let window_id = super::make_wid(window.wl_surface());
+        if self.native_terminal(window_id) {
+            return;
+        }
 
         let index = if let Some(index) =
             self.window_compositor_updates.iter().position(|update| update.window_id == window_id)
@@ -358,6 +374,9 @@ impl PopupHandler for WinitState {
         configure: PopupConfigure,
     ) {
         let window_id = super::make_wid(popup.wl_surface());
+        if self.native_terminal(window_id) {
+            return;
+        }
 
         let index = if let Some(index) =
             self.window_compositor_updates.iter().position(|update| update.window_id == window_id)
@@ -410,6 +429,7 @@ impl OutputHandler for WinitState {
     }
 
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, updated: WlOutput) {
+        self.dispatched_events = true;
         let mut monitors = self.monitors.lock().unwrap();
         let updated = MonitorHandle::new(updated);
         if let Some(pos) = monitors.iter().position(|output| output == &updated) {
@@ -420,6 +440,13 @@ impl OutputHandler for WinitState {
     }
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, removed: WlOutput) {
+        // A targeted panel is closed permanently, never moved to another output.
+        let targeted: Vec<_> = self.windows.get_mut().iter().filter_map(|(id, window)| {
+            matches!(&window.lock().unwrap().window, crate::window::state::WindowType::Layer { output: Some(output), .. } if output == &removed).then_some(*id)
+        }).collect();
+        for id in targeted {
+            self.queue_terminal_layer(id);
+        }
         let mut monitors = self.monitors.lock().unwrap();
         let removed = MonitorHandle::new(removed);
         if let Some(pos) = monitors.iter().position(|output| output == &removed) {
@@ -446,6 +473,7 @@ impl CompositorHandler for WinitState {
         _: &WlSurface,
         _: &WlOutput,
     ) {
+        self.dispatched_events = true;
     }
 
     fn surface_leave(
@@ -455,6 +483,7 @@ impl CompositorHandler for WinitState {
         _: &WlSurface,
         _: &WlOutput,
     ) {
+        self.dispatched_events = true;
     }
 
     fn scale_factor_changed(

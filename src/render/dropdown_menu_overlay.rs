@@ -44,16 +44,49 @@ pub(crate) fn draw_context_menu<Msg>(
     scale: f32,
     direction: LayoutDirection,
 ) {
-    let surfaces = super::context_menu_overlay::context_surfaces(menu, viewport, direction, font);
+    draw_context_menu_with_surfaces(
+        canvas,
+        menu,
+        viewport,
+        mouse,
+        font,
+        image_cache,
+        theme,
+        scale,
+        direction,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_context_menu_with_surfaces<Msg>(
+    canvas: &Canvas,
+    menu: &super::ContextMenuOverlay<'_, Msg>,
+    viewport: (f32, f32),
+    mouse: Point,
+    font: &Font,
+    image_cache: &mut ImageRenderCache,
+    theme: &Theme,
+    scale: f32,
+    direction: LayoutDirection,
+    resolved: Option<&[DropdownMenuSurface]>,
+) {
+    let rebuilt;
+    let surfaces = if let Some(surfaces) = resolved {
+        surfaces
+    } else {
+        rebuilt = super::context_menu_overlay::context_surfaces(menu, viewport, direction, font);
+        &rebuilt
+    };
     let content = MenuContent {
         entries: menu.entries,
         state: &menu.state,
     };
-    let hover = hover_path(content.entries, &surfaces, mouse);
+    let hover = hover_path(content.entries, surfaces, mouse);
     let mut painter = MenuPainter::new(canvas, font, theme, direction, true);
     painter.image_cache = Some(image_cache);
     painter.scale = scale;
-    for surface in &surfaces {
+    for surface in surfaces {
         painter.draw_surface(&content, surface, hover.as_deref());
     }
 }
@@ -137,10 +170,26 @@ pub(crate) fn draw_native_dropdown<Msg>(
     fonts: &mut FontCache,
     theme: &Theme,
     direction: LayoutDirection,
+    resolved: Option<&[DropdownMenuSurface]>,
 ) {
     if let Some(menu) = overlays.iter().find(|menu| menu.id == id) {
         let font = get_cached_font(fonts, "sans-serif", theme.font_body);
-        MenuPainter::new(canvas, &font, theme, direction, true).draw_menu(menu, viewport, mouse);
+        let rebuilt;
+        let surfaces = if let Some(surfaces) = resolved {
+            surfaces
+        } else {
+            rebuilt = overlay_surfaces(menu, viewport, direction);
+            &rebuilt
+        };
+        let hover = hover_path(menu.entries, surfaces, mouse);
+        let content = MenuContent {
+            entries: menu.entries,
+            state: &menu.state,
+        };
+        let mut painter = MenuPainter::new(canvas, &font, theme, direction, true);
+        for surface in surfaces {
+            painter.draw_surface(&content, surface, hover.as_deref());
+        }
     }
 }
 
@@ -232,7 +281,7 @@ pub(crate) fn dropdown_menu_entry_hover_at<Msg>(
     })
 }
 
-fn entry_hit<Msg>(
+pub(crate) fn entry_hit<Msg>(
     menu: &DropdownOverlay<'_, Msg>,
     surface: &DropdownMenuSurface,
     point: Point,

@@ -69,10 +69,21 @@ struct OverlayHoverCoverage {
 }
 
 /// Resolves the mouse point each visual layer may use for hover affordances.
+#[cfg(test)]
 pub(crate) fn overlay_hover_routes<Msg>(
     input: OverlayHoverInput<'_, '_, Msg>,
 ) -> OverlayHoverRoutes {
-    let coverage = OverlayHoverCoverage::collect(&input);
+    overlay_hover_routes_with_native(input, None)
+}
+
+pub(crate) fn overlay_hover_routes_with_native<Msg>(
+    input: OverlayHoverInput<'_, '_, Msg>,
+    native: Option<&(
+        super::NativeMenuKind,
+        Vec<crate::widgets::dropdown_menu::DropdownMenuSurface>,
+    )>,
+) -> OverlayHoverRoutes {
+    let coverage = OverlayHoverCoverage::collect(&input, native);
     OverlayHoverRoutes::from_coverage(input.mouse, input.focused_id, coverage)
 }
 
@@ -113,10 +124,29 @@ impl OverlayHoverCoverage {
         self.context_menu || self.dropdown || self.search || self.select || self.popover
     }
 
-    fn collect<Msg>(input: &OverlayHoverInput<'_, '_, Msg>) -> Self {
+    fn collect<Msg>(
+        input: &OverlayHoverInput<'_, '_, Msg>,
+        native: Option<&(
+            super::NativeMenuKind,
+            Vec<crate::widgets::dropdown_menu::DropdownMenuSurface>,
+        )>,
+    ) -> Self {
+        let covered = native.is_some_and(|(_, surfaces)| {
+            surfaces
+                .iter()
+                .any(|surface| surface.rect.contains(input.mouse))
+        });
         Self {
-            context_menu: context_menu_captures_hover(input),
-            dropdown: dropdown_captures_hover(input),
+            context_menu: if matches!(native, Some((super::NativeMenuKind::Context(_), _))) {
+                covered
+            } else {
+                context_menu_captures_hover(input)
+            },
+            dropdown: if matches!(native, Some((super::NativeMenuKind::Dropdown(_), _))) {
+                covered
+            } else {
+                dropdown_captures_hover(input)
+            },
             search: search_captures_hover(input),
             select: select_captures_hover(input),
             popover: popover_captures_hover(input),

@@ -331,6 +331,190 @@ pub(crate) fn build_context_menu_surfaces<Msg>(
     )
 }
 
+/// Native sizing uses a finite policy area, not the parent's drawable extent.
+/// The area is local to the opening point; output constraints belong to Winit.
+pub(crate) fn build_native_menu_surfaces<Entry: DropdownMenuEntryAccess>(
+    origin: Point,
+    entries: &[Entry],
+    state: &DropdownMenuState,
+    direction: LayoutDirection,
+    estimate_width: &dyn Fn(&[Entry]) -> f32,
+) -> Vec<DropdownMenuSurface> {
+    if !state.is_open() {
+        return Vec::new();
+    }
+    const WIDTH: f32 = 1024.0;
+    const HEIGHT: f32 = 768.0;
+    let width = finite_nonnegative(estimate_width(entries)).min(WIDTH);
+    let x = match direction {
+        LayoutDirection::Ltr => origin.x,
+        LayoutDirection::Rtl => origin.x - width,
+    };
+    let left = match direction {
+        LayoutDirection::Ltr => x,
+        LayoutDirection::Rtl => origin.x - WIDTH,
+    };
+    let viewport = Rect::from_xywh(
+        left - VIEWPORT_MARGIN,
+        origin.y - VIEWPORT_MARGIN,
+        WIDTH + VIEWPORT_MARGIN * 2.0,
+        HEIGHT + VIEWPORT_MARGIN * 2.0,
+    );
+    let content_height = estimate_content_height(entries);
+    let root = build_surface(
+        Vec::new(),
+        Rect::from_xywh(x, origin.y, width, content_height.min(MAX_HEIGHT)),
+        content_height,
+        entries,
+        state,
+    );
+    append_submenu_surfaces(
+        vec![root],
+        entries,
+        state,
+        &SubmenuGeometry {
+            viewport,
+            direction,
+            estimate_width,
+        },
+    )
+}
+
+/// Resolve a requested chain into the compositor's actual drawable rectangle.
+/// Keep logical row metrics unchanged; resized panels reveal/scroll content.
+pub(crate) fn resolve_native_menu_surfaces<Entry: DropdownMenuEntryAccess>(
+    requested: &[DropdownMenuSurface],
+    entries: &[Entry],
+    state: &DropdownMenuState,
+    requested_origin: Point,
+    configured: Rect,
+) -> Result<Vec<DropdownMenuSurface>, String> {
+    let Some(root) = requested.first() else {
+        return Ok(Vec::new());
+    };
+    let available_width = configured.width() + SUBMENU_OVERLAP * (requested.len() - 1) as f32;
+    let minimum_width = 64.0 * requested.len() as f32;
+    let minimum_height = ITEM_ROW_HEIGHT + Entry::level_padding() * 2.0;
+    if ![
+        configured.left,
+        configured.top,
+        configured.right,
+        configured.bottom,
+    ]
+    .iter()
+    .all(|edge| edge.is_finite())
+        || available_width < minimum_width
+        || configured.height() < minimum_height
+        || requested
+            .iter()
+            .any(|panel| panel.rect.width() < 64.0 || panel.rect.height() < minimum_height)
+    {
+        return Err("configured popup cannot contain a complete usable menu chain".into());
+    }
+    // Keep measured widths when they fit. Equal-width columns would clip a
+    // wide parent unnecessarily even when its narrow children leave ample room.
+    let requested_width: f32 = requested.iter().map(|panel| panel.rect.width()).sum();
+    let width_fraction = if requested_width > minimum_width {
+        ((available_width - minimum_width) / (requested_width - minimum_width)).min(1.0)
+    } else {
+        1.0
+    };
+    let resolved_width =
+        |panel: &DropdownMenuSurface| 64.0 + (panel.rect.width() - 64.0) * width_fraction;
+    let direction = if requested
+        .get(1)
+        .is_some_and(|child| child.rect.left < root.rect.left)
+    {
+        LayoutDirection::Rtl
+    } else {
+        LayoutDirection::Ltr
+    };
+    let width = resolved_width(root);
+    let height = root.rect.height().min(configured.height());
+    let x = if requested.len() > 1 {
+        match direction {
+            LayoutDirection::Ltr => configured.left,
+            LayoutDirection::Rtl => configured.right - width,
+        }
+    } else {
+        (root.rect.left - requested_origin.x + configured.left).clamp(
+            configured.left,
+            (configured.right - width).max(configured.left),
+        )
+    };
+    let y = (root.rect.top - requested_origin.y + configured.top).clamp(
+        configured.top,
+        (configured.bottom - height).max(configured.top),
+    );
+    let mut surfaces = vec![build_surface(
+        Vec::new(),
+        Rect::from_xywh(x, y, width, height),
+        root.content_height,
+        entries,
+        state,
+    )];
+    // Remove overlay margins at the native buffer boundary. Place every child
+    // from its resolved parent's actual row and scroll, never requested offsets.
+    let viewport = Rect::from_ltrb(
+        configured.left - VIEWPORT_MARGIN,
+        configured.top - VIEWPORT_MARGIN,
+        configured.right + VIEWPORT_MARGIN,
+        configured.bottom + VIEWPORT_MARGIN,
+    );
+    for child in requested.iter().skip(1) {
+        let (index, path) = child
+            .level_path
+            .split_last()
+            .ok_or("native child has no parent entry")?;
+        let parent_entries =
+            entries_at_level(entries, path).ok_or("native submenu parent is missing")?;
+        let child_entries = entries_at_level(entries, &child.level_path)
+            .ok_or("native submenu entries are missing")?;
+        let parent = surfaces.last_mut().unwrap();
+        if parent.level_path != path {
+            return Err("native submenu chain has a disconnected parent".into());
+        }
+        reveal_native_submenu_row(parent, parent_entries, *index)?;
+        let row = row_rect(parent, parent_entries, *index)
+            .ok_or("native submenu invoking row is missing")?;
+        let rect = place_submenu_surface(
+            parent.rect,
+            row,
+            resolved_width(child),
+            child.rect.height().min(configured.height()),
+            viewport,
+            direction,
+        );
+        surfaces.push(build_surface(
+            child.level_path.clone(),
+            rect,
+            child.content_height,
+            child_entries,
+            state,
+        ));
+    }
+    Ok(surfaces)
+}
+
+fn reveal_native_submenu_row<Entry: DropdownMenuEntryAccess>(
+    parent: &mut DropdownMenuSurface,
+    entries: &[Entry],
+    index: usize,
+) -> Result<(), String> {
+    let entry = entries
+        .get(index)
+        .ok_or("native submenu invoking entry is missing")?;
+    let top = row_content_top(entries, index);
+    let scroll = scroll_to_reveal(
+        parent.scroll_y,
+        top,
+        entry.entry_height(),
+        parent.rect.height() - (Entry::level_padding() - MENU_PADDING) * 2.0,
+    );
+    parent.scroll_y = clamp_scroll(scroll, parent.max_scroll);
+    Ok(())
+}
+
 fn build_child_surface<Entry: DropdownMenuEntryAccess>(
     surfaces: &[DropdownMenuSurface],
     root_entries: &[Entry],
@@ -467,3 +651,7 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 #[path = "../../../tests/unit/dropdown_menu_geometry_unit_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/unit/native_menu_geometry_unit_tests.rs"]
+mod native_tests;

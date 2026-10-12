@@ -1,6 +1,6 @@
 use super::*;
 use crate::widgets::dropdown_menu::{
-    DropdownMenuEntry, DropdownMenuState, build_open_menu_surfaces,
+    DropdownMenuEntry, DropdownMenuState, DropdownMenuSurface, build_native_menu_surfaces,
 };
 use skia_safe::{Color, Surface, surfaces};
 use taffy::prelude::{Dimension, Rect, Size, Style};
@@ -104,20 +104,19 @@ impl<'a> NativeMenuRaster<'a> {
         }
     }
 
-    fn panels(&self) -> Vec<SkiaRect> {
+    fn menu_surfaces(&self) -> Vec<DropdownMenuSurface> {
         if self.states[&MENU_ID].as_context_menu().is_some() {
             let font = get_cached_font(&mut HashMap::new(), "sans-serif", Theme::dark().font_body);
             let mut menus = Vec::new();
             collect_open_context_menus(&self.widget, &self.states, &mut Vec::new(), &mut menus);
-            return context_menu_overlay::context_surfaces(
-                &menus[0],
-                VIEWPORT,
+            let menu = &menus[0];
+            return build_native_menu_surfaces(
+                menu.anchor,
+                menu.entries,
+                &menu.state,
                 self.direction,
-                &font,
-            )
-            .into_iter()
-            .map(|panel| panel.rect)
-            .collect();
+                &|entries| crate::widget::estimate_context_menu_width(entries, &font),
+            );
         }
         let overlays = select_overlay::collector::collect_open_dropdown_overlays(
             &self.widget,
@@ -127,20 +126,31 @@ impl<'a> NativeMenuRaster<'a> {
             VIEWPORT,
         );
         let menu = &overlays[0];
-        build_open_menu_surfaces(
-            menu.anchor,
+        build_native_menu_surfaces(
+            Point::new(
+                if self.direction == LayoutDirection::Ltr {
+                    menu.anchor.left
+                } else {
+                    menu.anchor.right
+                },
+                menu.anchor.bottom + 4.0,
+            ),
             menu.entries,
             &menu.state,
-            SkiaRect::from_xywh(0.0, 0.0, VIEWPORT.0, VIEWPORT.1),
             self.direction,
+            &crate::widgets::dropdown_menu::estimate_level_width,
         )
-        .into_iter()
-        .map(|panel| panel.rect)
-        .collect()
+    }
+
+    fn panels(&self) -> Vec<SkiaRect> {
+        self.menu_surfaces()
+            .into_iter()
+            .map(|panel| panel.rect)
+            .collect()
     }
 
     fn paint(&self, surface: &mut Surface, origin: Point, scale: f32, theme: &Theme) {
-        draw_native_menu(
+        draw_native_menu_with_surfaces(
             surface.canvas(),
             &self.taffy,
             self.root,
@@ -159,6 +169,7 @@ impl<'a> NativeMenuRaster<'a> {
             theme,
             scale,
             self.direction,
+            Some(&self.menu_surfaces()),
         );
     }
 }
@@ -179,6 +190,92 @@ fn pixel_at(surface: &mut Surface, point: Point, origin: Point, scale: f32) -> C
         ((point.x - origin.x) * scale) as i32,
         ((point.y - origin.y) * scale) as i32,
     ))
+}
+
+#[test]
+fn configured_native_context_paint_and_hit_use_resized_layout_outside_thin_parent() {
+    use crate::widgets::dropdown_menu::{
+        build_native_menu_surfaces, point_to_entry, resolve_native_menu_surfaces, row_rect,
+    };
+    let entries: Vec<_> = (0..20)
+        .map(|_| crate::ContextMenuEntry::item("Settings", ()))
+        .collect();
+    let mut state = crate::widgets::dropdown_menu::DropdownMenuState::default();
+    state.open_at_index(Some(19));
+    let widget = Widget::context_menu(
+        Widget::Spacer {
+            style: Style::default(),
+        },
+        &entries,
+        Style::default(),
+    )
+    .with_id(MENU_ID);
+    let mut context = crate::engine::widget_state::ContextMenuState::default();
+    context.open_at(20.0, 28.0);
+    context.navigation = state.clone();
+    let states = HashMap::from([(MENU_ID, WidgetState::ContextMenu(context))]);
+    let font = get_cached_font(&mut HashMap::new(), "sans-serif", 14.0);
+    let requested = build_native_menu_surfaces(
+        Point::new(20.0, 28.0),
+        &entries,
+        &state,
+        LayoutDirection::Ltr,
+        &|entries| crate::widget::estimate_context_menu_width(entries, &font),
+    );
+    let configured = SkiaRect::from_xywh(-100.0, -80.0, 120.0, 76.0);
+    let panels = resolve_native_menu_surfaces(
+        &requested,
+        &entries,
+        &state,
+        Point::new(20.0, 28.0),
+        configured,
+    )
+    .unwrap();
+    let row = row_rect(&panels[0], &entries, 19).unwrap();
+    let point = Point::new(row.right - 10.0, row.center_y());
+    assert_eq!(point_to_entry(&panels[0], &entries, point), Some(19));
+    for scale in [1.0, 1.5, 2.0] {
+        let mut surface = surfaces::raster_n32_premul((
+            (configured.width() * scale) as i32,
+            (configured.height() * scale) as i32,
+        ))
+        .unwrap();
+        draw_native_menu_with_surfaces(
+            surface.canvas(),
+            &TaffyTree::new(),
+            NodeId::from(0usize),
+            &widget,
+            &states,
+            NativeMenuKind::Context(MENU_ID),
+            Point::new(configured.left, configured.top),
+            (800.0, 30.0),
+            point,
+            &mut HashMap::new(),
+            &mut ImageRenderCache::default(),
+            &Theme::dark(),
+            scale,
+            LayoutDirection::Ltr,
+            Some(&panels),
+        );
+        assert_ne!(
+            pixel_at(
+                &mut surface,
+                point,
+                Point::new(configured.left, configured.top),
+                scale
+            ),
+            Color::TRANSPARENT
+        );
+        assert_eq!(
+            pixel_at(
+                &mut surface,
+                Point::new(configured.left, configured.top),
+                Point::new(configured.left, configured.top),
+                scale
+            ),
+            Color::TRANSPARENT
+        );
+    }
 }
 
 #[test]

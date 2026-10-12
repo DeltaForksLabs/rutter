@@ -335,6 +335,18 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let size = self.engine.window.as_ref().unwrap().surface_size();
         self.engine.try_ensure_widget_states()?;
         self.engine.try_ensure_layout(size)?;
+        if self.native_menu.as_ref().is_some_and(|popup| popup.ready) {
+            let (hover, scroll) = self.native_cursor_targets(self.engine.last_mouse_pos)?;
+            let previous_hover = match previous_point {
+                Some(point) => self.native_cursor_targets(point)?.0,
+                None => None,
+            };
+            return Ok(DropdownCursorTargets {
+                hover,
+                previous_hover,
+                scroll,
+            });
+        }
         let viewport = self.logical_viewport(size);
         let point = self.engine.last_mouse_pos;
         let direction = A::locale().direction();

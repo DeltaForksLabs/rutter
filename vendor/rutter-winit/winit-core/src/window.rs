@@ -1,9 +1,9 @@
-// Modified for the local rutter-winit fork: popup support and placement documentation.
+// Modified for the local rutter-winit fork: popup/layer-shell roles and placement documentation.
 // See RUTTER_FORK.md in the fork root for provenance and validation.
 
 //! The [`Window`] trait and associated types.
+mod layer_shell;
 mod positioner;
-
 use std::any::Any;
 use std::fmt;
 
@@ -12,6 +12,7 @@ use cursor_icon::CursorIcon;
 use dpi::{
     LogicalPosition, LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size,
 };
+pub use layer_shell::*;
 pub use positioner::{WindowAnchor, WindowConstraintAdjustment, WindowGravity};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,9 @@ pub enum WindowType {
     /// A normal, top-level window.
     #[default]
     Window,
+    /// A native Wayland wlr-layer-shell surface. Requires validated settings
+    /// selected with [`WindowAttributes::with_layer_shell`]. Other backends reject it.
+    LayerShell,
     /// A short-lived window anchored to a parent, such as a menu, combo-box dropdown, or
     /// tooltip. Requires a parent set via [`WindowAttributes::with_parent_window`], and its
     /// position is interpreted relative to that parent.
@@ -146,6 +150,8 @@ impl Default for WindowPositioner {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct WindowAttributes {
+    /// A native Wayland layer role. Unsupported backends must reject the request.
+    pub layer_shell: Option<LayerShellConfig>,
     pub surface_size: Option<Size>,
     pub min_surface_size: Option<Size>,
     pub max_surface_size: Option<Size>,
@@ -188,6 +194,12 @@ pub struct WindowAttributes {
 }
 
 impl WindowAttributes {
+    /// Selects a native layer-shell role before any surface is mapped.
+    pub fn with_layer_shell(mut self, config: LayerShellConfig) -> Self {
+        self.layer_shell = Some(config);
+        self.window_type = WindowType::LayerShell;
+        self
+    }
     /// Get the parent window stored on the attributes.
     pub fn parent_window(&self) -> Option<&rwh_06::RawWindowHandle> {
         self.parent_window.as_ref().map(|handle| &handle.0)
@@ -545,6 +557,7 @@ impl WindowAttributes {
 impl Clone for WindowAttributes {
     fn clone(&self) -> Self {
         Self {
+            layer_shell: self.layer_shell.clone(),
             surface_size: self.surface_size,
             min_surface_size: self.min_surface_size,
             max_surface_size: self.max_surface_size,
@@ -577,6 +590,7 @@ impl Default for WindowAttributes {
     #[inline]
     fn default() -> WindowAttributes {
         WindowAttributes {
+            layer_shell: None,
             enabled_buttons: WindowButtons::all(),
             title: String::from("winit window"),
             decorations: true,
@@ -623,9 +637,42 @@ pub trait PlatformWindowAttributes: Any + std::fmt::Debug + Send + Sync {
 
 impl_dyn_casting!(PlatformWindowAttributes);
 
+/// A configured popup snapshot with explicitly separate coordinate spaces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PopupSurfaceGeometry {
+    /// Logical position relative to the parent's drawable content origin.
+    pub parent_position: dpi::LogicalPosition<f64>,
+    /// Actual physical buffer dimensions, at `scale_factor`.
+    pub surface_size: PhysicalSize<u32>,
+    /// Popup physical pixels per logical pixel, independently of the parent.
+    pub scale_factor: f64,
+    /// Wayland xdg_surface configure serial, when supplied by the platform.
+    pub configure_serial: Option<u32>,
+}
+
+fn parent_physical_popup_geometry(
+    position: PhysicalPosition<i32>,
+    surface_size: PhysicalSize<u32>,
+    parent_scale: f64,
+    popup_scale: f64,
+) -> PopupSurfaceGeometry {
+    PopupSurfaceGeometry {
+        parent_position: position.to_logical(parent_scale),
+        surface_size,
+        scale_factor: popup_scale,
+        configure_serial: None,
+    }
+}
+
 /// Represents a window.
 ///
 /// The window is closed when dropped.
+///
+/// Wayland layer-shell compositor closure or targeted-output removal permanently
+/// retires the native role and its popup children even if the window is retained
+/// and `CloseRequested` is ignored. New native handles become unavailable and
+/// `Destroyed` follows; release renderer resources before the retained window.
+/// Ordinary toplevel close requests remain vetoable.
 ///
 /// ## Threading
 ///
@@ -642,6 +689,19 @@ impl_dyn_casting!(PlatformWindowAttributes);
 /// **Web:** The [`Window`], which is represented by a `HTMLElementCanvas`, can
 /// not be closed by dropping the [`Window`].
 pub trait Window: Any + Send + Sync + fmt::Debug {
+    /// Configured logical drawable dimensions. Wayland returns its configured
+    /// viewport size directly, avoiding fractional buffer-rounding error.
+    fn surface_logical_size(&self) -> LogicalSize<f64> {
+        self.surface_size().to_logical(self.scale_factor())
+    }
+    /// Negotiated layer-shell role version, or None for ordinary windows.
+    fn layer_shell_version(&self) -> Option<u32> {
+        None
+    }
+    /// Stable compositor output name, when available (never enumeration order).
+    fn layer_output_name(&self) -> Option<String> {
+        None
+    }
     /// Returns the window type of this window
     fn window_type(&self) -> WindowType;
 
@@ -669,6 +729,35 @@ pub trait Window: Any + Send + Sync + fmt::Debug {
     /// - **Wayland:** No-op unless the window is a [`WindowType::Popup`], since the Wayland
     ///   positioner is part of the `xdg_popup` protocol role.
     fn set_positioner(&self, _positioner: WindowPositioner) {}
+
+    /// Request popup size and placement together. Wayland submits one positioner
+    /// transaction, so a configure cannot combine a new size with an old anchor.
+    /// Returns `None` when configuration is asynchronous.
+    fn request_popup_layout(
+        &self,
+        positioner: WindowPositioner,
+        size: Size,
+    ) -> Option<PhysicalSize<u32>> {
+        let size = self.request_surface_size(size);
+        self.set_positioner(positioner);
+        size
+    }
+
+    /// Read configured popup coordinates without mixing parent physical pixels
+    /// with popup buffer pixels. `parent_scale_factor` converts parent-relative
+    /// physical positions on platforms such as X11; Wayland overrides this with
+    /// one state snapshot of the logical configure, buffer size and popup scale.
+    fn popup_surface_geometry(
+        &self,
+        parent_scale_factor: f64,
+    ) -> Result<PopupSurfaceGeometry, RequestError> {
+        Ok(parent_physical_popup_geometry(
+            self.outer_position()?,
+            self.surface_size(),
+            parent_scale_factor,
+            self.scale_factor(),
+        ))
+    }
 
     /// Returns an identifier unique to the window.
     fn id(&self) -> WindowId;
@@ -2322,6 +2411,19 @@ mod tests {
     use crate::window::{ImeHint, ImePurpose};
 
     #[test]
+    fn popup_snapshot_converts_parent_physical_origin_independently_of_popup_scale() {
+        let snapshot = super::parent_physical_popup_geometry(
+            dpi::PhysicalPosition::new(-200, 60),
+            dpi::PhysicalSize::new(240, 108),
+            2.0,
+            1.5,
+        );
+        assert_eq!(snapshot.parent_position, LogicalPosition::new(-100.0, 30.0));
+        assert_eq!(snapshot.surface_size, dpi::PhysicalSize::new(240, 108));
+        assert_eq!(snapshot.scale_factor, 1.5);
+    }
+
+    #[test]
     fn ime_initial_request_caps_match() {
         let position: Position = LogicalPosition::new(0, 0).into();
         let size: Size = LogicalSize::new(0, 0).into();
@@ -2387,7 +2489,7 @@ mod tests {
             .is_some()
         );
 
-        let text: &[u8] = ['a' as u8; 8000].as_slice();
+        let text: &[u8] = [b'a'; 8000].as_slice();
         let text = std::str::from_utf8(text).unwrap();
         assert_eq!(
             ImeSurroundingText::new(text.into(), 0, 0),

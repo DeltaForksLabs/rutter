@@ -46,6 +46,7 @@ struct SwapchainBuildContext<'a> {
     skia_context: &'a mut DirectContext,
     queue_family_index: u32,
     transparent: bool,
+    popup: bool,
 }
 
 struct PendingSwapchain<'a> {
@@ -168,6 +169,8 @@ impl VkBackend {
                 .create_window(attrs)
                 .map_err(|err| Self::init_failure(err.to_string()))?,
         );
+        super::popup_limits::validate_popup_allocation(window.window_type(), window.surface_size())
+            .map_err(Self::init_failure)?;
 
         let entry = unsafe { Entry::load() }.map_err(|err| Self::init_failure(err.to_string()))?;
         let display_handle = window
@@ -306,6 +309,7 @@ impl VkBackend {
                 skia_context,
                 queue_family_index,
                 transparent,
+                popup: window.window_type() == winit::window::WindowType::Popup,
             },
             None,
         )
@@ -376,7 +380,11 @@ impl VkBackend {
             skia_context,
             queue_family_index,
             transparent,
+            popup,
         } = context;
+        if popup {
+            super::validate_native_popup_size(requested_size)?;
+        }
         let capabilities = unsafe {
             surface_loader
                 .get_physical_device_surface_capabilities(physical_device, surface)
@@ -398,6 +406,9 @@ impl VkBackend {
 
         let (format, color_space, color_type) = pick_surface_format(&formats)?;
         let extent = choose_extent(requested_size, capabilities);
+        if popup {
+            super::validate_native_popup_size(PhysicalSize::new(extent.width, extent.height))?;
+        }
         let min_image_count = choose_image_count(capabilities);
         let composite_alpha =
             pick_composite_alpha(capabilities.supported_composite_alpha, transparent)?;
@@ -453,6 +464,8 @@ impl VkBackend {
     }
 
     fn recreate_swapchain(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError> {
+        super::popup_limits::validate_popup_allocation(self.window.window_type(), size)
+            .map_err(Self::resize_error)?;
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
@@ -480,6 +493,7 @@ impl VkBackend {
                 skia_context: &mut self.skia_context,
                 queue_family_index: self.queue_family_index,
                 transparent: self.transparent,
+                popup: self.window.window_type() == winit::window::WindowType::Popup,
             },
             Some(old_swapchain),
         ) {
@@ -655,6 +669,7 @@ impl GraphicsBackend for VkBackend {
     }
 
     fn begin_frame(&mut self) -> Result<&Canvas, GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "begin frame")?;
         if self.swapchain_images.is_empty() {
             return Err(Self::frame_error("swapchain has no images"));
         }
@@ -681,6 +696,7 @@ impl GraphicsBackend for VkBackend {
     }
 
     fn end_frame(&mut self) -> Result<(), GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "present frame")?;
         let image_index = self.current_image_index.take().ok_or_else(|| {
             Self::frame_error("end_frame called without an active swapchain image")
         })?;
@@ -738,6 +754,7 @@ impl GraphicsBackend for VkBackend {
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) -> Result<(), GraphicsError> {
+        super::validate_native_lifetime(self.window.as_ref(), "resize")?;
         self.recreate_swapchain(size)
     }
 

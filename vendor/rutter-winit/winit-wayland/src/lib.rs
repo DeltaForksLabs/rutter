@@ -40,6 +40,7 @@ macro_rules! os_error {
 
 mod dnd;
 mod event_loop;
+mod layer_shell;
 mod output;
 mod popup;
 mod seat;

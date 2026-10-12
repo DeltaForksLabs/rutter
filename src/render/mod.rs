@@ -62,7 +62,7 @@ use self::control_icons::{ControlChevronDirection, draw_control_chevron, draw_se
 use self::counter::{CounterRenderInput, draw_counter};
 use self::custom::{CustomRenderFrame, draw_custom_widget};
 pub use self::image_cache::ImageRenderCache;
-use self::overlay_hover::{OverlayHoverInput, overlay_hover_routes};
+use self::overlay_hover::OverlayHoverInput;
 use self::rich_text::RichTextDirection;
 pub use self::rich_text::RichTextRenderer;
 use self::table::{TableRenderInput, draw_table};
@@ -289,26 +289,33 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
-    native_menu: Option<NativeMenuKind>,
+    native_layout: Option<&(
+        NativeMenuKind,
+        Vec<crate::widgets::dropdown_menu::DropdownMenuSurface>,
+    )>,
 ) {
+    let native_menu = native_layout.map(|(kind, _)| *kind);
     // Image-only or closed-menu scenes do not need a system font merely to
     // compute context-menu coverage. Resolve it only for retained open menus.
     let context_font = widget_states
         .values()
         .any(|state| state.as_context_menu().is_some_and(|menu| menu.is_open))
         .then(|| get_cached_font(font_cache, "sans-serif", theme.font_body));
-    let hover_routes = overlay_hover_routes(OverlayHoverInput {
-        taffy,
-        root: node,
-        widget,
-        widget_states,
-        input_states,
-        focused_id,
-        mouse: mouse_pos,
-        viewport: overlay_canvas::logical_canvas_size(canvas, scale),
-        context_font: context_font.as_ref(),
-        direction: node_layout_direction(taffy, node),
-    });
+    let hover_routes = overlay_hover::overlay_hover_routes_with_native(
+        OverlayHoverInput {
+            taffy,
+            root: node,
+            widget,
+            widget_states,
+            input_states,
+            focused_id,
+            mouse: mouse_pos,
+            viewport: overlay_canvas::logical_canvas_size(canvas, scale),
+            context_font: context_font.as_ref(),
+            direction: node_layout_direction(taffy, node),
+        },
+        native_layout,
+    );
     let mut path = Vec::new();
     let layout_fs = image_cache.layout_font_system();
     draw_widgets_impl(
@@ -1061,6 +1068,7 @@ pub(crate) fn collect_open_context_menus<'w, Msg>(
 /// A popup's rectangular bounds can include gaps between submenu panels. Clearing
 /// them every frame preserves the parent underneath and removes closed submenus.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn draw_native_menu<Msg>(
     canvas: &Canvas,
     taffy: &TaffyTree<RutterContext>,
@@ -1077,6 +1085,43 @@ pub(crate) fn draw_native_menu<Msg>(
     scale: f32,
     direction: LayoutDirection,
 ) {
+    draw_native_menu_with_surfaces(
+        canvas,
+        taffy,
+        root,
+        widget,
+        states,
+        menu,
+        origin,
+        viewport,
+        mouse,
+        fonts,
+        image_cache,
+        theme,
+        scale,
+        direction,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_native_menu_with_surfaces<Msg>(
+    canvas: &Canvas,
+    taffy: &TaffyTree<RutterContext>,
+    root: NodeId,
+    widget: &Widget<'_, Msg>,
+    states: &HashMap<u64, WidgetState>,
+    menu: NativeMenuKind,
+    origin: Point,
+    viewport: (f32, f32),
+    mouse: Point,
+    fonts: &mut HashMap<(String, u32), Font>,
+    image_cache: &mut ImageRenderCache,
+    theme: &Theme,
+    scale: f32,
+    direction: LayoutDirection,
+    surfaces: Option<&[crate::widgets::dropdown_menu::DropdownMenuSurface]>,
+) {
     canvas.restore_to_count(1);
     canvas.clear(SkiaColor::TRANSPARENT);
     canvas.save();
@@ -1089,7 +1134,7 @@ pub(crate) fn draw_native_menu<Msg>(
                 widget, taffy, root, states, viewport,
             );
             dropdown_menu_overlay::draw_native_dropdown(
-                canvas, &overlays, id, viewport, mouse, fonts, theme, direction,
+                canvas, &overlays, id, viewport, mouse, fonts, theme, direction, surfaces,
             );
         }
         NativeMenuKind::Context(id) => {
@@ -1097,7 +1142,7 @@ pub(crate) fn draw_native_menu<Msg>(
             collect_open_context_menus(widget, states, &mut Vec::new(), &mut overlays);
             if let Some(overlay) = overlays.iter().find(|overlay| overlay.id == id) {
                 let font = get_cached_font(fonts, "sans-serif", theme.font_body);
-                dropdown_menu_overlay::draw_context_menu(
+                dropdown_menu_overlay::draw_context_menu_with_surfaces(
                     canvas,
                     overlay,
                     viewport,
@@ -1107,6 +1152,7 @@ pub(crate) fn draw_native_menu<Msg>(
                     theme,
                     scale,
                     direction,
+                    surfaces,
                 );
             }
         }

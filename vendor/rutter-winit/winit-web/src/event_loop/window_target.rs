@@ -494,6 +494,14 @@ impl RootActiveEventLoop for ActiveEventLoop {
         &self,
         window_attributes: winit_core::window::WindowAttributes,
     ) -> Result<Box<dyn winit_core::window::Window>, RequestError> {
+        if window_attributes.layer_shell.is_some()
+            || window_attributes.window_type() == winit_core::window::WindowType::LayerShell
+        {
+            return Err(winit_core::error::NotSupportedError::new(
+                "layer-shell requires a Wayland connection",
+            )
+            .into());
+        }
         let window = Window::new(self, window_attributes)?;
         Ok(Box::new(window))
     }

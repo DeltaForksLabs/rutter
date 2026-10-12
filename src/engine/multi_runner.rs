@@ -13,9 +13,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 mod app_adapter;
+#[cfg(all(test, target_os = "linux"))]
+mod layer_shell_integration;
+#[cfg(all(test, target_os = "linux"))]
+mod native_menu_integration;
 mod startup;
 mod surface_commands;
 mod surface_events;
+mod surface_metrics;
 mod wakeup;
 
 use self::app_adapter::{SurfaceAppAdapter, SurfaceAppState};
@@ -54,6 +59,7 @@ pub struct MultiWindowRunner<A: MultiWindowAppLogic> {
     pending_surfaces: Vec<SurfaceRequest>,
     surface_configs: BTreeMap<SurfaceId, WindowConfig>,
     surface_runners: BTreeMap<SurfaceId, SurfaceRunner<A>>,
+    surface_metrics: BTreeMap<SurfaceId, crate::multi_window::SurfaceMetrics>,
     routes: SurfaceRoutes<WindowId>,
     focus_acquired_surfaces: HashSet<SurfaceId>,
     backend_preference: MultiWindowBackendPreference,
@@ -85,6 +91,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         self.register_committed_surface(request, native, runner)?;
         self.backend_preference.retain_committed(committed_backend);
         self.notify_surface_created(surface);
+        self.notify_surface_metrics(surface);
         Ok(())
     }
 
@@ -271,6 +278,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     }
 
     fn notify_surface_closed(&mut self, surface: SurfaceId) {
+        self.surface_metrics.remove(&surface);
         A::surface_closed(&mut self.canonical_state, surface);
         self.revision += 1;
         let model = self.canonical_state.clone();
@@ -366,6 +374,8 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
 
     fn release_native_surfaces(&mut self) {
         self.routes.clear();
+        // A resumed native lifetime must publish its initial configure again.
+        self.surface_metrics.clear();
         self.focus_acquired_surfaces.clear();
         for runner in self.surface_runners.values_mut() {
             runner.release_surface();
@@ -474,15 +484,21 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
         if self.native_surfaces_active {
             let surfaces: Vec<_> = self.surface_runners.keys().copied().collect();
             for surface in surfaces {
-                let result = self
-                    .surface_runners
-                    .get_mut(&surface)
-                    .expect("registered surface must retain its runner")
-                    .sync_native_menu(event_loop);
+                let Some(runner) = self.surface_runners.get_mut(&surface) else {
+                    continue;
+                };
+                let result = runner.sync_native_menu(event_loop);
                 if let Err(error) = result {
                     self.terminate_for_error(event_loop, surface_error(surface, error));
                     return;
                 }
+                // Native-menu synchronization can deliver an application message.
+                // Commit it before a metrics hook publishes the shared model.
+                self.synchronize_and_apply(event_loop, surface);
+                if event_loop.exiting() || self.fatal_error.is_some() {
+                    return;
+                }
+                self.notify_surface_metrics(surface);
             }
         }
         self.schedule_after_event(event_loop);

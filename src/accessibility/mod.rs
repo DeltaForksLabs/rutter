@@ -85,11 +85,25 @@ struct DropdownAccessibilityGeometry {
     visible_anchor: skia_safe::Rect,
 }
 
+#[cfg(test)]
 pub(crate) fn build_accessibility_update<Msg>(
     taffy: &TaffyTree<RutterContext>,
     widget: &Widget<Msg>,
     root_node: TaffyNodeId,
     inputs: AccessibilityInputs<'_>,
+) -> TreeUpdate {
+    build_accessibility_update_with_native(taffy, widget, root_node, inputs, None)
+}
+
+pub(crate) fn build_accessibility_update_with_native<Msg>(
+    taffy: &TaffyTree<RutterContext>,
+    widget: &Widget<Msg>,
+    root_node: TaffyNodeId,
+    inputs: AccessibilityInputs<'_>,
+    native: Option<&(
+        crate::render::NativeMenuKind,
+        Vec<crate::widgets::dropdown_menu::DropdownMenuSurface>,
+    )>,
 ) -> TreeUpdate {
     let dropdown_geometries = collect_dropdown_triggers(
         widget,
@@ -135,6 +149,7 @@ pub(crate) fn build_accessibility_update<Msg>(
         visible_dropdowns,
         search_popups,
     );
+    builder.native_menu_layout = native.cloned();
     let children = builder.collect(
         widget,
         Some(root_node),
@@ -151,6 +166,10 @@ struct AccessibilityBuilder<'layout, 'input> {
     dropdown_geometries: HashMap<u64, DropdownAccessibilityGeometry>,
     visible_dropdowns: HashSet<u64>,
     search_popups: HashMap<u64, search::SearchAccessibilityPopup>,
+    native_menu_layout: Option<(
+        crate::render::NativeMenuKind,
+        Vec<crate::widgets::dropdown_menu::DropdownMenuSurface>,
+    )>,
 }
 
 impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
@@ -168,6 +187,7 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
             dropdown_geometries,
             visible_dropdowns,
             search_popups,
+            native_menu_layout: None,
         }
     }
 

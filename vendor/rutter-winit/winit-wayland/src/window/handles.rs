@@ -45,6 +45,9 @@ pub struct Handles {
 
 impl Handles {
     pub(crate) fn request_redraw(&self) {
+        if self.window_requests.is_terminal() {
+            return;
+        }
         // NOTE: try to not wake up the loop when the event was already scheduled and not yet
         // processed by the loop, because if at this point the value was `true` it could only
         // mean that the loop still haven't dispatched the value to the client and will do
@@ -60,6 +63,9 @@ impl Handles {
     }
 
     pub(crate) fn push_window_event(&self, event: WindowEvent, id: WindowId) {
+        if self.window_requests.is_terminal() {
+            return;
+        }
         self.window_events_sink.lock().unwrap().push_window_event(event, id);
         self.event_loop_awakener.ping();
     }
@@ -80,6 +86,9 @@ impl Handles {
         surface: &WlSurface,
         request_type: Option<UserAttentionType>,
     ) {
+        if self.window_requests.is_terminal() {
+            return;
+        }
         let xdg_activation = match self.xdg_activation.as_ref() {
             Some(xdg_activation) => xdg_activation,
             None => {
@@ -109,6 +118,9 @@ impl Handles {
         surface: &WlSurface,
         hittest: bool,
     ) -> Result<(), RequestError> {
+        if self.window_requests.is_terminal() {
+            return Err(RequestError::Ignored);
+        }
         if hittest {
             surface.set_input_region(None);
             Ok(())
@@ -124,6 +136,8 @@ impl Handles {
 /// The request from the window to the event loop.
 #[derive(Debug)]
 pub struct WindowRequests {
+    /// Sticky native-lifetime invalidation, independent of application close requests.
+    pub terminal: AtomicBool,
     /// The window was closed.
     pub closed: AtomicBool,
 
@@ -132,6 +146,13 @@ pub struct WindowRequests {
 }
 
 impl WindowRequests {
+    pub fn is_terminal(&self) -> bool {
+        self.terminal.load(Ordering::Acquire)
+    }
+    pub fn mark_terminal(&self) {
+        self.terminal.store(true, Ordering::Release);
+        self.redraw_requested.store(false, Ordering::Relaxed);
+    }
     pub fn take_closed(&self) -> bool {
         self.closed.swap(false, Ordering::Relaxed)
     }
