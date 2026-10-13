@@ -26,6 +26,7 @@ mod event_processor;
 pub mod ffi;
 mod ime;
 mod monitor;
+mod panel;
 mod popup;
 mod util;
 mod window;

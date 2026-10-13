@@ -113,6 +113,7 @@ pub enum CloseBehavior {
 /// Startup and lifecycle settings for one native window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowConfig {
+    panel: Option<Box<winit::window::PanelConfig>>,
     layer_shell: Option<winit::window::LayerShellConfig>,
     title: String,
     transparent: bool,
@@ -131,6 +132,7 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
+            panel: None,
             layer_shell: None,
             title: "Rutter".to_string(),
             transparent: false,
@@ -163,6 +165,16 @@ macro_rules! bool_window_setting {
 }
 
 impl WindowConfig {
+    /// Requests a native Wayland layer panel or managed X11 EWMH dock.
+    /// Unsupported backends and conflicting geometry hints fail at creation.
+    pub fn with_panel(mut self, config: winit::window::PanelConfig) -> Self {
+        self.panel = Some(Box::new(config));
+        self
+    }
+    /// Returns the immutable native panel request.
+    pub fn panel(&self) -> Option<&winit::window::PanelConfig> {
+        self.panel.as_deref()
+    }
     /// Requests a real Wayland layer surface. Creation fails if unavailable;
     /// ordinary window position/size/decorations hints do not define this role.
     /// ```
@@ -370,6 +382,9 @@ impl WindowConfig {
     }
 
     fn apply_geometry(&self, mut attributes: WindowAttributes) -> WindowAttributes {
+        if let Some(panel) = self.panel() {
+            attributes = attributes.with_panel(panel.clone());
+        }
         if let Some(layer) = self.layer_shell.clone() {
             attributes = attributes.with_layer_shell(layer);
         }
@@ -439,6 +454,33 @@ impl Error for WindowConfigError {}
 mod layer_shell_tests {
     use super::*;
     use crate::{LayerAnchors, LayerExclusiveZone, LayerMargins, LayerOutput, LayerShellConfig};
+
+    #[test]
+    fn neutral_panel_clone_defaults_and_conflicting_hints() {
+        let panel = crate::PanelConfig::new("panel", crate::PanelEdge::Top, 0, 32).unwrap();
+        assert!(WindowConfig::default().panel().is_none());
+        let config = WindowConfig::default().with_panel(panel.clone());
+        assert_eq!(config.clone().panel(), Some(&panel));
+        assert_eq!(config.window_attributes().panel, Some(panel));
+        assert!(config.window_attributes().validate_panel().is_ok());
+        assert!(
+            config
+                .clone()
+                .with_inner_size(800, 600)
+                .unwrap()
+                .window_attributes()
+                .validate_panel()
+                .is_err()
+        );
+        let layer = LayerShellConfig::new("conflict", LayerAnchors::TOP, 200, 32).unwrap();
+        assert!(
+            config
+                .with_layer_shell(layer)
+                .window_attributes()
+                .validate_panel()
+                .is_err()
+        );
+    }
 
     #[test]
     fn layer_shell_role_survives_geometry_hints_and_cloning() {

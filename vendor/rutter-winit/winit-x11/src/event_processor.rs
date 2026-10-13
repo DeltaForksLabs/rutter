@@ -56,6 +56,7 @@ const KEYCODE_OFFSET: u8 = 8;
 
 #[derive(Debug)]
 pub struct EventProcessor {
+    pub terminal_panels: RefCell<std::collections::HashSet<xproto::Window>>,
     pub ime_receiver: ImeReceiver,
     pub ime_event_receiver: ImeEventReceiver,
     pub randr_event_offset: u8,
@@ -90,6 +91,12 @@ impl EventProcessor {
 
         // Handle IME requests.
         while let Ok(request) = self.ime_receiver.try_recv() {
+            let window = match &request {
+                ImeRequest::Area(window, ..) | ImeRequest::Allow(window, ..) => *window,
+            };
+            if self.is_terminal(window as xproto::Window) {
+                continue;
+            }
             let ime = match self.target.ime.as_mut() {
                 Some(ime) => ime,
                 None => continue,
@@ -108,6 +115,9 @@ impl EventProcessor {
 
         // Drain IME events.
         while let Ok((window, event)) = self.ime_event_receiver.try_recv() {
+            if self.is_terminal(window as xproto::Window) {
+                continue;
+            }
             let window_id = mkwid(window as xproto::Window);
             let event = match event {
                 ImeEvent::Enabled => WindowEvent::Ime(Ime::Enabled),
@@ -150,6 +160,45 @@ impl EventProcessor {
 
     fn process_xevent(&mut self, xev: &mut XEvent, app: &mut dyn ApplicationHandler) {
         let event_type = xev.get_type();
+        if matches!(
+            event_type,
+            xlib::ConfigureNotify
+                | xlib::MapNotify
+                | xlib::VisibilityNotify
+                | xlib::Expose
+                | xlib::PropertyNotify
+                | xlib::ClientMessage
+                | xlib::UnmapNotify
+                | xlib::ReparentNotify
+                | xlib::KeyPress
+                | xlib::KeyRelease
+                | xlib::FocusIn
+                | xlib::FocusOut
+                | xlib::ButtonPress
+                | xlib::ButtonRelease
+                | xlib::MotionNotify
+                | xlib::EnterNotify
+                | xlib::LeaveNotify
+        ) {
+            let any: &XAnyEvent = xev.as_ref();
+            let target = match event_type {
+                xlib::MapNotify => {
+                    let event: &XMapEvent = xev.as_ref();
+                    event.window
+                },
+                xlib::UnmapNotify => {
+                    let event: &xlib::XUnmapEvent = xev.as_ref();
+                    event.window
+                },
+                _ => any.window,
+            };
+            if self.is_terminal(target as xproto::Window)
+                || (matches!(event_type, xlib::KeyPress | xlib::KeyRelease)
+                    && !self.window_exists(target as xproto::Window))
+            {
+                return;
+            }
+        }
 
         // If we have IME disabled, don't try to `filter_event`, since only IME can consume them
         // and forward back. This is not desired for e.g. games since some IMEs may delay the input
@@ -176,6 +225,8 @@ impl EventProcessor {
             }
 
             filtered
+        } else if event_type == xlib::GenericEvent {
+            false
         } else {
             self.filter_event(xev)
         };
@@ -191,6 +242,17 @@ impl EventProcessor {
             xlib::ConfigureNotify => self.configure_notify(xev.as_ref(), app),
             xlib::ReparentNotify => self.reparent_notify(xev.as_ref()),
             xlib::MapNotify => self.map_notify(xev.as_ref(), app),
+            xlib::UnmapNotify => {
+                let event: &xlib::XUnmapEvent = xev.as_ref();
+                if let Some(window) = self.with_window(event.window as xproto::Window, Arc::clone) {
+                    if window.panel.is_some()
+                        && !window.revoked.load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        let result = window.observe_panel_mapping();
+                        self.handle_panel_update(&window, result, app);
+                    }
+                }
+            },
             xlib::DestroyNotify => self.destroy_notify(xev.as_ref(), app),
             xlib::PropertyNotify => self.property_notify(xev.as_ref(), app),
             xlib::VisibilityNotify => self.visibility_notify(xev.as_ref(), app),
@@ -213,6 +275,34 @@ impl EventProcessor {
                     };
 
                 let evtype = xev.evtype();
+
+                let target = match evtype {
+                    xinput2::XI_ButtonPress
+                    | xinput2::XI_ButtonRelease
+                    | xinput2::XI_Motion
+                    | xinput2::XI_KeyPress
+                    | xinput2::XI_KeyRelease
+                    | xinput2::XI_TouchBegin
+                    | xinput2::XI_TouchUpdate
+                    | xinput2::XI_TouchEnd => {
+                        let event: &XIDeviceEvent = unsafe { xev.as_event() };
+                        Some(event.event)
+                    },
+                    xinput2::XI_Enter
+                    | xinput2::XI_Leave
+                    | xinput2::XI_FocusIn
+                    | xinput2::XI_FocusOut => {
+                        let event: &XIEnterEvent = unsafe { xev.as_event() };
+                        Some(event.event)
+                    },
+                    _ => None,
+                };
+                if target.is_some_and(|window| {
+                    self.is_terminal(window as xproto::Window)
+                        || !self.window_exists(window as xproto::Window)
+                }) {
+                    return;
+                }
 
                 match evtype {
                     ty @ xinput2::XI_ButtonPress | ty @ xinput2::XI_ButtonRelease => {
@@ -289,7 +379,9 @@ impl EventProcessor {
                     let xev: &XkbAnyEvent = unsafe { &*(xev as *const _ as *const XkbAnyEvent) };
                     self.xkb_event(xev, app);
                 }
-                if event_type == self.randr_event_offset as c_int {
+                if event_type == self.randr_event_offset as c_int
+                    || event_type == self.randr_event_offset as c_int + 1
+                {
                     self.process_dpi_change(app);
                 }
             },
@@ -768,7 +860,7 @@ impl EventProcessor {
             outer
         };
 
-        if is_synthetic {
+        if is_synthetic && window.panel.is_none() {
             let mut shared_state_lock = window.shared_state_lock();
             // If we don't use the existing adjusted value when available, then the user can screw
             // up the resizing by dragging across monitors *without* dropping the
@@ -899,9 +991,18 @@ impl EventProcessor {
         });
     }
 
-    fn map_notify(&self, xev: &XMapEvent, app: &mut dyn ApplicationHandler) {
+    fn map_notify(&mut self, xev: &XMapEvent, app: &mut dyn ApplicationHandler) {
         let window = xev.window as xproto::Window;
         let window_id = mkwid(window);
+        if let Some(native) = self.with_window(window, Arc::clone) {
+            if native.panel.is_some() {
+                let result = native.observe_panel_mapping();
+                self.handle_panel_update(&native, result, app);
+            }
+        }
+        if self.is_terminal(window) {
+            return;
+        }
 
         // NOTE: Re-issue the focus state when mapping the window.
         //
@@ -912,11 +1013,23 @@ impl EventProcessor {
         app.window_event(&self.target, window_id, WindowEvent::Focused(focus));
     }
 
-    fn destroy_notify(&self, xev: &XDestroyWindowEvent, app: &mut dyn ApplicationHandler) {
+    fn destroy_notify(&mut self, xev: &XDestroyWindowEvent, app: &mut dyn ApplicationHandler) {
         let window = xev.window as xproto::Window;
         let window_id = mkwid(window);
 
-        self.dismiss_descendant_popups(window, app);
+        if self.is_terminal(window) {
+            // Terminal callbacks already ran, even if the weak route is now gone.
+            // Only native route and IME cleanup below remains necessary.
+        } else if self.with_window(window, |window| window.panel.is_some()).unwrap_or(false) {
+            self.retire_panel_tree(window, app);
+        } else {
+            self.dismiss_descendant_popups(window, app);
+        }
+        self.with_window(window, |window| {
+            if window.panel.is_some() {
+                window.revoked.store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
 
         // In the event that the window's been destroyed without being dropped first, we
         // cleanup again here.
@@ -930,7 +1043,9 @@ impl EventProcessor {
                 .expect("Failed to destroy input context");
         }
 
-        app.window_event(&self.target, window_id, WindowEvent::Destroyed);
+        if !self.terminal_panels.borrow().contains(&window) {
+            app.window_event(&self.target, window_id, WindowEvent::Destroyed);
+        }
     }
 
     fn dismiss_descendant_popups(&self, parent: xproto::Window, app: &mut dyn ApplicationHandler) {
@@ -943,7 +1058,9 @@ impl EventProcessor {
                 .borrow()
                 .values()
                 .filter_map(|window| window.upgrade())
-                .filter(|window| window.popup_parent() == Some(ancestor))
+                .filter(|window| {
+                    window.popup_parent() == Some(ancestor) && !self.is_terminal(window.xwindow)
+                })
                 .collect();
             for child in children {
                 ancestors.push(child.id().into_raw() as xproto::Window);
@@ -951,6 +1068,9 @@ impl EventProcessor {
             }
         }
         for popup in descendants.into_iter().rev() {
+            if self.is_terminal(popup.xwindow) {
+                continue;
+            }
             popup.set_visible(false);
             app.window_event(&self.target, popup.id(), WindowEvent::CloseRequested);
         }
@@ -1002,6 +1122,11 @@ impl EventProcessor {
             Some(window) => window,
             None => return,
         };
+
+        if self.is_terminal(window) {
+            self.update_mods_from_core_event(mkwid(window), xev.state as u16, app);
+            return;
+        }
 
         let window_id = mkwid(window);
 
@@ -1698,14 +1823,9 @@ impl EventProcessor {
                     self.xkb_context.set_keymap_from_x11(xcb);
                     self.xmodmap.reload_from_x_connection(&self.target.xconn);
 
-                    let window_id = match self.active_window.map(mkwid) {
-                        Some(window_id) => window_id,
-                        None => return,
-                    };
-
                     if let Some(state) = self.xkb_context.state_mut() {
                         let mods = state.modifiers().into();
-                        self.send_modifiers(window_id, mods, true, app);
+                        self.send_active_modifiers(mods, true, app);
                     }
                 }
             },
@@ -1713,14 +1833,9 @@ impl EventProcessor {
                 let xcb = self.target.xconn.xcb_connection().get_raw_xcb_connection();
                 self.xkb_context.set_keymap_from_x11(xcb);
                 self.xmodmap.reload_from_x_connection(&self.target.xconn);
-                let window_id = match self.active_window.map(mkwid) {
-                    Some(window_id) => window_id,
-                    None => return,
-                };
-
                 if let Some(state) = self.xkb_context.state_mut() {
                     let mods = state.modifiers().into();
-                    self.send_modifiers(window_id, mods, true, app);
+                    self.send_active_modifiers(mods, true, app);
                 }
             },
             xlib::XkbStateNotify => {
@@ -1739,13 +1854,8 @@ impl EventProcessor {
                         xev.locked_group as u32,
                     );
 
-                    let window_id = match self.active_window.map(mkwid) {
-                        Some(window_id) => window_id,
-                        None => return,
-                    };
-
                     let mods = state.modifiers().into();
-                    self.send_modifiers(window_id, mods, true, app);
+                    self.send_active_modifiers(mods, true, app);
                 }
             },
             _ => {},
@@ -1771,13 +1881,8 @@ impl EventProcessor {
 
             // NOTE: we use active window since generally sub windows don't have keyboard input,
             // and winit assumes that unfocused window doesn't have modifiers.
-            let window_id = match self.active_window.map(mkwid) {
-                Some(window_id) => window_id,
-                None => return,
-            };
-
             let mods = state.modifiers();
-            self.send_modifiers(window_id, mods.into(), force, app);
+            self.send_active_modifiers(mods.into(), force, app);
         }
     }
 
@@ -1887,6 +1992,20 @@ impl EventProcessor {
         depressed
     }
 
+    fn send_active_modifiers(
+        &self,
+        modifiers: ModifiersState,
+        force: bool,
+        app: &mut dyn ApplicationHandler,
+    ) {
+        if let Some(window) = self.active_window {
+            self.send_modifiers(mkwid(window), modifiers, force, app);
+        } else {
+            // Global XKB state still advances when terminal focus has been cleared.
+            self.modifiers.set(modifiers);
+        }
+    }
+
     /// Send modifiers for the active window.
     ///
     /// The event won't be sent when the `modifiers` match the previously `sent` modifiers value,
@@ -1900,7 +2019,8 @@ impl EventProcessor {
     ) {
         // NOTE: Always update the modifiers to account for case when they've changed
         // and forced was `true`.
-        if self.modifiers.replace(modifiers) != modifiers || force {
+        let changed = self.modifiers.replace(modifiers) != modifiers;
+        if (changed || force) && !self.is_terminal(window_id.into_raw() as xproto::Window) {
             let event = WindowEvent::ModifiersChanged(self.modifiers.get().into());
             app.window_event(&self.target, window_id, event);
         }
@@ -1938,19 +2058,28 @@ impl EventProcessor {
         }
     }
 
-    fn process_dpi_change(&self, app: &mut dyn ApplicationHandler) {
+    fn process_dpi_change(&mut self, app: &mut dyn ApplicationHandler) {
         self.target.xconn.reload_database().expect("failed to reload Xft database");
 
         // In the future, it would be quite easy to emit monitor hotplug events.
         let prev_list = {
             let prev_list = self.target.xconn.invalidate_cached_monitor_list();
-            match prev_list {
-                Some(prev_list) => prev_list,
-                None => return,
-            }
+            prev_list.unwrap_or_default()
         };
 
-        let new_list = self.target.xconn.available_monitors().expect("Failed to get monitor list");
+        let new_list = match self.target.xconn.available_monitors() {
+            Ok(monitors) => monitors,
+            Err(error) => {
+                warn!(%error, "Failed to refresh ordinary X11 monitors");
+                Vec::new()
+            },
+        };
+        let windows: Vec<_> =
+            self.target.windows.borrow().values().filter_map(|window| window.upgrade()).collect();
+        for window in windows.iter().filter(|window| window.panel.is_some()) {
+            let result = window.refresh_panel();
+            self.handle_panel_update(window, result, app);
+        }
         for new_monitor in new_list {
             // Previous list may be empty, in case of disconnecting and
             // reconnecting the only one monitor. We still need to emit events in
@@ -1960,7 +2089,10 @@ impl EventProcessor {
                 .find(|prev_monitor| prev_monitor.name == new_monitor.name)
                 .map(|prev_monitor| prev_monitor.scale_factor);
             if Some(new_monitor.scale_factor) != maybe_prev_scale_factor {
-                for window in self.target.windows.borrow().values().filter_map(|w| w.upgrade()) {
+                for window in windows.iter().filter(|window| {
+                    window.panel.is_none()
+                        && !window.revoked.load(std::sync::atomic::Ordering::Acquire)
+                }) {
                     window.refresh_dpi_for_monitor(
                         &new_monitor,
                         maybe_prev_scale_factor,
@@ -1975,6 +2107,155 @@ impl EventProcessor {
     fn window_exists(&self, window_id: xproto::Window) -> bool {
         self.with_window(window_id, |_| ()).is_some()
     }
+
+    pub(crate) fn is_terminal(&self, window: xproto::Window) -> bool {
+        self.terminal_panels.borrow().contains(&window)
+            || self
+                .with_window(window, |window| {
+                    window.revoked.load(std::sync::atomic::Ordering::Acquire)
+                })
+                .unwrap_or(false)
+    }
+
+    pub(crate) fn has_panel_retry(&self) -> bool {
+        self.target.windows.borrow().values().filter_map(|window| window.upgrade()).any(|window| {
+            !window.revoked.load(std::sync::atomic::Ordering::Acquire)
+                && window
+                    .panel
+                    .as_ref()
+                    .is_some_and(|panel| panel.retry.load(std::sync::atomic::Ordering::Acquire))
+        })
+    }
+
+    pub(crate) fn retry_panels(&mut self, app: &mut dyn ApplicationHandler) {
+        let windows: Vec<_> =
+            self.target
+                .windows
+                .borrow()
+                .values()
+                .filter_map(|window| window.upgrade())
+                .filter(|window| {
+                    !window.revoked.load(std::sync::atomic::Ordering::Acquire)
+                        && window.panel.as_ref().is_some_and(|panel| {
+                            panel.retry.load(std::sync::atomic::Ordering::Acquire)
+                        })
+                })
+                .collect();
+        for window in windows {
+            let result = window.retry_panel_update();
+            self.handle_panel_update(&window, result, app);
+        }
+    }
+
+    fn handle_panel_update(
+        &mut self,
+        window: &Arc<UnownedWindow>,
+        result: Result<(), crate::panel::UpdateError>,
+        app: &mut dyn ApplicationHandler,
+    ) {
+        if self.is_terminal(window.xwindow) {
+            return;
+        }
+        let result = if let Some(panel) = &window.panel {
+            publish_panel_update(
+                result,
+                &panel.notified_scale,
+                || *panel.committed_geometry.lock().unwrap(),
+                |event| {
+                    app.window_event(&self.target, window.id(), event);
+                },
+            )
+        } else {
+            result
+        };
+        match result {
+            Ok(()) => {},
+            Err(crate::panel::UpdateError::Terminal(error)) => {
+                warn!(%error, window = window.xwindow, output = ?window.panel.as_ref().map(|panel| panel.output_name.as_str()), "Retiring X11 panel after confirmed output geometry loss");
+                self.retire_panel_tree(window.xwindow, app);
+            },
+            Err(crate::panel::UpdateError::Retry(error)) => {
+                if let Some(panel) = &window.panel {
+                    panel.retry.store(true, std::sync::atomic::Ordering::Release);
+                }
+                warn!(%error, window = window.xwindow, output = ?window.panel.as_ref().map(|panel| panel.output_name.as_str()), "Transient X11 panel update failure; retrying on a later event-loop iteration");
+            },
+        }
+    }
+
+    fn retire_panel_tree(&mut self, parent: xproto::Window, app: &mut dyn ApplicationHandler) {
+        let windows: Vec<_> =
+            self.target.windows.borrow().values().filter_map(|window| window.upgrade()).collect();
+        let mut tree = Vec::new();
+        collect_panel_tree(parent, &windows, &mut tree);
+        // Phase one is atomic with respect to user code: revoke every retained
+        // handle and remember every XID before withdrawal or the first callback.
+        for window in &tree {
+            window.revoked.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(panel) = &window.panel {
+                panel.retry.store(false, std::sync::atomic::Ordering::Release);
+                panel.requested_visible.store(false, std::sync::atomic::Ordering::Release);
+            }
+            self.terminal_panels.borrow_mut().insert(window.xwindow);
+        }
+        if self.active_window.is_some_and(|window| self.is_terminal(window)) {
+            self.active_window = None;
+            self.held_key_press = None;
+            self.is_composing = false;
+            self.xfiltered_modifiers.clear();
+        }
+        for window in &tree {
+            window.withdraw_retired_surface();
+        }
+        for window in tree {
+            app.window_event(&self.target, window.id(), WindowEvent::CloseRequested);
+            app.window_event(&self.target, window.id(), WindowEvent::Destroyed);
+        }
+    }
+}
+
+/// Remember the last published scale, not last_monitor: visibility refreshes and
+/// partially failed native updates can replace that snapshot before notification.
+fn publish_panel_update(
+    result: Result<(), crate::panel::UpdateError>,
+    notified_scale: &Mutex<f64>,
+    snapshot: impl FnOnce() -> (f64, PhysicalSize<u32>),
+    notify: impl FnOnce(WindowEvent),
+) -> Result<(), crate::panel::UpdateError> {
+    result?;
+    let (scale, configured_size) = snapshot();
+    {
+        let mut previous = notified_scale.lock().unwrap();
+        if *previous == scale {
+            return Ok(());
+        }
+        *previous = scale;
+    }
+    let size = Arc::new(Mutex::new(configured_size));
+    notify(WindowEvent::ScaleFactorChanged {
+        scale_factor: scale,
+        surface_size_writer: SurfaceSizeWriter::new(Arc::downgrade(&size)),
+    });
+    // Panel geometry is immutable. The writer is valid during dispatch, but its
+    // requested override cannot replace the validated native panel layout.
+    Ok(())
+}
+
+fn collect_panel_tree(
+    parent: xproto::Window,
+    windows: &[Arc<UnownedWindow>],
+    tree: &mut Vec<Arc<UnownedWindow>>,
+) {
+    let Some(window) = windows.iter().find(|window| window.xwindow == parent) else {
+        return;
+    };
+    if window.revoked.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    for child in windows.iter().filter(|window| window.popup_parent() == Some(parent)) {
+        collect_panel_tree(child.xwindow, windows, tree);
+    }
+    tree.push(window.clone());
 }
 
 fn is_first_touch(first: &mut Option<u32>, num: &mut u32, id: u32, phase: i32) -> bool {
@@ -1995,4 +2276,48 @@ fn is_first_touch(first: &mut Option<u32>, num: &mut u32, id: u32, phase: i32) -
     }
 
     *first == Some(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_scale_refresh_then_retry_publishes_committed_snapshot_once() {
+        let notified = Mutex::new(1.0);
+        let snapshot = Cell::new((1.0, PhysicalSize::new(400, 40)));
+        let events = Cell::new(0);
+        let notify = |event| {
+            let WindowEvent::ScaleFactorChanged { scale_factor, mut surface_size_writer } = event
+            else {
+                panic!("expected scale transition");
+            };
+            assert_eq!(scale_factor, snapshot.get().0);
+            assert_eq!(snapshot.get().1, PhysicalSize::new(600, 60));
+            assert_eq!(*notified.lock().unwrap(), 1.5);
+            // The writer must remain live for the synchronous callback.
+            surface_size_writer.request_surface_size(PhysicalSize::new(700, 70)).unwrap();
+            events.set(events.get() + 1);
+        };
+        let failure = crate::panel::UpdateError::Retry(
+            winit_core::error::NotSupportedError::new("controlled topology read failure").into(),
+        );
+        assert!(
+            publish_panel_update(
+                Err(failure),
+                &notified,
+                || panic!("failed snapshot published"),
+                notify
+            )
+            .is_err()
+        );
+        assert_eq!(*notified.lock().unwrap(), 1.0);
+        assert_eq!(events.get(), 0);
+        // Native retry commits last_monitor/geometry before the notifier runs.
+        snapshot.set((1.5, PhysicalSize::new(600, 60)));
+        publish_panel_update(Ok(()), &notified, || snapshot.get(), notify).unwrap();
+        publish_panel_update(Ok(()), &notified, || snapshot.get(), notify).unwrap();
+        assert_eq!(events.get(), 1);
+        assert_eq!(snapshot.get().1, PhysicalSize::new(600, 60));
+    }
 }

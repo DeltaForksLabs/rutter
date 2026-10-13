@@ -2,6 +2,28 @@
 
 This standalone workspace is a source fork of [winit v0.31.0-beta.3](https://github.com/rust-windowing/winit/releases/tag/v0.31.0-beta.3), from upstream commit `7d20408d33210c93bf036335b88ee083ca563a90`. Its published crate names and versions remain unchanged for compatibility; `rutter-winit` names the fork, not a new published crate. The upstream Apache-2.0 license and source files are preserved. No GitHub repository has been created for this fork.
 
+## Backend-neutral panel role
+
+The fork adds independent validated `PanelConfig` settings and `WindowType::Panel`.
+Wayland translates them into its existing real layer-shell role; X11 creates a
+checked managed EWMH DOCK with physical partial struts, pinned XRandR output identity,
+nonactivating input policy and terminal child-first geometry/output retirement.
+X11 keeps retired drawables allocated for renderer cleanup, but revokes new raw
+handle access. The existing `x11-dl` library loads and retains RandR's Xlib event
+converters; otherwise Xlib discards the events selected through x11rb. No new Cargo
+dependency or fork version change is involved. Unsupported backends reject the role.
+The explicit LayerShell API remains Wayland-only. Neutral output-name metrics do
+not invent a layer-shell capability on X11.
+
+Panel updates use fresh, generation-checked RandR snapshots and reconcile the latest
+requested visibility. Transient failures retry; confirmed output loss revokes the
+entire panel tree before callbacks, with terminal XID tombstones suppressing queued
+input after owner drop. Compact perpendicular margins and neutral Wayland activation
+tokens are rejected before native allocation.
+
+See [the native panel contract](../../docs/NATIVE_PANELS.md) for APIs, backend
+differences, internal-root-border reservation limits, lifecycle and isolated probes.
+
 ## X11 popup experiment
 
 The X11 backend now accepts `WindowType::Popup` with a **live X11 parent in the same event loop**. It creates an override-redirect window under the X screen root (not an X11 child clipped to the parent), sets `_NET_WM_WINDOW_TYPE_POPUP_MENU` and `WM_TRANSIENT_FOR`, and places it relative to the parent content origin. `with_positioner` and `set_positioner` use winit's shared xdg-style placement algorithm with monitor bounds; `with_position` without a positioner gives the popup a parent-relative top-left origin. Active popups request X keyboard focus; inactive popups do not. Visible popups grab **all enabled XInput2 master pointers**, including new masters after a hierarchy change; a button press outside the popup emits `WindowEvent::CloseRequested` and releases its grabs. Hiding or dropping the popup restores the preceding visible popup's grabs, if any. Parent `ConfigureNotify` events reposition associated popups. If the parent is destroyed, the backend hides its descendant popups, releases their grabs, and sends them `CloseRequested` before reporting the parent's destruction. Applications must still drop their popup handles in response.

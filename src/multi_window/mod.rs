@@ -30,7 +30,8 @@ pub use window_config::{
 };
 pub use winit::window::{
     Layer, LayerAnchors, LayerExclusiveZone, LayerKeyboardInteractivity, LayerMargins, LayerOutput,
-    LayerShellConfig, LayerShellConfigError,
+    LayerShellConfig, LayerShellConfigError, PanelConfig, PanelConfigError, PanelEdge, PanelFocus,
+    PanelMargins, PanelOutput,
 };
 /// Stable application-owned identity for one logical surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

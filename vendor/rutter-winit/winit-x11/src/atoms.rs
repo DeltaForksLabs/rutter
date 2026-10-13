@@ -59,6 +59,7 @@ atom_manager! {
     _NET_WM_STATE_MAXIMIZED_HORZ,
     _NET_WM_STATE_MAXIMIZED_VERT,
     _NET_WM_WINDOW_TYPE,
+    _NET_WM_STRUT_PARTIAL,
 
     // Activation atoms.
     _NET_STARTUP_INFO_BEGIN,

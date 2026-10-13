@@ -42,6 +42,7 @@ mod retirement_tests;
 /// The Wayland window.
 #[derive(Debug)]
 pub struct Window {
+    panel_role: bool,
     /// Reference to the underlying SCTK window.
     window: Option<SctkWindow>,
     surface: WlSurface,
@@ -256,6 +257,7 @@ impl Window {
         event_loop_awakener.ping();
 
         Ok(Self {
+            panel_role: attributes.panel.is_some(),
             window,
             surface,
             display,
@@ -378,7 +380,9 @@ impl CoreWindow for Window {
         data.with_output_info(|info| info.name.clone())
     }
     fn window_type(&self) -> winit_core::window::WindowType {
-        if self.window.is_none() {
+        if self.panel_role {
+            winit_core::window::WindowType::Panel
+        } else if self.window.is_none() {
             winit_core::window::WindowType::LayerShell
         } else {
             winit_core::window::WindowType::Window

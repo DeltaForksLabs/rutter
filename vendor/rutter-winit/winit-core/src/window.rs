@@ -3,6 +3,7 @@
 
 //! The [`Window`] trait and associated types.
 mod layer_shell;
+mod panel;
 mod positioner;
 use std::any::Any;
 use std::fmt;
@@ -13,6 +14,7 @@ use dpi::{
     LogicalPosition, LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size,
 };
 pub use layer_shell::*;
+pub use panel::*;
 pub use positioner::{WindowAnchor, WindowConstraintAdjustment, WindowGravity};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -63,6 +65,8 @@ pub enum WindowType {
     /// A native Wayland wlr-layer-shell surface. Requires validated settings
     /// selected with [`WindowAttributes::with_layer_shell`]. Other backends reject it.
     LayerShell,
+    /// A native desktop panel: Wayland layer-shell or a managed X11 EWMH dock.
+    Panel,
     /// A short-lived window anchored to a parent, such as a menu, combo-box dropdown, or
     /// tooltip. Requires a parent set via [`WindowAttributes::with_parent_window`], and its
     /// position is interpreted relative to that parent.
@@ -152,6 +156,8 @@ impl Default for WindowPositioner {
 pub struct WindowAttributes {
     /// A native Wayland layer role. Unsupported backends must reject the request.
     pub layer_shell: Option<LayerShellConfig>,
+    /// Immutable backend-neutral panel settings.
+    pub panel: Option<PanelConfig>,
     pub surface_size: Option<Size>,
     pub min_surface_size: Option<Size>,
     pub max_surface_size: Option<Size>,
@@ -558,6 +564,7 @@ impl Clone for WindowAttributes {
     fn clone(&self) -> Self {
         Self {
             layer_shell: self.layer_shell.clone(),
+            panel: self.panel.clone(),
             surface_size: self.surface_size,
             min_surface_size: self.min_surface_size,
             max_surface_size: self.max_surface_size,
@@ -591,6 +598,7 @@ impl Default for WindowAttributes {
     fn default() -> WindowAttributes {
         WindowAttributes {
             layer_shell: None,
+            panel: None,
             enabled_buttons: WindowButtons::all(),
             title: String::from("winit window"),
             decorations: true,
@@ -701,6 +709,10 @@ pub trait Window: Any + Send + Sync + fmt::Debug {
     /// Stable compositor output name, when available (never enumeration order).
     fn layer_output_name(&self) -> Option<String> {
         None
+    }
+    /// Connection-local panel output name; legacy layer accessor remains available.
+    fn panel_output_name(&self) -> Option<String> {
+        self.layer_output_name()
     }
     /// Returns the window type of this window
     fn window_type(&self) -> WindowType;

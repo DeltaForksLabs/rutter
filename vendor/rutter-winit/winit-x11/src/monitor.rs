@@ -136,6 +136,27 @@ impl MonitorHandle {
         Some(MonitorHandle { id, name, scale_factor, position, primary, rect, video_modes })
     }
 
+    pub(crate) fn from_panel_snapshot(
+        xconn: &XConnection,
+        resources: &ScreenResources,
+        id: randr::Crtc,
+        crtc: &randr::GetCrtcInfoReply,
+        output: &randr::GetOutputInfoReply,
+    ) -> Option<Self> {
+        let (name, scale_factor, video_modes) =
+            xconn.output_info_from_reply(resources, crtc, output)?;
+        let position = (i32::from(crtc.x), i32::from(crtc.y));
+        Some(Self {
+            id,
+            name,
+            scale_factor,
+            position,
+            primary: false,
+            rect: util::AaRect::new(position, (u32::from(crtc.width), u32::from(crtc.height))),
+            video_modes,
+        })
+    }
+
     pub fn dummy() -> Self {
         MonitorHandle {
             id: 0,
@@ -264,8 +285,10 @@ impl XConnection {
             .ok_or(X11Error::MissingExtension(randr::X11_EXTENSION_NAME))?;
 
         // Select input data.
-        let event_mask =
-            NotifyMask::CRTC_CHANGE | NotifyMask::OUTPUT_PROPERTY | NotifyMask::SCREEN_CHANGE;
+        let event_mask = NotifyMask::CRTC_CHANGE
+            | NotifyMask::OUTPUT_CHANGE
+            | NotifyMask::OUTPUT_PROPERTY
+            | NotifyMask::SCREEN_CHANGE;
         self.xcb_connection().randr_select_input(root, event_mask)?;
 
         Ok(info.first_event)

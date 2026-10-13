@@ -22,6 +22,8 @@ mod surface_commands;
 mod surface_events;
 mod surface_metrics;
 mod wakeup;
+#[cfg(all(test, target_os = "linux"))]
+mod x11_panel_integration;
 
 use self::app_adapter::{SurfaceAppAdapter, SurfaceAppState};
 use self::wakeup::ApplicationWakeupScheduler;

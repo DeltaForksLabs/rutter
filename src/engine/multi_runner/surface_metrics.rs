@@ -18,7 +18,7 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             physical_size: (size.width, size.height),
             logical_size: (logical_size.width, logical_size.height),
             scale_factor: scale,
-            output_name: window.layer_output_name(),
+            output_name: window.panel_output_name(),
             layer_shell_version: window.layer_shell_version(),
         };
         if self.surface_metrics.get(&surface) == Some(&metrics) {

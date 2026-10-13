@@ -45,6 +45,7 @@ pub use multi_window::{
     LayerMargins, LayerOutput, LayerShellConfig, LayerShellConfigError,
     MAX_MESSAGE_INGRESS_CAPACITY, MessageIngressConfig, MessageIngressConfigError,
     MessageIngressError, MultiWindowAppLogic, MultiWindowMessageSender, MultiWindowRunError,
+    PanelConfig, PanelConfigError, PanelEdge, PanelFocus, PanelMargins, PanelOutput,
     SurfaceCommand, SurfaceEvent, SurfaceId, SurfaceMetrics, SurfaceRequest, WindowConfig,
     WindowConfigError, WindowLevel, WindowPosition, WindowSize,
 };

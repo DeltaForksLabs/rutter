@@ -8,6 +8,7 @@ use std::num::NonZeroU32;
 use std::ops::Deref;
 use std::os::raw::*;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::{cmp, env};
 
@@ -73,7 +74,8 @@ impl Window {
     ) -> Result<Self, RequestError> {
         use winit_core::window::WindowType;
         match attribs.window_type() {
-            WindowType::Window => {
+            WindowType::Window | WindowType::Panel => {
+                attribs.validate_panel().map_err(|err| NotSupportedError::new(err.0))?;
                 let window = Arc::new(UnownedWindow::new(event_loop, attribs)?);
                 event_loop.windows.borrow_mut().insert(window.id(), Arc::downgrade(&window));
                 Ok(Window(window))
@@ -85,7 +87,7 @@ impl Window {
                     .borrow()
                     .get(&WindowId::from_raw(parent as usize))
                     .and_then(|window| window.upgrade())
-                    .is_none()
+                    .is_none_or(|window| window.revoked.load(Ordering::Acquire))
                 {
                     return Err(RequestError::NotSupported(NotSupportedError::new(
                         "X11 popup parent must be a live window in this event loop",
@@ -130,7 +132,9 @@ impl Window {
 
 impl CoreWindow for Window {
     fn window_type(&self) -> winit_core::window::WindowType {
-        if self.0.popup.is_some() {
+        if self.0.panel.is_some() {
+            winit_core::window::WindowType::Panel
+        } else if self.0.popup.is_some() {
             winit_core::window::WindowType::Popup
         } else {
             winit_core::window::WindowType::Window
@@ -142,6 +146,9 @@ impl CoreWindow for Window {
     }
 
     fn set_positioner(&self, positioner: WindowPositioner) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         if let Some(popup) = &self.0.popup {
             if let Err(err) = self.0.reposition_popup(positioner) {
                 warn!("Failed to reposition X11 popup: {err}");
@@ -160,10 +167,16 @@ impl CoreWindow for Window {
     }
 
     fn request_redraw(&self) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.request_redraw()
     }
 
     fn pre_present_notify(&self) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.pre_present_notify()
     }
 
@@ -186,6 +199,9 @@ impl CoreWindow for Window {
     }
 
     fn set_outer_position(&self, position: Position) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         if self.0.popup.is_none() {
             self.0.set_outer_position(position);
             return;
@@ -206,6 +222,9 @@ impl CoreWindow for Window {
     }
 
     fn request_surface_size(&self, size: Size) -> Option<PhysicalSize<u32>> {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return None;
+        }
         self.0.request_surface_size(size)
     }
 
@@ -218,10 +237,16 @@ impl CoreWindow for Window {
     }
 
     fn set_min_surface_size(&self, min_size: Option<Size>) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_min_surface_size(min_size)
     }
 
     fn set_max_surface_size(&self, max_size: Option<Size>) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_max_surface_size(max_size)
     }
 
@@ -230,18 +255,30 @@ impl CoreWindow for Window {
     }
 
     fn set_surface_resize_increments(&self, increments: Option<Size>) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_surface_resize_increments(increments)
     }
 
     fn set_title(&self, title: &str) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_title(title);
     }
 
     fn set_transparent(&self, transparent: bool) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_transparent(transparent);
     }
 
     fn set_blur(&self, blur: bool) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_blur(blur);
     }
 
@@ -254,6 +291,9 @@ impl CoreWindow for Window {
     }
 
     fn set_resizable(&self, resizable: bool) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_resizable(resizable);
     }
 
@@ -262,6 +302,9 @@ impl CoreWindow for Window {
     }
 
     fn set_enabled_buttons(&self, buttons: WindowButtons) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_enabled_buttons(buttons)
     }
 
@@ -270,6 +313,9 @@ impl CoreWindow for Window {
     }
 
     fn set_minimized(&self, minimized: bool) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_minimized(minimized)
     }
 
@@ -278,6 +324,9 @@ impl CoreWindow for Window {
     }
 
     fn set_maximized(&self, maximized: bool) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_maximized(maximized)
     }
 
@@ -286,6 +335,9 @@ impl CoreWindow for Window {
     }
 
     fn set_fullscreen(&self, fullscreen: Option<Fullscreen>) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_fullscreen(fullscreen)
     }
 
@@ -294,6 +346,9 @@ impl CoreWindow for Window {
     }
 
     fn set_decorations(&self, decorations: bool) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_decorations(decorations);
     }
 
@@ -302,10 +357,16 @@ impl CoreWindow for Window {
     }
 
     fn set_window_level(&self, level: WindowLevel) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_window_level(level);
     }
 
     fn set_window_icon(&self, window_icon: Option<winit_core::icon::Icon>) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         let icon = match window_icon.as_ref() {
             Some(icon) => icon.cast_ref::<RgbaIcon>(),
             None => None,
@@ -314,6 +375,9 @@ impl CoreWindow for Window {
     }
 
     fn request_ime_update(&self, action: CoreImeRequest) -> Result<(), ImeRequestError> {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return Err(ImeRequestError::NotSupported);
+        }
         self.0.request_ime_update(action)
     }
 
@@ -322,6 +386,13 @@ impl CoreWindow for Window {
     }
 
     fn focus_window(&self) {
+        if self.0.revoked.load(Ordering::Acquire)
+            || self.0.panel.as_ref().is_some_and(|panel| {
+                panel.config.focus() == winit_core::window::PanelFocus::NonActivating
+            })
+        {
+            return;
+        }
         self.0.focus_window();
     }
 
@@ -330,10 +401,16 @@ impl CoreWindow for Window {
     }
 
     fn request_user_attention(&self, request_type: Option<UserAttentionType>) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.request_user_attention(request_type);
     }
 
     fn set_theme(&self, theme: Option<Theme>) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_theme(theme);
     }
 
@@ -342,6 +419,9 @@ impl CoreWindow for Window {
     }
 
     fn set_content_protected(&self, protected: bool) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_content_protected(protected);
     }
 
@@ -350,39 +430,70 @@ impl CoreWindow for Window {
     }
 
     fn set_cursor(&self, cursor: Cursor) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_cursor(cursor);
     }
 
     fn set_cursor_position(&self, position: Position) -> Result<(), RequestError> {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return Err(NotSupportedError::new("native panel lifetime has ended").into());
+        }
         self.0.set_cursor_position(position)
     }
 
     fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return Err(NotSupportedError::new("native panel lifetime has ended").into());
+        }
         self.0.set_cursor_grab(mode)
     }
 
     fn set_cursor_visible(&self, visible: bool) {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.set_cursor_visible(visible);
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return Err(NotSupportedError::new("panel geometry is immutable").into());
+        }
         self.0.drag_window()
     }
 
     fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), RequestError> {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return Err(NotSupportedError::new("panel geometry is immutable").into());
+        }
         self.0.drag_resize_window(direction)
     }
 
     fn show_window_menu(&self, position: Position) {
+        if self.0.panel.is_some() || self.0.revoked.load(Ordering::Acquire) {
+            return;
+        }
         self.0.show_window_menu(position);
     }
 
     fn set_cursor_hittest(&self, hittest: bool) -> Result<(), RequestError> {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return Err(NotSupportedError::new("native panel lifetime has ended").into());
+        }
         self.0.set_cursor_hittest(hittest)
     }
 
     fn current_monitor(&self) -> Option<CoreMonitorHandle> {
         self.0.current_monitor().map(|monitor| CoreMonitorHandle(Arc::new(monitor)))
+    }
+
+    fn panel_output_name(&self) -> Option<String> {
+        if self.0.revoked.load(Ordering::Acquire) {
+            return None;
+        }
+        self.0.panel.as_ref().map(|panel| panel.output_name.clone())
     }
 
     fn available_monitors(&self) -> Box<dyn Iterator<Item = CoreMonitorHandle>> {
@@ -425,9 +536,16 @@ impl Drop for Window {
     fn drop(&mut self) {
         let window = &self.0;
         let xconn = &window.xconn;
+        if window.panel.is_some() {
+            if let Err(error) = crate::panel::set_reservation(xconn, window.xwindow, None) {
+                warn!(%error, "Failed to release X11 panel reservation on drop");
+            }
+        }
 
-        if let Err(err) = window.restore_popup_keyboard_focus() {
-            warn!(error = %err, "Failed to restore keyboard focus before dropping X11 popup");
+        if !window.revoked.load(Ordering::Acquire) {
+            if let Err(err) = window.restore_popup_keyboard_focus() {
+                warn!(error = %err, "Failed to restore keyboard focus before dropping X11 popup");
+            }
         }
         window.release_popup_pointer();
 
@@ -436,7 +554,16 @@ impl Drop for Window {
             window.set_fullscreen(None);
         }
 
-        if let Ok(c) =
+        if window.panel.is_some() {
+            if let Err(error) = xconn
+                .xcb_connection()
+                .destroy_window(window.xwindow)
+                .map_err(X11Error::from)
+                .and_then(|cookie| cookie.check().map_err(X11Error::from))
+            {
+                warn!(%error, "Failed to destroy X11 panel on drop");
+            }
+        } else if let Ok(c) =
             xconn.xcb_connection().destroy_window(window.id().into_raw() as xproto::Window)
         {
             c.ignore_error();
@@ -521,7 +648,7 @@ unsafe impl Sync for UnownedWindow {}
 #[derive(Debug)]
 pub struct UnownedWindow {
     pub(crate) xconn: Arc<XConnection>, // never changes
-    xwindow: xproto::Window,            // never changes
+    pub(crate) xwindow: xproto::Window, // never changes
     #[allow(dead_code)]
     visual: u32, // never changes
     root: xproto::Window,               // never changes
@@ -537,10 +664,14 @@ pub struct UnownedWindow {
     redraw_sender: WakeSender<WindowId>,
     activation_sender: WakeSender<ActivationItem>,
     popup: Option<PopupState>,
+    pub(crate) panel: Option<crate::panel::PanelState>,
+    pub(crate) revoked: AtomicBool,
 }
 
 #[derive(Debug)]
 struct PopupState {
+    panel_owned: bool,
+    previous_panel_focus: Mutex<Option<xproto::Window>>,
     parent: xproto::Window,
     parent_ref: Weak<UnownedWindow>,
     active: bool,
@@ -586,6 +717,17 @@ macro_rules! leap {
     };
 }
 
+fn leap_panel_map(xconn: &XConnection, window: u32, visible: bool) -> Result<(), RequestError> {
+    let cookie = if visible {
+        xconn.xcb_connection().map_window(window)
+    } else {
+        xconn.xcb_connection().unmap_window(window)
+    };
+    leap!(leap!(cookie).check());
+    leap!(xconn.flush_requests());
+    Ok(())
+}
+
 impl UnownedWindow {
     #[allow(clippy::unnecessary_cast)]
     pub(crate) fn new(
@@ -613,6 +755,27 @@ impl UnownedWindow {
                 NotSupportedError::new("requested screen id not present in server's response"),
             )?
         };
+
+        window_attrs.validate_panel().map_err(|err| NotSupportedError::new(err.0))?;
+        if let Some(panel) = &window_attrs.panel {
+            if screen_id != xconn.default_screen_index() as i32
+                || x11_attributes.override_redirect
+                || x11_attributes.embed_window.is_some()
+                || x11_attributes.base_size.is_some()
+                || x11_attributes.activation_token.is_some()
+                || x11_attributes.x11_window_types != vec![WindowType::Normal]
+            {
+                return Err(NotSupportedError::new(
+                    "panel cannot use X11 embedding, override-redirect, nondefault screen, \
+                     activation or role/size overrides",
+                )
+                .into());
+            }
+            window_attrs.decorations = false;
+            window_attrs.resizable = false;
+            window_attrs.active = false;
+            crate::panel::require_ewmh(xconn, screen.root, panel.reservation().is_some())?;
+        }
 
         let popup_parent = (window_attrs.window_type() == winit_core::window::WindowType::Popup)
             .then(|| popup_parent(&window_attrs))
@@ -642,8 +805,19 @@ impl UnownedWindow {
             })
             .transpose()?;
 
-        let mut monitors = leap!(xconn.available_monitors());
-        let guessed_monitor = if monitors.is_empty() {
+        let panel_snapshot = window_attrs
+            .panel
+            .as_ref()
+            .map(|panel| {
+                crate::panel::select_output(xconn, root, panel.output())
+                    .map_err(crate::panel::UpdateError::into_request)
+            })
+            .transpose()?;
+        let mut monitors =
+            if panel_snapshot.is_some() { Vec::new() } else { leap!(xconn.available_monitors()) };
+        let guessed_monitor = if let Some(snapshot) = &panel_snapshot {
+            snapshot.monitor.clone()
+        } else if monitors.is_empty() {
             X11MonitorHandle::dummy()
         } else if let Some(origin) = parent_origin {
             let index = monitors
@@ -702,6 +876,23 @@ impl UnownedWindow {
         };
 
         let popup_positioner = popup_parent.map(|_| popup_positioner(&window_attrs));
+        let panel_layout = window_attrs
+            .panel
+            .as_ref()
+            .map(|panel| {
+                crate::panel::layout(
+                    panel,
+                    guessed_monitor.position,
+                    guessed_monitor.rect.size(),
+                    panel_snapshot.as_ref().unwrap().root_size,
+                    scale_factor,
+                )
+            })
+            .transpose()?;
+        if let Some(layout) = panel_layout {
+            position = Some(layout.position);
+            dimensions = layout.size.into();
+        }
         if let (Some(parent_origin), Some(positioner)) = (parent_origin, popup_positioner) {
             let monitor_size = if guessed_monitor.is_dummy() {
                 PhysicalSize::new(screen.width_in_pixels as u32, screen.height_in_pixels as u32)
@@ -828,6 +1019,9 @@ impl UnownedWindow {
 
             wid
         };
+        // Panel failures, including failures after mapping, must not leak native roles.
+        let mut panel_creation =
+            crate::panel::CreationGuard::new(xconn, xwindow, window_attrs.panel.is_some());
 
         // The COPY_FROM_PARENT is a special value for the visual used to copy
         // the visual from the parent window, thus we have to query the visual
@@ -852,10 +1046,29 @@ impl UnownedWindow {
             cursor_grabbed_mode: Mutex::new(CursorGrabMode::None),
             cursor_visible: Mutex::new(true),
             ime_sender: Mutex::new(event_loop.ime_sender.clone()),
-            shared_state: SharedState::new(guessed_monitor, &window_attrs),
+            shared_state: SharedState::new(guessed_monitor.clone(), &window_attrs),
             redraw_sender: event_loop.redraw_sender.clone(),
             activation_sender: event_loop.activation_sender.clone(),
+            panel: window_attrs.panel.clone().map(|config| crate::panel::PanelState {
+                config,
+                output_name: guessed_monitor.name.clone(),
+                requested_visible: AtomicBool::new(window_attrs.visible),
+                retry: AtomicBool::new(false),
+                notified_scale: Mutex::new(scale_factor),
+                committed_geometry: Mutex::new((scale_factor, panel_layout.unwrap().size)),
+            }),
+            revoked: AtomicBool::new(false),
             popup: popup_parent.map(|parent| PopupState {
+                panel_owned: event_loop
+                    .windows
+                    .borrow()
+                    .get(&WindowId::from_raw(parent as usize))
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|parent| {
+                        parent.panel.is_some()
+                            || parent.popup.as_ref().is_some_and(|popup| popup.panel_owned)
+                    }),
+                previous_panel_focus: Mutex::new(None),
                 parent,
                 parent_ref: event_loop
                     .windows
@@ -873,8 +1086,13 @@ impl UnownedWindow {
         // Title must be set before mapping. Some tiling window managers (i.e. i3) use the window
         // title to determine placement/etc., so doing this after mapping would cause the WM to
         // act on the wrong title state.
-        leap!(window.set_title_inner(&window_attrs.title)).ignore_error();
-        leap!(window.set_decorations_inner(window_attrs.decorations)).ignore_error();
+        if window.panel.is_some() {
+            leap!(leap!(window.set_title_inner(&window_attrs.title)).check());
+            leap!(leap!(window.set_decorations_inner(false)).check());
+        } else {
+            leap!(window.set_title_inner(&window_attrs.title)).ignore_error();
+            leap!(window.set_decorations_inner(window_attrs.decorations)).ignore_error();
+        }
 
         if let Some(theme) = window_attrs.preferred_theme {
             leap!(window.set_theme_inner(Some(theme))).ignore_error();
@@ -933,12 +1151,27 @@ impl UnownedWindow {
                 flusher.ignore_error()
             }
 
-            let window_types = if popup_parent.is_some() {
+            let window_types = if window.panel.is_some() {
+                vec![WindowType::Dock]
+            } else if popup_parent.is_some() {
                 vec![WindowType::PopupMenu]
             } else {
                 x11_attributes.x11_window_types
             };
-            leap!(window.set_window_types(window_types)).ignore_error();
+            if let Some(panel) = &window.panel {
+                leap!(leap!(window.set_window_types(window_types)).check());
+                let mut hints = WmHints::new();
+                hints.input = Some(panel.config.focus() == winit_core::window::PanelFocus::Normal);
+                leap!(leap!(hints.set(xconn.xcb_connection(), window.xwindow)).check());
+                crate::panel::set_reservation(
+                    xconn,
+                    window.xwindow,
+                    panel_layout
+                        .and_then(|layout| if window_attrs.visible { layout.strut } else { None }),
+                )?;
+            } else {
+                leap!(window.set_window_types(window_types)).ignore_error();
+            }
 
             if let Some(parent) = popup_parent {
                 leap!(
@@ -1064,7 +1297,11 @@ impl UnownedWindow {
 
             // Set visibility (map window)
             if window_attrs.visible {
-                leap!(xconn.xcb_connection().map_window(window.xwindow)).ignore_error();
+                if window.panel.is_some() {
+                    leap!(leap!(xconn.xcb_connection().map_window(window.xwindow)).check());
+                } else {
+                    leap!(xconn.xcb_connection().map_window(window.xwindow)).ignore_error();
+                }
                 leap!(xconn.xcb_connection().configure_window(
                     xwindow,
                     &xproto::ConfigureWindowAux::new().stack_mode(xproto::StackMode::ABOVE)
@@ -1127,7 +1364,144 @@ impl UnownedWindow {
         // We never want to give the user a broken window, since by then, it's too late to handle.
         let window = leap!(xconn.sync_with_server().map(|_| window));
 
+        panel_creation.armed = false;
         Ok(window)
+    }
+
+    /// Recompute from the pinned output; retry transient errors and never migrate.
+    pub(crate) fn refresh_panel(&self) -> Result<(), crate::panel::UpdateError> {
+        let Some(panel) = &self.panel else {
+            return Ok(());
+        };
+        if self.revoked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        panel.retry.store(true, Ordering::Release);
+        let snapshot = crate::panel::select_output(
+            &self.xconn,
+            self.root,
+            &winit_core::window::PanelOutput::Name(panel.output_name.clone()),
+        )?;
+        let monitor = snapshot.monitor;
+        let layout = crate::panel::layout(
+            &panel.config,
+            monitor.position,
+            monitor.rect.size(),
+            snapshot.root_size,
+            monitor.scale_factor(),
+        )
+        .map_err(crate::panel::UpdateError::Terminal)?;
+        let visible = panel.requested_visible.load(Ordering::Acquire);
+        let size_hint = cast_physical_size_to_hint(layout.size);
+        let hints = WmSizeHints {
+            position: Some((
+                WmSizeHintsSpecification::UserSpecified,
+                layout.position.x,
+                layout.position.y,
+            )),
+            size: Some((WmSizeHintsSpecification::UserSpecified, size_hint.0, size_hint.1)),
+            min_size: Some(size_hint),
+            max_size: Some(size_hint),
+            size_increment: None,
+            base_size: None,
+            aspect: None,
+            win_gravity: None,
+        };
+        leap!(
+            leap!(hints.set(
+                self.xconn.xcb_connection(),
+                self.xwindow,
+                xproto::AtomEnum::WM_NORMAL_HINTS
+            ))
+            .check()
+        );
+        leap!(
+            leap!(
+                self.xconn.xcb_connection().configure_window(
+                    self.xwindow,
+                    &xproto::ConfigureWindowAux::new()
+                        .x(layout.position.x)
+                        .y(layout.position.y)
+                        .width(layout.size.width)
+                        .height(layout.size.height)
+                )
+            )
+            .check()
+        );
+        crate::panel::set_reservation(
+            &self.xconn,
+            self.xwindow,
+            if visible { layout.strut } else { None },
+        )?;
+        leap!(self.xconn.flush_requests());
+        *panel.committed_geometry.lock().unwrap() = (monitor.scale_factor(), layout.size);
+        self.shared_state_lock().last_monitor = monitor;
+        panel.retry.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn retry_panel_update(&self) -> Result<(), crate::panel::UpdateError> {
+        if self.revoked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.refresh_panel()?;
+        if let Some(panel) = &self.panel {
+            leap_panel_map(
+                &self.xconn,
+                self.xwindow,
+                panel.requested_visible.load(Ordering::Acquire),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Unmap an already-revoked tree member, retaining storage for renderer teardown.
+    pub(crate) fn withdraw_retired_surface(&self) {
+        // All tree handles are already revoked before any withdrawal or callback.
+        if self.panel.is_some() {
+            if let Err(error) = crate::panel::set_reservation(&self.xconn, self.xwindow, None)
+                .and_then(|()| leap_panel_map(&self.xconn, self.xwindow, false))
+            {
+                warn!(%error, "Failed to withdraw retired X11 panel");
+            }
+        } else {
+            if let Err(error) = self.restore_popup_keyboard_focus() {
+                warn!(%error, "Failed to restore focus while retiring X11 panel popup");
+            }
+            self.release_popup_pointer();
+            if let Err(error) = leap_panel_map(&self.xconn, self.xwindow, false) {
+                warn!(%error, "Failed to withdraw retired X11 panel popup");
+            }
+        }
+        self.shared_state_lock().visibility = Visibility::No;
+    }
+
+    pub(crate) fn observe_panel_mapping(&self) -> Result<(), crate::panel::UpdateError> {
+        if self.revoked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let Some(panel) = &self.panel else {
+            return Ok(());
+        };
+        let attributes =
+            leap!(leap!(self.xconn.xcb_connection().get_window_attributes(self.xwindow)).reply());
+        let mapped = attributes.map_state != xproto::MapState::UNMAPPED;
+        // Notifications may precede newer application requests. Query the live
+        // mapping rather than replaying an old notification as a hide/show command.
+        self.shared_state_lock().visibility = if mapped { Visibility::Yes } else { Visibility::No };
+        if panel.requested_visible.load(Ordering::Acquire) {
+            self.refresh_panel()?;
+            if !mapped {
+                leap_panel_map(&self.xconn, self.xwindow, true)?;
+            }
+            Ok(())
+        } else {
+            crate::panel::set_reservation(&self.xconn, self.xwindow, None)?;
+            if mapped {
+                leap_panel_map(&self.xconn, self.xwindow, false)?;
+            }
+            Ok(())
+        }
     }
 
     fn reposition_popup(&self, positioner: WindowPositioner) -> Result<(), RequestError> {
@@ -1199,6 +1573,9 @@ impl UnownedWindow {
     }
 
     pub(crate) fn follow_popup_parent(&self) -> Result<(), RequestError> {
+        if self.revoked.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let popup = self.popup.as_ref().expect("only popups follow their parent");
         self.reposition_popup(*popup.positioner.lock().unwrap())
     }
@@ -1206,6 +1583,13 @@ impl UnownedWindow {
     fn focus_popup_keyboard(&self) -> Result<(), RequestError> {
         if !self.popup.as_ref().is_some_and(|popup| popup.active) {
             return Ok(());
+        }
+        let popup = self.popup.as_ref().unwrap();
+        if popup.panel_owned {
+            let focus = leap!(leap!(self.xconn.xcb_connection().get_input_focus()).reply()).focus;
+            if focus != self.xwindow {
+                *popup.previous_panel_focus.lock().unwrap() = (focus > 1).then_some(focus);
+            }
         }
         leap!(
             leap!(self.xconn.xcb_connection().set_input_focus(
@@ -1236,6 +1620,9 @@ impl UnownedWindow {
 
     fn restore_popup_keyboard_focus(&self) -> Result<(), RequestError> {
         let Some(popup) = &self.popup else { return Ok(()) };
+        if popup.panel_owned {
+            return self.restore_panel_popup_focus(popup);
+        }
         let connection = self.xconn.xcb_connection();
         // Popups are root children: RevertToParent falls back to the screen
         // root, not WM_TRANSIENT_FOR. Restore before unmapping/destruction,
@@ -1259,6 +1646,45 @@ impl UnownedWindow {
             .check()
         );
         Ok(())
+    }
+
+    fn restore_panel_popup_focus(&self, popup: &PopupState) -> Result<(), RequestError> {
+        let Some(previous) = *popup.previous_panel_focus.lock().unwrap() else {
+            return Ok(());
+        };
+        let connection = self.xconn.xcb_connection();
+        // Acquisition uses CurrentTime. If the popup closes before its FocusIn
+        // is drained, the cached event timestamp predates acquisition. Serialize
+        // the ownership/viewability check and CurrentTime restore against other
+        // clients so immediate close works without stealing a raced focus change.
+        leap!(leap!(connection.grab_server()).check());
+        let restored = (|| -> Result<(), RequestError> {
+            if leap!(leap!(connection.get_input_focus()).reply()).focus != self.xwindow {
+                return Ok(());
+            }
+            let attributes = leap!(leap!(connection.get_window_attributes(previous)).reply());
+            if attributes.map_state == xproto::MapState::VIEWABLE {
+                leap!(
+                    leap!(connection.set_input_focus(
+                        xproto::InputFocus::PARENT,
+                        previous,
+                        x11rb::CURRENT_TIME
+                    ))
+                    .check()
+                );
+            }
+            Ok(())
+        })();
+        let released = connection
+            .ungrab_server()
+            .map_err(X11Error::from)
+            .and_then(|cookie| cookie.check().map_err(X11Error::from));
+        if let Err(error) = released {
+            warn!(%error, "Failed to release X11 server after panel popup focus restoration");
+            restored?;
+            return Err(os_error!(error).into());
+        }
+        restored
     }
 
     fn grab_popup_pointer(&self) -> Result<(), RequestError> {
@@ -1384,7 +1810,9 @@ impl UnownedWindow {
         let previous = loop {
             let Some(candidate) = grab.previous.pop() else { break None };
             if let Some(window) = candidate.upgrade() {
-                if window.shared_state_lock().visibility != Visibility::No {
+                if !window.revoked.load(Ordering::Acquire)
+                    && window.shared_state_lock().visibility != Visibility::No
+                {
                     break Some(window);
                 }
             }
@@ -1950,6 +2378,36 @@ impl UnownedWindow {
 
     #[inline]
     pub fn set_visible(&self, visible: bool) {
+        if self.revoked.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(panel) = &self.panel {
+            panel.requested_visible.store(visible, Ordering::Release);
+            let result = if visible {
+                // Install the strut before mapping, including a fresh root/output query.
+                self.shared_state_lock().visibility = Visibility::YesWait;
+                self.refresh_panel()
+                    .map_err(crate::panel::UpdateError::into_request)
+                    .and_then(|()| leap_panel_map(&self.xconn, self.xwindow, true))
+            } else {
+                crate::panel::set_reservation(&self.xconn, self.xwindow, None)
+                    .and_then(|()| leap_panel_map(&self.xconn, self.xwindow, false))
+            };
+            if let Err(error) = result {
+                panel.retry.store(true, Ordering::Release);
+                warn!(%error, "Failed to change X11 panel visibility");
+                if let Err(cleanup) = crate::panel::set_reservation(&self.xconn, self.xwindow, None)
+                    .and_then(|()| leap_panel_map(&self.xconn, self.xwindow, false))
+                {
+                    warn!(error = %cleanup, "Failed to withdraw X11 panel after visibility failure");
+                }
+                self.shared_state_lock().visibility = Visibility::No;
+            }
+            if !visible {
+                self.shared_state_lock().visibility = Visibility::No;
+            }
+            return;
+        }
         let mut shared_state = self.shared_state_lock();
 
         match (visible, shared_state.visibility) {
@@ -2763,6 +3221,9 @@ impl UnownedWindow {
 
     #[inline]
     pub fn raw_window_handle_rwh_06(&self) -> Result<rwh_06::RawWindowHandle, rwh_06::HandleError> {
+        if self.revoked.load(Ordering::Acquire) {
+            return Err(rwh_06::HandleError::Unavailable);
+        }
         let mut window_handle = rwh_06::XlibWindowHandle::new(self.xlib_window());
         window_handle.visual_id = self.visual as c_ulong;
         Ok(window_handle.into())
@@ -2772,6 +3233,9 @@ impl UnownedWindow {
     pub fn raw_display_handle_rwh_06(
         &self,
     ) -> Result<rwh_06::RawDisplayHandle, rwh_06::HandleError> {
+        if self.revoked.load(Ordering::Acquire) {
+            return Err(rwh_06::HandleError::Unavailable);
+        }
         Ok(rwh_06::XlibDisplayHandle::new(
             Some(
                 std::ptr::NonNull::new(self.xlib_display())

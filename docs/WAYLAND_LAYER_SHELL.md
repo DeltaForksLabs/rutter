@@ -1,5 +1,10 @@
 # Wayland layer-shell surfaces
 
+For the independent `PanelConfig` / `WindowConfig::with_panel` API, including the
+native X11/EWMH backend and its geometry/focus limitations, see
+[Native desktop panels](NATIVE_PANELS.md). `with_layer_shell` retains the strictly
+Wayland-only contract documented here.
+
 ## Public request and ownership
 
 Rutter exports `LayerShellConfig`, `LayerAnchors`, `LayerOutput`, `Layer`,

@@ -795,8 +795,24 @@ impl RootActiveEventLoop for ActiveEventLoop {
 
     fn create_window(
         &self,
-        window_attributes: winit_core::window::WindowAttributes,
+        mut window_attributes: winit_core::window::WindowAttributes,
     ) -> Result<Box<dyn winit_core::window::Window>, RequestError> {
+        window_attributes.validate_panel().map_err(|err| NotSupportedError::new(err.0))?;
+        if window_attributes.panel.is_some()
+            && window_attributes
+                .platform
+                .as_ref()
+                .and_then(|platform| platform.cast_ref::<crate::WindowAttributesWayland>())
+                .is_some_and(|platform| platform.activation_token.is_some())
+        {
+            return Err(NotSupportedError::new(
+                "neutral Wayland panels cannot use activation tokens",
+            )
+            .into());
+        }
+        if let Some(panel) = &window_attributes.panel {
+            window_attributes.layer_shell = Some(panel.layer_shell_config());
+        }
         if window_attributes.layer_shell.is_some()
             && window_attributes.window_type() == WindowType::Popup
         {
@@ -817,7 +833,7 @@ impl RootActiveEventLoop for ActiveEventLoop {
             .into());
         }
         match window_attributes.window_type() {
-            WindowType::Window | WindowType::LayerShell => {
+            WindowType::Window | WindowType::LayerShell | WindowType::Panel => {
                 let window = crate::Window::new(self, window_attributes)?;
                 Ok(Box::new(window))
             },

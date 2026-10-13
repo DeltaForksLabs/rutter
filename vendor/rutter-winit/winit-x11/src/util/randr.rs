@@ -69,6 +69,15 @@ impl XConnection {
             },
         };
 
+        self.output_info_from_reply(resources, crtc, &output_info)
+    }
+
+    pub(crate) fn output_info_from_reply(
+        &self,
+        resources: &monitor::ScreenResources,
+        crtc: &randr::GetCrtcInfoReply,
+        output_info: &randr::GetOutputInfoReply,
+    ) -> Option<(String, f64, Vec<VideoModeHandle>)> {
         let bit_depth = self.default_root().root_depth;
         let output_modes = &output_info.modes;
         let resource_modes = resources.modes();

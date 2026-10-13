@@ -178,7 +178,7 @@ def main():
     # Keep automatic compositor naming away from wayland-0, even in this private directory.
     socket_zero_lock = (root / "wayland-0.lock").open("w")
     fcntl.flock(socket_zero_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    env = {key: value for key, value in os.environ.items() if not key.startswith("FRAYM_") and key not in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XAUTHORITY", "WAYLAND_DEBUG", "RUTTER_LAYER_OUTPUT", "RUTTER_LAYER_LIVE_INPUT", "RUTTER_LAYER_REMOVE_OUTPUT", "RUTTER_LAYER_MAXIMIZE", "DBUS_SESSION_BUS_ADDRESS", "DBUS_STARTER_ADDRESS")}
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("FRAYM_", "DBUS_")) and key not in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XAUTHORITY", "WAYLAND_DEBUG", "RUTTER_LAYER_OUTPUT", "RUTTER_LAYER_LIVE_INPUT", "RUTTER_LAYER_REMOVE_OUTPUT", "RUTTER_LAYER_MAXIMIZE", "SESSION_MANAGER", "DESKTOP_AUTOSTART_ID", "XDG_SESSION_ID", "XDG_SESSION_TYPE", "XDG_SESSION_DESKTOP", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "GNOME_DESKTOP_SESSION_ID", "KDE_FULL_SESSION")}
     env.update(XDG_RUNTIME_DIR=str(root), XDG_CONFIG_HOME=str(root), XDG_CONFIG_DIRS=str(root), LIBGL_ALWAYS_SOFTWARE="1", CARGO_BUILD_JOBS="2", XWAYLAND_NO_GLAMOR="1")
     (root / "autostart").write_text("# Owned disposable compositor: no session autostart.\n")
     (root / "environment").write_text("# No inherited compositor-specific session configuration.\n")
@@ -222,6 +222,14 @@ def main():
             env["RUTTER_LAYER_MAXIMIZE"] = "1"
         env["WAYLAND_DEBUG"] = "client"
         if args.retained_layer or args.retained_renderer:
+            with (root / "neutral-client.log").open("w") as log:
+                neutral = subprocess.run(["cargo", "test", "--locked", "--offline", "--lib", "native_neutral_panel_wayland_uses_real_layer_role", "--", "--ignored", "--nocapture"], env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120)
+            neutral_trace = (root / "neutral-client.log").read_text()
+            assert neutral.returncode == 0, neutral_trace
+            assert re.search(r"zwlr_layer_surface_v1[#@]\d+\.set_margin\(8, 0, 0, 0\)", neutral_trace), neutral_trace
+            assert re.search(r"zwlr_layer_surface_v1[#@]\d+\.set_exclusive_zone\(40\)", neutral_trace), neutral_trace
+            assert len(re.findall(r"get_layer_surface\(", neutral_trace)) == 1, "Rejected activation request must not allocate a layer role"
+            print("PASS: neutral Wayland panel renders with an 8-pixel margin and a 40-pixel protocol reservation")
             if args.retained_layer:
                 fixture = "retained_layer_output_removal_retires_native_lifetime_and_children" if args.remove_output else "retained_layer_closed_callback_retires_native_lifetime_and_children"
                 command = ["cargo", "test", "--manifest-path", "vendor/rutter-winit/Cargo.toml", "-p", "winit-wayland"]

@@ -8,6 +8,55 @@ use winit::event::{ButtonSource, ElementState, MouseButton};
 use winit::event_loop::EventLoop;
 
 #[test]
+#[ignore = "requires the owned layer-shell smoke driver"]
+fn native_neutral_panel_wayland_uses_real_layer_role() {
+    use crate::engine::gpu::gl::GlBackend;
+    use winit::application::ApplicationHandler;
+    use winit::platform::wayland::EventLoopBuilderExtWayland;
+    use winit::window::{WindowAttributes, WindowType};
+    struct NeutralPanel;
+    impl ApplicationHandler for NeutralPanel {
+        fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+            let panel = crate::PanelConfig::new("rutter-neutral", crate::PanelEdge::Top, 320, 32)
+                .unwrap()
+                .with_reservation(Some(32))
+                .unwrap()
+                .with_margins(crate::PanelMargins {
+                    top: 8,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert_eq!(panel.reservation(), Some(32));
+            let activation = winit::platform::wayland::WindowAttributesWayland::default()
+                .with_activation_token(winit::window::ActivationToken::from_raw(
+                    "owned-rejected-token".into(),
+                ));
+            assert!(
+                event_loop
+                    .create_window(
+                        WindowAttributes::default()
+                            .with_panel(panel.clone())
+                            .with_platform_attributes(Box::new(activation))
+                    )
+                    .is_err()
+            );
+            let mut backend =
+                GlBackend::try_new(event_loop, WindowAttributes::default().with_panel(panel))
+                    .unwrap();
+            assert_eq!(backend.window().window_type(), WindowType::Panel);
+            assert!(backend.window().layer_shell_version().is_some());
+            backend.begin_frame().unwrap().clear(skia_safe::Color::BLUE);
+            backend.end_frame().unwrap();
+            event_loop.exit();
+        }
+        fn window_event(&mut self, _: &dyn ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+    }
+    let mut builder = EventLoop::builder();
+    builder.with_wayland().with_any_thread(true);
+    builder.build().unwrap().run_app(NeutralPanel).unwrap();
+}
+
+#[test]
 #[ignore = "requires an owned two-output layer compositor and external targeted output removal"]
 fn native_layer_retained_opengl_renderer_rejects_frames_after_output_removal() {
     use crate::engine::gpu::{GraphicsBackend, gl::GlBackend};

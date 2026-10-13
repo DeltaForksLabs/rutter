@@ -206,6 +206,104 @@ pub struct EventLoop {
 
 pub(crate) type ActivationItem = (WindowId, winit_core::event_loop::AsyncRequestSerial);
 
+#[cfg(test)]
+mod panel_retirement_tests {
+    use rwh_06::HasWindowHandle;
+    use winit_core::window::{PanelConfig, PanelEdge, WindowAttributes, WindowType};
+
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the owned Openbox/Xwayland panel driver"]
+    fn terminal_focus_and_late_ancestor_destroy_do_not_dispatch() {
+        assert_eq!(std::env::var("RUTTER_X11_PANEL_OWNED").as_deref(), Ok("1"));
+        struct Events(Vec<(WindowId, WindowEvent)>);
+        impl ApplicationHandler for Events {
+            fn can_create_surfaces(&mut self, _: &dyn RootActiveEventLoop) {}
+            fn window_event(
+                &mut self,
+                _: &dyn RootActiveEventLoop,
+                id: WindowId,
+                event: WindowEvent,
+            ) {
+                self.0.push((id, event));
+            }
+        }
+        let mut event_loop = EventLoop::new().unwrap();
+        let processor = &mut event_loop.event_processor;
+        let settings = processor.target.create_window(WindowAttributes::default()).unwrap();
+        let panel = processor
+            .target
+            .create_window(WindowAttributes::default().with_panel(
+                PanelConfig::new("retirement-routing", PanelEdge::Top, 200, 32).unwrap(),
+            ))
+            .unwrap();
+        let popup = |parent: &dyn winit_core::window::Window| {
+            // SAFETY: parents are retained through creation and terminal retirement.
+            let attributes = unsafe {
+                WindowAttributes::default()
+                    .with_window_type(WindowType::Popup)
+                    .with_parent_window(Some(parent.window_handle().unwrap().as_raw()))
+            }
+            .with_active(false);
+            processor.target.create_window(attributes).unwrap()
+        };
+        let ancestor = popup(&*panel);
+        let descendant = popup(&*ancestor);
+        let descendant_xid = descendant.id().into_raw() as xproto::Window;
+        let ancestor_xid = ancestor.id().into_raw() as xproto::Window;
+        processor.active_window = Some(descendant_xid);
+        processor.held_key_press = Some(38);
+        processor.is_composing = true;
+        let mut events = Events(Vec::new());
+        let destroy = |processor: &mut EventProcessor, xid: xproto::Window, events: &mut Events| {
+            // SAFETY: zero initializes XEvent; the matching type tag selects this member.
+            let mut event: ffi::XEvent = unsafe { mem::zeroed() };
+            let native: &mut ffi::XDestroyWindowEvent = event.as_mut();
+            native.type_ = ffi::DestroyNotify;
+            native.display = processor.target.xconn.display;
+            native.window = xid as _;
+            processor.process_event(&mut event, events);
+        };
+        destroy(processor, panel.id().into_raw() as _, &mut events);
+        assert_eq!(processor.active_window, None);
+        assert_eq!(processor.held_key_press, None);
+        assert!(!processor.is_composing);
+        assert!(descendant.window_handle().is_err());
+        assert_eq!(events.0.iter().filter(|(id, _)| *id != settings.id()).count(), 6);
+        events.0.clear();
+        // Deliberately leave a stale active route to exercise the dispatch guards
+        // independently of the retirement-time clearing above.
+        processor.active_window = Some(descendant_xid);
+        let mut event: ffi::XEvent = unsafe { mem::zeroed() };
+        // SAFETY: XKB's event fits XEvent; its tag selects the XKB decoder.
+        let state =
+            unsafe { &mut *(&mut event as *mut ffi::XEvent).cast::<ffi::XkbStateNotifyEvent>() };
+        state.type_ = processor.xkbext.first_event as _;
+        state.display = processor.target.xconn.display;
+        state.xkb_type = ffi::XkbStateNotify;
+        state.base_mods = 1;
+        processor.process_event(&mut event, &mut events);
+        assert!(processor.modifiers.get().shift_key());
+        let map =
+            unsafe { &mut *(&mut event as *mut ffi::XEvent).cast::<ffi::XkbMapNotifyEvent>() };
+        map.xkb_type = ffi::XkbMapNotify;
+        processor.process_event(&mut event, &mut events);
+        let key: &mut ffi::XKeyEvent = event.as_mut();
+        key.type_ = ffi::KeyPress;
+        key.display = processor.target.xconn.display;
+        key.window = settings.id().into_raw() as _; // A live, nonterminal event target.
+        key.keycode = 38;
+        processor.process_event(&mut event, &mut events);
+        drop(ancestor);
+        destroy(processor, ancestor_xid, &mut events);
+        assert!(events.0.is_empty(), "late terminal dispatch: {:?}", events.0);
+        assert!(descendant.window_handle().is_err());
+        drop(descendant);
+        drop(panel);
+    }
+}
+
 #[derive(Debug)]
 struct EventLoopState {
     /// The latest readiness state for the x11 file descriptor
@@ -396,6 +494,7 @@ impl EventLoop {
             target: window_target,
             devices: Default::default(),
             randr_event_offset,
+            terminal_panels: Default::default(),
             ime_receiver,
             ime_event_receiver,
             xi2ext,
@@ -539,6 +638,9 @@ impl EventLoop {
 
             min_timeout(control_flow_timeout, timeout)
         };
+        if self.event_processor.has_panel_retry() {
+            timeout = min_timeout(timeout, Some(Duration::from_millis(50)));
+        }
 
         self.state.x11_readiness = Readiness::EMPTY;
         if let Err(error) =
@@ -593,9 +695,13 @@ impl EventLoop {
 
         // Process all pending events
         self.drain_events(app);
+        self.event_processor.retry_panels(app);
 
         // Empty activation tokens.
         while let Ok((window_id, serial)) = self.activation_receiver.try_recv() {
+            if self.event_processor.is_terminal(window_id.into_raw() as xproto::Window) {
+                continue;
+            }
             let token = self
                 .event_processor
                 .with_window(window_id.into_raw() as xproto::Window, |window| {
@@ -631,6 +737,9 @@ impl EventLoop {
             }
 
             for window_id in windows {
+                if self.event_processor.is_terminal(window_id.into_raw() as xproto::Window) {
+                    continue;
+                }
                 app.window_event(
                     &self.event_processor.target,
                     window_id,
@@ -771,6 +880,7 @@ impl RootActiveEventLoop for ActiveEventLoop {
             )
             .into());
         }
+        window_attributes.validate_panel().map_err(|err| NotSupportedError::new(err.0))?;
         Ok(Box::new(Window::new(self, window_attributes)?))
     }
 
