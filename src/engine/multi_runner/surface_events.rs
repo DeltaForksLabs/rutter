@@ -19,7 +19,12 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             self.surface_runners
                 .get(&surface)
                 .and_then(|runner| runner.native_menu_window_id())
-                .is_some(),
+                .is_some()
+                || self.surface_configs.values().any(|config| {
+                    config
+                        .popup()
+                        .is_some_and(|popup| popup.parent() == surface)
+                }),
         );
         if !self.forward_native_surface_event(event_loop, surface, native, event) {
             return;

@@ -85,6 +85,33 @@ pub enum WindowType {
     Popup,
 }
 
+/// Input-grab policy for native popups.
+///
+/// Currently interpreted only by Wayland popup creation. Other backends retain
+/// their existing activation and grab behavior; this is not a portable guarantee
+/// of outside-click dismissal or keyboard focus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PopupGrab {
+    /// Preserve the legacy policy: attempt a grab when [`WindowAttributes::active`]
+    /// is true, and allow creation without a grab when no serial is available.
+    #[default]
+    Auto,
+    /// Require a one-use, still-valid physical pointer-button or keyboard press
+    /// delivered to this popup's exact parent on its originating seat.
+    ///
+    /// On Wayland, create the popup synchronously inside that press's
+    /// `ApplicationHandler::window_event` callback. Queued release, focus loss,
+    /// replacement input, or removal of the input capability invalidates it.
+    /// Repeats, release callbacks, redraws, timers and deferred work do not
+    /// authorize a grab. Missing input returns an error before native role
+    /// creation; there is no ungrabbed fallback. The compositor still decides
+    /// whether to accept the grab and may immediately dismiss the popup.
+    Required,
+    /// Never request a Wayland popup grab, independently of activation.
+    None,
+}
+
 /// The positioner state backing a window's anchor-based placement.
 ///
 /// Set at window creation via [`WindowAttributes::with_positioner`], and read/mutated at runtime
@@ -189,7 +216,11 @@ pub struct WindowAttributes {
     ///   `WS_EX_NOACTIVATE`, macOS: `NSWindowStyleMask::NonactivatingPanel`, Wayland: no grab). On
     ///   X11, `true` focuses the popup without a keyboard grab. Visible X11 popups grab enabled
     ///   master pointers independently of this activation policy.
+    ///
+    /// On Wayland, an explicit [`Self::popup_grab`] overrides this grab policy.
     pub active: bool,
+    /// See [`Self::with_popup_grab`]. Defaults to [`PopupGrab::Auto`].
+    pub popup_grab: PopupGrab,
     pub cursor: Cursor,
     pub(crate) parent_window: Option<SendSyncRawWindowHandle>,
     pub fullscreen: Option<Fullscreen>,
@@ -472,6 +503,16 @@ impl WindowAttributes {
         self
     }
 
+    /// Selects the Wayland popup grab policy independently of activation.
+    ///
+    /// Only affects [`WindowType::Popup`] on Wayland. See [`PopupGrab::Required`]
+    /// for the synchronous input-dispatch requirement and failure behavior.
+    #[inline]
+    pub fn with_popup_grab(mut self, popup_grab: PopupGrab) -> Self {
+        self.popup_grab = popup_grab;
+        self
+    }
+
     /// Modifies the cursor icon of the window.
     ///
     /// The default is [`CursorIcon::Default`].
@@ -583,6 +624,7 @@ impl Clone for WindowAttributes {
             content_protected: self.content_protected,
             window_level: self.window_level,
             active: self.active,
+            popup_grab: self.popup_grab,
             cursor: self.cursor.clone(),
             parent_window: self.parent_window.clone(),
             fullscreen: self.fullscreen.clone(),
@@ -605,6 +647,7 @@ impl Default for WindowAttributes {
             resizable: true,
             visible: true,
             active: true,
+            popup_grab: PopupGrab::default(),
             surface_resize_increments: Default::default(),
             content_protected: Default::default(),
             min_surface_size: Default::default(),
@@ -2421,6 +2464,19 @@ mod tests {
         ImeSurroundingTextError,
     };
     use crate::window::{ImeHint, ImePurpose};
+
+    #[test]
+    fn popup_grab_defaults_to_legacy_policy_and_survives_clone() {
+        use super::{PopupGrab, WindowAttributes};
+
+        assert_eq!(WindowAttributes::default().popup_grab, PopupGrab::Auto);
+        for policy in [PopupGrab::Auto, PopupGrab::Required, PopupGrab::None] {
+            let attributes = WindowAttributes::default().with_active(false).with_popup_grab(policy);
+            let cloned = attributes.clone();
+            assert_eq!(cloned.popup_grab, policy);
+            assert!(!cloned.active);
+        }
+    }
 
     #[test]
     fn popup_snapshot_converts_parent_physical_origin_independently_of_popup_scale() {

@@ -24,6 +24,11 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         if self.surface_metrics.get(&surface) == Some(&metrics) {
             return;
         }
+        // Recreate against a fresh anchor after any parent configure, including
+        // changes first observed here rather than through a queued resize event.
+        if self.surface_metrics.contains_key(&surface) {
+            self.close_popup_children(surface);
+        }
         self.surface_metrics.insert(surface, metrics.clone());
         A::surface_metrics_changed(&mut self.canonical_state, surface, metrics);
         self.revision += 1;

@@ -19,12 +19,14 @@ use std::hash::Hash;
 use std::time::Instant;
 use winit::error::EventLoopError;
 mod ingress;
+mod popup;
 mod window_config;
 pub(crate) use ingress::MessageIngress;
 pub use ingress::{
     MAX_MESSAGE_INGRESS_CAPACITY, MessageIngressConfig, MessageIngressConfigError,
     MessageIngressError, MultiWindowMessageSender,
 };
+pub use popup::{PopupAnchor, PopupConfig, PopupConfigError, PopupConstraints, PopupDirection};
 pub use window_config::{
     CloseBehavior, WindowConfig, WindowConfigError, WindowLevel, WindowPosition, WindowSize,
 };
@@ -77,10 +79,12 @@ impl SurfaceRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceCommand {
     /// Creates and registers a new logical surface.
+    /// An already-open popup ID is closed/recreated; ordinary duplicate IDs fail.
     Open(SurfaceRequest),
     /// Closes and unregisters one logical surface.
     Close(SurfaceId),
     /// Changes native visibility and preserves it across suspension and resume.
+    /// Hiding a popup closes it; hiding its parent also closes the popup.
     SetVisible { surface: SurfaceId, visible: bool },
     /// Requests an asynchronous redraw without invalidating layout.
     RequestRedraw(SurfaceId),
@@ -141,6 +145,7 @@ pub trait MultiWindowAppLogic {
     ) {
     }
     /// Observes logical removal after the native route has been retired.
+    /// Includes native popup dismissal, transient discard on suspension, and shutdown.
     fn surface_closed(_state: &mut Self::State, _surface: SurfaceId) {}
     /// Processes one native surface event and returns requested runtime operations.
     ///
@@ -333,11 +338,20 @@ pub trait MultiWindowAppLogic {
 /// Describes controlled failures in the multi-window runtime.
 #[derive(Debug)]
 pub enum MultiWindowRunError {
+    /// A native popup request failed validation or live-parent resolution.
+    Popup {
+        surface: SurfaceId,
+        parent: SurfaceId,
+        reason: String,
+    },
     EventLoop(EventLoopError),
     Surface(SurfaceId, RutterRunError),
     MessageIngressConfig(MessageIngressConfigError),
     DuplicateLogicalSurface(SurfaceId),
-    NativeRouteConflict { surface: SurfaceId, native: String },
+    NativeRouteConflict {
+        surface: SurfaceId,
+        native: String,
+    },
     UnknownLogicalSurface(SurfaceId),
     EmptyInitialSurfaces,
     Startup(Box<dyn Error + Send + Sync>),
@@ -345,6 +359,14 @@ pub enum MultiWindowRunError {
 impl Display for MultiWindowRunError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Popup {
+                surface,
+                parent,
+                reason,
+            } => write!(
+                formatter,
+                "native popup {surface:?} with parent {parent:?} failed: {reason}"
+            ),
             Self::EventLoop(error) => write!(formatter, "event loop failed: {error}"),
             Self::Surface(surface, error) => write!(
                 formatter,
@@ -439,6 +461,7 @@ impl<NativeId: Copy + Eq + Hash> SurfaceRoutes<NativeId> {
         self.surface_by_native.remove(&native);
         Some(native)
     }
+    #[cfg(test)]
     pub(crate) fn remove_native(&mut self, native: NativeId) -> Option<SurfaceId> {
         let surface = self.surface_by_native.remove(&native)?;
         self.native_by_surface.remove(&surface);

@@ -54,6 +54,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Audited multi-window runtime with stable surface IDs and per-window event routing.
 - Native Wayland layer-shell panels with validated output/edge anchoring, work-area reservations and layer-owned menus.
 - Backend-neutral native panels through `PanelConfig` / `WindowConfig::with_panel`: Wayland layer-shell and managed X11/EWMH docks. See [native panel geometry, focus and lifecycle](docs/NATIVE_PANELS.md).
+- Opt-in arbitrary-content native popups through `WindowConfig::with_popup`, with registered parents, logical placement and ordinary multi-window widget routing. See [native popup support and input-grab rules](docs/NATIVE_POPUPS.md); run `cargo run --example native_popup_clock -- top` for a live clock/calendar.
 - Clipboard paste sanitization for text inputs.
 - Safe image decoding limits to reduce malicious allocation risk.
 

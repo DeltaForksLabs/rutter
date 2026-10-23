@@ -42,11 +42,12 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         if !self.surface_configs.contains_key(&surface) {
             return Err(MultiWindowRunError::UnknownLogicalSurface(surface));
         }
+        self.close_popup_children(surface);
         self.routes.remove_surface(surface);
         self.focus_acquired_surfaces.remove(&surface);
         self.surface_configs.remove(&surface);
         if let Some(runner) = self.surface_runners.get_mut(&surface) {
-            runner.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
+            runner.release_surface();
         }
         self.surface_runners.remove(&surface);
         self.notify_surface_closed(surface);
@@ -71,6 +72,12 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         visible: bool,
     ) -> Result<(), MultiWindowRunError> {
         self.config_for(surface)?;
+        if !visible {
+            if self.config_for(surface)?.popup().is_some() {
+                return self.close_surface(surface);
+            }
+            self.close_popup_children(surface);
+        }
         self.runner_for_mut(surface)?.set_surface_visible(visible);
         self.surface_configs
             .get_mut(&surface)

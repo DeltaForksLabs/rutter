@@ -1,5 +1,74 @@
 # Development Log
 
+## [2026-10-22T22:00:14-03:00] - Release Native Widget Popups with the Requested Commit Amend - 0.42.0
+
+**Context:** Include the project version increment in the last native-popup/menu-reconciliation commit using the user's explicitly requested amend.
+
+**Challenge:** Synchronize generated package metadata without changing dependency resolution, preserve the previous commit's complete file descriptions and breaking-change notice, and avoid including the preexisting `.gitignore` edit.
+
+**Decision:** Advance Rutter from 0.41.0 to 0.42.0 as the next pre-1.0 minor release for the new popup API. This is not a claim of full source compatibility: downstream exhaustive matches need the new `MultiWindowRunError::Popup` arm, and shutdown now notifies `surface_closed` for remaining registered surfaces. Change the authoritative root manifest and let Cargo regenerate only the root package version in the lockfile. Update current popup documentation, retain historical DEVLOG versions and independent fork versions, and prepare the authorized amend with an English per-file message and its existing `BREAKING CHANGE` footer. No registry publication, tag or push is requested.
+
+**Files Changed:** `Cargo.toml`, Cargo-regenerated `Cargo.lock`, `docs/NATIVE_POPUPS.md`, `vendor/rutter-winit/RUTTER_FORK.md`, and this log. The earlier implementation, tests and example remain part of the amended commit without further source edits.
+
+**Validation:** All resource-intensive commands ran sequentially:
+
+```bash
+CARGO_BUILD_JOBS=2 cargo check --offline --all-targets --all-features
+cargo fmt --all -- --check
+cargo fmt --manifest-path vendor/rutter-winit/Cargo.toml --all -- --check
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --example native_popup_clock
+git diff --check
+git diff --exit-code -- ':(glob)vendor/**/Cargo.toml' ':(glob)vendor/**/Cargo.lock'
+```
+
+Check and Clippy passed at 0.42.0; both formatting checks passed. The full root suite passed 712 library tests (35 ignored), 50 binary tests, 235 integration tests and 308 doctests; the example's two tests passed separately. The owned Xvfb wrapper sets two Cargo build jobs, clears inherited display/session/DBus variables and supplies the isolated clipboard service needed by engine tests. Complete suite results were inspected. The manifest/lockfile diff contains only the root version increment; dependency resolution and fork manifests/lockfiles are unchanged. Source/docs diffs, Git status and staging scope were reviewed for the requested amend.
+
+Fork suites, live compositor smoke, non-Linux builds and registry packaging were not rerun for this metadata/documentation-only increment; the previous entry records the actual implementation validation and remaining graphical/FRAYM gaps. There are no new dependencies, runtime changes or generated source edits in this release follow-up. The generated root lockfile changed only its Rutter version. The preexisting `.gitignore` edit remains outside the commit, and local ignored issue references must be synchronized to the replacement commit hash after amend. No push is performed.
+
+## [2026-10-22T20:36:11-03:00] - Reconcile Published Menu Models and Expose Native Widget Popups - Unreleased
+
+**Context:** Implement the two remaining local issues for stale native-menu widget-ID snapshots and arbitrary-content parented popups without replacing native menus or layer-shell panels.
+
+**Challenge:** A popup can receive input before its parent's queued redraw reconciles a published model. Arbitrary widget surfaces also need truthful native parenting, configured geometry, input-grab authorization and child-first lifetime without leaking raw handles to applications. The live clock probe exposed a second bug: multi-window post-event scheduling replaced a live clock's wakeup with idle `Wait`.
+
+**Decision:** Invalidate every runner at shared-model publication, reconcile widget ownership/state/layout before menu consumers, retain strict same-state reconstruction checks, and track layout revisions even when another path has consumed the dirty flag. Revoke stale hit/paint state and retire removed/changed openers instead of retargeting actions. Add validated `PopupConfig`/`WindowConfig::with_popup` requests using registered parent IDs and ordinary per-surface widget engines. Preserve `SurfaceRequest` fields and `SurfaceCommand` variants, enforce logical/physical buffer budgets and native-role checks, arbitrate one application transient, close/recreate on parent geometry changes, and discard children before parents on closure/suspension/shutdown. Extend the Winit fork with default-compatible `PopupGrab::Auto`, strict `Required` and explicit `None`: required grabs consume the exact live parent/seat press token before any native allocation; release, replacement input, callback return and focus/capability/seat loss revoke it. Legacy serial choice follows receipt order, never numeric magnitude. Aggregate live-clock and smooth-scroll redraw deadlines so post-event scheduling preserves both. Keep panel focus policy unchanged in the runtime; the example explicitly selects on-demand input because labwc 0.7.1 otherwise withheld Escape from its grabbed layer-owned popup.
+
+**Files Changed:** `src/engine/{mod.rs,runner.rs,multi_runner.rs,test_surface.rs}`, native-menu reconciliation/presentation and tests, multi-runner popup/publication/lifecycle/metrics modules and tests, `src/multi_window/{mod.rs,window_config.rs,popup.rs}`, public exports, popup configuration tests, `examples/native_popup_clock.rs`, `tests/native/native_popup_smoke.py`, the Winit core/Wayland popup/event-loop/seat modules, `vendor/rutter-winit/RUTTER_FORK.md`, `README.md`, `docs/NATIVE_POPUPS.md`, the two local issue status reports and this log. The shared in-memory/raster test fixture lives in `engine/test_surface.rs` rather than being compiled as duplicate modules.
+
+**Validation:** Resource-intensive operations ran sequentially, with two Cargo build jobs and reduced test debug information where shown. Graphical input targeted only owned disposable displays, not the inherited desktop. Final successful commands included:
+
+```bash
+CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --example native_popup_clock
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=target CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --manifest-path vendor/rutter-winit/Cargo.toml -p winit-core -p winit-wayland -p winit-x11
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=target cargo clippy --locked --offline --manifest-path vendor/rutter-winit/Cargo.toml -p winit-core -p winit-wayland -p winit-x11 --all-targets -- -D warnings
+cargo fmt --all
+cargo fmt --all -- --check
+cargo fmt --manifest-path vendor/rutter-winit/Cargo.toml --all -- --check
+PYTHONPYCACHEPREFIX=/tmp/opencode/pycache python3 -m py_compile tests/native/native_popup_smoke.py
+```
+
+- The temporary Xvfb wrapper sets `CARGO_BUILD_JOBS=2`, clears inherited display/session/DBus variables and provides an isolated clipboard display for existing engine initialization. The complete final root output was inspected: 712 library tests passed (35 ignored), 50 binary tests, 235 integration tests and 308 doctests passed. Eight menu reconciliation regressions cover both menu types and withheld parent redraws; three publication/scheduling regressions cover cross-surface/external/wakeup paths and preservation of the live-clock deadline. Two example tests passed separately.
+- The selected Linux fork tests passed 43 unit tests (16 core, 13 Wayland, 14 X11) and 18 doctests. Eleven graphical fixtures and four doctests remained default-ignored. Root all-target/all-feature check/Clippy, selected fork all-target Clippy, root/fork format checks and Python syntax compilation passed. Literal Winit workspace all-features and non-Linux builds were not rerun: the previous entry records the Apple-only dependency incompatibility on this Linux host. No equivalence to that feature/platform matrix is claimed.
+
+```bash
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo build --locked --offline --profile test --example native_popup_clock
+LD_LIBRARY_PATH=/tmp/opencode/graphics-tools/usr/lib/x86_64-linux-gnu python3 tests/native/native_popup_smoke.py --labwc /tmp/opencode/graphics-tools/usr/bin/labwc --xvfb /tmp/opencode/graphics-tools/usr/bin/Xvfb --wlr-randr /tmp/opencode/graphics-tools/usr/bin/wlr-randr --keep
+git diff --check
+git diff --exit-code -- ':(glob)**/Cargo.toml' ':(glob)**/Cargo.lock' Cargo.toml Cargo.lock
+```
+
+- The final smoke rerun passed 12 scenarios (top/bottom/left/right at 1x/1.25x/2x), each with three opens. Real Wayland protocol traces establish `xdg_popup`/grab/layer-parent association, configured 384x448 bounds and no additional layer roles for children. Pixel sampling verifies clock ticking, month navigation and day selection; Escape, outside-client dismissal, explicit Close and reopening passed. XTEST was sent only to the owned Xvfb host; labwc delivered Wayland seat input. Final logs: `/tmp/opencode/rutter-popup-3iwp7qkm`; the preceding successful matrix is in `/tmp/opencode/rutter-popup-4_2irr0u`. Runtime tools/libraries were extracted under `/tmp/opencode`, not added as project dependencies or installed globally.
+- Intermediate failures were not counted as successes: zero-area/not-invalidated test menu fixtures caused two publication regressions to fail before fixture correction; initial smoke attempts lacked the clipboard display, exposed the clock deadline bug and the noninteractive-parent Escape limitation, and assumed only one layer role despite backend probing. An example test initially referred to a nonexistent calendar enum variant. Clippy identified duplicate fixture modules, large enum variants, a collapsible conditional and a test arithmetic lint; shared fixture placement and boxed private settings/metadata fixed them without suppressions. The last formatting check found only the example import wrap; formatting and final checks then passed.
+
+Remaining live gaps are ordinary toplevel/X11 parents through the new API, non-grabbing mode, every corner/constraint combination, multiple-parent/menu arbitration, parent closure, suspend/shutdown and FRAYM. The example's `(0, 0)` anchor is not all corner coverage. In-memory menu ordering/lifecycle tests are not a live Quasar/FRAYM reproduction. FRAYM's previously recorded layer-shell configure stall remains uncorrected; passing labwc is not FRAYM acceptance. Non-Linux execution, physical output hotplug and real multi-monitor DPI transitions were not validated. The inherited synchronous Wayland initial-configure wait still has no added timeout.
+
+Compatibility: popup presentation is opt-in, existing generic popovers remain in-surface, and legacy Winit grab defaults remain `Auto`. The new `MultiWindowRunError::Popup` variant requires downstream exhaustive error matches to add an arm; shutdown now notifies `surface_closed` for remaining registered surfaces. Required grabs intentionally reject deferred/release-triggered opens; callers can explicitly request non-grabbing behavior with its documented focus/dismissal limits. No Cargo dependencies, versions, lockfiles or generated source files changed; root remains 0.41.0. DEVLOG and local issue statuses were updated. The ignored `issues/` reports remain local; new fix hashes and `[DONE]` renames are deferred until actual commits exist. The preexisting `.gitignore` change was preserved. Nothing was staged, committed or pushed.
+
 ## [2026-10-12T23:11:30-03:00] - Validate Locked Linux Feature Sets Across All Three Forks - Unreleased
 
 **Context:** Verify the current uncommitted PanelConfig/X11/EWMH worktree with online dependency access and strict fork Clippy/test checks on the Linux host.

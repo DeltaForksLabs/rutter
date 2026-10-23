@@ -17,6 +17,7 @@ use winit_core::keyboard::ModifiersState;
 
 use crate::WindowId;
 use crate::event_loop::sink::EventSink;
+use crate::seat::{PopupInput, PopupInputKind};
 use crate::state::WinitState;
 
 impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
@@ -60,6 +61,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                 },
             },
             WlKeyboardEvent::Enter { surface, .. } => {
+                seat_state.popup_input.keyboard_left();
                 let window_id = crate::make_wid(&surface);
 
                 // Mark the window as focused.
@@ -95,6 +97,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                 }
             },
             WlKeyboardEvent::Leave { surface, .. } => {
+                seat_state.popup_input.keyboard_left();
                 let window_id = crate::make_wid(&surface);
 
                 // NOTE: we should drop the repeat regardless whether it was for the present
@@ -132,7 +135,22 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
             WlKeyboardEvent::Key { serial, key, state: WEnum::Value(key_state), .. }
                 if matches!(key_state, WlKeyState::Repeated | WlKeyState::Pressed) =>
             {
-                seat_state.latest_input_serial.set(Some(serial));
+                state.events_sink.record_input_serial(data.seat.clone(), serial);
+                let input = if key_state == WlKeyState::Pressed {
+                    seat_state.popup_input.invalidate();
+                    data.window_id.lock().unwrap().map(|window_id| {
+                        seat_state.popup_input.press(
+                            PopupInputKind::Keyboard(key),
+                            data.seat.clone(),
+                            window_id,
+                            serial,
+                        )
+                    })
+                } else {
+                    // Compositor repeats, like client-side repeats, are not new
+                    // implicit grabs and must not refresh a consumed press.
+                    None
+                };
                 let key = key + 8;
                 key_input(
                     keyboard_state,
@@ -141,6 +159,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     key,
                     ElementState::Pressed,
                     key_state == WlKeyState::Repeated,
+                    input,
                 );
 
                 let delay = match keyboard_state.repeat_info {
@@ -195,6 +214,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                             repeat_keycode,
                             ElementState::Pressed,
                             true,
+                            None,
                         );
 
                         // NOTE: the gap could change dynamically while repeat is going.
@@ -208,7 +228,8 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
             WlKeyboardEvent::Key {
                 serial, key, state: WEnum::Value(WlKeyState::Released), ..
             } => {
-                seat_state.latest_input_serial.set(Some(serial));
+                state.events_sink.record_input_serial(data.seat.clone(), serial);
+                seat_state.popup_input.release(PopupInputKind::Keyboard(key));
                 let key = key + 8;
 
                 key_input(
@@ -218,6 +239,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     key,
                     ElementState::Released,
                     false,
+                    None,
                 );
 
                 if keyboard_state.repeat_info != RepeatInfo::Disable
@@ -370,6 +392,7 @@ fn key_input(
     keycode: u32,
     state: ElementState,
     repeat: bool,
+    input: Option<PopupInput>,
 ) {
     let window_id = match *data.window_id.lock().unwrap() {
         Some(window_id) => window_id,
@@ -379,6 +402,10 @@ fn key_input(
     if let Some(mut key_context) = keyboard_state.xkb_context.key_context() {
         let event = key_context.process_key_event(keycode, state, repeat);
         let event = WindowEvent::KeyboardInput { device_id: None, event, is_synthetic: false };
-        event_sink.push_window_event(event, window_id);
+        if let Some(input) = input {
+            event_sink.push_popup_input_event(event, window_id, input);
+        } else {
+            event_sink.push_window_event(event, window_id);
+        }
     }
 }

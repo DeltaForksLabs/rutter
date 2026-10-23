@@ -66,6 +66,7 @@ mod dropdown_pointer;
 mod native_integration;
 mod native_menu;
 mod pointer_region;
+mod popup_coordination;
 mod search;
 mod secondary_pointer;
 mod shortcut;
@@ -653,7 +654,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         }
         // Input handlers run after `new_events`, so this schedules a newly started scroll.
         let deadline = self
-            .next_smooth_scroll_deadline(Instant::now())
+            .next_redraw_deadline(Instant::now())
             .into_iter()
             .chain(self.pending_native_menu_deadline())
             .min();
@@ -1672,8 +1673,15 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .min()
     }
 
-    pub(crate) fn next_smooth_scroll_deadline(&self, now: Instant) -> Option<Instant> {
+    pub(crate) fn next_redraw_deadline(&self, now: Instant) -> Option<Instant> {
         animation_frame_deadline(now, false, false, self.engine.has_pending_smooth_scroll())
+            .into_iter()
+            .chain(
+                self.engine
+                    .has_live_clock
+                    .then(|| self.clock_redraw_at.unwrap_or_else(next_clock_tick_at)),
+            )
+            .min()
     }
 
     fn live_clock_deadline(&mut self) -> Option<Instant> {

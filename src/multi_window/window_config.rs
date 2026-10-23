@@ -113,6 +113,7 @@ pub enum CloseBehavior {
 /// Startup and lifecycle settings for one native window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowConfig {
+    popup: Option<Box<super::PopupConfig>>,
     panel: Option<Box<winit::window::PanelConfig>>,
     layer_shell: Option<winit::window::LayerShellConfig>,
     title: String,
@@ -132,6 +133,7 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
+            popup: None,
             panel: None,
             layer_shell: None,
             title: "Rutter".to_string(),
@@ -165,6 +167,38 @@ macro_rules! bool_window_setting {
 }
 
 impl WindowConfig {
+    /// Opts into a native parented popup with ordinary application content.
+    /// By default, Wayland requires opening inside the actual parent's input press
+    /// callback; use [`super::PopupConfig::with_grab(false)`] for a non-grabbing popup.
+    /// The runtime validates the live parent and rejects conflicting roles/geometry hints.
+    /// Decorations and interactive resizing are disabled for this native role.
+    pub fn with_popup(mut self, popup: super::PopupConfig) -> Self {
+        self.popup = Some(Box::new(popup));
+        self
+    }
+
+    /// Returns the validated popup request, if selected.
+    pub fn popup(&self) -> Option<&super::PopupConfig> {
+        self.popup.as_deref()
+    }
+
+    pub(crate) fn validate_popup(&self) -> Result<(), super::PopupConfigError> {
+        if self.popup.is_some()
+            && (self.panel.is_some()
+                || self.layer_shell.is_some()
+                || self.position.is_some()
+                || self.inner_size.is_some()
+                || self.min_inner_size.is_some()
+                || self.max_inner_size.is_some()
+                || self.window_level != WindowLevel::Normal
+                || !self.visible
+                || self.close_behavior != CloseBehavior::CloseSurface)
+        {
+            return Err(super::PopupConfigError::ConflictingWindowHints);
+        }
+        Ok(())
+    }
+
     /// Requests a native Wayland layer panel or managed X11 EWMH dock.
     /// Unsupported backends and conflicting geometry hints fail at creation.
     pub fn with_panel(mut self, config: winit::window::PanelConfig) -> Self {

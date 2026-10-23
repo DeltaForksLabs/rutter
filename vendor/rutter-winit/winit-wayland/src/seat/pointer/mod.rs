@@ -28,6 +28,7 @@ use winit_core::event::{
 };
 
 use crate::WindowId;
+use crate::seat::PopupInputKind;
 use crate::state::WinitState;
 
 pub mod pointer_gesture;
@@ -59,6 +60,18 @@ impl PointerHandler for WinitState {
         };
 
         for event in events {
+            // Revoke queued press tokens even when this event targets a decoration
+            // or a surface that has already disappeared from the window registry.
+            match event.kind {
+                PointerEventKind::Press { .. } => seat_state.popup_input.invalidate(),
+                PointerEventKind::Release { button, .. } => {
+                    seat_state.popup_input.release(PopupInputKind::Pointer(button));
+                },
+                PointerEventKind::Enter { .. } | PointerEventKind::Leave { .. } => {
+                    seat_state.popup_input.pointer_left();
+                },
+                _ => (),
+            }
             let surface = &event.surface;
 
             // The parent surface.
@@ -171,26 +184,36 @@ impl PointerHandler for WinitState {
                     if matches!(kind, PointerEventKind::Press { .. }) {
                         // For Gnome (Mutter) and possible others only the Press event serial must
                         // be logged!
-                        seat_state.latest_input_serial.set(Some(serial));
+                        self.events_sink.record_input_serial(seat.clone(), serial);
                     }
 
+                    let input = matches!(kind, PointerEventKind::Press { .. }).then(|| {
+                        seat_state.popup_input.press(
+                            PopupInputKind::Pointer(button),
+                            seat.clone(),
+                            window_id,
+                            serial,
+                        )
+                    });
                     let button = wayland_button_to_winit(button);
                     let state = if matches!(kind, PointerEventKind::Press { .. }) {
                         ElementState::Pressed
                     } else {
                         ElementState::Released
                     };
-                    self.events_sink.push_window_event(
-                        WindowEvent::PointerButton {
-                            primary: true,
-                            device_id: None,
-                            state,
-                            position,
-                            button,
-                            is_macos_activation_click: false,
-                        },
-                        window_id,
-                    );
+                    let event = WindowEvent::PointerButton {
+                        primary: true,
+                        device_id: None,
+                        state,
+                        position,
+                        button,
+                        is_macos_activation_click: false,
+                    };
+                    if let Some(input) = input {
+                        self.events_sink.push_popup_input_event(event, window_id, input);
+                    } else {
+                        self.events_sink.push_window_event(event, window_id);
+                    }
                 },
                 PointerEventKind::Axis { horizontal, vertical, .. } => {
                     // Get the current phase.

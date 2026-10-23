@@ -12,6 +12,8 @@ pub mod multi_runner;
 pub mod run_error;
 pub mod runner;
 mod table_runtime;
+#[cfg(test)]
+mod test_surface;
 mod virtual_selection;
 pub mod widget_state;
 
@@ -1721,6 +1723,9 @@ pub struct RutterEngine<A: AppLogic> {
     runtime_cache_scratch: WidgetRuntimeCaches<A::Message>,
     pub last_root_node: NodeId,
     pub layout_dirty: bool,
+    // Native surfaces must notice reconciliation performed by another input
+    // path, even after that path has consumed layout_dirty.
+    layout_revision: u64,
     pub app_state: A::State,
     pub input_states: HashMap<u64, crate::input_state::InputWidgetState>,
     pub widget_states: HashMap<u64, WidgetState>,
@@ -1824,6 +1829,7 @@ impl<A: AppLogic> RutterEngine<A> {
             taffy,
             last_root_node: root,
             layout_dirty: true,
+            layout_revision: 0,
             app_state,
             input_states: HashMap::new(),
             widget_states: HashMap::new(),
@@ -2032,7 +2038,14 @@ impl<A: AppLogic> RutterEngine<A> {
             )
         };
         if let Some(previous) = &self.widget_id_snapshot {
-            previous.validate_transition_to(&next_snapshot)?;
+            if self.layout_dirty {
+                previous.validate_transition_to(&next_snapshot)?;
+            } else {
+                // A clean runtime is a reconstruction, not a model publication.
+                // In particular, popup input must not accept a different tree
+                // merely because the parent redraw has not run yet.
+                previous.validate_reconstruction(&next_snapshot)?;
+            }
         }
         let widget_tree_changed = self.widget_id_snapshot.as_ref() != Some(&next_snapshot);
         validate_existing_widget_states(&self.widget_states, &stateful)?;
@@ -2336,6 +2349,16 @@ impl<A: AppLogic> RutterEngine<A> {
             .unwrap_or_else(|error| panic!("widget ID validation failed: {error}"));
     }
 
+    pub(crate) fn try_ensure_layout_for_input(
+        &mut self,
+        size: PhysicalSize<u32>,
+    ) -> Result<(), WidgetIdError> {
+        if self.layout_dirty || self.widget_id_snapshot.is_none() {
+            self.try_ensure_widget_states()?;
+        }
+        self.try_ensure_layout(size)
+    }
+
     pub fn try_ensure_layout(&mut self, size: PhysicalSize<u32>) -> Result<(), WidgetIdError> {
         if !self.layout_dirty {
             // Retained flags can be changed directly without changing the view.
@@ -2486,6 +2509,7 @@ impl<A: AppLogic> RutterEngine<A> {
             self.focused_widget_id = None;
         }
         self.layout_dirty = false;
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         Ok(())
     }
 

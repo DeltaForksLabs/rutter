@@ -30,6 +30,7 @@ use crate::widgets::dropdown_menu::{
 
 mod geometry;
 mod presentation;
+mod reconciliation;
 use geometry::*;
 
 enum NativeMenuRequest {
@@ -56,6 +57,7 @@ pub(super) struct NativeMenuSurface {
     pub(super) backend: Box<dyn GraphicsBackend>,
     pub(super) kind: NativeMenuKind,
     pub(super) ready: bool,
+    parent_layout_revision: u64,
     configure_deadline: Instant,
     placement: MenuPlacement,
     requested_origin: Point,
@@ -128,13 +130,13 @@ impl NativeMenuSurface {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    // The caller has reconciled parent state/layout. Keep measurement separate
+    // from the guard so it can also refresh an already-created popup's panels.
     fn requested_native_menu(&mut self) -> Result<NativeMenuRequest, RutterRunError> {
         let size = self.engine.window.as_ref().unwrap().surface_size();
         if size.width == 0 || size.height == 0 {
             return Ok(NativeMenuRequest::Closed);
         }
-        self.engine.try_ensure_widget_states()?;
-        self.engine.try_ensure_layout(size)?;
         let scale = self.engine.scale_factor;
         let viewport = (size.width as f32 / scale, size.height as f32 / scale);
         let theme = A::theme_for(&self.engine.app_state);
@@ -215,6 +217,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if self.engine.window.is_none() {
             return Ok(());
         }
+        self.reconcile_native_menu_model()?;
         if !self.engine.any_context_menu_open() && !self.any_dropdown_menu_open() {
             self.engine.native_menu_layout = None;
             if self.native_menu.take().is_some() {
@@ -225,7 +228,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let (placement, surfaces) = match self.requested_native_menu()? {
             NativeMenuRequest::Menu(placement, surfaces) => (placement, surfaces),
             NativeMenuRequest::Unavailable(kind, reason) => {
-                self.disable_native_menus(kind, reason);
+                self.disable_native_menus(kind, reason)?;
                 return Ok(());
             }
             NativeMenuRequest::Closed => {
@@ -237,11 +240,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             }
         };
         if self.native_menus_unavailable {
-            if !self.overlay_menu_usable(placement.kind) {
+            if !self.overlay_menu_usable(placement.kind)? {
                 self.disable_native_menus(
                     placement.kind,
                     "native menus are unavailable on this surface".to_owned(),
-                );
+                )?;
             }
             return Ok(());
         }
@@ -265,13 +268,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         self.disable_native_menus(
                             kind,
                             format!("read popup configure before reposition: {error}"),
-                        );
+                        )?;
                         return Ok(());
                     }
                 };
                 if let Err(reason) = configured_rect(before) {
                     let kind = popup.kind;
-                    self.disable_native_menus(kind, reason);
+                    self.disable_native_menus(kind, reason)?;
                     return Ok(());
                 }
                 popup.configure_serial_before_request = before.configure_serial;
@@ -291,7 +294,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     && let Err(reason) = validate_native_popup_size(actual_size)
                 {
                     let kind = popup.kind;
-                    self.disable_native_menus(kind, reason);
+                    self.disable_native_menus(kind, reason)?;
                     return Ok(());
                 }
                 popup.placement = placement;
@@ -344,13 +347,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             Ok(backend) => {
                 let configured_size = backend.window().surface_size();
                 if let Err(reason) = validate_native_popup_size(configured_size) {
-                    self.disable_native_menus(placement.kind, reason);
+                    self.disable_native_menus(placement.kind, reason)?;
                     return Ok(());
                 }
                 self.native_menu = Some(NativeMenuSurface {
                     backend,
                     kind: placement.kind,
                     ready: false,
+                    parent_layout_revision: self.engine.layout_revision,
                     configure_deadline: Instant::now() + POPUP_CONFIGURE_TIMEOUT,
                     placement,
                     requested_origin: Point::new(
@@ -367,16 +371,20 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 self.resolve_native_menu()?;
                 self.redraw();
             }
-            Err(error) => self.disable_native_menus(placement.kind, error),
+            Err(error) => self.disable_native_menus(placement.kind, error)?,
         }
         Ok(())
     }
 
-    fn disable_native_menus(&mut self, kind: NativeMenuKind, reason: String) {
+    fn disable_native_menus(
+        &mut self,
+        kind: NativeMenuKind,
+        reason: String,
+    ) -> Result<(), RutterRunError> {
         let id = match kind {
             NativeMenuKind::Context(id) | NativeMenuKind::Dropdown(id) => id,
         };
-        let overlay_usable = self.overlay_menu_usable(kind);
+        let overlay_usable = self.overlay_menu_usable(kind)?;
         eprintln!("rutter: native menu unavailable; overlay_usable={overlay_usable}: {reason}");
         self.native_menu = None;
         self.engine.native_menu_layout = None;
@@ -397,9 +405,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 message,
                 &mut self.engine.clipboard,
             );
-            self.engine.layout_dirty = true;
+            self.invalidate_published_model();
         }
         self.redraw();
+        Ok(())
     }
 
     fn native_pointer_position(
@@ -530,6 +539,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match self.reconcile_native_menu_before_input() {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(error) => {
+                        self.terminate_for_error(event_loop, error);
+                        return;
+                    }
+                }
                 if let Err(error) = self.refresh_layout_before_keyboard_input() {
                     self.terminate_for_error(event_loop, error);
                     return;
@@ -543,7 +560,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 if let Some(popup) = self.native_menu.as_mut() {
                     if let Err(reason) = validate_native_popup_size(size) {
                         let kind = popup.kind;
-                        self.disable_native_menus(kind, reason);
+                        if let Err(error) = self.disable_native_menus(kind, reason) {
+                            self.terminate_for_error(event_loop, error);
+                        }
                     } else {
                         if popup.configure_serial_before_request.is_none() {
                             popup.awaiting_configure = false;
@@ -584,11 +603,20 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         cursor: Point,
         button: MouseButton,
     ) -> Result<(), RutterRunError> {
-        let kind = self.native_menu.as_ref().unwrap().kind;
+        let Some(kind) = self.native_menu.as_ref().map(|popup| popup.kind) else {
+            return Ok(());
+        };
         let id = match kind {
             NativeMenuKind::Context(id) | NativeMenuKind::Dropdown(id) => id,
         };
         let (hit, scroll) = self.native_cursor_targets(cursor)?;
+        if self
+            .native_menu
+            .as_ref()
+            .is_none_or(|popup| popup.kind != kind)
+        {
+            return Ok(());
+        }
         if let Some(hit) = hit {
             self.handle_dropdown_pointer_hit(hit, button);
         } else if button == MouseButton::Right || scroll.is_none() {
@@ -608,6 +636,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         RutterRunError,
     > {
         use crate::render::dropdown_menu_overlay::DropdownMenuScrollTarget;
+        if !self.reconcile_native_menu_before_input()? {
+            return Ok((None, None));
+        }
         let Some((kind, surfaces)) = self.engine.native_menu_layout.as_ref() else {
             return Ok((None, None));
         };
@@ -665,7 +696,8 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         Ok((hit, scroll))
     }
 
-    fn overlay_menu_usable(&mut self, kind: NativeMenuKind) -> bool {
+    fn overlay_menu_usable(&mut self, kind: NativeMenuKind) -> Result<bool, RutterRunError> {
+        self.reconcile_native_menu_model()?;
         let size = self
             .engine
             .window
@@ -680,6 +712,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             A::theme_for(&self.engine.app_state).font_body,
         );
         let widget = A::view(&mut self.engine.app_state);
+        validate_runtime_reconstruction(self.engine.widget_id_snapshot.as_ref(), &widget)?;
         let surfaces = match kind {
             NativeMenuKind::Context(id) => {
                 let mut menus = Vec::new();
@@ -717,7 +750,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 })
             }
         };
-        surfaces.is_some_and(|surfaces| {
+        Ok(surfaces.is_some_and(|surfaces| {
             !surfaces.is_empty()
                 && surfaces.iter().all(|surface| {
                     usable_menu_area(
@@ -729,10 +762,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         kind,
                     )
                 })
-        })
+        }))
     }
 }
 
 #[cfg(test)]
 #[path = "native_menu/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod reconciliation_tests;

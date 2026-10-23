@@ -20,14 +20,15 @@ use winit_core::error::{NotSupportedError, RequestError};
 use winit_core::event::{Ime, WindowEvent};
 use winit_core::monitor::{Fullscreen, MonitorHandle as CoreMonitorHandle};
 use winit_core::window::{
-    CursorGrabMode, ImeCapabilities, ImeRequest, ImeRequestError, ResizeDirection, Theme,
-    UserAttentionType, Window as CoreWindow, WindowAnchor, WindowAttributes, WindowButtons,
+    CursorGrabMode, ImeCapabilities, ImeRequest, ImeRequestError, PopupGrab, ResizeDirection,
+    Theme, UserAttentionType, Window as CoreWindow, WindowAnchor, WindowAttributes, WindowButtons,
     WindowConstraintAdjustment, WindowGravity, WindowId, WindowLevel, WindowPositioner,
 };
 
 use super::ActiveEventLoop;
 use super::output::MonitorHandle;
 use crate::WindowAttributesWayland;
+use crate::seat::PopupInput;
 use crate::window::Handles;
 use crate::window::handles::WindowRequests;
 use crate::window::state::{WindowState, WindowType};
@@ -74,8 +75,6 @@ impl Popup {
                 .xdg_activation
                 .as_ref()
                 .map(|activation_state| activation_state.global().clone());
-            let xdg_positioner = XdgPositioner::new(&state.xdg_shell)
-                .map_err(|_| error("Failed to create positioner"))?;
             let parent_window_id =
                 WindowId::from_raw(parent_window_handle.surface.as_ptr() as usize);
             if state
@@ -86,6 +85,27 @@ impl Popup {
             {
                 return Err(error("Popup parent native lifetime has retired"));
             }
+            if !state.windows.borrow().contains_key(&parent_window_id) {
+                return Err(error("Parent window id unknown"));
+            }
+            // Preflight before allocating any positioner, wl_surface or role,
+            // linking a child, or inserting entries in either window registry.
+            // The dispatch scope survives synchronous constructor roundtrips;
+            // handlers can still revoke its shared token on intervening input.
+            let (grab, xdg_positioner) = prepare_popup_positioner(
+                select_popup_grab(
+                    attributes.popup_grab,
+                    attributes.active,
+                    parent_window_id,
+                    event_loop_window_target.popup_input.borrow().as_ref(),
+                    state.events_sink.latest_input.clone(),
+                    |seat| state.seats.contains_key(&seat.id()),
+                ),
+                || {
+                    XdgPositioner::new(&state.xdg_shell)
+                        .map_err(|_| error("Failed to create positioner"))
+                },
+            )?;
             let (popup, popup_state) = if let Some(parent_window_state) =
                 state.windows.borrow().get(&parent_window_id)
             {
@@ -98,8 +118,6 @@ impl Popup {
                     constraint_adjustment,
                     ..
                 } = requested_positioner;
-                let grab_keyboard = attributes.active;
-
                 let mut parent_window_state = parent_window_state.lock().unwrap();
 
                 // Use the scale factor and xdg geometry of the parent.
@@ -211,20 +229,8 @@ impl Popup {
                 // Request a keyboard grab so the compositor routes key events to
                 // this popup rather than the parent window. Must happen before the
                 // first commit that maps the surface.
-                if grab_keyboard {
-                    // Use the seat with the most recent event
-                    let grab = state
-                        .seat_state
-                        .seats()
-                        .filter_map(|seat| {
-                            let serial = state.seats.get(&seat.id())?.latest_serial()?;
-                            Some((seat, serial))
-                        })
-                        .max_by_key(|(_, serial)| *serial);
-
-                    if let Some((seat, serial)) = grab {
-                        popup.xdg_popup().grab(&seat, serial);
-                    }
+                if let Some((seat, serial)) = grab {
+                    popup.xdg_popup().grab(&seat, serial);
                 }
 
                 popup.wl_surface().commit();
@@ -356,6 +362,15 @@ impl Popup {
 }
 
 impl CoreWindow for Popup {
+    fn surface_logical_size(&self) -> LogicalSize<f64> {
+        let Some(state) = self.state() else { return LogicalSize::default() };
+        let state = state.lock().unwrap();
+        if let WindowType::Popup { last_configure: Some(configure), .. } = &state.window {
+            return configured_popup_logical_size(configure.width, configure.height);
+        }
+        state.surface_size().cast()
+    }
+
     fn window_type(&self) -> winit_core::window::WindowType {
         winit_core::window::WindowType::Popup
     }
@@ -795,6 +810,54 @@ fn configured_popup_geometry(
     }
 }
 
+fn configured_popup_logical_size(width: i32, height: i32) -> LogicalSize<f64> {
+    LogicalSize::new(f64::from(width), f64::from(height))
+}
+
+/// Gate the first protocol allocation on grab preflight. Injecting that allocation
+/// keeps the failure-without-native-mutation boundary testable without a compositor.
+fn prepare_popup_positioner<S, P>(
+    grab: Result<Option<(S, u32)>, &'static str>,
+    create_positioner: impl FnOnce() -> Result<P, RequestError>,
+) -> Result<(Option<(S, u32)>, P), RequestError> {
+    let grab = grab.map_err(NotSupportedError::new)?;
+    Ok((grab, create_positioner()?))
+}
+
+fn select_popup_grab<S: Clone>(
+    policy: PopupGrab,
+    active: bool,
+    parent: WindowId,
+    input: Option<&PopupInput<S>>,
+    latest_input: Option<(S, u32)>,
+    seat_is_live: impl Fn(&S) -> bool,
+) -> Result<Option<(S, u32)>, &'static str> {
+    match policy {
+        PopupGrab::None => Ok(None),
+        PopupGrab::Auto => {
+            let grab = latest_input.filter(|(seat, _)| active && seat_is_live(seat));
+            if grab.is_some()
+                && let Some(input) = input
+            {
+                // A legacy popup opened in this callback must not leave the
+                // same physical press available for a second, required grab.
+                input.invalidate();
+            }
+            Ok(grab)
+        },
+        PopupGrab::Required => {
+            let input =
+                input.ok_or("Required popup grab needs a live parent input press callback")?;
+            let serial = input.consume(parent, seat_is_live).ok_or(
+                "Required popup grab input is released, stale, consumed, or belongs to another \
+                 parent or unavailable seat",
+            )?;
+            Ok(Some((input.seat.clone(), serial)))
+        },
+        _ => Err("Unsupported popup grab policy"),
+    }
+}
+
 fn initial_popup_positioner(attributes: &WindowAttributes) -> WindowPositioner {
     let mut positioner = attributes.positioner.unwrap_or_default();
     if attributes.positioner.is_none()
@@ -869,6 +932,110 @@ fn from_constraint_adjustment(
 #[cfg(test)]
 mod positioner_tests {
     use super::*;
+    use crate::seat::{PopupInputKind, PopupInputState};
+
+    #[test]
+    fn required_grab_uses_the_dispatch_parent_and_seat_and_consumes_once() {
+        let parent = WindowId::from_raw(1);
+        let state = PopupInputState::default();
+        let input = state.press(PopupInputKind::Pointer(1), 7_u8, parent, 0);
+        let select = |parent, live_seat| {
+            select_popup_grab(
+                PopupGrab::Required,
+                false,
+                parent,
+                Some(&input),
+                Some((8, u32::MAX)),
+                |seat| *seat == live_seat,
+            )
+        };
+        assert!(select(WindowId::from_raw(2), 7).is_err());
+        assert!(select(parent, 8).is_err());
+        assert_eq!(select(parent, 7), Ok(Some((7, 0))));
+        assert!(select(parent, 7).is_err());
+    }
+
+    #[test]
+    fn required_grab_failure_cannot_reach_native_allocation() {
+        let parent = WindowId::from_raw(1);
+        let state = PopupInputState::default();
+        let input = state.press(PopupInputKind::Pointer(1), 7_u8, parent, 42);
+        state.release(PopupInputKind::Pointer(1));
+        for input in [None, Some(&input)] {
+            let mut allocations = 0;
+            let selection =
+                select_popup_grab(PopupGrab::Required, true, parent, input, Some((7, 99)), |_| {
+                    true
+                });
+            let result = prepare_popup_positioner(selection, || {
+                allocations += 1;
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert_eq!(allocations, 0);
+        }
+    }
+
+    #[test]
+    fn auto_and_none_preserve_activation_policy() {
+        let parent = WindowId::from_raw(1);
+        let state = PopupInputState::default();
+        let input = state.press(PopupInputKind::Keyboard(2), 7_u8, parent, 42);
+        for active in [false, true] {
+            assert_eq!(
+                select_popup_grab(
+                    PopupGrab::None,
+                    active,
+                    parent,
+                    Some(&input),
+                    Some((7, 43)),
+                    |_| true
+                ),
+                Ok(None)
+            );
+            assert_eq!(
+                select_popup_grab(PopupGrab::Auto, active, parent, Some(&input), None, |_| true),
+                Ok(None)
+            );
+            assert_eq!(
+                select_popup_grab(PopupGrab::Auto, active, parent, None, Some((8, 0)), |_| true),
+                Ok(active.then_some((8, 0)))
+            );
+        }
+        assert_eq!(
+            select_popup_grab(PopupGrab::Auto, true, parent, None, Some((8, 0)), |_| false),
+            Ok(None)
+        );
+        assert_eq!(input.consume(parent, |_| true), Some(42));
+    }
+
+    #[test]
+    fn auto_grab_does_not_leave_the_press_available_for_a_second_required_grab() {
+        let parent = WindowId::from_raw(1);
+        let state = PopupInputState::default();
+        let input = state.press(PopupInputKind::Pointer(1), 7_u8, parent, 42);
+        assert_eq!(
+            select_popup_grab(PopupGrab::Auto, true, parent, Some(&input), Some((7, 42)), |_| true),
+            Ok(Some((7, 42)))
+        );
+        assert!(
+            select_popup_grab(PopupGrab::Required, true, parent, Some(&input), None, |_| true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn configured_logical_dimensions_do_not_inherit_buffer_rounding() {
+        let logical = configured_popup_logical_size(101, 73);
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let physical =
+                super::super::logical_to_physical_rounded(LogicalSize::new(101, 73), scale);
+            assert_eq!(logical, LogicalSize::new(101.0, 73.0));
+            if scale == 1.25 || scale == 1.5 {
+                assert_ne!(physical.to_logical::<f64>(scale), logical);
+            }
+        }
+    }
 
     #[test]
     fn popup_snapshot_keeps_parent_logical_configure_separate_from_popup_buffer_scale() {

@@ -72,6 +72,33 @@ The `popup_selection` test represents two menu options as hit regions in its own
 
 ## Integration status
 
+### Explicit Wayland popup grab policy
+
+`WindowAttributes::with_popup_grab(PopupGrab)` separates legacy best-effort
+`Auto` (the default), `Required`, and deliberately non-grabbing `None`.
+`Required` accepts only a synchronous physical pointer-button or non-repeat
+keyboard press callback for the exact live parent and seat. Event metadata
+carries a one-use authorization token; release, focus/capability/seat loss,
+another press on that seat, callback return, or consumption revokes it.
+Construction checks authorization before allocating a positioner, surface, role,
+or registry entry. Synchronous configure roundtrips retain the callback scope,
+but intervening input can still revoke it. Touch/tablet and deferred or
+release-triggered opens are not authorized by this path. Compositor acceptance
+and keyboard-focus policy remain authoritative.
+
+Legacy `Auto` selects cached input by receipt order, not the numeric maximum of
+opaque/wrapping serials; `None` never issues a Wayland grab. X11's existing native
+pointer-grab policy is unchanged. `Popup::surface_logical_size()` now reports the
+unrounded configured logical dimensions rather than dividing rounded buffer pixels.
+Queued press metadata is boxed so unrelated window events do not grow with it.
+
+The Rutter arbitrary-content API selects `Required` by default and exposes an
+explicit non-grabbing opt-out. See [the popup contract](../../docs/NATIVE_POPUPS.md)
+for input, failure and focus boundaries and the disposable labwc clock/calendar
+probe. The probe observed that labwc 0.7.1 does not deliver Escape to a grabbed
+popup on a keyboard-noninteractive layer parent; the example explicitly requests
+on-demand, never exclusive, keyboard input. No fork dependency or fork version changed.
+
 ### Wayland layer-shell role
 
 The fork now supports `WindowAttributes::with_layer_shell(LayerShellConfig)` on

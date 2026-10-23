@@ -39,6 +39,7 @@ use winit_core::monitor::MonitorHandle as CoreMonitorHandle;
 use winit_core::window::{Theme, WindowType};
 
 use crate::dnd::{MimeData, dnd_action_winit_to_wl};
+use crate::seat::PopupInput;
 use crate::types::cursor::WaylandCustomCursor;
 use crate::{DragSource, MimeType, image_to_buffer, make_data_transfer_id};
 
@@ -56,9 +57,32 @@ use super::{WindowId, logical_to_physical_rounded};
 
 type WaylandDispatcher = calloop::Dispatcher<'static, WaylandSource<WinitState>, WinitState>;
 
+/// Application dispatch owns the authorization scope, independently of queue
+/// dispatch. A constructor roundtrip must not expire otherwise live input.
+fn with_popup_input<S, R>(
+    current: &RefCell<Option<PopupInput<S>>>,
+    input: Option<PopupInput<S>>,
+    callback: impl FnOnce() -> R,
+) -> R {
+    struct ClearInput<'a, S>(&'a RefCell<Option<PopupInput<S>>>);
+    impl<S> Drop for ClearInput<'_, S> {
+        fn drop(&mut self) {
+            if let Some(input) = self.0.borrow_mut().take() {
+                input.invalidate();
+            }
+        }
+    }
+
+    if let Some(previous) = current.replace(input) {
+        previous.invalidate();
+    }
+    let _clear = ClearInput(current);
+    callback()
+}
+
 #[derive(Debug)]
 pub(crate) enum Event {
-    WindowEvent { window_id: WindowId, event: WindowEvent },
+    WindowEvent { window_id: WindowId, event: WindowEvent, popup_input: Option<Box<PopupInput>> },
     DeviceEvent { event: DeviceEvent },
 }
 
@@ -164,6 +188,7 @@ impl EventLoop {
             control_flow: Cell::new(ControlFlow::default()),
             exit: Cell::new(None),
             state: RefCell::new(winit_state),
+            popup_input: RefCell::new(None),
         };
 
         let event_loop = Self {
@@ -475,7 +500,7 @@ impl EventLoop {
         });
         for event in buffer_sink.drain() {
             match event {
-                Event::WindowEvent { window_id, event } => {
+                Event::WindowEvent { window_id, event, popup_input } => {
                     if self.with_state(|state| {
                         state
                             .window_requests
@@ -483,7 +508,12 @@ impl EventLoop {
                             .get(&window_id)
                             .is_some_and(|requests| !requests.is_terminal())
                     }) {
-                        app.window_event(&self.active_event_loop, window_id, event)
+                        self.active_event_loop.dispatch_window_event(
+                            app,
+                            window_id,
+                            event,
+                            popup_input.map(|input| *input),
+                        )
                     }
                 },
                 Event::DeviceEvent { event } => {
@@ -498,7 +528,7 @@ impl EventLoop {
         });
         for event in buffer_sink.drain() {
             match event {
-                Event::WindowEvent { window_id, event } => {
+                Event::WindowEvent { window_id, event, popup_input } => {
                     if self.with_state(|state| {
                         state
                             .window_requests
@@ -506,7 +536,12 @@ impl EventLoop {
                             .get(&window_id)
                             .is_some_and(|requests| !requests.is_terminal())
                     }) {
-                        app.window_event(&self.active_event_loop, window_id, event)
+                        self.active_event_loop.dispatch_window_event(
+                            app,
+                            window_id,
+                            event,
+                            popup_input.map(|input| *input),
+                        )
                     }
                 },
                 Event::DeviceEvent { event } => {
@@ -724,6 +759,9 @@ impl AsRawFd for EventLoop {
 
 #[derive(Debug)]
 pub struct ActiveEventLoop {
+    /// Present only while delivering the physical press that authorizes a grab.
+    /// Synchronous Wayland roundtrips do not clear this dispatch scope.
+    pub(crate) popup_input: RefCell<Option<PopupInput>>,
     /// Event loop proxy
     event_loop_proxy: CoreEventLoopProxy,
 
@@ -1109,6 +1147,16 @@ impl fmt::Display for UnknownDataTransfer {
 impl std::error::Error for UnknownDataTransfer {}
 
 impl ActiveEventLoop {
+    fn dispatch_window_event<A: ApplicationHandler>(
+        &self,
+        app: &mut A,
+        window_id: WindowId,
+        event: WindowEvent,
+        input: Option<PopupInput>,
+    ) {
+        with_popup_input(&self.popup_input, input, || app.window_event(self, window_id, event));
+    }
+
     fn clear_exit(&self) {
         self.exit.set(None)
     }
@@ -1248,4 +1296,45 @@ enum PumpEventNotifierAction {
 /// `Option::min`)
 fn min_timeout(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     a.map_or(b, |a_timeout| b.map_or(Some(a_timeout), |b_timeout| Some(a_timeout.min(b_timeout))))
+}
+
+#[cfg(test)]
+mod popup_input_tests {
+    use super::*;
+    use crate::seat::{PopupInputKind, PopupInputState};
+
+    #[test]
+    fn callback_scope_survives_queue_work_but_expires_on_return() {
+        let parent = WindowId::from_raw(1);
+        let seat = PopupInputState::default();
+        let input = seat.press(PopupInputKind::Pointer(1), 7_u8, parent, 42);
+        let current = RefCell::new(None);
+        with_popup_input(&current, Some(input.clone()), || {
+            // Queue dispatch is independent of application dispatch. New input
+            // on another seat must not replace the active callback's metadata.
+            let other_seat = PopupInputState::default();
+            let _other = other_seat.press(PopupInputKind::Keyboard(2), 8_u8, parent, 43);
+            assert_eq!(current.borrow().as_ref().unwrap().seat, 7);
+            assert_eq!(current.borrow().as_ref().unwrap().consume(parent, |_| true), Some(42));
+        });
+        assert!(current.borrow().is_none());
+        assert_eq!(input.consume(parent, |_| true), None);
+        let unused = seat.press(PopupInputKind::Pointer(1), 7_u8, parent, 44);
+        with_popup_input(&current, Some(unused.clone()), || {});
+        assert_eq!(unused.consume(parent, |_| true), None);
+        with_popup_input(&current, None, || assert!(current.borrow().is_none()));
+    }
+
+    #[test]
+    fn roundtrip_release_revokes_the_current_dispatch_token() {
+        let parent = WindowId::from_raw(1);
+        let seat = PopupInputState::default();
+        let kind = PopupInputKind::Keyboard(2);
+        let input = seat.press(kind, 7_u8, parent, 42);
+        let current = RefCell::new(None);
+        with_popup_input(&current, Some(input), || {
+            seat.release(kind);
+            assert_eq!(current.borrow().as_ref().unwrap().consume(parent, |_| true), None);
+        });
+    }
 }

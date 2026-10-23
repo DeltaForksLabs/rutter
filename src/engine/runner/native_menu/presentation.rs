@@ -7,6 +7,7 @@ use super::*;
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
     pub(super) fn resolve_native_menu(&mut self) -> Result<bool, RutterRunError> {
+        self.reconcile_native_menu_model()?;
         let Some(popup) = self.native_menu.as_ref() else {
             return Ok(false);
         };
@@ -22,7 +23,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     self.disable_native_menus(
                         kind,
                         format!("read configured popup geometry: {error}"),
-                    );
+                    )?;
                 }
                 return Ok(false);
             }
@@ -37,16 +38,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 self.disable_native_menus(
                     kind,
                     "configured popup cannot contain a usable menu row".into(),
-                );
+                )?;
                 return Ok(false);
             }
             Err(reason) => {
-                self.disable_native_menus(kind, reason);
+                self.disable_native_menus(kind, reason)?;
                 return Ok(false);
             }
         };
         if !popup.ready && Instant::now() >= popup.configure_deadline {
-            self.disable_native_menus(kind, "popup configure/presentation timed out".into());
+            self.disable_native_menus(kind, "popup configure/presentation timed out".into())?;
             return Ok(false);
         }
         if !configure_acknowledged(
@@ -56,7 +57,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             snapshot,
         ) {
             if Instant::now() >= popup.configure_deadline {
-                self.disable_native_menus(kind, "popup configure timed out".into());
+                self.disable_native_menus(kind, "popup configure timed out".into())?;
             }
             return Ok(false);
         }
@@ -112,10 +113,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let resolved = match resolved {
             Some(Ok(surfaces)) => surfaces,
             Some(Err(reason)) => {
-                self.disable_native_menus(kind, reason);
+                self.disable_native_menus(kind, reason)?;
                 return Ok(false);
             }
-            None => return Ok(false),
+            None => {
+                self.retire_native_menu();
+                return Ok(false);
+            }
         };
         let layout_changed = self
             .engine
@@ -130,7 +134,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         // arrive before SurfaceResized/RedrawRequested is delivered to the runner.
         if popup.allocated_size != snapshot.surface_size {
             if let Err(error) = popup.backend.resize(snapshot.surface_size) {
-                self.disable_native_menus(kind, format!("resize configured native popup: {error}"));
+                self.disable_native_menus(
+                    kind,
+                    format!("resize configured native popup: {error}"),
+                )?;
                 return Ok(false);
             }
             popup.allocated_size = snapshot.surface_size;
@@ -147,6 +154,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     pub(super) fn present_native_menu_frame(&mut self) -> Result<bool, RutterRunError> {
+        // Presentation is also callable from input before the queued redraw.
+        if !self.resolve_native_menu()? {
+            return Ok(false);
+        }
         let Some(popup) = self.native_menu.as_mut() else {
             return Ok(false);
         };
@@ -169,7 +180,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         {
             match error {
                 RutterRunError::Graphics(error) => {
-                    self.disable_native_menus(kind, format!("present native popup frame: {error}"));
+                    self.disable_native_menus(
+                        kind,
+                        format!("present native popup frame: {error}"),
+                    )?;
                     return Ok(false);
                 }
                 error => return Err(error),
@@ -188,7 +202,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 self.disable_native_menus(
                     kind,
                     format!("read popup geometry after presentation: {error}"),
-                );
+                )?;
                 return Ok(false);
             }
         };

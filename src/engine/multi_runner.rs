@@ -17,6 +17,9 @@ mod app_adapter;
 mod layer_shell_integration;
 #[cfg(all(test, target_os = "linux"))]
 mod native_menu_integration;
+mod popup;
+#[cfg(test)]
+mod publication_tests;
 mod startup;
 mod surface_commands;
 mod surface_events;
@@ -79,16 +82,30 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         event_loop: &dyn ActiveEventLoop,
         request: SurfaceRequest,
     ) -> Result<(), MultiWindowRunError> {
+        let replacing_popup = request.window.popup().is_some()
+            && self
+                .surface_configs
+                .get(&request.surface)
+                .is_some_and(|config| config.popup().is_some());
+        if !replacing_popup {
+            self.ensure_surface_is_available(request.surface)?;
+        }
+        let attributes = self.surface_attributes(&request)?;
+        if request.window.popup().is_some() {
+            self.prepare_popup_open();
+        }
         self.ensure_surface_is_available(request.surface)?;
         let mut runner = self.build_surface_runner(&request)?;
+        if let Some(popup) = request.window.popup()
+            && let Some(parent) = self.surface_runners.get(&popup.parent())
+        {
+            runner.set_transient_keyboard_modifiers(parent.transient_keyboard_modifiers());
+        }
         let required_backend = self.backend_preference.required_backend();
         let (native, committed_backend) = runner
-            .resume_surface(
-                event_loop,
-                Some(request.window.window_attributes()),
-                required_backend,
-            )
+            .resume_surface(event_loop, Some(attributes), required_backend)
             .map_err(|error| surface_error(request.surface, error.into()))?;
+        Self::validate_committed_popup(&request, &runner)?;
         let surface = request.surface;
         self.register_committed_surface(request, native, runner)?;
         self.backend_preference.retain_committed(committed_backend);
@@ -269,6 +286,9 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             let state = runner.app_state_mut();
             state.model = model.clone();
             state.revision = revision;
+            // Publication is a legitimate model transition, even when no parent
+            // redraw is requested before a native popup receives its next event.
+            runner.invalidate_published_model();
         }
     }
 
@@ -305,16 +325,13 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     }
 
     fn handle_destroyed(&mut self, event_loop: &dyn ActiveEventLoop, native: WindowId) {
-        let Some(surface) = self.routes.remove_native(native) else {
+        let Some(surface) = self.routes.surface_for(native) else {
             return;
         };
-        self.surface_configs.remove(&surface);
-        self.focus_acquired_surfaces.remove(&surface);
-        if let Some(runner) = self.surface_runners.get_mut(&surface) {
-            runner.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
+        if let Err(error) = self.close_surface(surface) {
+            self.terminate_for_error(event_loop, error);
+            return;
         }
-        self.surface_runners.remove(&surface);
-        self.notify_surface_closed(surface);
         self.exit_if_no_surfaces(event_loop);
     }
 
@@ -354,10 +371,10 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         A::next_wakeup(&self.canonical_state, now).filter(|deadline| *deadline > now)
     }
 
-    fn next_smooth_scroll_deadline(&self, now: Instant) -> Option<Instant> {
+    fn next_redraw_deadline(&self, now: Instant) -> Option<Instant> {
         self.surface_runners
             .values()
-            .filter_map(|runner| runner.next_smooth_scroll_deadline(now))
+            .filter_map(|runner| runner.next_redraw_deadline(now))
             .min()
     }
 
@@ -370,11 +387,14 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         if event_loop.exiting() || self.fatal_error.is_some() {
             return;
         }
-        let surface = self.next_smooth_scroll_deadline(now);
+        // Event/render delivery can introduce a clock after new_events polled
+        // scheduled work. Do not replace that clock's timer with an idle Wait.
+        let surface = self.next_redraw_deadline(now);
         set_wait_deadline(event_loop, minimum_deadline(application, surface));
     }
 
     fn release_native_surfaces(&mut self) {
+        self.discard_arbitrary_popups();
         self.routes.clear();
         // A resumed native lifetime must publish its initial configure again.
         self.surface_metrics.clear();
@@ -484,6 +504,10 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
             return;
         }
         if self.native_surfaces_active {
+            if let Err(error) = self.coordinate_native_transients() {
+                self.terminate_for_error(event_loop, error);
+                return;
+            }
             let surfaces: Vec<_> = self.surface_runners.keys().copied().collect();
             for surface in surfaces {
                 let Some(runner) = self.surface_runners.get_mut(&surface) else {
@@ -535,6 +559,24 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
             self.schedule_after_event(event_loop);
             return;
         }
+        match self.popup_lifecycle_event(surface, &event) {
+            Ok(true) => {
+                self.schedule_after_event(event_loop);
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => return self.terminate_for_error(event_loop, error),
+        }
+        if let Some((popup, popup_native)) = self.popup_keyboard_target(surface, &event) {
+            if let WindowEvent::ModifiersChanged(modifiers) = &event
+                && let Some(parent) = self.surface_runners.get_mut(&surface)
+            {
+                parent.set_transient_keyboard_modifiers(*modifiers);
+            }
+            self.dispatch_surface_event(event_loop, popup, popup_native, event);
+            self.schedule_after_event(event_loop);
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => self.handle_close_request(event_loop, surface),
             WindowEvent::Destroyed => self.handle_destroyed(event_loop, native),
@@ -546,6 +588,16 @@ impl<A: MultiWindowAppLogic + 'static> ApplicationHandler for MultiWindowRunner<
 
 impl<A: MultiWindowAppLogic> Drop for MultiWindowRunner<A> {
     fn drop(&mut self) {
+        // Configs retain parent identities until every native child is dropped.
+        // No 'static bound is needed to retire routes and notify the canonical model.
+        let mut surfaces: Vec<_> = self.surface_configs.keys().copied().collect();
+        surfaces.sort_by_key(|surface| self.surface_configs[surface].popup().is_none());
+        for surface in surfaces {
+            self.routes.remove_surface(surface);
+            self.surface_runners.remove(&surface);
+            self.surface_configs.remove(&surface);
+            A::surface_closed(&mut self.canonical_state, surface);
+        }
         if let Some(ingress) = &self.message_ingress {
             ingress.close();
         }

@@ -1,7 +1,8 @@
 //! Seat handling.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use foldhash::HashMap;
 use sctk::data_device_manager::data_device::DataDevice;
@@ -19,6 +20,7 @@ use wayland_protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pi
 use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::ZwpTabletSeatV2;
 use winit_core::event::WindowEvent;
 use winit_core::keyboard::ModifiersState;
+use winit_core::window::WindowId;
 
 use crate::state::WinitState;
 
@@ -36,6 +38,99 @@ pub use text_input::{ClientState as TextInputClientState, TextInputState};
 use touch::TouchPoint;
 
 pub(crate) use crate::seat::text_input::ZwpTextInputV3Ext;
+
+/// A physical press, shared with its queued event. Invalidating the seat's copy
+/// also revokes events already drained into the event loop's delivery buffer.
+#[derive(Debug, Clone)]
+pub(crate) struct PopupInput<S = WlSeat> {
+    pub(crate) seat: S,
+    parent: WindowId,
+    serial: u32,
+    valid: Arc<AtomicBool>,
+}
+
+impl<S> PopupInput<S> {
+    pub(crate) fn consume(
+        &self,
+        parent: WindowId,
+        seat_is_live: impl FnOnce(&S) -> bool,
+    ) -> Option<u32> {
+        if self.parent != parent || !seat_is_live(&self.seat) {
+            return None;
+        }
+        self.valid.swap(false, Ordering::Relaxed).then_some(self.serial)
+    }
+
+    pub(crate) fn invalidate(&self) {
+        self.valid.store(false, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PopupInputKind {
+    Pointer(u32),
+    Keyboard(u32),
+}
+
+/// Only the latest physical press on a seat can authorize a required grab.
+/// Serial numbers are opaque (including zero); receipt order defines freshness.
+#[derive(Debug)]
+pub(crate) struct PopupInputState<S = WlSeat> {
+    current: RefCell<Option<(PopupInputKind, PopupInput<S>)>>,
+}
+
+impl<S> Default for PopupInputState<S> {
+    fn default() -> Self {
+        Self { current: RefCell::new(None) }
+    }
+}
+
+impl<S: Clone> PopupInputState<S> {
+    pub(crate) fn press(
+        &self,
+        kind: PopupInputKind,
+        seat: S,
+        parent: WindowId,
+        serial: u32,
+    ) -> PopupInput<S> {
+        self.invalidate();
+        let input = PopupInput { seat, parent, serial, valid: Arc::new(AtomicBool::new(true)) };
+        *self.current.borrow_mut() = Some((kind, input.clone()));
+        input
+    }
+}
+
+impl<S> PopupInputState<S> {
+    pub(crate) fn release(&self, kind: PopupInputKind) {
+        self.invalidate_if(|current| current == kind);
+    }
+
+    pub(crate) fn pointer_left(&self) {
+        self.invalidate_if(|kind| matches!(kind, PopupInputKind::Pointer(_)));
+    }
+
+    pub(crate) fn keyboard_left(&self) {
+        self.invalidate_if(|kind| matches!(kind, PopupInputKind::Keyboard(_)));
+    }
+
+    fn invalidate_if(&self, predicate: impl FnOnce(PopupInputKind) -> bool) {
+        if self.current.borrow().as_ref().is_some_and(|(kind, _)| predicate(*kind)) {
+            self.invalidate();
+        }
+    }
+
+    pub(crate) fn invalidate(&self) {
+        if let Some((_, input)) = self.current.borrow_mut().take() {
+            input.invalidate();
+        }
+    }
+}
+
+impl<S> Drop for PopupInputState<S> {
+    fn drop(&mut self) {
+        self.invalidate();
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct WinitSeatState {
@@ -78,21 +173,13 @@ pub struct WinitSeatState {
     /// Whether we have pending modifiers.
     modifiers_pending: bool,
 
-    /// Serial of the most recent input event (keyboard or pointer) on this seat.
-    /// Written by both keyboard and pointer handlers through a shared reference,
-    /// so interior mutability is required.
-    pub(crate) latest_input_serial: Cell<Option<u32>>,
+    /// Live press authorization shared with application-dispatch metadata.
+    pub(crate) popup_input: PopupInputState,
 }
 
 impl WinitSeatState {
     pub fn new() -> Self {
         Default::default()
-    }
-
-    /// Returns the serial of the most recent input event on this seat, or `None` if none has
-    /// been received yet.
-    pub fn latest_serial(&self) -> Option<u32> {
-        self.latest_input_serial.get()
     }
 
     pub(crate) fn data_device(&self) -> Option<&DataDevice> {
@@ -242,6 +329,7 @@ impl SeatHandler for WinitState {
                 }
             },
             SeatCapability::Pointer => {
+                seat_state.popup_input.pointer_left();
                 if let Some(relative_pointer) = seat_state.relative_pointer.take() {
                     relative_pointer.destroy();
                 }
@@ -273,6 +361,7 @@ impl SeatHandler for WinitState {
                 }
             },
             SeatCapability::Keyboard => {
+                seat_state.popup_input.keyboard_left();
                 seat_state.keyboard_state = None;
                 self.on_keyboard_destroy(&seat.id());
             },
@@ -310,5 +399,50 @@ impl WinitState {
                 self.events_sink.push_window_event(WindowEvent::Focused(false), *window_id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod popup_input_tests {
+    use super::*;
+
+    #[test]
+    fn newer_press_revokes_queued_input_even_across_serial_wrap() {
+        let parent = WindowId::from_raw(1);
+        let other_parent = WindowId::from_raw(2);
+        let state = PopupInputState::default();
+        let old = state.press(PopupInputKind::Pointer(1), 7_u8, parent, u32::MAX);
+        let new = state.press(PopupInputKind::Keyboard(2), 7_u8, other_parent, 0);
+        assert_eq!(old.consume(parent, |_| true), None);
+        assert_eq!(new.consume(parent, |_| true), None);
+        assert_eq!(new.consume(other_parent, |seat| *seat == 7), Some(0));
+        assert_eq!(new.consume(other_parent, |_| true), None);
+    }
+
+    #[test]
+    fn release_before_application_delivery_revokes_only_the_matching_press() {
+        let parent = WindowId::from_raw(1);
+        for kind in [PopupInputKind::Pointer(1), PopupInputKind::Keyboard(2)] {
+            let state = PopupInputState::default();
+            let input = state.press(kind, 7_u8, parent, 42);
+            state.release(PopupInputKind::Pointer(9));
+            state.release(kind);
+            assert_eq!(input.consume(parent, |_| true), None);
+        }
+    }
+
+    #[test]
+    fn focus_loss_capability_removal_and_seat_removal_revoke_queued_input() {
+        let parent = WindowId::from_raw(1);
+        let state = PopupInputState::default();
+        let pointer = state.press(PopupInputKind::Pointer(1), 7_u8, parent, 42);
+        state.pointer_left();
+        assert_eq!(pointer.consume(parent, |_| true), None);
+        let keyboard = state.press(PopupInputKind::Keyboard(2), 7_u8, parent, 43);
+        state.keyboard_left();
+        assert_eq!(keyboard.consume(parent, |_| true), None);
+        let removed = state.press(PopupInputKind::Pointer(1), 7_u8, parent, 44);
+        drop(state);
+        assert_eq!(removed.consume(parent, |_| true), None);
     }
 }
