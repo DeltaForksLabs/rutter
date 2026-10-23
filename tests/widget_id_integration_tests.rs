@@ -198,6 +198,36 @@ fn counter_has_its_own_id_family_and_accepts_manual_assignment() {
 }
 
 #[test]
+fn one_counter_identity_accepts_published_numeric_mode_changes_but_rejects_unstable_reconstruction()
+{
+    let floating = Widget::counter(0.5, 0.0, 1.0, 0.25, |_| (), Style::default(), "Amount");
+    let automatic_integer = WidgetIdSnapshot::capture(&counter(AUTO_ID)).unwrap();
+    let automatic_float = WidgetIdSnapshot::capture(&floating).unwrap();
+    assert_eq!(
+        automatic_integer.validate_transition_to(&automatic_float),
+        Ok(())
+    );
+    assert!(
+        automatic_integer
+            .validate_reconstruction(&automatic_float)
+            .is_err()
+    );
+
+    let assigned = floating.try_with_id(17).unwrap();
+    assert!(matches!(assigned, Widget::Counter { id: 17, .. }));
+    let integer = WidgetIdSnapshot::capture(&counter(17)).unwrap();
+    let float = WidgetIdSnapshot::capture(&assigned).unwrap();
+    assert_eq!(integer.validate_transition_to(&float), Ok(()));
+    assert!(matches!(
+        integer.validate_reconstruction(&float),
+        Err(WidgetIdError::InconsistentStructure { .. })
+    ));
+
+    let moved = WidgetIdSnapshot::capture(&column(vec![assigned])).unwrap();
+    assert_eq!(float.validate_transition_to(&moved), Ok(()));
+}
+
+#[test]
 fn strict_reconstruction_detects_a_different_owner_set() {
     let validated = WidgetIdSnapshot::capture(&column(vec![password_input(17)])).unwrap();
     let rebuilt =

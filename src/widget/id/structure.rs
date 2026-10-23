@@ -1,7 +1,7 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
 
-use crate::widget::Widget;
+use crate::widget::{CounterConfig, Widget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WidgetStructureKind {
@@ -24,6 +24,9 @@ pub(crate) enum WidgetStructureKind {
     Radio,
     Slider,
     Counter,
+    // Private numeric-mode fingerprint for strict same-model reconstruction.
+    // Both modes share the public Counter ID tag, allowing published transitions.
+    CounterFloatMode,
     Clock,
     Select,
     ProgressBar,
@@ -84,6 +87,7 @@ impl WidgetStructureKind {
             Self::Radio => "Radio",
             Self::Slider => "Slider",
             Self::Counter => "Counter",
+            Self::CounterFloatMode => "Counter (f64)",
             Self::Clock => "Clock",
             Self::Select => "Select",
             Self::ProgressBar => "ProgressBar",
@@ -148,7 +152,10 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::Switch { .. } => Kind::Switch,
         Widget::Radio { .. } => Kind::Radio,
         Widget::Slider { .. } => Kind::Slider,
-        Widget::Counter { .. } => Kind::Counter,
+        Widget::Counter { config, .. } => match config {
+            CounterConfig::Integer(_) => Kind::Counter,
+            CounterConfig::Float(_) => Kind::CounterFloatMode,
+        },
         Widget::Clock { .. } => Kind::Clock,
         Widget::Select { .. } => Kind::Select,
         Widget::ProgressBar { .. } => Kind::ProgressBar,

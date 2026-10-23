@@ -1,5 +1,74 @@
 # Development Log
 
+## [2026-10-23T01:39:55-03:00] - Unify Integer and Floating-Point Counter APIs - Unreleased
+
+**Context:** The user requested a single Counter instead of separate integer and floating-point widgets.
+
+**Challenge:** Infer either numeric type through the same constructor while preserving exact `i64` arithmetic, typed callbacks, one widget identity and safe hold repetition when the published numeric mode changes.
+
+**Alternatives:** The preceding, uncommitted implementation used separate float widgets and constructors to retain the old variant fields. Converting all values to `f64` would simplify dispatch but lose integer precision above `2^53` and change integer callbacks. A sealed generic input trait supports one constructor without either tradeoff.
+
+**Decision:** Replace the preceding split design with one `Widget::Counter` containing `CounterConfig::{Integer, Float}` and typed `CounterParameters`. Use the same generic `Widget::counter`, `Widget::try_counter`, `validate_counter` and `CounterConfigError<N = i64>` for `i64` and `f64`; only these numeric types implement the sealed `CounterInput` trait. Keep one runtime Counter cache, layout context, rendering/input path and ID family. Preserve the numerical guards, saturating integer arithmetic, fused floating page targets and shared display/sizing representation from the earlier implementation. `CounterValue` retains the intrinsic-layout numeric representation; context equality compares float bits so signed-zero changes invalidate sizing deterministically.
+
+Published mode changes may retain the same ID, while the private reconstruction fingerprint still detects an unstable view changing mode without publication. Refresh dirty runtime metadata before scheduled hold callbacks, including before a queued redraw. Preserve a per-ID generation only across uninterrupted same-mode publications, so both a direct mode change and a round trip between scheduler polls cancel the old hold rather than retargeting or reviving it.
+
+Existing integer constructor calls retain their argument order and callback type. Direct `Widget::Counter` construction/destructuring must migrate the former numeric fields into `config`; direct `CounterContext` construction must use `CounterValue` (or `.into()`). These are source compatibility changes, documented in the README. There is no additional public Widget/context variant or float-specific constructor, and TimePicker remains integer-based.
+
+**Files Changed:** `src/widget/counter.rs`, `src/widget/mod.rs`, `src/widget/id/structure.rs`, `src/lib.rs`; engine runtime metadata and Counter runner/numeric/regression modules; layout, render, sizing and accessibility integrations; TimePicker callback tests; Counter/numeric/identity integration tests; `examples/widgets/counter_demo.rs`; `README.md`; this log. The uncommitted `src/widget/counter_float.rs` was removed.
+
+**Validation:** Resource-intensive commands ran sequentially. Commands actually executed for the unified implementation:
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --test counter_widget_tests --test widget_numeric_validation_tests --test widget_id_integration_tests -- --test-threads=2
+CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --lib counter -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+cargo fmt --all -- --check
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+git diff --check
+git diff --exit-code -- Cargo.toml Cargo.lock ':(glob)vendor/**'
+git diff --cached --exit-code
+```
+
+The targeted integration command passed 30 tests. The final targeted library run passed 26 Counter-related tests. The full unified suite passed **727 library tests (35 ignored), 51 binary tests, 242 integration tests and 310 doctests**, including two compile-fail examples rejecting mixed parameter/callback types, constructor inference, TimePicker and demo regressions. Full output and result summaries were inspected. Formatting, all-target/all-feature check, Clippy with warnings denied and diff checks passed. An initial regression deliberately withholding redraw failed with an extra old-mode callback; refreshing metadata fixed it. Focused read-only review then identified the round-trip hold case; generation tracking and symmetric regressions resolved it, followed by successful targeted tests and full validation.
+
+The disposable Xvfb wrapper supplies isolated clipboard/display state and two Cargo jobs; no inherited desktop was driven. Manual GUI/real-screen-reader acceptance, non-Linux execution and fork-only suites were not run for this Counter change; root input/raster/accessibility tests do not claim that coverage. No dependencies, version, lockfiles, vendor code or generated files changed. The preexisting `.gitignore` modification was preserved. Nothing was staged or committed. Results in the following historical entry apply only to its superseded split implementation.
+
+## [2026-10-22T22:41:52-03:00] - Support Floating-Point Native Counters - Unreleased
+
+**Status:** Historical, uncommitted design superseded by the single-Counter implementation recorded above; its API, ID-family and validation descriptions are not the current design.
+
+**Context:** Allow the native Counter to represent and adjust floating-point values as well as the existing signed integers.
+
+**Challenge:** Extend callbacks, runtime caches, keyboard/pointer/assistive input, hold repetition, layout, rendering and identity without converting large integers to an inexact representation or changing the TimePicker's integer contract. Floating-point input also needs finite-number guards, bounded overflow and termination when a step cannot change the representable value.
+
+**Alternatives:** Converting the existing counter to `f64` would break integer callbacks and lose precision above `2^53`. A generic public constructor would require a public dispatch trait and additional numeric-inference/error-type complexity. Explicit floating-point constructors retain the current integer signatures and fields.
+
+**Decision:** Add `Widget::CounterFloat`, `counter_f64`, `try_counter_f64`, `validate_counter_f64` and `FloatCounterConfigError`, preserving the integer API and `CounterContext`. Keep separate typed runtime maps and share input/hold scheduling through a private numeric trait. Reject nonfinite configuration, unordered bounds, out-of-range initial values and nonpositive steps in the validated constructor; guard unchecked nonfinite/range/step input before adjustment. Keep inclusive bounds, relative steps (not a minimum-anchored grid), no duplicate callbacks at boundaries and no-progress termination. Use fused `mul_add` for floating page targets: multiplying a large step by ten first can overflow even when cancellation with the current value yields a finite in-range target. Preserve integer saturating arithmetic. Use the same `to_string()` representation for preferred sizing and drawing; document ordinary IEEE-754 decimal rounding rather than promising fixed-decimal semantics or text editing. Add a distinct ID family to prevent silent reuse across incompatible callback types.
+
+**Files Changed:** Public widget configuration/exports and ID structure; engine runtime caches and `runner/counter.rs` with its numeric and regression-test submodules; layout, shared counter rendering/hit testing and accessibility; the Counter leaf match in TableOfContents; numeric/Counter/identity integration tests; `examples/widgets/counter_demo.rs`; `README.md`; this log.
+
+**Validation:** Resource-intensive commands ran sequentially with two Cargo build jobs. Commands actually executed:
+
+```bash
+cargo fmt --all
+cargo fmt --all -- --check
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --test counter_widget_tests --test widget_numeric_validation_tests --test widget_id_integration_tests -- --test-threads=2
+CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --lib counter -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+git diff --check
+git diff --exit-code -- Cargo.toml Cargo.lock ':(glob)vendor/**'
+```
+
+The targeted integration command passed 29 tests. The final targeted Counter library command passed 22 tests, including real controlled application updates through pointer hold, focused keyboard routing and the accessibility action inbox on an in-memory window. Tests cover fractional and off-grid steps, sign changes, uneven bounds, every nonfinite argument, ordinary/page overflow and cancellation, subnormal/no-progress steps, hold timing/cache synchronization/application edits, disabled/removed controls, fractional painting and sizing, identity separation, and exact integer adjustment above `2^53`. The final full root suite passed **723 library tests (35 ignored), 51 binary tests, 241 integration tests and 311 doctests**, including TimePicker regressions and both Counter demo tests. Full command output and every result summary were inspected. Formatting, all-target/all-feature check, final Clippy and diff checks passed.
+
+An initial Clippy run rejected the demo's three message variants sharing the `Changed` suffix; naming the new fractional message `Amount` fixed this without suppressing a lint. A focused review identified premature overflow in the initial floating page-step multiplication; fused targets and symmetric cancellation regressions were added, then the targeted Counter tests, full suite, Clippy, check and formatting checks were rerun successfully. Clipboard-dependent engine tests used the existing disposable Xvfb wrapper, which clears inherited desktop/session/DBus variables, owns and cleans its display, and sets `CARGO_BUILD_JOBS=2`; no inherited desktop was driven.
+
+No manual GUI/real-screen-reader acceptance or non-Linux execution was performed; in-memory input routing, raster rendering, accessibility metadata/inbox tests and Linux compilation are the validation provided, not substitutes for those acceptance checks. The new public `Widget::CounterFloat` and `layout::RutterContext::CounterFloat` variants require arms in downstream exhaustive matches, and replacing an integer Counter with a float Counter requires a new manual ID. No dependencies, version, lockfiles, vendor code or generated files changed. The preexisting `.gitignore` modification was preserved. Nothing was staged or committed.
+
 ## [2026-10-22T22:00:14-03:00] - Release Native Widget Popups with the Requested Commit Amend - 0.42.0
 
 **Context:** Include the project version increment in the last native-popup/menu-reconciliation commit using the user's explicitly requested amend.

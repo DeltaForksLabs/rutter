@@ -25,9 +25,9 @@ pub(crate) enum CounterSegment {
 
 pub(super) struct CounterRenderInput<'a> {
     pub(super) canvas: &'a Canvas,
-    pub(super) value: i64,
-    pub(super) min: i64,
-    pub(super) max: i64,
+    pub(super) value_text: &'a str,
+    pub(super) can_decrement: bool,
+    pub(super) can_increment: bool,
     pub(super) is_focused: bool,
     pub(super) size: (f32, f32),
     pub(super) mouse: Point,
@@ -44,8 +44,8 @@ struct CounterSegments {
 
 pub(super) fn draw_counter(mut input: CounterRenderInput<'_>) {
     let segments = counter_segments(input.size);
-    let can_decrement = input.min <= input.max && input.value > input.min;
-    let can_increment = input.min <= input.max && input.value < input.max;
+    let can_decrement = input.can_decrement;
+    let can_increment = input.can_increment;
     draw_counter_frame(&input);
     draw_counter_actions(&input, segments, can_decrement, can_increment);
     draw_counter_separators(&input, segments);
@@ -170,8 +170,8 @@ fn draw_counter_labels(
     can_increment: bool,
 ) {
     draw_counter_label(input, segments.decrement, "-", can_decrement);
-    let value = input.value.to_string();
-    draw_counter_label(input, segments.value, &value, true);
+    let value_text = input.value_text;
+    draw_counter_label(input, segments.value, value_text, true);
     draw_counter_label(input, segments.increment, "+", can_increment);
     if input.is_focused {
         draw_counter_focus(input.canvas, input.size, input.theme);
@@ -241,9 +241,9 @@ mod tests {
         let mut font_cache = HashMap::new();
         draw_counter(CounterRenderInput {
             canvas: surface.canvas(),
-            value: 1,
-            min: 0,
-            max: 2,
+            value_text: "1",
+            can_decrement: true,
+            can_increment: true,
             is_focused: true,
             size: (120.0, 40.0),
             mouse: Point::new(-1.0, -1.0),

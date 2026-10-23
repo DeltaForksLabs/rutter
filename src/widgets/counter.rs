@@ -12,12 +12,12 @@ pub(crate) fn counter_action_width(height: f32) -> f32 {
     (height * 0.7).clamp(COUNTER_MIN_ACTION_WIDTH, COUNTER_MAX_ACTION_WIDTH)
 }
 
-pub(crate) fn counter_value_width(value: i64) -> f32 {
+pub(crate) fn counter_value_width(value: impl std::fmt::Display) -> f32 {
     let characters = value.to_string().chars().count().max(1);
     characters as f32 * COUNTER_CHARACTER_WIDTH + COUNTER_VALUE_PADDING
 }
 
-pub(crate) fn counter_preferred_width(value: i64, height: f32) -> f32 {
+pub(crate) fn counter_preferred_width(value: impl std::fmt::Display, height: f32) -> f32 {
     counter_action_width(height) * 2.0 + counter_value_width(value)
 }
 

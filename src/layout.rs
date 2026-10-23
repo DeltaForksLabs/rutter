@@ -19,7 +19,7 @@ use crate::i18n::LayoutDirection;
 use crate::render::RichTextRenderer;
 use crate::render::rich_text::{RichTextDirection, RichTextMetrics, RichTextWidth};
 use crate::text_controls::{TextControlPolicy, normalize_text_controls};
-use crate::widget::Widget;
+use crate::widget::{CounterValue, Widget};
 use crate::widgets::counter::{COUNTER_DEFAULT_HEIGHT, counter_preferred_width};
 use crate::widgets::rich_text::OwnedRichTextSpec;
 use crate::widgets::table_of_contents::{
@@ -43,9 +43,25 @@ pub struct TextContext {
     pub font_size: f32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Intrinsic Counter layout value, compared by numeric mode and float bits.
+#[derive(Debug, Clone)]
 pub struct CounterContext {
-    pub value: i64,
+    /// The value formatted to determine the Counter's preferred width.
+    pub value: CounterValue,
+}
+
+impl PartialEq for CounterContext {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.value, other.value) {
+            (CounterValue::Integer(left), CounterValue::Integer(right)) => left == right,
+            // Signed zero has different display widths; identical NaN bits must
+            // remain stable so rebuilding an invalid counter does not dirty layout.
+            (CounterValue::Float(left), CounterValue::Float(right)) => {
+                left.to_bits() == right.to_bits()
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -352,10 +368,12 @@ impl LayoutBlueprint {
             Widget::Custom { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
             }
-            Widget::Counter { value, style, .. } => Self::leaf_with_context(
+            Widget::Counter { config, style, .. } => Self::leaf_with_context(
                 Some(widget.resolved_id(path).unwrap()),
                 style.clone(),
-                RutterContext::Counter(CounterContext { value: *value }),
+                RutterContext::Counter(CounterContext {
+                    value: config.value(),
+                }),
             ),
             Widget::Clock {
                 time_zone,
@@ -934,6 +952,76 @@ mod tests {
             color: None,
             size,
         }
+    }
+
+    #[test]
+    fn counter_context_equality_preserves_numeric_mode_and_float_bits() {
+        let float_context = |value| CounterContext {
+            value: CounterValue::Float(value),
+        };
+        let integer_context = |value| CounterContext {
+            value: CounterValue::Integer(value),
+        };
+
+        assert_eq!(integer_context(i64::MAX), integer_context(i64::MAX));
+        assert_ne!(integer_context(i64::MAX), integer_context(i64::MAX - 1));
+        assert_ne!(integer_context(0), float_context(0.0));
+        assert_ne!(float_context(-0.0), float_context(0.0));
+
+        let nan_bits = 0x7ff8_0000_0000_0001;
+        assert_eq!(
+            float_context(f64::from_bits(nan_bits)),
+            float_context(f64::from_bits(nan_bits)),
+        );
+        assert_ne!(
+            float_context(f64::from_bits(nan_bits)),
+            float_context(f64::from_bits(nan_bits + 1)),
+        );
+    }
+
+    #[test]
+    fn counter_signed_zero_update_invalidates_intrinsic_width() {
+        let counter_row = |value| Widget::Row {
+            children: vec![
+                Widget::counter(value, -1.0, 1.0, 0.25, |_| (), Style::default(), "Amount")
+                    .with_id(17),
+            ],
+            style: Style::default(),
+        };
+        let mut taffy = TaffyTree::new();
+        let root = taffy.new_leaf(Style::default()).unwrap();
+        let mut tree = SyncedLayoutTree::placeholder(root);
+        let font_system = fs();
+        let renderer = RichTextRenderer::default();
+
+        sync_tree(&mut taffy, &mut tree, &counter_row(0.0));
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(300, 100),
+            font_system.clone(),
+            &renderer,
+        );
+        let counter_node = tree.children[0].node_id;
+        let positive_width = taffy.layout(counter_node).unwrap().size.width;
+
+        sync_tree(&mut taffy, &mut tree, &counter_row(-0.0));
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(300, 100),
+            font_system,
+            &renderer,
+        );
+
+        assert_eq!(tree.children[0].node_id, counter_node);
+        assert_eq!(
+            taffy.get_node_context(counter_node),
+            Some(&RutterContext::Counter(CounterContext {
+                value: CounterValue::Float(-0.0),
+            })),
+        );
+        assert!(taffy.layout(counter_node).unwrap().size.width > positive_width);
     }
 
     #[test]

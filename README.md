@@ -746,7 +746,31 @@ Migration note for `0.32.0`: `Widget::TableOfContents` now carries `options`; pr
 
 An open `Select` keeps its trigger in normal layout and renders its options in a dedicated overlay pass. The popup therefore covers later content without moving siblings, opens on the side with more usable space, and constrains long option lists to a viewport-safe window that follows keyboard and mouse-wheel selection.
 
-`Counter` is a controlled signed-integer spin button rendered as `- value +`. It sends `on_change` only when decrement or increment produces a bounded value. Holding an on-screen action starts repeating after a short delay and progressively accelerates until release or a range boundary. With an automatic width, it measures its central value from its character count so the action buttons stay close as the number grows. Use `Widget::counter(value, min, max, step, on_change, style, label)` for direct construction or `Widget::try_counter` to validate the range, value, and step. Keyboard users can adjust it with `+`, `-`, Arrow keys, Home, End, Page Up, and Page Down; assistive technologies receive a `SpinButton` with increment, decrement, and numeric-range metadata.
+`Counter` is a controlled spin button rendered as `- value +`, with integer (`i64`) and floating-point (`f64`) configurations. It sends `on_change` only when decrement or increment produces a different bounded value. Holding an on-screen action starts repeating after a short delay and progressively accelerates until release, a range boundary, or a step that cannot change the representable value. With an automatic width, it measures its central value from its character count, including decimal points and signs, so the action buttons stay close as the number grows. Keyboard users can adjust it with `+`, `-`, Arrow keys, Home, End, Page Up, and Page Down; assistive technologies receive a `SpinButton` with increment, decrement, and numeric-range metadata.
+
+Use the same `Widget::counter(value, min, max, step, on_change, style, label)` constructor for both numeric types, or `Widget::try_counter` for validated construction. The value, bounds, step, and callback must share one type:
+
+- `i64`: callbacks remain `fn(i64) -> Msg`, with exact integer arithmetic even above `2^53`.
+- `f64`: callbacks are `fn(f64) -> Msg`, without converting or truncating fractions.
+
+All arguments must be finite, `min <= value <= max`, and `step > 0`. Bounds are inclusive, and the value need not align to a grid anchored at `min`. The same `validate_counter` function accepts either type and returns `CounterConfigError<N>` (`N` defaults to `i64` for existing integer error annotations).
+
+```rust
+use rutter::Widget;
+use taffy::prelude::Style;
+
+enum Msg { QuantityChanged(i64), AmountChanged(f64) }
+let quantity = Widget::counter(
+    1, 0, 10, 1, Msg::QuantityChanged, Style::default(), "Quantity",
+);
+let amount = Widget::try_counter(
+    0.5, -10.0, 10.0, 0.125, Msg::AmountChanged, Style::default(), "Amount",
+).expect("finite value and positive step within ordered bounds");
+```
+
+Floating-point mode uses standard IEEE-754 arithmetic and `f64::to_string()` for both drawing and intrinsic sizing. Decimal steps such as `0.1` can accumulate rounding error; this is not a fixed-decimal/money input, and it does not add text editing or localized decimal parsing. See `cargo run -- counter` for integer and fractional controls side by side.
+
+There is only one public `Widget::Counter`, one `RutterContext::Counter`, and one Counter ID family. Published numeric-mode changes can keep the same ID; an active pointer hold is cancelled instead of being transferred to the other numeric mode. Migration for direct enum construction or field patterns: numeric fields and the typed callback now live in `config: CounterConfig::Integer(parameters)` or `CounterConfig::Float(parameters)`, where `parameters` is `CounterParameters<N, Msg>`. Prefer the shared constructors. `layout::CounterContext.value` now holds `CounterValue` (use `value.into()` for direct context construction). No additional widget/context variant or float-specific constructor is needed.
 
 `Select` chooses one value. `DropdownMenu` instead exposes commands and optional checkbox/radio state; it does not represent a selected form value.
 

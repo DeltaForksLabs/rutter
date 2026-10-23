@@ -15,12 +15,14 @@ use super::{
 pub struct CounterDemoState {
     theme: ExampleTheme,
     quantity: i64,
+    amount: f64,
 }
 
 #[derive(Clone, Debug)]
 pub enum Msg {
     ThemeChanged(ExampleTheme),
     QuantityChanged(i64),
+    Amount(f64),
 }
 
 pub struct CounterDemo;
@@ -33,6 +35,7 @@ impl AppLogic for CounterDemo {
         CounterDemoState {
             theme: ExampleTheme::Dark,
             quantity: 1,
+            amount: 0.5,
         }
     }
 
@@ -47,6 +50,7 @@ impl AppLogic for CounterDemo {
         match message {
             Msg::ThemeChanged(theme) => state.theme = theme,
             Msg::QuantityChanged(quantity) => state.quantity = quantity,
+            Msg::Amount(amount) => state.amount = amount,
         }
     }
 
@@ -71,6 +75,20 @@ fn counter_demo_children<'a>(state: &CounterDemoState) -> Vec<Widget<'a, Msg>> {
         )
         .with_id(1),
         demo_text(format!("Quantity: {}", state.quantity), 14.0),
+        Widget::counter(
+            state.amount,
+            -10.0,
+            10.0,
+            0.125,
+            Msg::Amount,
+            counter_demo_style(),
+            "Fractional amount",
+        )
+        .with_id(2),
+        demo_text(
+            format!("Fractional amount: {} (step 0.125)", state.amount),
+            14.0,
+        ),
         demo_text(
             "Hold an on-screen - or + to accelerate, or use +/- keys, Arrows, Home, End, and Page keys.",
             12.0,
@@ -122,5 +140,31 @@ mod tests {
         let state = CounterDemo::new(&mut fonts);
 
         assert_eq!(state.quantity, 1);
+        assert_eq!(state.amount, 0.5);
+    }
+
+    #[test]
+    fn demo_includes_integer_and_fractional_counters() {
+        let mut fonts = FontSystem::new();
+        let state = CounterDemo::new(&mut fonts);
+        let children = counter_demo_children(&state);
+        assert!(
+            children
+                .iter()
+                .any(|widget| matches!(widget, Widget::Counter { id: 1, .. }))
+        );
+        let counter = children
+            .iter()
+            .find_map(|widget| match widget {
+                Widget::Counter {
+                    id: 2,
+                    config: rutter::CounterConfig::Float(parameters),
+                    ..
+                } => Some(parameters),
+                _ => None,
+            })
+            .expect("demo contains a fractional counter");
+        assert_eq!((counter.value, counter.step), (0.5, 0.125));
+        assert!(matches!((counter.on_change)(0.625), Msg::Amount(0.625)));
     }
 }

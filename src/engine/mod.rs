@@ -72,9 +72,10 @@ use crate::widget::custom::{
 };
 use crate::widget::id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 use crate::widget::{
-    DialogAction, KeyedVirtualItems, VirtualSelection, Widget, pop_interactive_virtual_item_path,
-    push_interactive_virtual_item_path, resolve_search_suggestion_id, resolve_table_cell_id,
-    resolve_table_header_id, resolve_table_row_id,
+    CounterConfig, DialogAction, KeyedVirtualItems, VirtualSelection, Widget,
+    pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
+    resolve_search_suggestion_id, resolve_table_cell_id, resolve_table_header_id,
+    resolve_table_row_id,
 };
 use crate::widgets::carousel::geometry::carousel_item_frames;
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
@@ -484,13 +485,12 @@ struct SliderRuntime<Msg> {
     step: f32,
 }
 
-#[derive(Debug, Clone)]
-struct CounterRuntime<Msg> {
-    on_change: fn(i64) -> Msg,
-    value: i64,
-    min: i64,
-    max: i64,
-    step: i64,
+type CounterRuntime<Msg, T = i64> = crate::widget::CounterParameters<T, Msg>;
+
+#[derive(Clone, Debug)]
+struct CounterRuntimeEntry<Msg> {
+    config: CounterConfig<Msg>,
+    generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -650,7 +650,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     radios: HashMap<u64, fn() -> Msg>,
     accordions: HashMap<u64, Msg>,
     sliders: HashMap<u64, SliderRuntime<Msg>>,
-    counters: HashMap<u64, CounterRuntime<Msg>>,
+    counters: HashMap<u64, CounterRuntimeEntry<Msg>>,
     selects: HashMap<u64, SelectRuntime<Msg>>,
     searches: HashMap<u64, SearchRuntime<Msg>>,
     dropdown_menus: HashMap<u64, DropdownMenuRuntime<Msg>>,
@@ -723,6 +723,18 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
 }
 
 impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
+    fn reconcile_counter_generations(&mut self, previous: &Self, generation: u64) {
+        for (id, counter) in &mut self.counters {
+            counter.generation = previous
+                .counters
+                .get(id)
+                .filter(|old| {
+                    std::mem::discriminant(&old.config) == std::mem::discriminant(&counter.config)
+                })
+                .map_or(generation, |old| old.generation);
+        }
+    }
+
     fn clear(&mut self) {
         self.input_order.clear();
         self.focus_order.clear();
@@ -2497,6 +2509,12 @@ impl<A: AppLogic> RutterEngine<A> {
                 .map(move |matched| resolve_search_suggestion_id(overlay.id, matched.index))
         })
         .collect();
+        // Preserve a hold only across uninterrupted publications of the same
+        // numeric mode. A round-trip mode change must not revive an old hold.
+        self.runtime_cache_scratch.reconcile_counter_generations(
+            &self.runtime_caches,
+            self.layout_revision.wrapping_add(1),
+        );
         std::mem::swap(&mut self.runtime_caches, &mut self.runtime_cache_scratch);
         drop(widget_tree);
         self.sync_input_buffers();
@@ -2729,24 +2747,14 @@ impl<A: AppLogic> RutterEngine<A> {
                     "sliders",
                 )?;
             }
-            Widget::Counter {
-                value,
-                on_change,
-                min,
-                max,
-                step,
-                ..
-            } => {
+            Widget::Counter { config, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 insert_runtime_entry(
                     &mut runtime_caches.counters,
                     resolved_id,
-                    CounterRuntime {
-                        on_change: *on_change,
-                        value: *value,
-                        min: *min,
-                        max: *max,
-                        step: *step,
+                    CounterRuntimeEntry {
+                        config: config.clone(),
+                        generation: 0,
                     },
                     "counters",
                 )?;
@@ -3880,6 +3888,7 @@ mod tests {
     enum Msg {
         Str(String),
         Float(f32),
+        Float64(f64),
         Integer(i64),
         Usize(usize),
         Indices(Vec<usize>),
@@ -3958,6 +3967,17 @@ mod tests {
                     Widget::counter(2, 0, 5, 1, Msg::Integer, base_style(120.0, 40.0), "Count")
                         .with_id(47)
                         .enabled(!disabled),
+                    Widget::counter(
+                        0.5,
+                        0.0,
+                        1.0,
+                        0.25,
+                        Msg::Float64,
+                        base_style(120.0, 40.0),
+                        "Amount",
+                    )
+                    .with_id(48)
+                    .enabled(!disabled),
                 ],
             }
         }
@@ -3971,13 +3991,15 @@ mod tests {
         let mut focus_order = Vec::new();
         collect_focus_order(&enabled, &mut focus_order);
         assert!(!focus_order.is_empty());
+        assert_eq!(focus_order.iter().filter(|&&id| id == 47).count(), 1);
+        assert_eq!(focus_order.iter().filter(|&&id| id == 48).count(), 1);
         let mut disabled_order = Vec::new();
         collect_focus_order(&disabled, &mut disabled_order);
         assert!(disabled_order.is_empty());
 
         let mut taffy = TaffyTree::new();
         let states = HashMap::new();
-        let root = build_taffy_tree(&mut taffy, &disabled, fs(), &states);
+        let root = build_taffy_tree(&mut taffy, &enabled, fs(), &states);
         compute_layout(
             &mut taffy,
             root,
@@ -3986,6 +4008,28 @@ mod tests {
             &crate::render::RichTextRenderer::default(),
         );
         let mut caches = WidgetRuntimeCaches::default();
+        RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
+            &mut caches,
+            &mut HashMap::new(),
+            &HashMap::new(),
+            &taffy,
+            &enabled,
+            root,
+            DummyApp::theme().spacing,
+        );
+        caches.focus_order.clone_from(&focus_order);
+        assert!(matches!(
+            caches.counters.get(&47).map(|counter| &counter.config),
+            Some(CounterConfig::Integer(_))
+        ));
+        assert!(matches!(
+            caches.counters.get(&48).map(|counter| &counter.config),
+            Some(CounterConfig::Float(_))
+        ));
+        assert_eq!(caches.counters.len(), 2);
+        assert!(runtime_focus_is_live(&caches, 47));
+        assert!(runtime_focus_is_live(&caches, 48));
+
         RutterEngine::<DummyApp>::sync_runtime_metadata_for_test(
             &mut caches,
             &mut HashMap::new(),
@@ -4003,6 +4047,8 @@ mod tests {
         assert!(caches.checkboxes.is_empty());
         assert!(caches.switches.is_empty());
         assert!(caches.counters.is_empty());
+        assert!(!runtime_focus_is_live(&caches, 47));
+        assert!(!runtime_focus_is_live(&caches, 48));
         assert!(!runtime_focus_is_live(&caches, 43));
         assert!(!runtime_focus_is_live(&caches, 44));
         let mut states = HashMap::from([(
@@ -4060,16 +4106,26 @@ mod tests {
                     style: base_style(240.0, 20.0),
                     label: "",
                 },
-                Widget::Counter {
-                    id: 10,
-                    value: 3,
-                    min: -2,
-                    max: 8,
-                    step: 2,
-                    on_change: Msg::Integer,
-                    style: base_style(160.0, 40.0),
-                    label: "Quantity",
-                },
+                Widget::counter(
+                    3,
+                    -2,
+                    8,
+                    2,
+                    Msg::Integer,
+                    base_style(160.0, 40.0),
+                    "Quantity",
+                )
+                .with_id(10),
+                Widget::counter(
+                    0.5,
+                    -1.0,
+                    2.0,
+                    0.25,
+                    Msg::Float64,
+                    base_style(160.0, 40.0),
+                    "Amount",
+                )
+                .with_id(11),
                 Widget::Select {
                     id: 3,
                     options: &["A", "B"],
@@ -4187,12 +4243,31 @@ mod tests {
         assert_eq!(slider.step, 5.0);
         assert_eq!((slider.on_change)(55.0), Msg::Float(55.0));
 
-        let counter = runtime_caches.counters.get(&10).unwrap();
+        let CounterConfig::Integer(counter) = &runtime_caches.counters.get(&10).unwrap().config
+        else {
+            panic!("integer counter must preserve its numeric mode");
+        };
         assert_eq!(
             (counter.value, counter.min, counter.max, counter.step),
             (3, -2, 8, 2)
         );
         assert_eq!((counter.on_change)(5), Msg::Integer(5));
+
+        let CounterConfig::Float(float_counter) = &runtime_caches.counters.get(&11).unwrap().config
+        else {
+            panic!("floating-point counter must preserve its numeric mode");
+        };
+        assert_eq!(
+            (
+                float_counter.value,
+                float_counter.min,
+                float_counter.max,
+                float_counter.step,
+            ),
+            (0.5, -1.0, 2.0, 0.25)
+        );
+        assert_eq!((float_counter.on_change)(0.75), Msg::Float64(0.75));
+        assert_eq!(runtime_caches.counters.len(), 2);
 
         let select = runtime_caches.selects.get(&3).unwrap();
         assert_eq!(select.selected_index, 0);
@@ -4242,6 +4317,8 @@ mod tests {
 
         assert_eq!(runtime_caches.toast_dismiss.get(&6), Some(&Msg::Dismiss));
         assert_eq!(runtime_caches.popover_dismiss.get(&8), Some(&Msg::Dismiss));
+        runtime_caches.clear();
+        assert!(runtime_caches.counters.is_empty());
     }
 
     fn interactive_runtime_button<'a>(index: usize) -> Option<Widget<'a, Msg>> {

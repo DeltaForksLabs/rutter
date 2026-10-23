@@ -6,33 +6,48 @@ use std::time::{Duration, Instant};
 use winit::keyboard::{Key, NamedKey};
 
 use super::RutterRunner;
+use crate::CounterConfig;
 use crate::app::AppLogic;
+use crate::engine::CounterRuntime;
+
+mod number;
+use number::CounterNumber;
+
+#[cfg(test)]
+mod float_tests;
 
 const COUNTER_HOLD_INITIAL_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Clone, Copy, Debug)]
-struct CounterValueRange {
-    value: i64,
-    min: i64,
-    max: i64,
-    step: i64,
+struct CounterValueRange<T = i64> {
+    value: T,
+    min: T,
+    max: T,
+    step: T,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct CounterHoldRepeat {
+pub(super) enum CounterHoldRepeat {
+    Integer(CounterRepeat<i64>),
+    Float(CounterRepeat<f64>),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CounterRepeat<T> {
     id: u64,
+    generation: u64,
     increment: bool,
-    range: CounterValueRange,
-    last_observed_value: i64,
+    range: CounterValueRange<T>,
+    last_observed_value: T,
     next_repeat_at: Instant,
     repetition_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CounterRepeatAdvance {
+enum CounterRepeatAdvance<T> {
     Waiting(Instant),
     Changed {
-        value: i64,
+        value: T,
         next_deadline: Option<Instant>,
     },
     Finished,
@@ -41,20 +56,43 @@ enum CounterRepeatAdvance {
 impl<A: AppLogic + 'static> RutterRunner<A> {
     pub(super) fn begin_counter_hold(&mut self, id: u64, increment: bool) {
         self.counter_hold_repeat = None;
-        let Some(counter) = self.engine.runtime_caches.counters.get(&id).cloned() else {
+        let Some(entry) = self.engine.runtime_caches.counters.get(&id).cloned() else {
             return;
         };
-        let range = CounterValueRange {
-            value: counter.value,
-            min: counter.min,
-            max: counter.max,
-            step: counter.step,
-        };
-        let Some((value, repeat)) = counter_hold_plan(id, range, increment, Instant::now()) else {
-            return;
-        };
-        self.counter_hold_repeat = repeat;
-        self.apply_counter_value(counter.on_change, value);
+        match entry.config {
+            CounterConfig::Integer(counter) => self.start_counter_repeat(
+                id,
+                entry.generation,
+                counter,
+                increment,
+                CounterHoldRepeat::Integer,
+            ),
+            CounterConfig::Float(counter) => self.start_counter_repeat(
+                id,
+                entry.generation,
+                counter,
+                increment,
+                CounterHoldRepeat::Float,
+            ),
+        }
+    }
+
+    fn start_counter_repeat<T: CounterNumber>(
+        &mut self,
+        id: u64,
+        generation: u64,
+        counter: CounterRuntime<A::Message, T>,
+        increment: bool,
+        wrap: fn(CounterRepeat<T>) -> CounterHoldRepeat,
+    ) {
+        let range = CounterValueRange::from_counter(&counter);
+        if let Some((value, mut repeat)) = counter_hold_plan(id, range, increment, Instant::now()) {
+            if let Some(repeat) = repeat.as_mut() {
+                repeat.generation = generation;
+            }
+            self.counter_hold_repeat = repeat.map(wrap);
+            self.apply_counter_value(counter.on_change, value);
+        }
     }
 
     pub(super) fn counter_hold_deadline(&mut self, now: Instant) -> Option<Instant> {
@@ -62,42 +100,61 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.counter_hold_repeat = None;
             return None;
         }
-        let mut repeat = self.counter_hold_repeat.take()?;
-        let (value, min, max, step, on_change) = self
-            .engine
-            .runtime_caches
-            .counters
-            .get(&repeat.id)
-            .map(|counter| {
-                (
-                    counter.value,
-                    counter.min,
-                    counter.max,
-                    counter.step,
-                    counter.on_change,
-                )
-            })?;
-        sync_counter_hold_range(&mut repeat, value, min, max, step);
-        self.apply_counter_hold_advance(repeat, on_change, now)
+        let repeat = self.counter_hold_repeat.take()?;
+        // Scheduled work can precede the queued redraw. Refresh the published
+        // model before using callbacks, including when the numeric mode changes.
+        if self.engine.layout_dirty {
+            let size = self.engine.window.as_ref()?.surface_size();
+            if let Err(error) = self.engine.try_ensure_layout_for_input(size) {
+                self.fatal_error.get_or_insert_with(|| error.into());
+                return None;
+            }
+        }
+        let (id, generation) = match repeat {
+            CounterHoldRepeat::Integer(repeat) => (repeat.id, repeat.generation),
+            CounterHoldRepeat::Float(repeat) => (repeat.id, repeat.generation),
+        };
+        let entry = self.engine.runtime_caches.counters.get(&id)?.clone();
+        if entry.generation != generation {
+            return None;
+        }
+        // A published numeric-mode change must not retarget an active hold.
+        match (repeat, entry.config) {
+            (CounterHoldRepeat::Integer(repeat), CounterConfig::Integer(counter)) => {
+                self.apply_counter_hold_advance(repeat, counter, CounterHoldRepeat::Integer, now)
+            }
+            (CounterHoldRepeat::Float(repeat), CounterConfig::Float(counter)) => {
+                self.apply_counter_hold_advance(repeat, counter, CounterHoldRepeat::Float, now)
+            }
+            _ => None,
+        }
     }
 
-    fn apply_counter_hold_advance(
+    fn apply_counter_hold_advance<T: CounterNumber>(
         &mut self,
-        mut repeat: CounterHoldRepeat,
-        on_change: fn(i64) -> A::Message,
+        mut repeat: CounterRepeat<T>,
+        counter: CounterRuntime<A::Message, T>,
+        wrap: fn(CounterRepeat<T>) -> CounterHoldRepeat,
         now: Instant,
     ) -> Option<Instant> {
+        sync_counter_hold_range(
+            &mut repeat,
+            counter.value,
+            counter.min,
+            counter.max,
+            counter.step,
+        );
         match advance_counter_hold(&mut repeat, now) {
             CounterRepeatAdvance::Waiting(deadline) => {
-                self.counter_hold_repeat = Some(repeat);
+                self.counter_hold_repeat = Some(wrap(repeat));
                 Some(deadline)
             }
             CounterRepeatAdvance::Changed {
                 value,
                 next_deadline,
             } => {
-                self.counter_hold_repeat = next_deadline.map(|_| repeat);
-                self.apply_counter_value(on_change, value);
+                self.counter_hold_repeat = next_deadline.map(|_| wrap(repeat));
+                self.apply_counter_value(counter.on_change, value);
                 self.redraw();
                 next_deadline
             }
@@ -106,9 +163,24 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     pub(super) fn adjust_focused_counter_key(&mut self, id: u64, key: &Key) -> bool {
-        let Some(counter) = self.engine.runtime_caches.counters.get(&id).cloned() else {
-            return false;
-        };
+        match self
+            .engine
+            .runtime_caches
+            .counters
+            .get(&id)
+            .map(|entry| entry.config.clone())
+        {
+            Some(CounterConfig::Integer(counter)) => self.adjust_counter_key(counter, key),
+            Some(CounterConfig::Float(counter)) => self.adjust_counter_key(counter, key),
+            None => false,
+        }
+    }
+
+    fn adjust_counter_key<T: CounterNumber>(
+        &mut self,
+        counter: CounterRuntime<A::Message, T>,
+        key: &Key,
+    ) -> bool {
         let Some(value) =
             counter_value_for_key(counter.value, counter.min, counter.max, counter.step, key)
         else {
@@ -118,7 +190,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         true
     }
 
-    fn apply_counter_value(&mut self, on_change: fn(i64) -> A::Message, value: i64) {
+    fn apply_counter_value<T>(&mut self, on_change: fn(T) -> A::Message, value: T) {
         A::update(
             &mut self.engine.app_state,
             on_change(value),
@@ -128,19 +200,31 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 }
 
-fn counter_hold_plan(
+impl<T: Copy> CounterValueRange<T> {
+    fn from_counter<Msg>(counter: &CounterRuntime<Msg, T>) -> Self {
+        Self {
+            value: counter.value,
+            min: counter.min,
+            max: counter.max,
+            step: counter.step,
+        }
+    }
+}
+
+fn counter_hold_plan<T: CounterNumber>(
     id: u64,
-    mut range: CounterValueRange,
+    mut range: CounterValueRange<T>,
     increment: bool,
     now: Instant,
-) -> Option<(i64, Option<CounterHoldRepeat>)> {
+) -> Option<(T, Option<CounterRepeat<T>>)> {
     let observed_value = range.value;
     let value = counter_adjusted_value(range.value, range.min, range.max, range.step, increment)?;
     range.value = value;
     let can_repeat =
         counter_adjusted_value(value, range.min, range.max, range.step, increment).is_some();
-    let repeat = can_repeat.then_some(CounterHoldRepeat {
+    let repeat = can_repeat.then_some(CounterRepeat {
         id,
+        generation: 0,
         increment,
         range,
         last_observed_value: observed_value,
@@ -150,12 +234,12 @@ fn counter_hold_plan(
     Some((value, repeat))
 }
 
-fn sync_counter_hold_range(
-    repeat: &mut CounterHoldRepeat,
-    value: i64,
-    min: i64,
-    max: i64,
-    step: i64,
+fn sync_counter_hold_range<T: CounterNumber>(
+    repeat: &mut CounterRepeat<T>,
+    value: T,
+    min: T,
+    max: T,
+    step: T,
 ) {
     if value != repeat.last_observed_value && value != repeat.range.value {
         repeat.range.value = value;
@@ -166,7 +250,10 @@ fn sync_counter_hold_range(
     repeat.range.step = step;
 }
 
-fn advance_counter_hold(repeat: &mut CounterHoldRepeat, now: Instant) -> CounterRepeatAdvance {
+fn advance_counter_hold<T: CounterNumber>(
+    repeat: &mut CounterRepeat<T>,
+    now: Instant,
+) -> CounterRepeatAdvance<T> {
     if now < repeat.next_repeat_at {
         return CounterRepeatAdvance::Waiting(repeat.next_repeat_at);
     }
@@ -187,9 +274,9 @@ fn advance_counter_hold(repeat: &mut CounterHoldRepeat, now: Instant) -> Counter
     }
 }
 
-fn schedule_counter_repeat(
-    repeat: &mut CounterHoldRepeat,
-    value: i64,
+fn schedule_counter_repeat<T: CounterNumber>(
+    repeat: &mut CounterRepeat<T>,
+    value: T,
     now: Instant,
 ) -> Option<Instant> {
     repeat.range.value = value;
@@ -213,25 +300,27 @@ fn counter_repeat_interval(repetition_count: u32) -> Duration {
     }
 }
 
-fn counter_adjusted_value(
-    value: i64,
-    min: i64,
-    max: i64,
-    step: i64,
+fn counter_adjusted_value<T: CounterNumber>(
+    value: T,
+    min: T,
+    max: T,
+    step: T,
     increment: bool,
-) -> Option<i64> {
-    if min > max || step <= 0 {
+) -> Option<T> {
+    if !T::valid_range(value, min, max, step) {
         return None;
     }
-    let bounded = value.clamp(min, max);
+    counter_bounded_target(value, min, max, value.stepped(step, increment))
+}
+
+// Validate the inputs before computing a target. An overflowing final target
+// clamps to a finite endpoint; unchecked out-of-range values are corrected first.
+fn counter_bounded_target<T: CounterNumber>(value: T, min: T, max: T, target: T) -> Option<T> {
+    let bounded = value.bounded(min, max);
     if bounded != value {
         return Some(bounded);
     }
-    let next = if increment {
-        value.saturating_add(step).min(max)
-    } else {
-        value.saturating_sub(step).max(min)
-    };
+    let next = target.bounded(min, max);
     (next != value).then_some(next)
 }
 
@@ -245,8 +334,14 @@ enum CounterKeyAction {
     PageIncrement,
 }
 
-fn counter_value_for_key(value: i64, min: i64, max: i64, step: i64, key: &Key) -> Option<i64> {
-    if min > max || step <= 0 {
+fn counter_value_for_key<T: CounterNumber>(
+    value: T,
+    min: T,
+    max: T,
+    step: T,
+    key: &Key,
+) -> Option<T> {
+    if !T::valid_range(value, min, max, step) {
         return None;
     }
     match counter_key_action(key)? {
@@ -255,10 +350,10 @@ fn counter_value_for_key(value: i64, min: i64, max: i64, step: i64, key: &Key) -
         CounterKeyAction::Minimum => (value != min).then_some(min),
         CounterKeyAction::Maximum => (value != max).then_some(max),
         CounterKeyAction::PageDecrement => {
-            counter_adjusted_value(value, min, max, step.saturating_mul(10), false)
+            counter_bounded_target(value, min, max, value.page_target(step, false))
         }
         CounterKeyAction::PageIncrement => {
-            counter_adjusted_value(value, min, max, step.saturating_mul(10), true)
+            counter_bounded_target(value, min, max, value.page_target(step, true))
         }
     }
 }
@@ -287,31 +382,31 @@ mod tests {
 
     #[test]
     fn counter_adjustment_clamps_uneven_steps_and_integer_extremes() {
-        assert_eq!(counter_adjusted_value(8, 0, 10, 3, true), Some(10));
-        assert_eq!(counter_adjusted_value(0, 0, 10, 3, false), None);
+        assert_eq!(counter_adjusted_value::<i64>(8, 0, 10, 3, true), Some(10));
+        assert_eq!(counter_adjusted_value::<i64>(0, 0, 10, 3, false), None);
         assert_eq!(
             counter_adjusted_value(i64::MAX - 1, i64::MIN, i64::MAX, 2, true),
             Some(i64::MAX)
         );
-        assert_eq!(counter_adjusted_value(1, 4, 3, 1, true), None);
+        assert_eq!(counter_adjusted_value::<i64>(1, 4, 3, 1, true), None);
     }
 
     #[test]
     fn counter_keyboard_targets_use_bounds_and_page_steps() {
         assert_eq!(
-            counter_value_for_key(1, 0, 20, 2, &Key::Named(NamedKey::PageUp)),
+            counter_value_for_key::<i64>(1, 0, 20, 2, &Key::Named(NamedKey::PageUp)),
             Some(20)
         );
         assert_eq!(
-            counter_value_for_key(7, 0, 20, 2, &Key::Named(NamedKey::Home)),
+            counter_value_for_key::<i64>(7, 0, 20, 2, &Key::Named(NamedKey::Home)),
             Some(0)
         );
         assert_eq!(
-            counter_value_for_key(20, 0, 20, 2, &Key::Named(NamedKey::ArrowUp)),
+            counter_value_for_key::<i64>(20, 0, 20, 2, &Key::Named(NamedKey::ArrowUp)),
             None
         );
         assert_eq!(
-            counter_value_for_key(4, 0, 20, 2, &Key::Character("+".into())),
+            counter_value_for_key::<i64>(4, 0, 20, 2, &Key::Character("+".into())),
             Some(6)
         );
     }
@@ -319,7 +414,7 @@ mod tests {
     #[test]
     fn counter_hold_waits_then_accelerates_until_the_boundary() {
         let now = Instant::now();
-        let range = CounterValueRange {
+        let range: CounterValueRange = CounterValueRange {
             value: 0,
             min: 0,
             max: 4,
@@ -346,7 +441,7 @@ mod tests {
     #[test]
     fn counter_hold_stops_as_soon_as_it_reaches_a_boundary() {
         let now = Instant::now();
-        let range = CounterValueRange {
+        let range: CounterValueRange = CounterValueRange {
             value: 1,
             min: 0,
             max: 3,
@@ -367,7 +462,7 @@ mod tests {
     #[test]
     fn counter_hold_sync_uses_only_new_application_values() {
         let now = Instant::now();
-        let range = CounterValueRange {
+        let range: CounterValueRange = CounterValueRange {
             value: 3,
             min: 0,
             max: 10,

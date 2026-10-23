@@ -89,9 +89,9 @@ use crate::render::hit_test::{dialog_card_rect, modal_card_rect, popover_rect};
 use crate::text_controls::TextControlPolicy;
 use crate::theme::Theme;
 use crate::widget::{
-    ButtonVariant, ContextMenuEntry, CustomWidgetState, DialogAction, DialogPosition, InputState,
-    KeyedVirtualItems, Orientation, ToastKind, ToastPosition, VirtualSelection, Widget,
-    is_interactive_virtual_item_path, pop_interactive_virtual_item_path,
+    ButtonVariant, ContextMenuEntry, CounterConfig, CustomWidgetState, DialogAction,
+    DialogPosition, InputState, KeyedVirtualItems, Orientation, ToastKind, ToastPosition,
+    VirtualSelection, Widget, is_interactive_virtual_item_path, pop_interactive_virtual_item_path,
     push_interactive_virtual_item_path,
 };
 use crate::widgets::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
@@ -1673,19 +1673,38 @@ fn draw_widgets_impl<'w, Msg>(
                 theme,
             });
         }
-        Widget::Counter {
-            value, min, max, ..
-        } => draw_counter(CounterRenderInput {
-            canvas,
-            value: *value,
-            min: *min,
-            max: *max,
-            is_focused,
-            size,
-            mouse: local_mouse,
-            font_cache,
-            theme,
-        }),
+        Widget::Counter { config, .. } => {
+            let (can_decrement, can_increment) = match config {
+                CounterConfig::Integer(parameters) => (
+                    parameters.min <= parameters.max && parameters.value > parameters.min,
+                    parameters.min <= parameters.max && parameters.value < parameters.max,
+                ),
+                CounterConfig::Float(parameters) => {
+                    let valid = crate::widget::validate_counter(
+                        parameters.value,
+                        parameters.min,
+                        parameters.max,
+                        parameters.step,
+                    )
+                    .is_ok();
+                    (
+                        valid && parameters.value > parameters.min,
+                        valid && parameters.value < parameters.max,
+                    )
+                }
+            };
+            draw_counter(CounterRenderInput {
+                canvas,
+                value_text: &config.value().to_string(),
+                can_decrement,
+                can_increment,
+                is_focused,
+                size,
+                mouse: local_mouse,
+                font_cache,
+                theme,
+            });
+        }
         Widget::Clock {
             time_zone, config, ..
         } => draw_clock(ClockRenderInput {
@@ -5762,6 +5781,73 @@ mod tests {
         assert_eq!(expanded.radii(Corner::LowerLeft), Vector::new(0.0, 0.0));
         assert_eq!(collapsed.radii(Corner::LowerRight), Vector::new(8.0, 8.0));
         assert_eq!(collapsed.radii(Corner::LowerLeft), Vector::new(8.0, 8.0));
+    }
+
+    #[test]
+    fn float_counter_renders_fractional_text_and_guards_invalid_steps() {
+        let style = Style {
+            size: Size::from_lengths(160.0, 40.0),
+            ..Style::default()
+        };
+        let mut integer = rendered_counter(&Widget::counter(
+            1,
+            0,
+            2,
+            1,
+            |_| (),
+            style.clone(),
+            "Amount",
+        ));
+        let mut fractional = rendered_counter(&Widget::counter(
+            1.25,
+            0.0,
+            2.0,
+            0.25,
+            |_| (),
+            style.clone(),
+            "Amount",
+        ));
+        let mut invalid = rendered_counter(&Widget::counter(
+            1.25,
+            0.0,
+            2.0,
+            f64::NAN,
+            |_| (),
+            style,
+            "Amount",
+        ));
+
+        let integer_pixels = integer.peek_pixels().unwrap();
+        let fractional_pixels = fractional.peek_pixels().unwrap();
+        assert!((40..120).any(|x| {
+            (0..40).any(|y| integer_pixels.get_color((x, y)) != fractional_pixels.get_color((x, y)))
+        }));
+        assert_ne!(
+            pixel_at(&mut fractional, 10, 10),
+            pixel_at(&mut invalid, 10, 10)
+        );
+        assert_ne!(
+            pixel_at(&mut fractional, 150, 10),
+            pixel_at(&mut invalid, 150, 10)
+        );
+    }
+
+    fn rendered_counter(widget: &Widget<'_, ()>) -> Surface {
+        let widget_states = HashMap::new();
+        let layout_fonts = Rc::new(RefCell::new(FontSystem::new()));
+        let mut taffy = TaffyTree::new();
+        let root = build_taffy_tree(&mut taffy, widget, layout_fonts.clone(), &widget_states);
+        compute_layout(
+            &mut taffy,
+            root,
+            PhysicalSize::new(160, 40),
+            layout_fonts,
+            &RichTextRenderer::default(),
+        );
+        let mut surface = surfaces::raster_n32_premul((160, 40)).unwrap();
+        surface.canvas().clear(Color::TRANSPARENT);
+        draw_test_widget_tree(surface.canvas(), &taffy, root, widget, &widget_states);
+        surface
     }
 
     fn rounded_container_widget() -> Widget<'static, ()> {

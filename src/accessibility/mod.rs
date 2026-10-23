@@ -31,7 +31,7 @@ use crate::render::select_overlay::collector::{
 };
 use crate::widget::id::resolve_accessibility_path_id;
 use crate::widget::{
-    CustomAccessibility, CustomAccessibilityActions, CustomAccessibilityRole,
+    CounterConfig, CustomAccessibility, CustomAccessibilityActions, CustomAccessibilityRole,
     CustomAccessibilityState, DialogAction, KeyedVirtualItems, VirtualSelection, Widget,
     pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
     resolve_table_of_contents_accordion_id, resolve_table_of_contents_navigation_id,
@@ -1216,18 +1216,20 @@ fn apply_numeric_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
             node.set_max_numeric_value(*max as f64);
             node.set_numeric_value_step(*step as f64);
         }
-        Widget::Counter {
-            value,
-            min,
-            max,
-            step,
-            ..
-        } => {
-            node.set_numeric_value(*value as f64);
-            node.set_min_numeric_value(*min as f64);
-            node.set_max_numeric_value(*max as f64);
-            node.set_numeric_value_step(*step as f64);
-        }
+        Widget::Counter { config, .. } => match config {
+            CounterConfig::Integer(parameters) => {
+                node.set_numeric_value(parameters.value as f64);
+                node.set_min_numeric_value(parameters.min as f64);
+                node.set_max_numeric_value(parameters.max as f64);
+                node.set_numeric_value_step(parameters.step as f64);
+            }
+            CounterConfig::Float(parameters) => {
+                node.set_numeric_value(parameters.value);
+                node.set_min_numeric_value(parameters.min);
+                node.set_max_numeric_value(parameters.max);
+                node.set_numeric_value_step(parameters.step);
+            }
+        },
         Widget::ProgressBar {
             value,
             indeterminate,
@@ -1887,6 +1889,36 @@ mod tests {
         assert_eq!(counter.numeric_value_step(), Some(1.0));
         assert!(counter.supports_action(Action::Increment));
         assert!(counter.supports_action(Action::Decrement));
+    }
+
+    #[test]
+    fn float_counter_preserves_numeric_metadata_when_disabled() {
+        for enabled in [true, false] {
+            let widget = Widget::counter(
+                0.5,
+                -1.0,
+                2.0,
+                0.25,
+                |_| (),
+                base_style(160.0, 40.0),
+                "Amount",
+            )
+            .with_id(17)
+            .enabled(enabled);
+
+            let update = build_update(&widget);
+            let counter = node_for(&update, Role::SpinButton);
+
+            assert_eq!(counter.label(), Some("Amount"));
+            assert_eq!(counter.numeric_value(), Some(0.5));
+            assert_eq!(counter.min_numeric_value(), Some(-1.0));
+            assert_eq!(counter.max_numeric_value(), Some(2.0));
+            assert_eq!(counter.numeric_value_step(), Some(0.25));
+            assert_eq!(counter.is_disabled(), !enabled);
+            assert_eq!(counter.supports_action(Action::Focus), enabled);
+            assert_eq!(counter.supports_action(Action::Increment), enabled);
+            assert_eq!(counter.supports_action(Action::Decrement), enabled);
+        }
     }
 
     #[test]

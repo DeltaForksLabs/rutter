@@ -5,6 +5,7 @@
 // Rutter Framework — widget/mod.rs
 // ============================================================
 
+mod counter;
 pub mod custom;
 pub(crate) mod id;
 mod virtual_items;
@@ -27,6 +28,10 @@ use crate::widgets::table_of_contents::{
     HeadingLevel, TableOfContentsAccordion, TableOfContentsOptions,
 };
 use crate::widgets::time::{ClockConfig, TimeZone};
+pub use counter::{
+    CounterConfig, CounterConfigError, CounterInput, CounterParameters, CounterValue,
+    validate_counter,
+};
 pub use custom::{
     CUSTOM_WIDGET_API_VERSION, CustomAccessibility, CustomAccessibilityAction,
     CustomAccessibilityActions, CustomAccessibilityNode, CustomAccessibilityRole,
@@ -73,61 +78,6 @@ impl fmt::Display for WidgetConfigError {
 }
 
 impl std::error::Error for WidgetConfigError {}
-
-/// Reports an invalid integer counter configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CounterConfigError {
-    InvalidRange { min: i64, max: i64 },
-    ValueOutOfRange { value: i64, min: i64, max: i64 },
-    InvalidStep { step: i64 },
-}
-
-impl fmt::Display for CounterConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidRange { min, max } => {
-                write!(
-                    formatter,
-                    "invalid counter range {min}..={max}, expected min <= max"
-                )
-            }
-            Self::ValueOutOfRange { value, min, max } => write!(
-                formatter,
-                "invalid counter value {value}, expected a value within {min}..={max}"
-            ),
-            Self::InvalidStep { step } => {
-                write!(formatter, "invalid counter step {step}, expected step > 0")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CounterConfigError {}
-
-/// Validates the value, range, and step supplied to an integer counter.
-///
-/// ```rust
-/// use rutter::validate_counter;
-///
-/// assert!(validate_counter(1, 0, 9, 1).is_ok());
-/// ```
-pub fn validate_counter(
-    value: i64,
-    min: i64,
-    max: i64,
-    step: i64,
-) -> Result<(), CounterConfigError> {
-    if min > max {
-        return Err(CounterConfigError::InvalidRange { min, max });
-    }
-    if value < min || value > max {
-        return Err(CounterConfigError::ValueOutOfRange { value, min, max });
-    }
-    if step <= 0 {
-        return Err(CounterConfigError::InvalidStep { step });
-    }
-    Ok(())
-}
 
 pub fn validate_slider(value: f32, min: f32, max: f32, step: f32) -> Result<(), WidgetConfigError> {
     if value.is_finite()
@@ -788,11 +738,7 @@ pub enum Widget<'a, Msg> {
     },
     Counter {
         id: u64,
-        value: i64,
-        min: i64,
-        max: i64,
-        step: i64,
-        on_change: fn(i64) -> Msg,
+        config: CounterConfig<Msg>,
         style: Style,
         label: &'a str,
     },
@@ -1303,55 +1249,85 @@ impl<'a, Msg> Widget<'a, Msg> {
         Ok(Self::slider(value, min, max, step, on_change, style, label))
     }
 
-    /// Creates a controlled integer counter rendered as `- value +`.
+    /// Creates a controlled integer or floating-point Counter rendered as `- value +`.
+    ///
+    /// The value, bounds, step and callback share one numeric type (`i64` or `f64`).
+    /// Integer arithmetic remains exact. Floating-point values use IEEE-754 arithmetic
+    /// and `to_string()` formatting; decimal steps can accumulate rounding error.
+    /// Adjustments clamp to inclusive bounds and stop when the step cannot change
+    /// the representable value. There is no text input or localized decimal parsing.
+    /// Use [`Self::try_counter`] for validated construction.
     ///
     /// ```rust
-    /// use rutter::Widget;
+    /// use rutter::{CounterConfig, Widget};
     /// use taffy::prelude::Style;
     ///
-    /// enum Msg { QuantityChanged(i64) }
+    /// enum Msg { QuantityChanged(i64), AmountChanged(f64) }
     /// let counter = Widget::counter(1, 0, 9, 1, Msg::QuantityChanged, Style::default(), "Quantity");
-    /// assert!(matches!(counter, Widget::Counter { value: 1, .. }));
+    /// assert!(matches!(counter, Widget::Counter { config: CounterConfig::Integer(_), .. }));
+    /// let amount = Widget::counter(0.5, 0.0, 1.0, 0.125, Msg::AmountChanged, Style::default(), "Amount");
+    /// assert!(matches!(amount, Widget::Counter { config: CounterConfig::Float(_), .. }));
     /// ```
-    pub fn counter(
-        value: i64,
-        min: i64,
-        max: i64,
-        step: i64,
-        on_change: fn(i64) -> Msg,
+    ///
+    /// Integer and float parameters cannot be mixed:
+    /// ```compile_fail
+    /// use rutter::Widget;
+    /// let _: Widget<'_, ()> = Widget::counter(
+    ///     1_i64, 0.0, 10.0, 0.5, |_| (), taffy::Style::default(), "Amount",
+    /// );
+    /// ```
+    /// The callback must receive the same numeric type:
+    /// ```compile_fail
+    /// use rutter::Widget;
+    /// let _: Widget<'_, ()> = Widget::counter(
+    ///     0.5, 0.0, 1.0, 0.125, |_: i64| (), taffy::Style::default(), "Amount",
+    /// );
+    /// ```
+    pub fn counter<N: CounterInput>(
+        value: N,
+        min: N,
+        max: N,
+        step: N,
+        on_change: fn(N) -> Msg,
         style: Style,
         label: &'a str,
     ) -> Self {
         Self::Counter {
             id: AUTO_ID,
-            value,
-            min,
-            max,
-            step,
-            on_change,
+            config: N::configure(CounterParameters {
+                value,
+                min,
+                max,
+                step,
+                on_change,
+            }),
             style,
             label,
         }
     }
 
-    /// Validates and creates a controlled integer counter.
+    /// Validates and creates an integer or floating-point Counter.
+    ///
+    /// All numbers must be finite, `min <= value <= max`, and `step > 0`.
     ///
     /// ```rust
     /// use rutter::Widget;
     /// use taffy::prelude::Style;
     ///
     /// let counter: Widget<'_, ()> = Widget::try_counter(1, 0, 9, 1, |_| (), Style::default(), "Quantity")?;
+    /// let amount: Widget<'_, ()> = Widget::try_counter(0.5, 0.0, 1.0, 0.125, |_| (), Style::default(), "Amount")
+    ///     .expect("finite fractional parameters");
     /// # Ok::<(), rutter::CounterConfigError>(())
     /// ```
-    pub fn try_counter(
-        value: i64,
-        min: i64,
-        max: i64,
-        step: i64,
-        on_change: fn(i64) -> Msg,
+    pub fn try_counter<N: CounterInput>(
+        value: N,
+        min: N,
+        max: N,
+        step: N,
+        on_change: fn(N) -> Msg,
         style: Style,
         label: &'a str,
-    ) -> Result<Self, CounterConfigError> {
+    ) -> Result<Self, CounterConfigError<N>> {
         validate_counter(value, min, max, step)?;
         Ok(Self::counter(
             value, min, max, step, on_change, style, label,

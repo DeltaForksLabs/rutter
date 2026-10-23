@@ -4,7 +4,7 @@ use super::{
     ClockConfig, ClockFormat, TimeOfDay, TimePickerConfig, TimePickerError, TimePickerLabels,
     TimeZone,
 };
-use crate::Widget;
+use crate::{CounterConfig, Widget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Msg {
@@ -185,8 +185,9 @@ fn config() -> TimePickerConfig<'static, Msg> {
 fn picker_contains_callback(widget: &Widget<'_, Msg>, expected: Msg) -> bool {
     match widget {
         Widget::Counter {
-            value, on_change, ..
-        } => on_change(*value) == expected,
+            config: CounterConfig::Integer(parameters),
+            ..
+        } => (parameters.on_change)(parameters.value) == expected,
         Widget::Select {
             selected_index,
             on_change,
