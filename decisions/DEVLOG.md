@@ -1,5 +1,89 @@
 # Development Log
 
+## [2026-10-25T19:05:41-03:00] - Prepare the ComboBox Version Update and Commit - 0.44.0
+
+**Context:** The user requested a version update and a commit of requests 62 and 62.1, without release/version wording in the commit title.
+
+**Challenge:** Include the complete ComboBox implementation and rendering fixes while synchronizing package metadata, preserving historical validation entries and leaving the user's `.gitignore` change outside the commit.
+
+**Decision:** Advance the experimental pre-1.0 minor version from 0.43.0 to 0.44.0 for the new widget/API. Update the authoritative manifest and let Cargo refresh only Rutter's lockfile version entry. Update README project status and preserve prior migration guidance. Use an English feature commit describing each committed file, with a BREAKING CHANGE footer for downstream exhaustive `Widget` matches. Do not add release wording to its title, create a tag, push or publish packages.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log; the commit also includes the ComboBox source, engine/render/accessibility integration, responsive demo and regression tests described in the preceding entries.
+
+**Validation:** Commands actually executed after the version update, sequentially:
+
+```bash
+CARGO_BUILD_JOBS=2 cargo check --offline --all-targets --all-features
+git diff -- Cargo.toml Cargo.lock
+cargo fmt --all -- --check
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --example native_popup_clock -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+```
+
+The 0.44.0 suite passed **825 library tests (35 existing ignored), 71 binary/demo tests, 250 integration tests and 313 doctests**. All **3 native clock example tests** passed. Formatting, all-target/all-feature check and warnings-denied Clippy passed. The manifest/lockfile diff changes only Rutter's version; no dependency resolution changes. Disposable Xvfb isolates clipboard/display state. Manual visual, real screen-reader, opt-in native/compositor, non-Linux and fork-only acceptance were not performed. System-font coverage requirements and the exhaustive-match source compatibility concern remain documented. No stored-data migration or new dependency is needed. The lockfile is the only generated metadata changed; vendor files and `.gitignore` are untouched by this task.
+
+## [2026-10-25T18:39:31-03:00] - Fix ComboBox Glyph Fallback and Dropdown Affordance - Unreleased
+
+**Context:** Request 62.1 reports missing-character rectangles and requests an open/closed chevron with a small square backing, matching the supplied right-hand dropdown reference.
+
+**Challenge:** ComboBox labels and suggestion rows used a single Skia typeface without per-script fallback or Arabic shaping, while the editor already used cosmic-text. Moving the indicator from the leading edge must also change text reservation, pointer coordinates and drag exclusion, not only its painted position.
+
+**Alternatives:** Replacing multilingual strings or forcing a single font would hide the defect and still fail for other scripts. Per-character font substitution would not provide contextual shaping. Reuse the retained Skia paragraph font collection instead of constructing font managers per row or adding another text dependency.
+
+**Decision:** Add bounded single-line paragraph rendering with system font fallback, shaping, explicit direction/start alignment, flattened line breaks, ellipsis and clipping. Use it for ComboBox labels/errors, shared search-popup rows/no-results feedback and shared editor placeholders. Keep editable values on cosmic-text and retain existing annotation/body allocations. Do not bundle fonts or modify system font configuration.
+
+Paint a physical-right square dropdown button with an opaque surface, subtle backing and thin border. Reuse the existing font-independent Select chevron; derive its direction from actual root popup collection so dismissal, selection, blur and clipped anchors show the closed state. Share square geometry between painting and pointer toggling, reserve trailing editor width without shifting its origin, apply the same width to disabled presentation, and exclude the button from text dragging. The square is a control dimension (32px maximum, 4px inset, reduced for shorter/narrower bodies), not a spacing-token substitution. Preserve one focus owner and existing keyboard/accessibility behavior. Physical-right placement in RTL deliberately follows the supplied reference; annotations and popup text still honor writing direction.
+
+**Files Changed:** `src/widgets/combo_box/mod.rs`; `src/render/{mod,rich_text,field,image_cache,search_overlay}.rs` and search-overlay collector direction; `src/engine/{mod,runner}.rs` and `runner/pointer_region.rs`; ComboBox runner/raster tests, rich-text renderer tests and search-overlay render fixtures; `README.md`; this log. The earlier request 62 implementation remains uncommitted and intact.
+
+**Validation:** Final commands actually run sequentially:
+
+```bash
+cargo fmt --all -- --check
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --example native_popup_clock -- --test-threads=2
+```
+
+The root suite passed **825 library tests (35 existing ignored), 71 binary/demo tests, 250 integration tests and 313 doctests**; the native clock example passed **3 tests**. Formatting, all-target/all-feature check and warnings-denied Clippy passed. Targeted implementation validation also passed 49 search tests, 22 spacing tests, 10 rich-text renderer tests and both ComboBox integration tests.
+
+The fallback regression registers a primary Latin face lacking a CJK glyph, verifies that negative control, and asserts zero unresolved glyphs for mixed Japanese/Arabic paragraphs after layout. It also checks Arabic run direction, flattened controls, single-line ellipsis, explicit inline-start alignment and bounded raster ink. This intentionally exercises installed system-font fallback: the test requires Latin, CJK and Arabic coverage and reports that prerequisite rather than silently skipping. ComboBox raster checks cover closed/open arrow differences, square backing, label/error allocations, 320/800px widths, both themes, RTL and 1x/1.5x/2x scales. Runner tests check keyboard/pointer toggling, Escape/selection/blur, exact toggle hits, unchanged caret origin, text dragging and disabled text width; shared popup tests retain short-viewport, live-scroll and clipping coverage. Disposable Xvfb isolates clipboard/display resources. No manual visual review, live screen-reader acceptance, opt-in native/compositor or non-Linux execution was performed.
+
+Compatibility: the request 62 public ComboBox API and source-index callbacks are unchanged. Its toggle moves from the leading edge to the right; shared search-popup text and input placeholders now shape/ellipsize using paragraph metrics. Font coverage still depends on installed fonts, as documented in the README. No dependencies, version, lockfile, vendor or generated-file changes. The user's `.gitignore` edit is untouched; nothing staged, committed or pushed.
+
+## [2026-10-25T15:18:34-03:00] - Add a Controlled Editable ComboBox - Unreleased
+
+**Context:** Request 62 adds a ComboBox using existing input, search and selection infrastructure.
+
+**Challenge:** Reuse text editing, matching and popup behavior without inheriting SearchBar's nonempty-query requirement, truncated source or Home/End list navigation, and without confusing active hover with committed selection.
+
+**Alternatives:** Composing a TextInput with focusable buttons in a generic Popover would duplicate editor-owned popup navigation and accessibility relationships. Reusing SearchBar unchanged would prevent empty-query browsing and consume ordinary caret navigation. A dedicated widget variant with a shared internal suggestion policy keeps existing controls compatible.
+
+**Decision:** Add `rutter::combo_box::ComboBox` configuration and `Widget::combo_box(id, query, on_change, options, style)`. The application owns draft text and committed source index; selection reports the original source index and the application publishes the canonical label. Unmatched drafts remain valid editor content; blur, Tab and Escape never commit. Reuse controlled TextInput synchronization, input limits, SearchMatcher, search runtime/overlay collection, Select popup geometry and AccessKit list semantics. Keep all ComboBox matches while limiting only its visible row window. Opening, selection, dismissal, wheel navigation and active-descendant reveal retain editor focus. Keep modified keys and Home/End/Left/Right in the editor. Reserve label/error rows and anchor the popup to the actual body using live scroll offsets. Keep disabled presentation without input or selection actions. The 24px leading indicator inset is an adornment dimension, not group spacing; its physical placement intentionally shares existing leading-editor pointer coordinates, including in RTL layouts. Localized annotation direction still follows layout direction.
+
+Add a responsive launcher demo with canonical selection, draft filtering, clear/reset, long/localized labels, validation and a disabled field. Use shared page/section/wrapping helpers and spacing tokens; extend the example inventory rather than weakening its geometry assertions.
+
+**Files Changed:** `src/widgets/combo_box/mod.rs`; widget variants/identity/exports; engine input and suggestion runtime, runner keyboard/pointer/focus routing and scroll geometry; layout field insets, rendering, popup collection/layout and accessibility; `examples/widgets/combo_box_demo.rs` and launcher registration; ComboBox API/runner/accessibility/overlay regression tests and shared example inventory; `README.md`; this log.
+
+**Validation:** Final validation commands actually executed sequentially:
+
+```bash
+cargo fmt --all -- --check
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --example native_popup_clock -- --test-threads=2
+```
+
+The complete root suite passed **821 library tests (35 existing ignored), 71 binary/demo tests, 250 integration tests and 313 doctests**; the native clock example passed **3 tests**. Formatting, all-target/all-feature check and warnings-denied Clippy passed. An initial full-suite invocation exceeded the tool's 120-second timeout during compilation; after verifying that no build/test process remained, the same command completed with a longer timeout. Disposable Xvfb isolated display/clipboard state from the inherited desktop.
+
+Coverage includes empty-query tail-option browsing, ranked original-index selection, Enter single activation, Escape/Tab/Shift+Tab draft retention, caret/modifier routing, controlled echoes/external replacement, IME commit, wheel interception, indicator toggling, disabled interaction and accessible active-versus-committed options. Geometry/raster checks sample 320/800px widths, 120/240px popup viewports, both themes and 1x/1.5x/2x scaling, long labels/errors, focus, annotation/body hit coordinates and RTL annotations. Live scrolling moves popup anchors and suppresses fully clipped triggers without relayout. The shared demo inventory also checks short/tall documents, spacing, wrapping and theme safe areas. These are software-rendered/runner checks, not manual GUI, real screen-reader, opt-in native/compositor or non-Linux acceptance; those remain unperformed.
+
+Compatibility: existing Select/SearchBar constructors, literals and behavior remain supported. The public `Widget::ComboBox` variant requires downstream exhaustive-match updates; no persisted-data migration is needed. Keep borrowed option order stable while assistive actions may be queued. No dependencies, version, lockfile, vendor or generated-file changes. The user's `.gitignore` modification remains untouched. Nothing staged, committed or pushed for this request.
+
 ## [2026-10-25T14:07:27-03:00] - Prepare the 0.43.0 Release Commit - 0.43.0
 
 **Context:** The user requested a version update and a commit of the completed Color Picker and widget-design work.

@@ -1902,6 +1902,22 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if self.engine.focused_widget_id == focus_id {
             return;
         }
+        if let Some(previous) = self.engine.focused_widget_id
+            && self
+                .engine
+                .runtime_caches
+                .searches
+                .get(&previous)
+                .is_some_and(|runtime| runtime.combo_box)
+            && let Some(state) = self
+                .engine
+                .widget_states
+                .get_mut(&previous)
+                .and_then(WidgetState::as_search_mut)
+        {
+            state.dismissed = true;
+            state.hovered_option = None;
+        }
         if self
             .engine
             .focused_widget_id
@@ -2252,6 +2268,30 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let pad_x = theme.spacing * 2.0;
         let pad_y = theme.spacing;
         let input = self.engine.runtime_caches.inputs.get(&id).cloned();
+        if self
+            .engine
+            .runtime_caches
+            .searches
+            .get(&id)
+            .is_some_and(|runtime| runtime.combo_box)
+            && let Some(state) = self
+                .engine
+                .widget_states
+                .get_mut(&id)
+                .and_then(WidgetState::as_search_mut)
+        {
+            let toggle =
+                crate::combo_box::toggle_rect(skia_safe::Rect::from_xywh(0.0, 0.0, width, height));
+            let toggle =
+                skia_safe::Contains::contains(&toggle, skia_safe::Point::new(local_x, local_y));
+            state.dismissed = if toggle { !state.dismissed } else { false };
+            state.hovered_option = None;
+            self.engine.layout_dirty = true;
+            if toggle {
+                self.focused_input_rect = None;
+                return;
+            }
+        }
         let leading_text_inset = input
             .as_ref()
             .map(|input| input.leading_text_inset)

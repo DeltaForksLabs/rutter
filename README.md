@@ -105,9 +105,15 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.43.0.** This pre-1.0 release adds the controlled five-format
-Color Picker, opt-in controlled text inputs, reusable design guidance and spacing
-tokens, responsive examples, and scroll-aware popover/focus geometry. Direct
+**Current version: 0.44.0.** This pre-1.0 release adds the controlled editable
+[ComboBox](#editable-combobox), with empty-query browsing, original-source-index
+selection, keyboard navigation and accessible popup semantics. Its right-hand
+square button reflects the visible popup state, and multilingual annotations and
+suggestions use shaped text with system font fallback. Exhaustive `Widget`
+matches must handle the new `ComboBox` variant; existing Select and SearchBar
+constructors remain supported. No stored-data migration is required.
+
+For upgrades from versions before 0.43.0, direct
 `Widget::TextInput` literals must specify `model_value`, exhaustive
 `layout::RutterContext` matches must handle `Field`, and fixed layouts must allow
 for field annotation rows. See [controlled inputs](#controlled-text-inputs),
@@ -884,6 +890,68 @@ let picker = Widget::color_picker(
 - The canonical color is unpremultiplied encoded sRGB in `f32`; gestures/conversions do not quantize through bytes. Floating conversions are approximate (typically compare unit components within `1e-6`, allowing more for hue); byte/HEX export rounds to eight bits. Hue survives gray/black, HSV saturation survives black, and active HSL/CMYK components retain degenerate-color intent. Switching representations derives the new representation from the color, not rounded draft text.
 - CMYK is a mathematical encoded-sRGB conversion, **not** ICC/profile-aware printing, ink-limit handling or a soft proof. No eyedropper, palette persistence or desktop color sampling is provided.
 - Keep the eleven reserved manual IDs stable across edits/formats. Numeric editors wrap at narrower widths. Arrow keys adjust S/V on the plane and hue/alpha on strips; Shift uses larger steps, Page Up/Down adjust by ten percent, and Home/End select endpoints (S on the plane). AccessKit nodes describe values and expose increment/decrement; the plane's assistive actions adjust V, with text channels available for other components. `.enabled(false)` blocks interaction while maintaining the controlled display.
+
+### Editable ComboBox
+
+`Widget::combo_box(id, query, on_change, options, style)` is a controlled editable
+picker. Configure it with `rutter::combo_box::ComboBox`; the borrowed source is
+`&[&str]`, and the selection callback receives the **original source index**.
+
+```rust
+use rutter::Widget;
+use rutter::taffy::Style;
+use rutter::combo_box::ComboBox;
+
+#[derive(Clone)]
+enum Msg { Draft(String), Pick(usize) }
+let places = ["Lisboa", "São Paulo", "東京"];
+let options = ComboBox::new(&places, Msg::Pick)
+    .with_label("Destination")
+    .with_placeholder("Type or browse")
+    .with_selected_index(Some(1))
+    .with_visible_rows(6).expect("positive row count");
+let field: Widget<'_, Msg> = Widget::combo_box(
+    62, "São Paulo", Msg::Draft, options, Style::default(),
+);
+```
+
+Echo draft changes into `query`. To commit, store the callback index and replace
+the query with the canonical source label; pass the stored index through
+`with_selected_index`. Unmatched drafts are allowed. Blur, Tab and Shift+Tab
+never commit; Escape dismisses while retaining draft and editor focus. The
+right-hand square dropdown button toggles browsing, and an empty query exposes the
+whole source. Closed Up/Down opens at the last/first match; Enter commits only
+the active option. Home/End/Left/Right and modified shortcuts remain editor
+operations. Typing filters with the shared search matcher. `with_visible_rows`
+caps only the popup window: arrows, page keys and the popup wheel can reach
+every match, including tail options.
+
+Use `with_state(InputState::Error)` and `with_error(...)` for validation, and
+`.enabled(false)` on the widget for disabled behavior. Labels/errors reserve
+annotation rows and preserve full accessible text. AccessKit exposes an editable
+ComboBox controlling a ListBox; its active descendant and application-owned
+committed selection are independent. Source order should remain stable while
+assistive-technology actions may be queued.
+
+The button stays physically right in both LTR and RTL layouts and shares the
+editor's focus (no extra Tab stop). Its centered square is 32 logical pixels in
+a 44px body, inset 4px; shorter bodies reduce the square to fit. Text painting,
+scrolling and pointer coordinates reserve that button without shifting the
+editor origin. The chevron points up only while the collected popup is exposed,
+and down after dismissal, selection, blur or a clipped-out anchor.
+
+Labels, errors, placeholders and popup rows use retained Skia paragraph shaping,
+system font fallback and bounded single-line ellipsis. Install system fonts
+covering your content (for example CJK and Arabic); Rutter does not bundle fonts
+or guarantee coverage for every script. Editable values retain the cosmic-text
+editor pipeline.
+
+Run **`cargo run -- combo_box`** or see
+[`examples/widgets/combo_box_demo.rs`](examples/widgets/combo_box_demo.rs) for
+filtering, canonical selection, clear/reset, disabled and localized fields.
+
+Existing `Select` and `SearchBar` constructors and behaviors are unchanged.
+Downstream exhaustive matches on `Widget` must handle the new `ComboBox` variant.
 
 ### Search Suggestions
 

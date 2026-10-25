@@ -596,7 +596,10 @@ fn hit_test_impl<Msg: Clone>(
                 msg: on_press.clone(),
             })
         }
-        Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
+        Widget::TextInput { .. }
+        | Widget::TextArea { .. }
+        | Widget::SearchBar { .. }
+        | Widget::ComboBox { .. } => {
             let body = crate::layout::field::FieldInsets::for_widget(widget)
                 .body((layout.size.width, layout.size.height));
             let local = Point::new(
@@ -1556,7 +1559,10 @@ pub(crate) fn collect_input_ids_at_path<Msg>(
 fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &mut Vec<usize>) {
     match widget {
         Widget::Disabled { child } => collect_input_ids_impl(child, ids, path),
-        Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
+        Widget::TextInput { .. }
+        | Widget::TextArea { .. }
+        | Widget::SearchBar { .. }
+        | Widget::ComboBox { .. } => {
             ids.push(widget.resolved_id(path).unwrap());
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
@@ -1627,6 +1633,7 @@ fn collect_stateful_ids_impl<Msg>(
             // the plain input needs none.
             out.push((widget.resolved_id(path).unwrap(), "search"))
         }
+        Widget::ComboBox { .. } => out.push((widget.resolved_id(path).unwrap(), "combo_box")),
         Widget::DropdownMenu { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "dropdown_menu"))
         }
@@ -1760,6 +1767,9 @@ fn find_input_props_impl<Msg: Clone>(
             ..
         } if widget.resolved_id(path) == Some(target_id) => {
             Some((*on_change, on_submit.clone(), false, false))
+        }
+        Widget::ComboBox { on_change, .. } if widget.resolved_id(path) == Some(target_id) => {
+            Some((*on_change, None, false, false))
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for (index, child) in children.iter().enumerate() {
@@ -2106,7 +2116,10 @@ fn find_input_geometry_impl<Msg>(
     path: &mut Vec<usize>,
 ) -> Option<InputGeometry> {
     match widget {
-        Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. }
+        Widget::TextInput { .. }
+        | Widget::TextArea { .. }
+        | Widget::SearchBar { .. }
+        | Widget::ComboBox { .. }
             if widget.resolved_id(path) == Some(target_id) =>
         {
             let layout = taffy.layout(node_id).ok()?;

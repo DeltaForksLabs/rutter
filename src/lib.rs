@@ -93,8 +93,8 @@ pub use widgets::color_picker::{
     ColorPickerState, PickerColor,
 };
 pub use widgets::{
-    calendar, carousel, color_picker, dropdown_menu, rich_text, search, table, table_of_contents,
-    time,
+    calendar, carousel, color_picker, combo_box, dropdown_menu, rich_text, search, table,
+    table_of_contents, time,
 };
 
 // ── Re-exports de dependências públicas ──────────────────────

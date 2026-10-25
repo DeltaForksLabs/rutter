@@ -372,7 +372,9 @@ impl LayoutBlueprint {
                 Self::with_children(None, style.clone(), vec![child])
             }
             Widget::Select { style, .. } => Self::field(widget, path, style, 40.0),
-            Widget::TextInput { style, .. } | Widget::TextArea { style, .. } => {
+            Widget::TextInput { style, .. }
+            | Widget::TextArea { style, .. }
+            | Widget::ComboBox { style, .. } => {
                 let body_height = if matches!(widget, Widget::TextArea { .. }) {
                     120.0
                 } else {

@@ -18,6 +18,7 @@ use crate::widgets::search::{SearchMatch, SearchSuggestions, filter_ranked};
 /// `matches` is recomputed on every collection from the field's current text,
 /// mirroring the engine's cached ranking so painting and hit-testing agree.
 pub(crate) struct SearchOverlay<'a> {
+    pub(crate) direction: crate::i18n::LayoutDirection,
     pub(crate) id: u64,
     pub(crate) anchor: SkiaRect,
     pub(crate) hovered_option: Option<usize>,
@@ -25,15 +26,17 @@ pub(crate) struct SearchOverlay<'a> {
     pub(crate) items: &'a [&'a str],
     pub(crate) empty_label: &'a str,
     pub(crate) selectable: bool,
+    pub(crate) visible_rows: Option<usize>,
+    pub(crate) committed_index: Option<usize>,
+    pub(crate) combo_box: bool,
     owner: OverlayOwner,
 }
 
 /// Collects the open suggestions popups of focused search bars.
 ///
-/// A popup is captured only when its field owns keyboard focus, has
-/// suggestions attached, was not dismissed with Escape, and carries
-/// non-empty text; an empty result set still produces a popup so the
-/// no-matches label can render.
+/// A popup is captured only when its field owns keyboard focus, has an attached
+/// source and was not dismissed. SearchBar additionally requires nonempty text;
+/// ComboBox permits empty-query browsing. Empty results still show feedback.
 pub(crate) fn collect_open_search_overlays<'r, 'p, Msg>(
     widget: &'r Widget<'p, Msg>,
     taffy: &TaffyTree<RutterContext>,
@@ -74,6 +77,7 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
         suggestions: &SearchSuggestions<'entry, Msg>,
         absolute: Point,
         size: (f32, f32),
+        node: NodeId,
     ) {
         let Some((input_states, focused_id)) = self.search_context else {
             return;
@@ -89,10 +93,18 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             return;
         };
         let query = input.text();
-        if query.trim().is_empty() {
+        if query.trim().is_empty() && !matches!(widget, Widget::ComboBox { .. }) {
             return;
         }
-        self.push_search(widget, suggestions, &state, &query, absolute, size);
+        self.push_search(
+            widget,
+            suggestions,
+            &state,
+            &query,
+            absolute,
+            size,
+            crate::render::node_layout_direction(self.taffy, node),
+        );
     }
 
     fn open_search_state(&self, id: u64) -> Option<&SearchState> {
@@ -102,6 +114,7 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             .filter(|state| !state.dismissed)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_search(
         &mut self,
         widget: &Widget<'entry, Msg>,
@@ -110,12 +123,27 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
         query: &str,
         absolute: Point,
         size: (f32, f32),
+        direction: crate::i18n::LayoutDirection,
     ) {
-        let anchor = SkiaRect::from_xywh(absolute.x, absolute.y, size.0, size.1);
+        let body = crate::layout::field::FieldInsets::for_widget(widget).body(size);
+        let anchor = SkiaRect::from_xywh(
+            absolute.x + body.left,
+            absolute.y + body.top,
+            body.width(),
+            body.height(),
+        );
         if self.clip.is_some_and(|clip| !rects_overlap(anchor, clip)) {
             return;
         }
         self.searches.push(SearchOverlay {
+            direction,
+            visible_rows: matches!(widget, Widget::ComboBox { .. })
+                .then_some(suggestions.max_results),
+            combo_box: matches!(widget, Widget::ComboBox { .. }),
+            committed_index: match widget {
+                Widget::ComboBox { selected_index, .. } => *selected_index,
+                _ => None,
+            },
             id: widget.resolved_id(&self.path).unwrap(),
             anchor,
             hovered_option: state.hovered_option,
@@ -123,7 +151,11 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
                 suggestions.items,
                 query,
                 suggestions.matcher,
-                suggestions.max_results,
+                if matches!(widget, Widget::ComboBox { .. }) {
+                    usize::MAX
+                } else {
+                    suggestions.max_results
+                },
             ),
             items: suggestions.items,
             empty_label: suggestions.labels.no_results,

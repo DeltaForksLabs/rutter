@@ -122,7 +122,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .input_states
             .get(&target)
             .is_some_and(|state| !state.text().trim().is_empty());
-        if !has_query {
+        if !has_query
+            && !self
+                .engine
+                .runtime_caches
+                .searches
+                .get(&target)
+                .is_some_and(|runtime| runtime.combo_box)
+        {
             return false;
         }
         self.focus_widget(Some(target));
@@ -143,6 +150,32 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     pub(super) fn handle_search_input_key(&mut self, id: u64, key: &Key) -> bool {
+        let combo_box = self
+            .engine
+            .runtime_caches
+            .searches
+            .get(&id)
+            .is_some_and(|runtime| runtime.combo_box);
+        if combo_box {
+            // Modified keys and caret navigation belong to the editor.
+            if !self.engine.modifiers.state().is_empty()
+                || matches!(
+                    key,
+                    Key::Named(
+                        NamedKey::Home | NamedKey::End | NamedKey::ArrowLeft | NamedKey::ArrowRight
+                    )
+                )
+            {
+                return false;
+            }
+            if !self.search_popup_is_open(id) {
+                if matches!(key, Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp)) {
+                    self.expand_search_accessibility_target(id);
+                } else {
+                    return false;
+                }
+            }
+        }
         if !self.search_popup_is_open(id) {
             return false;
         }
@@ -216,6 +249,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     pub(super) fn activate_search_original_index(&mut self, id: u64, index: usize) -> bool {
+        if self
+            .engine
+            .runtime_caches
+            .searches
+            .get(&id)
+            .is_some_and(|runtime| runtime.combo_box)
+            && !self.search_popup_is_open(id)
+        {
+            return false;
+        }
         let Some(on_select) = self
             .engine
             .runtime_caches
@@ -250,17 +293,24 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return false;
         };
         state.hovered_option = Some(row);
+        self.engine.layout_dirty = true;
         true
     }
 
     fn search_popup_is_open(&self, id: u64) -> bool {
         self.engine.focused_widget_id == Some(id)
             && self.engine.runtime_caches.searches.contains_key(&id)
-            && self
+            && (self
                 .engine
-                .input_states
+                .runtime_caches
+                .searches
                 .get(&id)
-                .is_some_and(|state| !state.text().trim().is_empty())
+                .is_some_and(|runtime| runtime.combo_box)
+                || self
+                    .engine
+                    .input_states
+                    .get(&id)
+                    .is_some_and(|state| !state.text().trim().is_empty()))
             && self
                 .engine
                 .widget_states
@@ -278,19 +328,21 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn search_accessibility_target(&self, target: u64) -> Option<(u64, usize, usize)> {
-        if !self
-            .engine
-            .runtime_caches
-            .visible_search_suggestion_ids
-            .contains(&target)
-        {
-            return None;
-        }
         self.engine
             .runtime_caches
             .searches
             .iter()
-            .filter(|(search_id, _)| self.search_popup_is_open(**search_id))
+            .filter(|(search_id, runtime)| {
+                self.search_popup_is_open(**search_id)
+                    && if runtime.combo_box {
+                        runtime.popup_exposed
+                    } else {
+                        self.engine
+                            .runtime_caches
+                            .visible_search_suggestion_ids
+                            .contains(&target)
+                    }
+            })
             .find_map(|(&search_id, runtime)| {
                 runtime
                     .results
@@ -313,6 +365,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .and_then(WidgetState::as_search_mut)
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/combo_box_runner_unit_tests.rs"]
+mod combo_box_tests;
 
 #[cfg(test)]
 mod tests {

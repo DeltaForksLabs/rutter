@@ -360,6 +360,7 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::TextInput { .. }
         | Widget::TextArea { .. }
         | Widget::SearchBar { .. }
+        | Widget::ComboBox { .. }
         | Widget::Slider { .. }
         | Widget::Counter { .. }
         | Widget::Select { .. }
@@ -621,14 +622,19 @@ struct SelectRuntime<Msg> {
     option_count: usize,
 }
 
-/// Per-frame suggestion state of a [`Widget::SearchBar`](crate::Widget::SearchBar)
-/// with integrated suggestions.
+/// Shared per-frame suggestion state for SearchBar and editable ComboBox.
+/// ComboBox policy keeps all matches and allows empty-query browsing; SearchBar
+/// retains its nonempty-query and result-limit behavior.
 ///
 /// `results` is recomputed during runtime-metadata sync from the field's
 /// current text so keyboard navigation follows the same deterministic ranking
 /// used by the overlay collector.
 #[derive(Debug, Clone)]
 struct SearchRuntime<Msg> {
+    combo_box: bool,
+    // Captured from live overlay collection, independently of its current rows.
+    // Controlled model reconciliation can replace the ranked source afterward.
+    popup_exposed: bool,
     on_select: Option<fn(usize) -> Msg>,
     max_results: usize,
     items: Vec<String>,
@@ -639,6 +645,8 @@ struct SearchRuntime<Msg> {
 impl<Msg> SearchRuntime<Msg> {
     fn new(suggestions: &SearchSuggestions<'_, Msg>, query: &str) -> Self {
         let mut runtime = Self {
+            combo_box: false,
+            popup_exposed: false,
             on_select: suggestions.on_select,
             max_results: suggestions.max_results,
             items: suggestions
@@ -655,10 +663,19 @@ impl<Msg> SearchRuntime<Msg> {
 
     fn refresh_results(&mut self, query: &str) {
         let item_refs: Vec<&str> = self.items.iter().map(String::as_str).collect();
-        self.results = if query.trim().is_empty() {
+        self.results = if query.trim().is_empty() && !self.combo_box {
             Vec::new()
         } else {
-            filter_ranked(&item_refs, query, self.matcher, self.max_results)
+            filter_ranked(
+                &item_refs,
+                query,
+                self.matcher,
+                if self.combo_box {
+                    usize::MAX
+                } else {
+                    self.max_results
+                },
+            )
         };
     }
 }
@@ -1048,6 +1065,7 @@ fn widget_state_matches_seed(state: &WidgetState, kind: &str) -> bool {
             | (WidgetState::Scroll(_), "scroll")
             | (WidgetState::Select(_), "select")
             | (WidgetState::Search(_), "search")
+            | (WidgetState::Search(_), "combo_box")
             | (WidgetState::DropdownMenu(_), "dropdown_menu")
             | (WidgetState::Anim(_), "anim")
             | (WidgetState::Tab(_), "tab")
@@ -2222,6 +2240,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     "scroll" => WidgetState::Scroll(ScrollState::default()),
                     "select" => WidgetState::Select(SelectState::default()),
                     "search" => WidgetState::Search(SearchState::default()),
+                    "combo_box" => WidgetState::Search(SearchState { dismissed: true, hovered_option: None }),
                     "dropdown_menu" => {
                         WidgetState::DropdownMenu(crate::dropdown_menu::DropdownMenuState::default())
                     }
@@ -2647,7 +2666,7 @@ impl<A: AppLogic> RutterEngine<A> {
         ) {
             self.focused_widget_id = Some(parent_id);
         }
-        self.runtime_cache_scratch.visible_search_suggestion_ids = collect_open_search_overlays(
+        let search_overlays = collect_open_search_overlays(
             &widget_tree,
             &self.taffy,
             root,
@@ -2655,15 +2674,21 @@ impl<A: AppLogic> RutterEngine<A> {
             &self.input_states,
             self.focused_widget_id,
             (logical.width as f32, logical.height as f32),
-        )
-        .into_iter()
-        .flat_map(|overlay| {
-            overlay
-                .matches
-                .into_iter()
-                .map(move |matched| resolve_search_suggestion_id(overlay.id, matched.index))
-        })
-        .collect();
+        );
+        for overlay in &search_overlays {
+            if let Some(runtime) = self.runtime_cache_scratch.searches.get_mut(&overlay.id) {
+                runtime.popup_exposed = true;
+            }
+        }
+        self.runtime_cache_scratch.visible_search_suggestion_ids = search_overlays
+            .into_iter()
+            .flat_map(|overlay| {
+                overlay
+                    .matches
+                    .into_iter()
+                    .map(move |matched| resolve_search_suggestion_id(overlay.id, matched.index))
+            })
+            .collect();
         // Preserve a hold only across uninterrupted publications of the same
         // numeric mode. A round-trip mode change must not revive an old hold.
         self.runtime_cache_scratch.reconcile_counter_generations(
@@ -2813,7 +2838,10 @@ impl<A: AppLogic> RutterEngine<A> {
         // for editor wrapping/scrolling; annotation rows are not editable space.
         let input_body_layout = if matches!(
             widget,
-            Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. }
+            Widget::TextInput { .. }
+                | Widget::TextArea { .. }
+                | Widget::SearchBar { .. }
+                | Widget::ComboBox { .. }
         ) {
             layout.copied().map(|mut layout| {
                 let body = crate::layout::field::FieldInsets::for_widget(widget)
@@ -2830,10 +2858,31 @@ impl<A: AppLogic> RutterEngine<A> {
             Widget::TextInput {
                 model_value,
                 on_change,
-                on_submit,
-                is_password,
+                ..
+            }
+            | Widget::ComboBox {
+                model_value,
+                on_change,
                 ..
             } => {
+                let visible_w = if matches!(widget, Widget::ComboBox { .. }) {
+                    crate::combo_box::text_width(
+                        layout
+                            .map(|layout| (layout.size.width, layout.size.height))
+                            .unwrap_or((292.0, 44.0)),
+                        traversal.spacing,
+                    )
+                } else {
+                    Self::visible_input_width(layout, traversal.spacing, 0.0)
+                };
+                let (on_submit, is_password) = match widget {
+                    Widget::TextInput {
+                        on_submit,
+                        is_password,
+                        ..
+                    } => (on_submit.clone(), *is_password),
+                    _ => (None, false),
+                };
                 let resolved_id = widget.resolved_id(path).unwrap();
                 if traversal.disabled {
                     if let Some(value) = model_value {
@@ -2842,12 +2891,8 @@ impl<A: AppLogic> RutterEngine<A> {
                             resolved_id,
                             DisabledInputPresentation {
                                 model_value: CachedInputModel::new(value),
-                                is_password: *is_password,
-                                visible_w: Self::visible_input_width(
-                                    layout,
-                                    traversal.spacing,
-                                    0.0,
-                                ),
+                                is_password,
+                                visible_w,
                                 visible_h: Self::visible_input_height(layout, traversal.spacing),
                                 limits: A::input_limits(resolved_id, InputKind::TextInput)
                                     .clamp_to_hard_caps(),
@@ -2864,17 +2909,34 @@ impl<A: AppLogic> RutterEngine<A> {
                     InputRuntime {
                         model_value: model_value.map(CachedInputModel::new),
                         on_change: *on_change,
-                        on_submit: on_submit.clone(),
-                        is_password: *is_password,
+                        on_submit,
+                        is_password,
                         is_multiline: false,
                         leading_text_inset: 0.0,
-                        visible_w: Self::visible_input_width(layout, traversal.spacing, 0.0),
+                        visible_w,
                         visible_h: Self::visible_input_height(layout, traversal.spacing),
                         limits: A::input_limits(resolved_id, InputKind::TextInput)
                             .clamp_to_hard_caps(),
                     },
                     "inputs",
                 )?;
+                if let Widget::ComboBox { suggestions, .. } = widget {
+                    let query = sources
+                        .input_states
+                        .get(&resolved_id)
+                        .map(crate::input_state::InputWidgetState::text)
+                        .unwrap_or_default();
+                    let mut runtime = SearchRuntime::new(suggestions, &query);
+                    runtime.combo_box = true;
+                    runtime.refresh_results(&query);
+                    normalize_search_hover(widget_states, resolved_id, runtime.results.len());
+                    insert_runtime_entry(
+                        &mut runtime_caches.searches,
+                        resolved_id,
+                        runtime,
+                        "combo boxes",
+                    )?;
+                }
             }
             _ if traversal.disabled => {}
             Widget::Button { on_press, .. } | Widget::ButtonContent { on_press, .. } => {
@@ -3742,6 +3804,20 @@ impl<A: AppLogic> RutterEngine<A> {
                     false
                 }
             };
+            if let Some(search) = self.runtime_caches.searches.get_mut(&id)
+                && search.combo_box
+            {
+                search.refresh_results(&state.text());
+                if model_replaced
+                    && let Some(search_state) = self
+                        .widget_states
+                        .get_mut(&id)
+                        .and_then(WidgetState::as_search_mut)
+                {
+                    search_state.hovered_option = None;
+                }
+                normalize_search_hover(&mut self.widget_states, id, search.results.len());
+            }
             state.sync_layout(
                 &mut fs,
                 runtime.visible_w,

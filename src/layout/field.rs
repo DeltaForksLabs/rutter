@@ -42,6 +42,9 @@ impl FieldInsets {
             }
             | Widget::TextArea {
                 label, error_msg, ..
+            }
+            | Widget::ComboBox {
+                label, error_msg, ..
             } => Self::new(label, error_msg.as_deref()),
             Widget::Select { label, .. } => Self::new(label, None),
             _ => Self::default(),

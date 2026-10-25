@@ -55,6 +55,60 @@ impl Default for RichTextRenderer {
 }
 
 impl RichTextRenderer {
+    /// Shapes, ellipsizes and paints with the same fallback paragraph metrics.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_single_line(
+        &self,
+        canvas: &Canvas,
+        text: &str,
+        font_size: f32,
+        bounds: skia_safe::Rect,
+        color: Color,
+        direction: crate::i18n::LayoutDirection,
+    ) {
+        if text.is_empty() || !valid_paint_bounds((bounds.width(), bounds.height())) {
+            return;
+        }
+        let mut paragraph = self.single_line_paragraph(text, font_size, color, direction);
+        paragraph.layout(bounds.width());
+        canvas.save();
+        canvas.clip_rect(bounds, None, false);
+        paragraph.paint(
+            canvas,
+            (
+                bounds.left,
+                bounds.top + ((bounds.height() - paragraph.height()) / 2.0).max(0.0),
+            ),
+        );
+        canvas.restore();
+    }
+
+    fn single_line_paragraph(
+        &self,
+        text: &str,
+        font_size: f32,
+        color: Color,
+        direction: crate::i18n::LayoutDirection,
+    ) -> Paragraph {
+        let mut text_style = TextStyle::new();
+        text_style.set_font_families(&["sans-serif"]);
+        text_style.set_font_size(font_size);
+        text_style.set_color(color);
+        let mut style = ParagraphStyle::new();
+        style.set_text_style(&text_style);
+        style.set_max_lines(1);
+        style.set_ellipsis("…");
+        style.set_text_align(skia_safe::textlayout::TextAlign::Start);
+        style.set_text_direction(match direction {
+            crate::i18n::LayoutDirection::Ltr => TextDirection::LTR,
+            crate::i18n::LayoutDirection::Rtl => TextDirection::RTL,
+        });
+        let mut builder = ParagraphBuilder::new(&style, self.font_collection.clone());
+        builder
+            .add_text(normalize_text_controls(text, TextControlPolicy::FlattenLineBreaks).as_ref());
+        builder.build()
+    }
+
     pub(crate) fn new() -> Self {
         let mut font_collection = FontCollection::new();
         font_collection.set_default_font_manager(FontMgr::new(), Some("sans-serif"));

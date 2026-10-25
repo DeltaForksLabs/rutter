@@ -12,6 +12,7 @@
 pub mod calendar_demo;
 pub mod carousel_demo;
 pub mod color_picker_demo;
+pub mod combo_box_demo;
 pub mod context_menu_demo;
 pub mod controls_demo;
 pub mod counter_demo;

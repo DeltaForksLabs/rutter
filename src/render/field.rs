@@ -11,6 +11,50 @@ use crate::layout::field::FieldInsets;
 use crate::theme::Theme;
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn draw_shaped_annotations(
+    canvas: &Canvas,
+    size: (f32, f32),
+    label: &str,
+    error: Option<&str>,
+    active: bool,
+    direction: LayoutDirection,
+    renderer: &super::RichTextRenderer,
+    theme: &Theme,
+) {
+    let insets = FieldInsets::new(label, error);
+    let bottom = insets.body(size).bottom;
+    for (text, top, height, font_size, color) in [
+        (
+            label,
+            0.0,
+            insets.top.min(size.1),
+            theme.font_label,
+            if active {
+                theme.primary
+            } else {
+                Theme::alpha(theme.on_surface, 180)
+            },
+        ),
+        (
+            error.unwrap_or(""),
+            bottom,
+            (size.1 - bottom).max(0.0),
+            theme.font_small,
+            theme.error,
+        ),
+    ] {
+        renderer.draw_single_line(
+            canvas,
+            text,
+            font_size,
+            Rect::from_xywh(4.0, top, (size.0 - 8.0).max(0.0), height),
+            color,
+            direction,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_annotations(
     canvas: &Canvas,
     size: (f32, f32),

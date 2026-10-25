@@ -304,6 +304,18 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
     )>,
 ) {
     let native_menu = native_layout.map(|(kind, _)| *kind);
+    image_cache.exposed_combo_box = select_overlay::collector::collect_open_search_overlays(
+        widget,
+        taffy,
+        node,
+        widget_states,
+        input_states,
+        focused_id,
+        overlay_canvas::logical_canvas_size(canvas, scale),
+    )
+    .into_iter()
+    .find(|overlay| overlay.combo_box)
+    .map(|overlay| overlay.id);
     // Image-only or closed-menu scenes do not need a system font merely to
     // compute context-menu coverage. Resolve it only for retained open menus.
     let context_font = widget_states
@@ -397,7 +409,7 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
         focused_id,
         mouse: hover_routes.search.mouse,
         shows_interaction_effects: hover_routes.search.shows_interaction_effects,
-        font_cache: &mut *font_cache,
+        paragraph_renderer: image_cache.rich_text_renderer(),
         theme,
         scale,
     });
@@ -1565,6 +1577,7 @@ fn draw_widgets_impl<'w, Msg>(
             ..
         } => draw_text_input(TextInputRenderInput {
             canvas,
+            paragraph_renderer: image_cache.rich_text_renderer(),
             fs,
             swash,
             font_cache,
@@ -1585,6 +1598,38 @@ fn draw_widgets_impl<'w, Msg>(
             leading_text_inset: 0.0,
             direction: node_layout_direction(taffy, node),
         }),
+        Widget::ComboBox {
+            label,
+            placeholder,
+            state,
+            error_msg,
+            ..
+        } => draw_combo_box(
+            TextInputRenderInput {
+                canvas,
+                paragraph_renderer: image_cache.rich_text_renderer(),
+                fs,
+                swash,
+                font_cache,
+                text_cache,
+                theme,
+                scale,
+                size,
+                is_focused,
+                label,
+                placeholder,
+                state: *state,
+                error_msg: error_msg.as_deref(),
+                is_password: false,
+                input_state: input_states.get(&resolved_id.unwrap()),
+                cursor_visible,
+                shows_interaction_effects,
+                is_multiline: false,
+                leading_text_inset: 0.0,
+                direction: node_layout_direction(taffy, node),
+            },
+            image_cache.exposed_combo_box == resolved_id,
+        ),
         Widget::TextArea {
             label,
             placeholder,
@@ -1593,6 +1638,7 @@ fn draw_widgets_impl<'w, Msg>(
             ..
         } => draw_text_input(TextInputRenderInput {
             canvas,
+            paragraph_renderer: image_cache.rich_text_renderer(),
             fs,
             swash,
             font_cache,
@@ -1615,6 +1661,7 @@ fn draw_widgets_impl<'w, Msg>(
         }),
         Widget::SearchBar { placeholder, .. } => draw_search_bar(TextInputRenderInput {
             canvas,
+            paragraph_renderer: image_cache.rich_text_renderer(),
             fs,
             swash,
             font_cache,
@@ -2787,6 +2834,7 @@ fn draw_tabbar(input: TabbarRenderInput<'_>) {
 
 struct TextInputRenderInput<'a> {
     canvas: &'a Canvas,
+    paragraph_renderer: &'a RichTextRenderer,
     fs: &'a mut FontSystem,
     swash: &'a mut SwashCache,
     font_cache: &'a mut HashMap<(String, u32), Font>,
@@ -2808,7 +2856,56 @@ struct TextInputRenderInput<'a> {
     direction: LayoutDirection,
 }
 
+fn draw_combo_box(input: TextInputRenderInput<'_>, open: bool) {
+    let canvas = input.canvas;
+    let body =
+        crate::layout::field::FieldInsets::new(input.label, input.error_msg).body(input.size);
+    let theme = input.theme;
+    let text_width = crate::combo_box::text_width((body.width(), body.height()), theme.spacing);
+    // A negative leading inset is never used: trailing reservation only changes
+    // the clip/scroll width, leaving pointer and caret origins identical.
+    draw_text_input_with_width(input, Some(text_width));
+    draw_combo_toggle(canvas, body, theme, open);
+}
+
+fn draw_combo_toggle(canvas: &Canvas, body: SkiaRect, theme: &Theme, open: bool) {
+    let rect = crate::combo_box::toggle_rect(body);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    canvas.save();
+    canvas.clip_rect(body, None, true);
+    let mut paint = Paint::default();
+    paint.set_color(Theme::alpha(theme.on_surface, 10));
+    paint.set_anti_alias(true);
+    // The square has an opaque base, independent of any editor selection.
+    let mut background = Paint::default();
+    background.set_color(theme.surface);
+    canvas.draw_rect(rect, &background);
+    canvas.draw_rect(rect, &paint);
+    paint.set_style(paint::Style::Stroke);
+    paint.set_stroke_width(1.0);
+    paint.set_color(Theme::alpha(theme.on_surface, 80));
+    canvas.draw_rect(rect, &paint);
+    draw_control_chevron(
+        canvas,
+        rect.center(),
+        4.0,
+        if open {
+            ControlChevronDirection::Up
+        } else {
+            ControlChevronDirection::Down
+        },
+        theme.on_surface,
+    );
+    canvas.restore();
+}
+
 fn draw_text_input(input: TextInputRenderInput<'_>) {
+    draw_text_input_with_width(input, None);
+}
+
+fn draw_text_input_with_width(input: TextInputRenderInput<'_>, content_width: Option<f32>) {
     let insets = crate::layout::field::FieldInsets::new(input.label, input.error_msg);
     let body = insets.body(input.size);
     input.canvas.save();
@@ -2817,35 +2914,52 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
         None,
         false,
     );
-    field::draw_annotations(
-        input.canvas,
-        input.size,
-        input.label,
-        input.error_msg,
-        input.is_focused,
-        input.direction,
-        input.font_cache,
-        input.theme,
-    );
+    if content_width.is_some() {
+        field::draw_shaped_annotations(
+            input.canvas,
+            input.size,
+            input.label,
+            input.error_msg,
+            input.is_focused,
+            input.direction,
+            input.paragraph_renderer,
+            input.theme,
+        );
+    } else {
+        field::draw_annotations(
+            input.canvas,
+            input.size,
+            input.label,
+            input.error_msg,
+            input.is_focused,
+            input.direction,
+            input.font_cache,
+            input.theme,
+        );
+    }
     input.canvas.translate((body.left, body.top));
     let canvas = input.canvas;
     if body.width() > 0.0 && body.height() > 0.0 {
-        draw_text_input_body(TextInputRenderInput {
-            size: (body.width(), body.height()),
-            label: "",
-            error_msg: None,
-            ..input
-        });
+        draw_text_input_body(
+            TextInputRenderInput {
+                size: (body.width(), body.height()),
+                label: "",
+                error_msg: None,
+                ..input
+            },
+            content_width,
+        );
     }
     canvas.restore();
 }
 
-fn draw_text_input_body(input: TextInputRenderInput<'_>) {
+fn draw_text_input_body(input: TextInputRenderInput<'_>, reserved_width: Option<f32>) {
     let TextInputRenderInput {
         canvas,
+        paragraph_renderer,
         fs,
         swash,
-        font_cache,
+        font_cache: _,
         text_cache,
         theme,
         scale,
@@ -2861,7 +2975,7 @@ fn draw_text_input_body(input: TextInputRenderInput<'_>) {
         shows_interaction_effects,
         is_multiline,
         leading_text_inset,
-        direction: _,
+        direction,
     } = input;
     let line_height = theme.font_body * 1.3;
     let border_c = theme.input_border(state, is_focused);
@@ -2878,7 +2992,8 @@ fn draw_text_input_body(input: TextInputRenderInput<'_>) {
 
     let pad_x = theme.spacing * 2.0;
     let pad_y = theme.spacing;
-    let content_width = (size.0 - pad_x * 2.0 - leading_text_inset).max(1.0);
+    let content_width =
+        reserved_width.unwrap_or((size.0 - pad_x * 2.0 - leading_text_inset).max(1.0));
     let text_width = if is_multiline {
         content_width
     } else {
@@ -2894,16 +3009,23 @@ fn draw_text_input_body(input: TextInputRenderInput<'_>) {
 
     let Some(s) = istate else {
         if !placeholder.is_empty() {
-            let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
-            let mut p = Paint::default();
-            p.set_color(Theme::alpha(theme.on_surface, 120));
-            p.set_anti_alias(true);
-            let y = if is_multiline {
-                theme.font_body
-            } else {
-                size.1 / 2.0 + theme.font_body / 3.0 - pad_y
-            };
-            draw_single_line_text(canvas, placeholder, (0.0, y), &f, &p);
+            paragraph_renderer.draw_single_line(
+                canvas,
+                placeholder,
+                theme.font_body,
+                SkiaRect::from_xywh(
+                    0.0,
+                    0.0,
+                    content_width,
+                    if is_multiline {
+                        line_height
+                    } else {
+                        (size.1 - pad_y * 2.0).max(0.0)
+                    },
+                ),
+                Theme::alpha(theme.on_surface, 120),
+                direction,
+            );
         }
         canvas.restore();
         return;
@@ -2912,16 +3034,23 @@ fn draw_text_input_body(input: TextInputRenderInput<'_>) {
     canvas.translate((-s.scroll_x, -s.scroll_y));
 
     if s.text_is_empty() && !placeholder.is_empty() && !is_focused {
-        let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
-        let mut p = Paint::default();
-        p.set_color(Theme::alpha(theme.on_surface, 120));
-        p.set_anti_alias(true);
-        let y = if is_multiline {
-            theme.font_body
-        } else {
-            size.1 / 2.0 + theme.font_body / 3.0 - pad_y
-        };
-        draw_single_line_text(canvas, placeholder, (0.0, y), &f, &p);
+        paragraph_renderer.draw_single_line(
+            canvas,
+            placeholder,
+            theme.font_body,
+            SkiaRect::from_xywh(
+                0.0,
+                0.0,
+                content_width,
+                if is_multiline {
+                    line_height
+                } else {
+                    (size.1 - pad_y * 2.0).max(0.0)
+                },
+            ),
+            Theme::alpha(theme.on_surface, 120),
+            direction,
+        );
         canvas.restore();
         return;
     }
@@ -2979,6 +3108,7 @@ fn draw_text_input_body(input: TextInputRenderInput<'_>) {
 fn draw_search_bar(input: TextInputRenderInput<'_>) {
     let TextInputRenderInput {
         canvas,
+        paragraph_renderer,
         fs,
         swash,
         font_cache,
@@ -3001,6 +3131,7 @@ fn draw_search_bar(input: TextInputRenderInput<'_>) {
     } = input;
     draw_text_input(TextInputRenderInput {
         canvas,
+        paragraph_renderer,
         fs,
         swash,
         font_cache: &mut *font_cache,

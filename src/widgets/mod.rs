@@ -6,6 +6,7 @@
 pub mod calendar;
 pub mod carousel;
 pub mod color_picker;
+pub mod combo_box;
 pub(crate) mod counter;
 pub mod dropdown_menu;
 pub mod rich_text;

@@ -304,7 +304,10 @@ impl WidgetIdVisitor {
             Widget::SearchBar {
                 suggestions: Some(suggestions),
                 ..
-            } => self.register_search_suggestions(widget, suggestions.items.len(), origin),
+            }
+            | Widget::ComboBox { suggestions, .. } => {
+                self.register_search_suggestions(widget, suggestions.items.len(), origin)
+            }
             Widget::TableOfContents { child, .. } => self.register_table_of_contents_entries(
                 widget,
                 collect_entries(child).len(),

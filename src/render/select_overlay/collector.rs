@@ -180,7 +180,10 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             Widget::SearchBar {
                 suggestions: Some(suggestions),
                 ..
-            } => self.capture_search(widget, suggestions, absolute, size),
+            }
+            | Widget::ComboBox { suggestions, .. } => {
+                self.capture_search(widget, suggestions, absolute, size, node)
+            }
             Widget::DropdownMenu { entries, .. } => {
                 self.capture_dropdown(widget, entries, absolute, size)
             }

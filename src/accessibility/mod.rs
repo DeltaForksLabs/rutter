@@ -282,7 +282,8 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
             Widget::SearchBar {
                 suggestions: Some(_),
                 ..
-            } => self.collect_search_bar(widget, frame, path),
+            }
+            | Widget::ComboBox { .. } => self.collect_search_bar(widget, frame, path),
             Widget::InteractiveVirtualListContent {
                 item_height, items, ..
             } => self.collect_interactive_virtual_list(widget, *item_height, items, frame, path),
@@ -1088,6 +1089,7 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         Widget::TextInput { .. } => Role::TextInput,
         Widget::TextArea { .. } => Role::MultilineTextInput,
         Widget::SearchBar { .. } => Role::SearchInput,
+        Widget::ComboBox { .. } => Role::EditableComboBox,
         Widget::Checkbox { .. } => Role::CheckBox,
         Widget::Switch { .. } => Role::Switch,
         Widget::Radio { .. } => Role::RadioButton,
@@ -1261,6 +1263,9 @@ fn apply_input_props<Msg>(
     }
     | Widget::TextArea {
         state, error_msg, ..
+    }
+    | Widget::ComboBox {
+        state, error_msg, ..
     } = widget
     {
         let error = error_msg.as_deref().filter(|message| !message.is_empty());
@@ -1276,7 +1281,8 @@ fn apply_input_props<Msg>(
     match widget {
         Widget::TextInput { placeholder, .. }
         | Widget::TextArea { placeholder, .. }
-        | Widget::SearchBar { placeholder, .. } => {
+        | Widget::SearchBar { placeholder, .. }
+        | Widget::ComboBox { placeholder, .. } => {
             set_nonempty_placeholder(node, placeholder);
             set_input_value(node, widget, input_states, path);
         }
@@ -1381,7 +1387,9 @@ fn set_widget_label<Msg>(
         Widget::RichText { content, .. } => node.set_label(content.plain_text()),
         Widget::Button { text, .. } => node.set_label(*text),
         Widget::ButtonContent { label, .. } => node.set_label(*label),
-        Widget::TextInput { label, .. } | Widget::TextArea { label, .. } => node.set_label(*label),
+        Widget::TextInput { label, .. }
+        | Widget::TextArea { label, .. }
+        | Widget::ComboBox { label, .. } => node.set_label(*label),
         Widget::SearchBar { .. } => node.set_label("Search"),
         Widget::Checkbox { label, .. } | Widget::Radio { label, .. } => node.set_label(*label),
         Widget::Slider { label, .. }
@@ -1967,6 +1975,95 @@ mod tests {
         assert!(options[2].supports_action(Action::Focus));
         assert!(options[2].supports_action(Action::Click));
         assert!(combo.active_descendant().is_some());
+    }
+
+    #[test]
+    fn combo_box_accessibility_separates_active_and_committed_source_options() {
+        let items = ["Other", "São Paulo — full localized option", "Santos"];
+        let widget = Widget::combo_box(
+            SEARCH_ID,
+            "sa",
+            |_| (),
+            crate::combo_box::ComboBox::new(&items, |_| ())
+                .with_label("Destination — 行き先")
+                .with_error("Full validation feedback")
+                .with_selected_index(Some(1))
+                .with_visible_rows(1)
+                .unwrap(),
+            base_style(240.0, 40.0),
+        );
+        let mut fonts = FontSystem::new();
+        let mut input = InputWidgetState::new(&mut fonts);
+        input.set_text(&mut fonts, "sa");
+        let inputs = HashMap::from([(SEARCH_ID, input)]);
+        let states = HashMap::from([(
+            SEARCH_ID,
+            WidgetState::Search(crate::engine::widget_state::SearchState {
+                hovered_option: Some(1),
+                dismissed: false,
+            }),
+        )]);
+        let update = build_search_update(&widget, &inputs, &states, Some(SEARCH_ID));
+        let combo = node_for(&update, Role::EditableComboBox);
+        assert_eq!(combo.label(), Some("Destination — 行き先"));
+        assert_eq!(combo.description(), Some("Full validation feedback"));
+        assert_eq!(combo.value(), Some("sa"));
+        assert_eq!(combo.is_expanded(), Some(true));
+        assert!(combo.supports_action(Action::Collapse));
+        assert_eq!(
+            combo.controls(),
+            &[access_node_id(crate::widget::resolve_search_popup_id(
+                SEARCH_ID
+            ))]
+        );
+        let ranked =
+            crate::search::filter_ranked(&items, "sa", crate::SearchMatcher::Fuzzy, usize::MAX);
+        assert_eq!(
+            combo.active_descendant(),
+            Some(access_node_id(crate::widget::resolve_search_suggestion_id(
+                SEARCH_ID,
+                ranked[1].index
+            )))
+        );
+        for (id, node) in update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::ListBoxOption)
+        {
+            let source_index = items
+                .iter()
+                .position(|label| Some(*label) == node.label())
+                .unwrap();
+            assert_eq!(
+                *id,
+                access_node_id(crate::widget::resolve_search_suggestion_id(
+                    SEARCH_ID,
+                    source_index
+                ))
+            );
+            assert_eq!(node.is_selected(), Some(source_index == 1));
+            assert!(node.supports_action(Action::Click));
+        }
+        let disabled = widget.enabled(false);
+        let update = build_search_update(&disabled, &inputs, &states, Some(SEARCH_ID));
+        let combo = node_for(&update, Role::EditableComboBox);
+        assert!(combo.is_disabled());
+        for action in [
+            Action::Focus,
+            Action::Click,
+            Action::Expand,
+            Action::Collapse,
+            Action::SetValue,
+        ] {
+            assert!(!combo.supports_action(action));
+        }
+        assert_eq!(combo.value(), Some("sa"));
+        assert!(
+            update
+                .nodes
+                .iter()
+                .all(|(_, node)| node.role() != Role::ListBox)
+        );
     }
 
     #[test]

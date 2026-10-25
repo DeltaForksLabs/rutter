@@ -12,6 +12,7 @@
 //   cargo run -- calendar
 //   cargo run -- carousel
 //   cargo run -- color_picker
+//   cargo run -- combo_box
 //   cargo run -- context_menu
 //   cargo run -- controls
 //   cargo run -- counter
@@ -53,6 +54,7 @@ fn main() {
         "calendar" => widget_examples::calendar_demo::run(),
         "carousel" => widget_examples::carousel_demo::run(),
         "color_picker" => widget_examples::color_picker_demo::run(),
+        "combo_box" => widget_examples::combo_box_demo::run(),
         "context_menu" => widget_examples::context_menu_demo::run(),
         "controls" => widget_examples::controls_demo::run(),
         "counter" => widget_examples::counter_demo::run(),

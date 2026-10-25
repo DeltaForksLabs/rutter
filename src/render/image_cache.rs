@@ -26,6 +26,9 @@ pub(crate) struct SvgImageCacheKey {
 }
 
 pub struct ImageRenderCache {
+    // Frame-local exposure from the root overlay collector. Keeping this with
+    // render resources avoids threading another argument through every widget.
+    pub(super) exposed_combo_box: Option<u64>,
     raster_images: MemoryBoundedLru<u64, RutterDecodedImage>,
     svg_images: MemoryBoundedLru<SvgImageCacheKey, Image>,
     layout_font_system: Rc<RefCell<FontSystem>>,
@@ -35,6 +38,7 @@ pub struct ImageRenderCache {
 impl Default for ImageRenderCache {
     fn default() -> Self {
         Self {
+            exposed_combo_box: None,
             raster_images: MemoryBoundedLru::new(MAX_RASTER_CACHE_BYTES),
             svg_images: MemoryBoundedLru::new(MAX_SVG_CACHE_BYTES),
             layout_font_system: Rc::new(RefCell::new(FontSystem::new())),

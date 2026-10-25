@@ -17,7 +17,7 @@ use winit::dpi::PhysicalSize;
 type Fonts = Rc<RefCell<FontSystem>>;
 
 #[test]
-fn all_thirty_launcher_demos_reflow_and_retain_reachable_documents() {
+fn all_launcher_demos_reflow_and_retain_reachable_documents() {
     let fonts = Rc::new(RefCell::new(FontSystem::new()));
     macro_rules! check {
         ($($module:ident::$application:ident),+ $(,)?) => {
@@ -31,6 +31,7 @@ fn all_thirty_launcher_demos_reflow_and_retain_reachable_documents() {
         calendar_demo::CalendarDemo,
         carousel_demo::CarouselDemo,
         color_picker_demo::ColorPickerDemo,
+        combo_box_demo::ComboBoxDemo,
         context_menu_demo::ContextMenuDemo,
         controls_demo::ControlsDemo,
         counter_demo::CounterDemo,
@@ -218,6 +219,12 @@ fn inspect<Message>(
             ..
         }
         | Widget::TextArea {
+            style,
+            label,
+            error_msg,
+            ..
+        }
+        | Widget::ComboBox {
             style,
             label,
             error_msg,
@@ -564,7 +571,7 @@ fn find_input<Message>(
 }
 
 #[test]
-fn all_thirty_one_example_sources_use_the_shared_spacing_vocabulary() {
+fn all_example_sources_use_the_shared_spacing_vocabulary() {
     macro_rules! sources {
         ($($file:literal),+ $(,)?) => { [$(($file, include_str!(concat!("../../examples/", $file)))),+] };
     }
@@ -575,6 +582,7 @@ fn all_thirty_one_example_sources_use_the_shared_spacing_vocabulary() {
         "widgets/calendar_demo.rs",
         "widgets/carousel_demo.rs",
         "widgets/color_picker_demo.rs",
+        "widgets/combo_box_demo.rs",
         "widgets/context_menu_demo.rs",
         "widgets/controls_demo.rs",
         "widgets/counter_demo.rs",
@@ -601,7 +609,7 @@ fn all_thirty_one_example_sources_use_the_shared_spacing_vocabulary() {
         "widgets/vlist_demo.rs",
         "native_popup_clock.rs",
     );
-    assert_eq!(sources.len(), 31);
+    assert_eq!(sources.len(), 32);
     for (name, source) in sources {
         assert!(
             source.contains("rutter::spacing"),

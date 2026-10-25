@@ -90,7 +90,11 @@ fn popup_from_overlay(
             label: overlay.items[matched.index].to_owned(),
             bounds: visible_option_bounds(popup, row),
             selectable: overlay.selectable,
-            selected: overlay.hovered_option == Some(row),
+            selected: if overlay.combo_box {
+                overlay.committed_index == Some(matched.index)
+            } else {
+                overlay.hovered_option == Some(row)
+            },
         })
         .collect();
     SearchAccessibilityPopup {

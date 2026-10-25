@@ -10,16 +10,16 @@
 
 use std::collections::HashMap;
 
-use skia_safe::{Font, Paint, Point, RRect, Rect as SkiaRect, canvas::Canvas};
+use skia_safe::{Paint, Point, RRect, Rect as SkiaRect, canvas::Canvas};
 use taffy::prelude::{NodeId, TaffyTree};
 
+use super::RichTextRenderer;
 use super::overlay_canvas::logical_canvas_size;
 use super::select_overlay::collector::{SearchOverlay, collect_open_search_overlays};
 use super::select_overlay::{
-    SelectPopupLayout, draw_select_popup_border, draw_select_popup_surface, popup_layout_for_focus,
-    select_option_at,
+    SelectPopupLayout, draw_select_popup_border, draw_select_popup_surface,
+    popup_layout_for_focus_with_window, select_option_at,
 };
-use super::text::{draw_single_line_text, get_cached_font};
 use crate::engine::widget_state::WidgetState;
 use crate::input_state::InputWidgetState;
 use crate::layout::{OPTION_HEIGHT, RutterContext};
@@ -44,7 +44,7 @@ pub(crate) struct SearchOverlayDrawInput<'render, 'widget, Msg> {
     pub(crate) focused_id: Option<u64>,
     pub(crate) mouse: Point,
     pub(crate) shows_interaction_effects: bool,
-    pub(crate) font_cache: &'render mut HashMap<(String, u32), Font>,
+    pub(crate) paragraph_renderer: &'render RichTextRenderer,
     pub(crate) theme: &'render Theme,
     pub(crate) scale: f32,
 }
@@ -73,7 +73,7 @@ pub(crate) fn draw_search_overlays<'render, 'widget, Msg>(
         focused_id,
         mouse,
         shows_interaction_effects,
-        font_cache,
+        paragraph_renderer,
         theme,
         scale,
     } = input;
@@ -93,7 +93,6 @@ pub(crate) fn draw_search_overlays<'render, 'widget, Msg>(
     canvas.save();
     canvas.reset_matrix();
     canvas.scale((scale, scale));
-    let font = get_cached_font(font_cache, "sans-serif", theme.font_body);
     for overlay in overlays {
         draw_search_popup(
             canvas,
@@ -101,7 +100,7 @@ pub(crate) fn draw_search_overlays<'render, 'widget, Msg>(
             viewport,
             mouse,
             shows_interaction_effects,
-            &font,
+            paragraph_renderer,
             theme,
         );
     }
@@ -154,7 +153,13 @@ pub(crate) fn search_popup_layout(
         .filter(|hovered| *hovered < overlay.matches.len())
         .unwrap_or(0);
     let row_count = overlay.matches.len().max(1);
-    popup_layout_for_focus(overlay.anchor, row_count, focus, viewport)
+    popup_layout_for_focus_with_window(
+        overlay.anchor,
+        row_count,
+        focus,
+        viewport,
+        overlay.visible_rows.unwrap_or(usize::MAX),
+    )
 }
 
 pub(crate) fn search_option_rect(popup: SelectPopupLayout, visible_row: usize) -> SkiaRect {
@@ -172,7 +177,7 @@ fn draw_search_popup(
     viewport: (f32, f32),
     mouse: Point,
     shows_interaction_effects: bool,
-    font: &Font,
+    renderer: &RichTextRenderer,
     theme: &Theme,
 ) {
     let popup = search_popup_layout(overlay, viewport);
@@ -184,7 +189,14 @@ fn draw_search_popup(
         true,
     );
     if overlay.matches.is_empty() {
-        draw_no_results_row(canvas, popup.rect, overlay.empty_label, font, theme);
+        draw_no_results_row(
+            canvas,
+            popup.rect,
+            overlay.empty_label,
+            renderer,
+            theme,
+            overlay.direction,
+        );
     } else {
         let mouse_row = select_option_at(popup.rect, mouse, popup.visible_options);
         let retained_hover = shows_interaction_effects
@@ -208,8 +220,9 @@ fn draw_search_popup(
                 row,
                 overlay.items[matched.index],
                 hovered == Some(absolute_row),
-                font,
+                renderer,
                 theme,
+                overlay.direction,
             );
         }
     }
@@ -217,14 +230,16 @@ fn draw_search_popup(
     draw_select_popup_border(canvas, popup.rect, theme);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_suggestion_row(
     canvas: &Canvas,
     popup: SkiaRect,
     row: usize,
     item: &str,
     hovered: bool,
-    font: &Font,
+    renderer: &RichTextRenderer,
     theme: &Theme,
+    direction: crate::i18n::LayoutDirection,
 ) {
     let rect = SkiaRect::from_xywh(
         popup.left + 1.0,
@@ -238,19 +253,42 @@ fn draw_suggestion_row(
         paint.set_anti_alias(true);
         canvas.draw_rect(rect, &paint);
     }
-    let mut text = Paint::default();
-    text.set_color(theme.on_surface);
-    text.set_anti_alias(true);
-    let baseline = rect.top + OPTION_HEIGHT / 2.0 + theme.font_body / 3.0;
-    draw_single_line_text(canvas, item, (rect.left + 8.0, baseline), font, &text);
+    renderer.draw_single_line(
+        canvas,
+        item,
+        theme.font_body,
+        SkiaRect::from_xywh(
+            rect.left + 8.0,
+            rect.top,
+            (rect.width() - 16.0).max(0.0),
+            rect.height(),
+        ),
+        theme.on_surface,
+        direction,
+    );
 }
 
-fn draw_no_results_row(canvas: &Canvas, popup: SkiaRect, label: &str, font: &Font, theme: &Theme) {
-    let mut text = Paint::default();
-    text.set_color(Theme::alpha(theme.on_surface, 120));
-    text.set_anti_alias(true);
-    let baseline = popup.top + OPTION_HEIGHT / 2.0 + theme.font_body / 3.0;
-    draw_single_line_text(canvas, label, (popup.left + 8.0, baseline), font, &text);
+fn draw_no_results_row(
+    canvas: &Canvas,
+    popup: SkiaRect,
+    label: &str,
+    renderer: &RichTextRenderer,
+    theme: &Theme,
+    direction: crate::i18n::LayoutDirection,
+) {
+    renderer.draw_single_line(
+        canvas,
+        label,
+        theme.font_body,
+        SkiaRect::from_xywh(
+            popup.left + 8.0,
+            popup.top,
+            (popup.width() - 16.0).max(0.0),
+            OPTION_HEIGHT,
+        ),
+        Theme::alpha(theme.on_surface, 120),
+        direction,
+    );
 }
 
 #[cfg(test)]

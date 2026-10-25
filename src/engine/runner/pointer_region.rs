@@ -220,7 +220,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return None;
         }
         let theme = A::theme_for(&self.engine.app_state);
-        if local_x < theme.spacing * 2.0 + input.leading_text_inset || local_y < theme.spacing {
+        if local_x < theme.spacing * 2.0 + input.leading_text_inset
+            || local_x > theme.spacing * 2.0 + input.leading_text_inset + input.visible_w
+            || local_y < theme.spacing
+        {
             return None;
         }
         let selected = self.engine.input_states.get(&id).and_then(|state| {

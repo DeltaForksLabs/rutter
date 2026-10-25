@@ -4,7 +4,7 @@ use rutter::{AppLogic, MultiWindowAppLogic, SurfaceId, Theme, Widget};
 use super::{
     accordion_demo::AccordionDemo, advanced_widgets_demo::AdvancedWidgetsDemo,
     button_content_demo::ButtonContentDemo, calendar_demo::CalendarDemo,
-    carousel_demo::CarouselDemo, color_picker_demo::ColorPickerDemo,
+    carousel_demo::CarouselDemo, color_picker_demo::ColorPickerDemo, combo_box_demo::ComboBoxDemo,
     context_menu_demo::ContextMenuDemo, controls_demo::ControlsDemo, counter_demo::CounterDemo,
     dialog_demo::DialogDemo, drag_drop_demo::DragDropDemo, dropdown_menu_demo::DropdownMenuDemo,
     form_demo::MyApp, image_viewer_demo::ImageViewerDemo, modal_toast_demo::ModalToastDemo,
@@ -47,6 +47,7 @@ fn composite_examples_start_dark_with_theme_selectors() {
 #[test]
 fn input_and_virtual_examples_start_dark_with_theme_selectors() {
     assert_single_window_theme::<ColorPickerDemo>();
+    assert_single_window_theme::<ComboBoxDemo>();
     assert_single_window_theme::<SearchBarDemo>();
     assert_single_window_theme::<SliderDemo>();
     assert_single_window_theme::<TabDemo>();

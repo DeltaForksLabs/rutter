@@ -298,7 +298,10 @@ impl GeometryPass<'_> {
         }
         if matches!(
             widget,
-            Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. }
+            Widget::TextInput { .. }
+                | Widget::TextArea { .. }
+                | Widget::SearchBar { .. }
+                | Widget::ComboBox { .. }
         ) {
             let body = crate::layout::field::FieldInsets::for_widget(widget)
                 .body((frame.width(), frame.height()));

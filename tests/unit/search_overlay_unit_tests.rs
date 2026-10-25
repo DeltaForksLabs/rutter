@@ -222,7 +222,7 @@ fn popup_draws_pixels_below_the_trigger() {
         focused_id: Some(SEARCH_ID),
         mouse: Point::new(0.0, 0.0),
         shows_interaction_effects: true,
-        font_cache: &mut HashMap::new(),
+        paragraph_renderer: &RichTextRenderer::default(),
         theme: &Theme::light(),
         scale: 1.0,
     });
@@ -266,9 +266,207 @@ fn search_popup_option_pixel(
         focused_id: Some(SEARCH_ID),
         mouse: Point::new(-10.0, -10.0),
         shows_interaction_effects,
-        font_cache: &mut HashMap::new(),
+        paragraph_renderer: &RichTextRenderer::default(),
         theme: &Theme::light(),
         scale: 1.0,
     });
     surface.peek_pixels().unwrap().get_color((110, 50))
+}
+
+#[test]
+fn combo_box_popup_window_keeps_tail_reachable_with_body_anchors_and_contained_hits() {
+    use crate::combo_box::ComboBox;
+    use crate::widget::InputState;
+    let items = [
+        "Alpha",
+        "Beta",
+        "Gamma",
+        "Delta",
+        "Epsilon",
+        "Tail — 東京 القاهرة São Paulo long option",
+    ];
+    for (width, height) in [(320, 240), (800, 240), (320, 120), (800, 120)] {
+        let widget = Widget::combo_box(
+            SEARCH_ID,
+            "",
+            TestMessage::Query,
+            ComboBox::new(&items, TestMessage::Picked)
+                .with_visible_rows(2)
+                .unwrap()
+                .with_label("Long localized label — 行き先 القاهرة")
+                .with_state(InputState::Error)
+                .with_error("Validation feedback remains in its allocated annotation row"),
+            Style {
+                size: Size::from_lengths(width as f32 - 32.0, 40.0),
+                ..Style::default()
+            },
+        );
+        let states = HashMap::from([(
+            SEARCH_ID,
+            WidgetState::Search(SearchState {
+                hovered_option: Some(5),
+                dismissed: false,
+            }),
+        )]);
+        let inputs = HashMap::from([(SEARCH_ID, typed_input(""))]);
+        let fonts = Rc::new(RefCell::new(FontSystem::new()));
+        let mut tree = TaffyTree::new();
+        let root = build_taffy_tree(&mut tree, &widget, fonts.clone(), &states);
+        compute_layout(
+            &mut tree,
+            root,
+            PhysicalSize::new(width, height),
+            fonts,
+            &RichTextRenderer::default(),
+        );
+        let overlays = collect_open_search_overlays(
+            &widget,
+            &tree,
+            root,
+            &states,
+            &inputs,
+            Some(SEARCH_ID),
+            (width as f32, height as f32),
+        );
+        let overlay = &overlays[0];
+        assert_eq!(overlay.matches.len(), 6);
+        assert_eq!(overlay.anchor.top, 20.0);
+        assert_eq!(overlay.anchor.height(), 40.0);
+        let popup = search_popup_layout(overlay, (width as f32, height as f32));
+        assert!(popup.visible_options <= 2 && popup.visible_options > 0);
+        assert!(popup.first_option + popup.visible_options == 6);
+        assert!(popup.rect.left >= 0.0 && popup.rect.right <= width as f32);
+        assert!(popup.rect.top >= 0.0 && popup.rect.bottom <= height as f32);
+        let point = Point::new(
+            popup.rect.center_x(),
+            popup.rect.bottom - OPTION_HEIGHT / 2.0,
+        );
+        assert_eq!(
+            search_overlay_hit(overlay, point, (width as f32, height as f32)),
+            Some(SearchOverlayHit::Suggestion {
+                id: SEARCH_ID,
+                index: 5
+            })
+        );
+        assert_eq!(
+            search_overlay_hit(
+                overlay,
+                Point::new(popup.rect.right + 1.0, point.y),
+                (width as f32, height as f32)
+            ),
+            None
+        );
+        for theme in [Theme::light(), Theme::dark()] {
+            for scale in [1.0, 1.5, 2.0] {
+                let mut surface = surfaces::raster_n32_premul((
+                    (width as f32 * scale) as i32,
+                    (height as f32 * scale) as i32,
+                ))
+                .unwrap();
+                surface.canvas().clear(Color::RED);
+                draw_search_overlays(SearchOverlayDrawInput {
+                    canvas: surface.canvas(),
+                    taffy: &tree,
+                    root,
+                    widget: &widget,
+                    widget_states: &states,
+                    input_states: &inputs,
+                    focused_id: Some(SEARCH_ID),
+                    mouse: Point::new(-10.0, -10.0),
+                    shows_interaction_effects: true,
+                    paragraph_renderer: &RichTextRenderer::default(),
+                    theme: &theme,
+                    scale,
+                });
+                let pixels = surface.peek_pixels().unwrap();
+                assert_ne!(
+                    pixels.get_color(((point.x * scale) as i32, (point.y * scale) as i32)),
+                    Color::RED
+                );
+                assert_eq!(
+                    pixels.get_color((
+                        ((popup.rect.right + 2.0) * scale) as i32,
+                        (point.y * scale) as i32
+                    )),
+                    Color::RED
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn combo_box_popup_follows_live_scroll_anchor_and_hides_clipped_trigger_without_relayout() {
+    use crate::engine::widget_state::ScrollState;
+    let field = Widget::combo_box(
+        SEARCH_ID,
+        "",
+        TestMessage::Query,
+        crate::combo_box::ComboBox::new(&["One", "Two"], TestMessage::Picked).with_label("Label"),
+        Style {
+            size: Size::from_lengths(200.0, 40.0),
+            flex_shrink: 0.0,
+            ..Style::default()
+        },
+    );
+    let widget = Widget::scroll_view(
+        Widget::Column {
+            children: vec![
+                field,
+                Widget::Spacer {
+                    style: Style {
+                        size: Size::from_lengths(200.0, 400.0),
+                        flex_shrink: 0.0,
+                        ..Style::default()
+                    },
+                },
+            ],
+            style: Style {
+                flex_shrink: 0.0,
+                ..Style::default()
+            },
+        },
+        Style {
+            size: Size::from_lengths(200.0, 80.0),
+            ..Style::default()
+        },
+    )
+    .with_id(99);
+    let mut states = focused_states();
+    states.insert(99, WidgetState::Scroll(ScrollState::default()));
+    let inputs = HashMap::from([(SEARCH_ID, typed_input(""))]);
+    let (tree, root) = layout_widget(&widget, &states);
+    let collect = |states: &HashMap<u64, WidgetState>| {
+        collect_open_search_overlays(
+            &widget,
+            &tree,
+            root,
+            states,
+            &inputs,
+            Some(SEARCH_ID),
+            VIEWPORT,
+        )
+    };
+    let original = collect(&states)[0].anchor;
+    states
+        .get_mut(&99)
+        .unwrap()
+        .as_scroll_mut()
+        .unwrap()
+        .offset_y = 10.0;
+    assert_eq!(collect(&states)[0].anchor.top, original.top - 10.0);
+    states
+        .get_mut(&99)
+        .unwrap()
+        .as_scroll_mut()
+        .unwrap()
+        .offset_y = 200.0;
+    assert!(collect(&states).is_empty());
+    states
+        .get_mut(&99)
+        .unwrap()
+        .as_scroll_mut()
+        .unwrap()
+        .offset_y = 0.0;
+    assert_eq!(collect(&states)[0].anchor, original);
 }

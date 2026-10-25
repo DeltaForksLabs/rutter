@@ -480,6 +480,7 @@ pub(crate) enum WidgetIdTag {
     Custom = 46,
     InteractiveVirtualItem = 47,
     PointerRegion = 48,
+    ComboBox = 49,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -699,6 +700,20 @@ pub enum Widget<'a, Msg> {
         state: InputState,
         placeholder: &'a str,
         error_msg: Option<String>,
+    },
+    /// Controlled editable picker; construct with [`Widget::combo_box`].
+    ComboBox {
+        id: u64,
+        /// Application-owned draft. The constructor always supplies `Some(query)`.
+        model_value: Option<&'a str>,
+        on_change: fn(String) -> Msg,
+        suggestions: SearchSuggestions<'a, Msg>,
+        selected_index: Option<usize>,
+        label: &'a str,
+        placeholder: &'a str,
+        state: InputState,
+        error_msg: Option<String>,
+        style: Style,
     },
     SearchBar {
         id: u64,
@@ -2163,6 +2178,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::TextInput { id: slot, .. }
             | Self::TextArea { id: slot, .. }
             | Self::SearchBar { id: slot, .. }
+            | Self::ComboBox { id: slot, .. }
             | Self::Slider { id: slot, .. }
             | Self::Counter { id: slot, .. }
             | Self::Clock { id: slot, .. }
@@ -2249,6 +2265,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::TextInput { id, .. } => (Some(*id), WidgetIdTag::TextInput, "TextInput"),
             Self::TextArea { id, .. } => (Some(*id), WidgetIdTag::TextArea, "TextArea"),
             Self::SearchBar { id, .. } => (Some(*id), WidgetIdTag::SearchBar, "SearchBar"),
+            Self::ComboBox { id, .. } => (Some(*id), WidgetIdTag::ComboBox, "ComboBox"),
             Self::Slider { id, .. } => (Some(*id), WidgetIdTag::Slider, "Slider"),
             Self::Counter { id, .. } => (Some(*id), WidgetIdTag::Counter, "Counter"),
             Self::Clock { id, .. } => (Some(*id), WidgetIdTag::Clock, "Clock"),
@@ -2312,6 +2329,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::TextInput { .. }
             | Self::TextArea { .. }
             | Self::SearchBar { .. }
+            | Self::ComboBox { .. }
             | Self::Slider { .. }
             | Self::Counter { .. }
             | Self::Select { .. }
@@ -2399,6 +2417,9 @@ impl<'a, Msg> Widget<'a, Msg> {
     }
 
     pub(crate) fn search_popup_id(&self, path: &[usize]) -> Option<u64> {
+        if matches!(self, Self::ComboBox { .. }) {
+            return Some(resolve_search_popup_id(self.resolved_id(path)?));
+        }
         let Self::SearchBar {
             suggestions: Some(_),
             ..
@@ -2410,6 +2431,10 @@ impl<'a, Msg> Widget<'a, Msg> {
     }
 
     pub(crate) fn search_suggestion_id(&self, path: &[usize], index: usize) -> Option<u64> {
+        if let Self::ComboBox { suggestions, .. } = self {
+            return (index < suggestions.items.len())
+                .then(|| resolve_search_suggestion_id(self.resolved_id(path).unwrap(), index));
+        }
         let Self::SearchBar {
             suggestions: Some(suggestions),
             ..

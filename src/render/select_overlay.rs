@@ -123,11 +123,23 @@ pub(crate) fn popup_layout_for_focus(
     focus: usize,
     viewport: (f32, f32),
 ) -> SelectPopupLayout {
+    popup_layout_for_focus_with_window(anchor, option_count, focus, viewport, usize::MAX)
+}
+
+/// Limits the painted window without truncating the navigable option source.
+pub(crate) fn popup_layout_for_focus_with_window(
+    anchor: SkiaRect,
+    option_count: usize,
+    focus: usize,
+    viewport: (f32, f32),
+    max_visible_rows: usize,
+) -> SelectPopupLayout {
     let width = anchor.width().min(viewport.0.max(0.0));
     let max_x = (viewport.0 - width).max(0.0);
     let x = anchor.left.clamp(0.0, max_x);
-    let (below, available_height) = popup_side(anchor, option_count, viewport.1);
-    let visible_options = visible_option_count(option_count, available_height);
+    let window_count = option_count.min(max_visible_rows);
+    let (below, available_height) = popup_side(anchor, window_count, viewport.1);
+    let visible_options = visible_option_count(window_count, available_height);
     let height = visible_options as f32 * OPTION_HEIGHT;
     let y = if below {
         anchor.bottom
