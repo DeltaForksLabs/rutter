@@ -1,5 +1,40 @@
 # Development Log
 
+## [2026-10-25T20:41:09-03:00] - Prepare the Tab Outline Fix Version and Commit - 0.44.1
+
+**Context:** The user requested a version update and commit for request 63.1, explicitly waiving another test run this time.
+
+**Challenge:** Synchronize version metadata without changing dependency resolution and preserve the user's unrelated `.gitignore` edit outside the commit.
+
+**Decision:** Bump 0.44.0 to 0.44.1 because this is a backward-compatible rendering fix. Let Cargo update the lockfile's Rutter version, update README status and retain the earlier regression evidence below. Commit the fix and regression coverage with an English title without release wording; do not tag or push.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log, `src/render/mod.rs` and `tests/unit/focus_ring_render_unit_tests.rs`.
+
+**Validation:** `CARGO_BUILD_JOBS=2 cargo check --offline --lib`, `cargo fmt --all -- --check` and `git diff --check` passed sequentially. The manifest/lockfile diff changes only Rutter's version; no dependency changes or other generated files are involved. Tests were not rerun, as explicitly requested; the prior 2 render tests, 67 integration tests and all-target/all-feature Clippy results belong to the preceding fix validation, not this version update. No new API compatibility, security or migration concerns were introduced.
+
+## [2026-10-25T19:59:25-03:00] - Remove the Selected Tab's Redundant Outline - Unreleased
+
+**Context:** Request 63.1 asks to remove the enclosing indicator around the selected tab, which already has an underline.
+
+**Challenge:** The enclosing indicator is the focus outline, also shown after a pointer click. Removing all tab focus painting would hide keyboard focus when it moves to a tab that has not been selected.
+
+**Decision:** Suppress the outline only when the focused tab is the active tab. Preserve the existing underline, label colors, geometry, hit targets, focus IDs, callbacks and outline on focused inactive tabs. No spacing or public API changes are needed.
+
+**Files Changed:** `src/render/mod.rs`; `tests/unit/focus_ring_render_unit_tests.rs`; this log.
+
+**Validation:** The new raster regression reproduced the original defect before the fix and passed afterward. It compares focused-selected and unfocused rendering pixel-for-pixel, checks the retained underline and verifies that inactive focus remains visible for both tab indices, light/dark themes, 320/800px widths and 1x/1.5x/2x scaling in a 48px-high strip. Commands run sequentially:
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib focus_ring_render_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --test phase4_integration_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+git diff --check
+```
+
+Both focus-render tests and all 67 phase-four integration tests passed, as did formatting and warnings-denied Clippy. The full test suite was not rerun for this localized paint condition. Manual visual, real screen-reader and non-Linux acceptance were not performed; long/localized tab labels and unrelated disabled/error/popup states were not added to this regression matrix. No dependencies, package version, lockfile or generated files changed. The user's existing `.gitignore` modification remains untouched; no commit was requested.
+
 ## [2026-10-25T19:05:41-03:00] - Prepare the ComboBox Version Update and Commit - 0.44.0
 
 **Context:** The user requested a version update and a commit of requests 62 and 62.1, without release/version wording in the commit title.

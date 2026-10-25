@@ -2789,7 +2789,9 @@ fn draw_tabbar(input: TabbarRenderInput<'_>) {
     for (i, tab) in tabs.iter().enumerate() {
         let tx = i as f32 * tab_w;
         let hov = SkiaRect::from_xywh(tx, 0.0, tab_w, size.1).contains(mouse);
-        if focused_tab == Some(i) {
+        // The active tab already has an underline; retain the outline only
+        // when keyboard focus needs to identify a different, unselected tab.
+        if focused_tab == Some(i) && i != active {
             draw_focus_outline(
                 canvas,
                 SkiaRect::from_xywh(
