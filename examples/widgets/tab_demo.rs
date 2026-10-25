@@ -7,6 +7,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
@@ -59,64 +60,68 @@ impl AppLogic for TabDemo {
         let content_col = Style {
             flex_direction: FlexDirection::Column,
             align_items: Some(AlignItems::Stretch),
-            padding: Rect::length(32.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(32.0),
-            },
-            flex_grow: 1.0,
+            gap: Size::length(spacing::SM),
+            flex_shrink: 0.0,
             ..Default::default()
         };
 
-        Widget::Column {
-            style: root,
-            children: vec![
-                example_theme_selector(s.theme, Msg::Theme),
-                // ── TabBar de 3 abas ─────────────────────────────────
-                Widget::TabBar {
-                    id: 50,
-                    tabs: TABS_3,
-                    active: s.active3,
-                    on_change: Msg::Tab3,
-                    style: tab_s.clone(),
-                },
-                Widget::Column {
-                    style: content_col.clone(),
-                    children: vec![
-                        Widget::Text {
-                            content: format!("Aba ativa (3): \"{}\"", TABS_3[s.active3]),
-                            color: None,
-                            size: 16.0,
-                            style: Style::default(),
+        super::layout::page(
+            "Tabs",
+            Widget::Column {
+                style: root,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::Theme),
+                    super::layout::section(vec![
+                        // ── TabBar de 3 abas ─────────────────────────────────
+                        Widget::TabBar {
+                            id: 50,
+                            tabs: TABS_3,
+                            active: s.active3,
+                            on_change: Msg::Tab3,
+                            style: tab_s.clone(),
                         },
-                        Widget::Text {
-                            content: "O underline deve estar centralizado sob o nome (FIX-2)"
-                                .into(),
-                            color: None,
-                            size: 12.0,
-                            style: Style::default(),
+                        Widget::Column {
+                            style: content_col.clone(),
+                            children: vec![
+                                Widget::Text {
+                                    content: format!("Aba ativa (3): \"{}\"", TABS_3[s.active3]),
+                                    color: None,
+                                    size: 16.0,
+                                    style: Style::default(),
+                                },
+                                Widget::Text {
+                                    content:
+                                        "O underline deve estar centralizado sob o nome (FIX-2)"
+                                            .into(),
+                                    color: None,
+                                    size: 12.0,
+                                    style: Style::default(),
+                                },
+                            ],
                         },
-                    ],
-                },
-                // ── TabBar de 5 abas ─────────────────────────────────
-                Widget::TabBar {
-                    id: 51,
-                    tabs: TABS_5,
-                    active: s.active5,
-                    on_change: Msg::Tab5,
-                    style: tab_s,
-                },
-                Widget::Column {
-                    style: content_col,
-                    children: vec![Widget::Text {
-                        content: format!("Aba ativa (5): \"{}\"", TABS_5[s.active5]),
-                        color: None,
-                        size: 16.0,
-                        style: Style::default(),
-                    }],
-                },
-            ],
-        }
+                        // ── TabBar de 5 abas ─────────────────────────────────
+                    ]),
+                    super::layout::section(vec![
+                        Widget::TabBar {
+                            id: 51,
+                            tabs: TABS_5,
+                            active: s.active5,
+                            on_change: Msg::Tab5,
+                            style: tab_s,
+                        },
+                        Widget::Column {
+                            style: content_col,
+                            children: vec![Widget::Text {
+                                content: format!("Aba ativa (5): \"{}\"", TABS_5[s.active5]),
+                                color: None,
+                                size: 16.0,
+                                style: Style::default(),
+                            }],
+                        },
+                    ]),
+                ],
+            },
+        )
     }
 
     fn update(s: &mut TabDemoState, msg: Msg, _: &mut Clipboard) {

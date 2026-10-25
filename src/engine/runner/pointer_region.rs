@@ -652,6 +652,7 @@ mod tests {
         runner.engine.runtime_caches.inputs.insert(
             19,
             InputRuntime {
+                model_value: None,
                 on_change: Message::Selected,
                 on_submit: None,
                 is_password: false,

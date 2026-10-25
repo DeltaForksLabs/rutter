@@ -7,6 +7,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
@@ -56,11 +57,8 @@ impl AppLogic for ProgressDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(40.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(20.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
         let bar_s = responsive_width(360.0, Dimension::length(20.0));
@@ -76,10 +74,7 @@ impl AppLogic for ProgressDemo {
                 width: Dimension::length(688.0),
                 height: Dimension::auto(),
             },
-            gap: Size {
-                width: LengthPercentage::length(12.0),
-                height: LengthPercentage::length(0.0),
-            },
+            gap: Size::length(spacing::MD),
             ..Default::default()
         };
         let spin_s = Style {
@@ -90,94 +85,103 @@ impl AppLogic for ProgressDemo {
             ..Default::default()
         };
 
-        Widget::Column {
-            style: col,
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                // ── Upload — determinado ─────────────────────────────
-                Widget::Text {
-                    content: format!("Upload: {:.0}%", s.upload * 100.0),
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::ProgressBar {
-                    id: 30,
-                    value: s.upload,
-                    indeterminate: false,
-                    style: bar_s.clone(),
-                },
-                // ── Download — determinado ───────────────────────────
-                Widget::Text {
-                    content: format!("Download: {:.0}%", s.download * 100.0),
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::ProgressBar {
-                    id: 31,
-                    value: s.download,
-                    indeterminate: false,
-                    style: bar_s.clone(),
-                },
-                // ── Indeterminado (FIX-5) ────────────────────────────
-                Widget::Text {
-                    content: if s.is_loading {
-                        "Carregando... (indeterminado)".into()
-                    } else {
-                        "Pausado".into()
+        super::layout::page(
+            "Progress and loading",
+            Widget::Column {
+                style: col,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    super::layout::section(vec![
+                        // ── Upload — determinado ─────────────────────────────
+                        Widget::Text {
+                            content: format!("Upload: {:.0}%", s.upload * 100.0),
+                            color: None,
+                            size: 14.0,
+                            style: Style::default(),
+                        },
+                        Widget::ProgressBar {
+                            id: 30,
+                            value: s.upload,
+                            indeterminate: false,
+                            style: bar_s.clone(),
+                        },
+                        // ── Download — determinado ───────────────────────────
+                    ]),
+                    super::layout::section(vec![
+                        Widget::Text {
+                            content: format!("Download: {:.0}%", s.download * 100.0),
+                            color: None,
+                            size: 14.0,
+                            style: Style::default(),
+                        },
+                        Widget::ProgressBar {
+                            id: 31,
+                            value: s.download,
+                            indeterminate: false,
+                            style: bar_s.clone(),
+                        },
+                        // ── Indeterminado (FIX-5) ────────────────────────────
+                    ]),
+                    super::layout::section(vec![
+                        Widget::Text {
+                            content: if s.is_loading {
+                                "Carregando... (indeterminado)".into()
+                            } else {
+                                "Pausado".into()
+                            },
+                            color: None,
+                            size: 14.0,
+                            style: Style::default(),
+                        },
+                        Widget::ProgressBar {
+                            id: 32,
+                            value: 0.0,
+                            indeterminate: s.is_loading,
+                            style: bar_s,
+                        },
+                        // ── Spinner ──────────────────────────────────────────
+                        Widget::Spinner {
+                            id: 40,
+                            style: spin_s,
+                        },
+                        // ── Controles ────────────────────────────────────────
+                    ]),
+                    Widget::Row {
+                        style: row_s,
+                        children: vec![
+                            Widget::Button {
+                                text: "+10% Upload",
+                                on_press: Msg::UploadStep,
+                                style: btn_s.clone(),
+                                color: None,
+                                variant: rutter::ButtonVariant::Ghost,
+                            },
+                            Widget::Button {
+                                text: "+10% Download",
+                                on_press: Msg::DownloadStep,
+                                style: btn_s.clone(),
+                                color: None,
+                                variant: rutter::ButtonVariant::Ghost,
+                            },
+                            Widget::Button {
+                                text: if s.is_loading { "Pausar" } else { "Retomar" },
+                                on_press: Msg::ToggleLoading,
+                                style: btn_s.clone(),
+                                color: None,
+                                variant: rutter::ButtonVariant::Primary,
+                            },
+                            Widget::Button {
+                                text: "Reset",
+                                on_press: Msg::Reset,
+                                style: btn_s,
+                                color: None,
+                                variant: rutter::ButtonVariant::Text,
+                            },
+                        ],
                     },
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::ProgressBar {
-                    id: 32,
-                    value: 0.0,
-                    indeterminate: s.is_loading,
-                    style: bar_s,
-                },
-                // ── Spinner ──────────────────────────────────────────
-                Widget::Spinner {
-                    id: 40,
-                    style: spin_s,
-                },
-                // ── Controles ────────────────────────────────────────
-                Widget::Row {
-                    style: row_s,
-                    children: vec![
-                        Widget::Button {
-                            text: "+10% Upload",
-                            on_press: Msg::UploadStep,
-                            style: btn_s.clone(),
-                            color: None,
-                            variant: rutter::ButtonVariant::Ghost,
-                        },
-                        Widget::Button {
-                            text: "+10% Download",
-                            on_press: Msg::DownloadStep,
-                            style: btn_s.clone(),
-                            color: None,
-                            variant: rutter::ButtonVariant::Ghost,
-                        },
-                        Widget::Button {
-                            text: if s.is_loading { "Pausar" } else { "Retomar" },
-                            on_press: Msg::ToggleLoading,
-                            style: btn_s.clone(),
-                            color: None,
-                            variant: rutter::ButtonVariant::Primary,
-                        },
-                        Widget::Button {
-                            text: "Reset",
-                            on_press: Msg::Reset,
-                            style: btn_s,
-                            color: None,
-                            variant: rutter::ButtonVariant::Text,
-                        },
-                    ],
-                },
-            ],
-        }
+                ],
+            },
+        )
     }
 
     fn update(s: &mut ProgressDemoState, msg: Msg, _: &mut Clipboard) {

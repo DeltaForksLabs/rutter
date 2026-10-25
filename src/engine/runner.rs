@@ -67,6 +67,8 @@ mod native_integration;
 mod native_menu;
 mod pointer_region;
 mod popup_coordination;
+#[cfg(test)]
+mod scroll_regressions;
 mod search;
 mod secondary_pointer;
 mod shortcut;
@@ -783,6 +785,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     if self.dispatch_captured_custom_move() {
                         return;
                     }
+                    if self.engine.focused_input_id().is_some()
+                        && let Err(error) = self.refresh_layout_before_keyboard_input()
+                    {
+                        self.terminate_for_error(el, error);
+                        return;
+                    }
                     if let Some(fid) = self.engine.focused_input_id()
                         && let Some(rect) = self.focused_input_rect
                     {
@@ -940,6 +948,23 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             viewport_size,
                             &self.engine.widget_states,
                         )
+                        .or_else(|| {
+                            self.engine
+                                .runtime_caches
+                                .viewport_geometry
+                                .hidden_popovers
+                                .iter()
+                                .min()
+                                .map(|&id| PopoverOverlayHit::Dismiss {
+                                    id,
+                                    on_dismiss: self
+                                        .engine
+                                        .runtime_caches
+                                        .popover_dismiss
+                                        .get(&id)
+                                        .cloned(),
+                                })
+                        })
                     } else {
                         None
                     };
@@ -1562,6 +1587,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         };
         self.engine.try_ensure_widget_states()?;
         self.engine.try_ensure_layout(size)?;
+        self.focused_input_rect = self
+            .engine
+            .runtime_caches
+            .viewport_geometry
+            .focused_input_rect;
         Ok(())
     }
 
@@ -1887,6 +1917,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
 
         self.engine.focused_widget_id = focus_id;
+        self.engine.pending_focus_reveal = focus_id.is_some();
         if let Some(id) = focus_id {
             if self.engine.runtime_caches.inputs.contains_key(&id) {
                 self.engine.ensure_input_state(id);
@@ -2128,9 +2159,17 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     }
 
     fn dismiss_open_popovers(&mut self) {
-        let messages = collect_open_popover_dismissals(
+        let mut messages = collect_open_popover_dismissals(
             &self.engine.widget_states,
             &self.engine.runtime_caches.popover_dismiss,
+        );
+        messages.extend(
+            self.engine
+                .runtime_caches
+                .viewport_geometry
+                .hidden_popovers
+                .iter()
+                .filter_map(|id| self.engine.runtime_caches.popover_dismiss.get(id).cloned()),
         );
         self.engine.close_all_popovers();
         for message in messages {
@@ -2868,7 +2907,21 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         {
             self.close_dropdown_menu(id, true);
         }
-        let ids = self.engine.runtime_caches.focus_order.clone();
+        let ids: Vec<_> = self
+            .engine
+            .runtime_caches
+            .focus_order
+            .iter()
+            .copied()
+            .filter(|id| {
+                !self
+                    .engine
+                    .runtime_caches
+                    .viewport_geometry
+                    .hidden_focus
+                    .contains(id)
+            })
+            .collect();
         if ids.is_empty() {
             return;
         }
@@ -2879,8 +2932,15 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 let i = ids.iter().position(|&x| x == cur).unwrap_or(0);
                 ids[if shift { (i + n - 1) % n } else { (i + 1) % n }]
             }
-            None => ids[0],
+            None => {
+                if shift {
+                    ids[ids.len() - 1]
+                } else {
+                    ids[0]
+                }
+            }
         };
+        self.focused_input_rect = None;
         self.focus_widget(Some(next));
         self.redraw();
     }

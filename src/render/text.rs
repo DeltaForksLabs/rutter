@@ -14,9 +14,11 @@
 
 use std::collections::HashMap;
 
-use skia_safe::{Color as SkiaColor, Font, FontMgr, FontStyle, Paint, Point, canvas::Canvas};
+use skia_safe::{Color as SkiaColor, Font, FontMgr, FontStyle, Paint, Point, Rect, canvas::Canvas};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub use super::text_cache::{TextBufferCache, TextShapeCacheLimits, TextShapeRequest};
+use crate::i18n::LayoutDirection;
 use crate::text_controls::{TextControlPolicy, normalize_text_controls};
 
 // ── Cache de fontes Skia ─────────────────────────────────────
@@ -152,6 +154,59 @@ pub(crate) fn draw_single_line_text(
 pub(crate) fn measure_single_line_text(font: &Font, text: &str, paint: &Paint) -> f32 {
     let normalized = normalize_text_controls(text, TextControlPolicy::FlattenLineBreaks);
     font.measure_str(normalized.as_ref(), Some(paint)).0
+}
+
+pub(super) enum BoundedTextAlignment {
+    InlineStart(LayoutDirection),
+    Center,
+}
+
+/// Ellipsizes and clips only the label, leaving control frames/focus rings free
+/// to use their normal bounds. Truncation never splits a grapheme cluster.
+pub(super) fn draw_bounded_single_line_text(
+    canvas: &Canvas,
+    text: &str,
+    bounds: Rect,
+    font: &Font,
+    paint: &Paint,
+    alignment: BoundedTextAlignment,
+) {
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return;
+    }
+    let text = ellipsized_single_line_text(text, bounds.width(), font, paint);
+    let width = measure_single_line_text(font, &text, paint);
+    let x = match alignment {
+        BoundedTextAlignment::InlineStart(LayoutDirection::Ltr) => bounds.left,
+        BoundedTextAlignment::InlineStart(LayoutDirection::Rtl) => bounds.right - width,
+        BoundedTextAlignment::Center => bounds.center_x() - width / 2.0,
+    };
+    let (_, metrics) = font.metrics();
+    let baseline = bounds.center_y() - (metrics.ascent + metrics.descent) / 2.0;
+    canvas.save();
+    canvas.clip_rect(bounds, None, false);
+    draw_single_line_text(canvas, &text, (x, baseline), font, paint);
+    canvas.restore();
+}
+
+fn ellipsized_single_line_text(text: &str, width: f32, font: &Font, paint: &Paint) -> String {
+    let text = normalize_text_controls(text, TextControlPolicy::FlattenLineBreaks);
+    if measure_single_line_text(font, &text, paint) <= width {
+        return text.into_owned();
+    }
+    if measure_single_line_text(font, "…", paint) > width {
+        return String::new();
+    }
+    let mut result = String::new();
+    for grapheme in text.graphemes(true) {
+        let candidate = format!("{result}{grapheme}…");
+        if measure_single_line_text(font, &candidate, paint) > width {
+            break;
+        }
+        result.push_str(grapheme);
+    }
+    result.push('…');
+    result
 }
 
 fn draw_normalized_text(

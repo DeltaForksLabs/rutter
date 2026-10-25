@@ -8,6 +8,7 @@ use skia_safe::textlayout::{
 };
 use skia_safe::{Canvas, Color, FontMgr, FontStyle};
 
+use crate::text_controls::{TextControlPolicy, normalize_text_controls};
 use crate::widgets::rich_text::{
     OwnedRichTextSpec, RichTextColor, RichTextSlant, RichTextSpanStyle, RichTextStyle,
 };
@@ -65,6 +66,87 @@ impl RichTextRenderer {
     pub(crate) fn clear(&mut self) {
         self.font_collection.paragraph_cache_mut().reset();
         self.font_collection.clear_caches();
+    }
+
+    pub(crate) fn measure_plain(
+        &self,
+        text: &str,
+        font_size: f32,
+        width: RichTextWidth,
+        direction: RichTextDirection,
+    ) -> RichTextMetrics {
+        if text.is_empty() {
+            return RichTextMetrics::default();
+        }
+        let mut paragraph = self.plain_paragraph(text, font_size, Color::BLACK, direction);
+        paragraph.layout(initial_layout_width(width));
+        let measured_width = match width {
+            RichTextWidth::Definite(limit) => paragraph.longest_line().min(limit.max(0.0)),
+            RichTextWidth::MinContent => paragraph.min_intrinsic_width(),
+            RichTextWidth::MaxContent => paragraph.max_intrinsic_width(),
+        }
+        .max(0.0)
+        .ceil();
+        if !matches!(width, RichTextWidth::Definite(_)) {
+            paragraph.layout(measured_width.max(1.0));
+        }
+        RichTextMetrics {
+            width: measured_width,
+            height: paragraph.height().ceil(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_plain(
+        &self,
+        canvas: &Canvas,
+        text: &str,
+        font_size: f32,
+        bounds: (f32, f32),
+        color: Color,
+        direction: RichTextDirection,
+    ) {
+        if text.is_empty() || !valid_paint_bounds(bounds) {
+            return;
+        }
+        let mut paragraph = self.plain_paragraph(text, font_size, color, direction);
+        paragraph.layout(bounds.0);
+        canvas.save();
+        canvas.clip_rect(
+            skia_safe::Rect::from_xywh(0.0, 0.0, bounds.0, bounds.1),
+            None,
+            false,
+        );
+        paragraph.paint(
+            canvas,
+            (0.0, ((bounds.1 - paragraph.height()) / 2.0).max(0.0)),
+        );
+        canvas.restore();
+    }
+
+    fn plain_paragraph(
+        &self,
+        text: &str,
+        font_size: f32,
+        color: Color,
+        direction: RichTextDirection,
+    ) -> Paragraph {
+        let mut text_style = TextStyle::new();
+        text_style.set_font_families(&["sans-serif"]);
+        text_style.set_font_size(font_size);
+        text_style.set_color(color);
+        text_style.set_height(1.2);
+        text_style.set_height_override(true);
+        let mut style = ParagraphStyle::new();
+        style.set_text_style(&text_style);
+        style.set_text_direction(match direction {
+            RichTextDirection::LeftToRight => TextDirection::LTR,
+            RichTextDirection::RightToLeft => TextDirection::RTL,
+        });
+        let mut builder = ParagraphBuilder::new(&style, self.font_collection.clone());
+        let normalized = normalize_text_controls(text, TextControlPolicy::PreserveLineBreaks);
+        builder.add_text(normalized.as_ref());
+        builder.build()
     }
 
     pub(crate) fn measure(

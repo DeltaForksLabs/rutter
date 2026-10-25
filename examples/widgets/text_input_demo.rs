@@ -7,6 +7,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, InputState, RutterRunner, Theme, Widget};
@@ -54,16 +55,13 @@ impl AppLogic for TextInputDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(20.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
         let inp = responsive_width(320.0, Dimension::length(44.0));
 
-        Widget::Column {
+        super::layout::page("Text inputs", Widget::Column {
             style: col,
             children: vec![
                 example_theme_selector(s.theme, Msg::ThemeChanged),
@@ -77,6 +75,7 @@ impl AppLogic for TextInputDemo {
                 // Campo normal
                 Widget::TextInput {
                     id: 1,
+                    model_value: None,
                     on_change: Msg::NormalChanged,
                     on_submit: Some(Msg::Submit),
                     style: inp.clone(),
@@ -89,6 +88,7 @@ impl AppLogic for TextInputDemo {
                 // Campo senha
                 Widget::TextInput {
                     id: 2,
+                    model_value: None,
                     on_change: Msg::PasswordChanged,
                     on_submit: Some(Msg::Submit),
                     style: inp.clone(),
@@ -101,6 +101,7 @@ impl AppLogic for TextInputDemo {
                 // Campo com estado de erro
                 Widget::TextInput {
                     id: 3,
+                    model_value: None,
                     on_change: Msg::ErrorChanged,
                     on_submit: None,
                     style: inp.clone(),
@@ -130,7 +131,7 @@ impl AppLogic for TextInputDemo {
                     style: Style::default(),
                 },
             ],
-        }
+        })
     }
 
     fn update(s: &mut TextInputDemoState, msg: Msg, _: &mut Clipboard) {

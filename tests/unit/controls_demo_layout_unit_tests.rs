@@ -4,10 +4,9 @@ use super::*;
 fn checkbox_row_wraps_and_uses_bounded_fluid_widths() {
     let mut state = ControlsDemoState::default();
     let view = ControlsDemo::view(&mut state);
-    let Widget::Column { children, .. } = view else {
-        panic!("controls demo root must be a Column")
-    };
-    let (checkboxes, style) = checkbox_row(&children);
+    let children = super::super::layout::document_children(&view);
+    let (checkboxes, style) = checkbox_row(children)
+        .expect("controls demo must contain one Row with only Checkbox children");
 
     assert_eq!(style.flex_wrap, FlexWrap::Wrap);
     assert_eq!(style.gap.width, LengthPercentage::length(24.0));
@@ -26,18 +25,16 @@ fn checkbox_row_wraps_and_uses_bounded_fluid_widths() {
 
 fn checkbox_row<'view, 'widget>(
     children: &'view [Widget<'widget, Msg>],
-) -> (&'view [Widget<'widget, Msg>], &'view Style) {
-    children
-        .iter()
-        .find_map(|child| match child {
-            Widget::Row { children, style }
-                if children
-                    .iter()
-                    .all(|child| matches!(child, Widget::Checkbox { .. })) =>
-            {
-                Some((children.as_slice(), style))
-            }
-            _ => None,
-        })
-        .expect("controls demo must contain one Row with only Checkbox children")
+) -> Option<(&'view [Widget<'widget, Msg>], &'view Style)> {
+    children.iter().find_map(|child| match child {
+        Widget::Row { children, style }
+            if children
+                .iter()
+                .all(|child| matches!(child, Widget::Checkbox { .. })) =>
+        {
+            Some((children.as_slice(), style))
+        }
+        Widget::Column { children, .. } => checkbox_row(children),
+        _ => None,
+    })
 }

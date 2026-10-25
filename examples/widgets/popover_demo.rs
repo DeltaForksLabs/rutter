@@ -6,6 +6,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
@@ -54,11 +55,8 @@ impl AppLogic for PopoverDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(16.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
 
@@ -74,11 +72,8 @@ impl AppLogic for PopoverDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            padding: Rect::length(16.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(10.0),
-            },
+            padding: Rect::length(spacing::LG),
+            gap: Size::length(spacing::MD),
             ..Default::default()
         };
 
@@ -89,10 +84,7 @@ impl AppLogic for PopoverDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            gap: Size {
-                width: LengthPercentage::length(10.0),
-                height: LengthPercentage::length(0.0),
-            },
+            gap: Size::length(spacing::MD),
             ..Default::default()
         };
 
@@ -149,40 +141,44 @@ impl AppLogic for PopoverDemo {
             ],
         };
 
-        Widget::Column {
-            style: root,
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                Widget::Text {
-                    content: "Popover Demo".into(),
-                    color: None,
-                    size: 22.0,
-                    style: Style::default(),
-                },
-                Widget::Text {
-                    content: "The floating panel is measured by Taffy and clamped to the viewport."
-                        .into(),
-                    color: None,
-                    size: 13.0,
-                    style: Style::default(),
-                },
-                Widget::popover(
-                    s.open,
-                    anchor,
-                    content,
-                    Some(Msg::Close),
-                    popover_style,
-                    popup_style,
-                )
-                .with_id(910),
-                Widget::Text {
-                    content: s.last_action.clone(),
-                    color: None,
-                    size: 13.0,
-                    style: Style::default(),
-                },
-            ],
-        }
+        super::layout::page(
+            "Popover",
+            Widget::Column {
+                style: root,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    Widget::Text {
+                        content: "Popover Demo".into(),
+                        color: None,
+                        size: 22.0,
+                        style: Style::default(),
+                    },
+                    Widget::Text {
+                        content:
+                            "The floating panel is measured by Taffy and clamped to the viewport."
+                                .into(),
+                        color: None,
+                        size: 13.0,
+                        style: Style::default(),
+                    },
+                    Widget::popover(
+                        s.open,
+                        anchor,
+                        content,
+                        Some(Msg::Close),
+                        popover_style,
+                        popup_style,
+                    )
+                    .with_id(910),
+                    Widget::Text {
+                        content: s.last_action.clone(),
+                        color: None,
+                        size: 13.0,
+                        style: Style::default(),
+                    },
+                ],
+            },
+        )
     }
 
     fn update(s: &mut PopoverDemoState, msg: Msg, _: &mut Clipboard) {

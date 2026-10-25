@@ -5,6 +5,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
@@ -84,16 +85,19 @@ impl AppLogic for ImageViewerDemo {
 
     fn view<'a>(s: &'a mut ImageViewerDemoState) -> Widget<'a, Msg> {
         let selected = sample(s.selected);
-        Widget::Column {
-            style: page_style(),
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                title(selected.name),
-                large_image(selected.data),
-                controls(),
-                thumbnails(),
-            ],
-        }
+        super::layout::page(
+            "Image viewer",
+            Widget::Column {
+                style: page_style(),
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    title(selected.name),
+                    large_image(selected.data),
+                    controls(),
+                    thumbnails(),
+                ],
+            },
+        )
     }
 
     fn update(s: &mut ImageViewerDemoState, msg: Msg, _: &mut Clipboard) {
@@ -194,20 +198,14 @@ fn page_style() -> Style {
         flex_direction: FlexDirection::Column,
         align_items: Some(AlignItems::Stretch),
         size: Size::from_percent(1.0, 1.0),
-        padding: Rect::length(40.0_f32),
-        gap: gap_size(18.0, 18.0),
+        padding: Rect::length(spacing::XL),
+        gap: gap_size(spacing::LG, spacing::LG),
         ..Default::default()
     }
 }
 
 fn row_style() -> Style {
-    Style {
-        flex_direction: FlexDirection::Row,
-        flex_wrap: FlexWrap::Wrap,
-        align_items: Some(AlignItems::Center),
-        gap: gap_size(12.0, 0.0),
-        ..Default::default()
-    }
+    super::layout::flow()
 }
 
 fn button_style() -> Style {

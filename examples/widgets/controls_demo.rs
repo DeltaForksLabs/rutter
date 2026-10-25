@@ -5,6 +5,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
@@ -55,20 +56,14 @@ impl AppLogic for ControlsDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(40.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(18.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
         let item_row = Style {
             flex_direction: FlexDirection::Row,
             align_items: Some(AlignItems::FlexStart),
-            gap: Size {
-                width: LengthPercentage::length(12.0),
-                height: LengthPercentage::length(0.0),
-            },
+            gap: Size::length(spacing::MD),
             ..responsive_width(320.0, Dimension::length(32.0))
         };
         let checkbox_row = Style {
@@ -84,8 +79,8 @@ impl AppLogic for ControlsDemo {
                 height: Dimension::auto(),
             },
             gap: Size {
-                width: LengthPercentage::length(24.0),
-                height: LengthPercentage::length(12.0),
+                width: LengthPercentage::length(spacing::XL),
+                height: LengthPercentage::length(spacing::MD),
             },
             ..Default::default()
         };
@@ -100,117 +95,118 @@ impl AppLogic for ControlsDemo {
         let select_s = responsive_width(320.0, Dimension::length(44.0));
         let radio_s = responsive_width(160.0, Dimension::length(28.0));
 
-        Widget::Column {
-            style: col,
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                // ── Checkboxes ───────────────────────────────────────
-                Widget::Text {
-                    content: "Checkboxes".into(),
-                    color: None,
-                    size: 18.0,
-                    style: Style::default(),
-                },
-                Widget::Row {
-                    style: checkbox_row,
-                    children: vec![
-                        Widget::Checkbox {
-                            checked: s.remember,
-                            on_change: Msg::RememberToggled,
-                            label: "Lembrar de mim",
-                            style: check_s.clone(),
+        super::layout::page(
+            "Controls",
+            Widget::Column {
+                style: col,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    Widget::Text {
+                        content: "Controls".into(),
+                        color: None,
+                        size: 24.0,
+                        style: Style::default(),
+                    },
+                    super::layout::section(vec![
+                        // ── Checkboxes ───────────────────────────────────────
+                        Widget::heading(rutter::HeadingLevel::H2, "Checkboxes", Style::default()),
+                        Widget::Row {
+                            style: checkbox_row,
+                            children: vec![
+                                Widget::Checkbox {
+                                    checked: s.remember,
+                                    on_change: Msg::RememberToggled,
+                                    label: "Lembrar de mim",
+                                    style: check_s.clone(),
+                                },
+                                Widget::Checkbox {
+                                    checked: s.newsletter,
+                                    on_change: Msg::NewsletterToggled,
+                                    label: "Receber newsletter",
+                                    style: check_s.clone(),
+                                },
+                            ],
                         },
-                        Widget::Checkbox {
-                            checked: s.newsletter,
-                            on_change: Msg::NewsletterToggled,
-                            label: "Receber newsletter",
-                            style: check_s.clone(),
+                        // ── Switch ───────────────────────────────────────────
+                    ]),
+                    super::layout::section(vec![
+                        Widget::heading(rutter::HeadingLevel::H2, "Switch", Style::default()),
+                        Widget::Row {
+                            style: item_row,
+                            children: vec![
+                                Widget::Text {
+                                    content: "Modo escuro".into(),
+                                    color: None,
+                                    size: 14.0,
+                                    style: Style {
+                                        flex_grow: 1.0,
+                                        ..Default::default()
+                                    },
+                                },
+                                Widget::Switch {
+                                    checked: s.theme == ExampleTheme::Dark,
+                                    on_change: Msg::DarkModeToggled,
+                                    style: switch_s,
+                                },
+                            ],
                         },
-                    ],
-                },
-                // ── Switch ───────────────────────────────────────────
-                Widget::Text {
-                    content: "Switch".into(),
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::Row {
-                    style: item_row,
-                    children: vec![
-                        Widget::Text {
-                            content: "Modo escuro".into(),
-                            color: None,
-                            size: 14.0,
-                            style: Style {
-                                flex_grow: 1.0,
-                                ..Default::default()
-                            },
+                        // ── Radio ────────────────────────────────────────────
+                    ]),
+                    super::layout::section(vec![
+                        Widget::heading(rutter::HeadingLevel::H2, "Radio", Style::default()),
+                        Widget::Radio {
+                            selected: s.radio_sel == 0,
+                            on_select: || Msg::RadioA,
+                            label: "Opção A",
+                            style: radio_s.clone(),
                         },
-                        Widget::Switch {
-                            checked: s.theme == ExampleTheme::Dark,
-                            on_change: Msg::DarkModeToggled,
-                            style: switch_s,
+                        Widget::Radio {
+                            selected: s.radio_sel == 1,
+                            on_select: || Msg::RadioB,
+                            label: "Opção B",
+                            style: radio_s.clone(),
                         },
-                    ],
-                },
-                // ── Radio ────────────────────────────────────────────
-                Widget::Text {
-                    content: "Radio".into(),
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::Radio {
-                    selected: s.radio_sel == 0,
-                    on_select: || Msg::RadioA,
-                    label: "Opção A",
-                    style: radio_s.clone(),
-                },
-                Widget::Radio {
-                    selected: s.radio_sel == 1,
-                    on_select: || Msg::RadioB,
-                    label: "Opção B",
-                    style: radio_s.clone(),
-                },
-                Widget::Radio {
-                    selected: s.radio_sel == 2,
-                    on_select: || Msg::RadioC,
-                    label: "Opção C",
-                    style: radio_s.clone(),
-                },
-                // ── Select ───────────────────────────────────────────
-                Widget::Text {
-                    content: "Select (dropdown)".into(),
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::Select {
-                    id: 10,
-                    options: LANGUAGES,
-                    selected_index: s.selected_lang,
-                    on_change: Msg::LanguageChanged,
-                    style: select_s,
-                    label: "Linguagem favorita",
-                    placeholder: "Escolha...",
-                },
-                // ── Resumo ───────────────────────────────────────────
-                Widget::Text {
-                    content: format!(
-                        "Lembrar={} | Newsletter={} | DarkMode={} | Radio={} | Lang={}",
-                        s.remember,
-                        s.newsletter,
-                        s.theme == ExampleTheme::Dark,
-                        s.radio_sel,
-                        LANGUAGES.get(s.selected_lang).copied().unwrap_or("-")
-                    ),
-                    color: None,
-                    size: 11.0,
-                    style: Style::default(),
-                },
-            ],
-        }
+                        Widget::Radio {
+                            selected: s.radio_sel == 2,
+                            on_select: || Msg::RadioC,
+                            label: "Opção C",
+                            style: radio_s.clone(),
+                        },
+                        // ── Select ───────────────────────────────────────────
+                    ]),
+                    super::layout::section(vec![
+                        Widget::heading(
+                            rutter::HeadingLevel::H2,
+                            "Select (dropdown)",
+                            Style::default(),
+                        ),
+                        Widget::Select {
+                            id: 10,
+                            options: LANGUAGES,
+                            selected_index: s.selected_lang,
+                            on_change: Msg::LanguageChanged,
+                            style: select_s,
+                            label: "Linguagem favorita",
+                            placeholder: "Escolha...",
+                        },
+                        // ── Resumo ───────────────────────────────────────────
+                    ]),
+                    Widget::Text {
+                        content: format!(
+                            "Lembrar={} | Newsletter={} | DarkMode={} | Radio={} | Lang={}",
+                            s.remember,
+                            s.newsletter,
+                            s.theme == ExampleTheme::Dark,
+                            s.radio_sel,
+                            LANGUAGES.get(s.selected_lang).copied().unwrap_or("-")
+                        ),
+                        color: None,
+                        size: 11.0,
+                        style: Style::default(),
+                    },
+                ],
+            },
+        )
     }
 
     fn update(s: &mut ControlsDemoState, msg: Msg, _: &mut Clipboard) {

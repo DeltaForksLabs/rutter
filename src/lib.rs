@@ -16,6 +16,7 @@ pub mod layout;
 pub mod multi_window;
 pub mod pointer;
 pub mod render;
+pub mod spacing;
 pub(crate) mod text_controls;
 pub mod theme;
 pub mod widget;
@@ -87,8 +88,13 @@ pub use widget::{
     VirtualItemKeyError, VirtualSelection, Widget, WidgetConfigError, validate_counter,
     validate_slider, validate_virtual_grid, validate_virtual_list,
 };
+pub use widgets::color_picker::{
+    ColorError, ColorFormat, ColorPickerCallbacks, ColorPickerEvent, ColorPickerIds,
+    ColorPickerState, PickerColor,
+};
 pub use widgets::{
-    calendar, carousel, dropdown_menu, rich_text, search, table, table_of_contents, time,
+    calendar, carousel, color_picker, dropdown_menu, rich_text, search, table, table_of_contents,
+    time,
 };
 
 // ── Re-exports de dependências públicas ──────────────────────

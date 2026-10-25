@@ -16,6 +16,7 @@ enum Msg {
 
 fn input(id: u64) -> Widget<'static, Msg> {
     Widget::TextInput {
+        model_value: None,
         on_change: |s| Msg::Changed(s),
         on_submit: Some(Msg::Submit),
         style: Style::default(),
@@ -318,6 +319,7 @@ fn text_input_default_state_is_idle() {
 #[test]
 fn text_input_error_state() {
     let w: Widget<Msg> = Widget::TextInput {
+        model_value: None,
         on_change: |_| Msg::Clear,
         on_submit: None,
         style: Style::default(),
@@ -340,6 +342,7 @@ fn text_input_error_state() {
 #[test]
 fn text_input_password_flag() {
     let w: Widget<Msg> = Widget::TextInput {
+        model_value: None,
         on_change: |_| Msg::Clear,
         on_submit: None,
         style: Style::default(),

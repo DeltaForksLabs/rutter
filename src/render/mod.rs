@@ -12,6 +12,7 @@ pub(crate) mod counter;
 mod custom;
 pub(crate) mod drag_badge;
 pub(crate) mod dropdown_menu_overlay;
+mod field;
 pub mod hit_test;
 pub mod image;
 mod image_cache;
@@ -41,6 +42,14 @@ mod context_menu_decoration_render_tests;
 #[path = "../../tests/unit/focus_ring_render_unit_tests.rs"]
 mod focus_ring_render_tests;
 
+#[cfg(test)]
+#[path = "../../tests/unit/widget_spacing_unit_tests.rs"]
+mod widget_spacing_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/widget_spacing_render_unit_tests.rs"]
+mod widget_spacing_review_tests;
+
 use std::{
     cell::RefCell,
     collections::{BTreeSet, HashMap, hash_map::DefaultHasher},
@@ -68,8 +77,9 @@ pub use self::rich_text::RichTextRenderer;
 use self::table::{TableRenderInput, draw_table};
 use self::table_of_contents::{TableOfContentsNavigationInput, draw_navigation};
 use self::text::{
-    TextBufferCache, TextDrawInput, TextShapeRequest, draw_single_line_text, draw_text_line,
-    get_cached_font, measure_single_line_text,
+    BoundedTextAlignment, TextBufferCache, TextDrawInput, TextShapeRequest,
+    draw_bounded_single_line_text, draw_single_line_text, draw_text_line, get_cached_font,
+    measure_single_line_text,
 };
 use self::{
     image::{MAX_ENCODED_IMAGE_BYTES, decode_rutter_image},
@@ -86,7 +96,6 @@ use crate::layout::{
     RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction, compute_layout,
 };
 use crate::render::hit_test::{dialog_card_rect, modal_card_rect, popover_rect};
-use crate::text_controls::TextControlPolicy;
 use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, ContextMenuEntry, CounterConfig, CustomWidgetState, DialogAction,
@@ -1574,6 +1583,7 @@ fn draw_widgets_impl<'w, Msg>(
             shows_interaction_effects,
             is_multiline: false,
             leading_text_inset: 0.0,
+            direction: node_layout_direction(taffy, node),
         }),
         Widget::TextArea {
             label,
@@ -1601,6 +1611,7 @@ fn draw_widgets_impl<'w, Msg>(
             shows_interaction_effects,
             is_multiline: true,
             leading_text_inset: 0.0,
+            direction: node_layout_direction(taffy, node),
         }),
         Widget::SearchBar { placeholder, .. } => draw_search_bar(TextInputRenderInput {
             canvas,
@@ -1622,6 +1633,7 @@ fn draw_widgets_impl<'w, Msg>(
             shows_interaction_effects,
             is_multiline: false,
             leading_text_inset: SEARCH_BAR_LEADING_TEXT_INSET,
+            direction: node_layout_direction(taffy, node),
         }),
         Widget::Checkbox { checked, label, .. } => draw_checkbox(
             *checked,
@@ -1774,16 +1786,15 @@ fn draw_widgets_impl<'w, Msg>(
             ..
         } => {
             let c = color.unwrap_or(theme.on_surface);
-            draw_text_line(TextDrawInput {
+            draw_plain_text_content(
                 canvas,
-                text: content,
-                size,
-                color: c,
-                font_size: *font_size,
-                font_cache,
-                center: false,
-                control_policy: TextControlPolicy::PreserveLineBreaks,
-            });
+                layout,
+                content,
+                *font_size,
+                c,
+                rich_text_node_direction(taffy, node),
+                image_cache.rich_text_renderer(),
+            );
         }
         Widget::Heading {
             content,
@@ -1792,16 +1803,15 @@ fn draw_widgets_impl<'w, Msg>(
             ..
         } => {
             let color = color.unwrap_or(theme.on_surface);
-            draw_text_line(TextDrawInput {
+            draw_plain_text_content(
                 canvas,
-                text: content,
-                size,
+                layout,
+                content,
+                level.font_size(),
                 color,
-                font_size: level.font_size(),
-                font_cache,
-                center: false,
-                control_policy: TextControlPolicy::PreserveLineBreaks,
-            });
+                rich_text_node_direction(taffy, node),
+                image_cache.rich_text_renderer(),
+            );
         }
         Widget::RichText { .. } => {
             if let Some(RutterContext::RichText(content)) = taffy.get_node_context(node) {
@@ -2795,9 +2805,42 @@ struct TextInputRenderInput<'a> {
     shows_interaction_effects: bool,
     is_multiline: bool,
     leading_text_inset: f32,
+    direction: LayoutDirection,
 }
 
 fn draw_text_input(input: TextInputRenderInput<'_>) {
+    let insets = crate::layout::field::FieldInsets::new(input.label, input.error_msg);
+    let body = insets.body(input.size);
+    input.canvas.save();
+    input.canvas.clip_rect(
+        SkiaRect::from_xywh(0.0, 0.0, input.size.0, input.size.1),
+        None,
+        false,
+    );
+    field::draw_annotations(
+        input.canvas,
+        input.size,
+        input.label,
+        input.error_msg,
+        input.is_focused,
+        input.direction,
+        input.font_cache,
+        input.theme,
+    );
+    input.canvas.translate((body.left, body.top));
+    let canvas = input.canvas;
+    if body.width() > 0.0 && body.height() > 0.0 {
+        draw_text_input_body(TextInputRenderInput {
+            size: (body.width(), body.height()),
+            label: "",
+            error_msg: None,
+            ..input
+        });
+    }
+    canvas.restore();
+}
+
+fn draw_text_input_body(input: TextInputRenderInput<'_>) {
     let TextInputRenderInput {
         canvas,
         fs,
@@ -2808,16 +2851,17 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
         scale,
         size,
         is_focused,
-        label,
+        label: _,
         placeholder,
         state,
-        error_msg,
+        error_msg: _,
         is_password,
         input_state: istate,
         cursor_visible,
         shows_interaction_effects,
         is_multiline,
         leading_text_inset,
+        direction: _,
     } = input;
     let line_height = theme.font_body * 1.3;
     let border_c = theme.input_border(state, is_focused);
@@ -2832,18 +2876,6 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
     brd.set_anti_alias(true);
     canvas.draw_rrect(rrect(size, theme.radius_sm), &brd);
 
-    if !label.is_empty() {
-        let lf = get_cached_font(font_cache, "sans-serif", theme.font_label);
-        let mut p = Paint::default();
-        p.set_color(if is_focused {
-            theme.primary
-        } else {
-            Theme::alpha(theme.on_surface, 180)
-        });
-        p.set_anti_alias(true);
-        draw_single_line_text(canvas, label, (4.0, -4.0), &lf, &p);
-    }
-
     let pad_x = theme.spacing * 2.0;
     let pad_y = theme.spacing;
     let content_width = (size.0 - pad_x * 2.0 - leading_text_inset).max(1.0);
@@ -2855,7 +2887,7 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
     canvas.save();
     canvas.translate((pad_x + leading_text_inset, pad_y));
     canvas.clip_rect(
-        SkiaRect::from_xywh(0.0, 0.0, content_width, size.1 - pad_y * 2.0),
+        SkiaRect::from_xywh(0.0, 0.0, content_width, (size.1 - pad_y * 2.0).max(0.0)),
         None,
         true,
     );
@@ -2891,13 +2923,6 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
         };
         draw_single_line_text(canvas, placeholder, (0.0, y), &f, &p);
         canvas.restore();
-        if let Some(msg) = error_msg {
-            let ef = get_cached_font(font_cache, "sans-serif", theme.font_small);
-            let mut p = Paint::default();
-            p.set_color(theme.error);
-            p.set_anti_alias(true);
-            draw_single_line_text(canvas, msg, (4.0, size.1 + theme.spacing * 3.0), &ef, &p);
-        }
         return;
     }
 
@@ -2949,14 +2974,6 @@ fn draw_text_input(input: TextInputRenderInput<'_>) {
     );
 
     canvas.restore();
-
-    if let Some(msg) = error_msg {
-        let ef = get_cached_font(font_cache, "sans-serif", theme.font_small);
-        let mut p = Paint::default();
-        p.set_color(theme.error);
-        p.set_anti_alias(true);
-        draw_single_line_text(canvas, msg, (4.0, size.1 + theme.spacing * 3.0), &ef, &p);
-    }
 }
 
 fn draw_search_bar(input: TextInputRenderInput<'_>) {
@@ -2980,6 +2997,7 @@ fn draw_search_bar(input: TextInputRenderInput<'_>) {
         shows_interaction_effects,
         is_multiline,
         leading_text_inset,
+        direction,
     } = input;
     draw_text_input(TextInputRenderInput {
         canvas,
@@ -3001,6 +3019,7 @@ fn draw_search_bar(input: TextInputRenderInput<'_>) {
         shows_interaction_effects,
         is_multiline,
         leading_text_inset,
+        direction,
     });
     let radius = (theme.font_body * 0.2).clamp(3.0, 3.5);
     let horizontal_padding = theme.spacing * 2.0;
@@ -3989,6 +4008,31 @@ fn draw_rich_text_content(
     canvas.restore();
 }
 
+fn draw_plain_text_content(
+    canvas: &Canvas,
+    layout: &taffy::Layout,
+    content: &str,
+    font_size: f32,
+    color: SkiaColor,
+    direction: RichTextDirection,
+    renderer: &RichTextRenderer,
+) {
+    canvas.save();
+    canvas.translate((
+        layout.border.left + layout.padding.left,
+        layout.border.top + layout.padding.top,
+    ));
+    renderer.draw_plain(
+        canvas,
+        content,
+        font_size,
+        (layout.content_box_width(), layout.content_box_height()),
+        color,
+        direction,
+    );
+    canvas.restore();
+}
+
 fn carousel_card_rect(frame: CarouselItemFrame, viewport_height: f32) -> SkiaRect {
     const GAP: f32 = 8.0;
     let horizontal = (GAP * 0.5).min(frame.width * 0.2);
@@ -4742,16 +4786,25 @@ fn draw_text_button(input: TextButtonRenderInput<'_>) {
     let hovered = button_hovered(size, mouse);
     let text_color = button_text_color(color, variant, hovered, theme);
     draw_button_frame(canvas, color, variant, is_focused, size, mouse, theme);
-    draw_text_line(TextDrawInput {
+    let font = get_cached_font(font_cache, "sans-serif", theme.font_body);
+    let mut paint = Paint::default();
+    paint.set_color(text_color);
+    paint.set_anti_alias(true);
+    let pad_x = theme.spacing * 2.0;
+    let pad_y = theme.spacing;
+    draw_bounded_single_line_text(
         canvas,
         text,
-        size,
-        color: text_color,
-        font_size: theme.font_body,
-        font_cache,
-        center: true,
-        control_policy: TextControlPolicy::FlattenLineBreaks,
-    });
+        SkiaRect::from_xywh(
+            pad_x,
+            pad_y,
+            (size.0 - pad_x * 2.0).max(0.0),
+            (size.1 - pad_y * 2.0).max(0.0),
+        ),
+        &font,
+        &paint,
+        BoundedTextAlignment::Center,
+    );
 }
 
 fn draw_button_frame(
@@ -4933,16 +4986,19 @@ fn draw_checkbox(checked: bool, input: LabeledControlRenderInput<'_>) {
         canvas.draw_line((cx - 1.5, cy + 3.5), (cx + 4.5, cy - 3.5), &p);
     }
     if !label.is_empty() {
-        let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
-        let mut p = Paint::default();
-        p.set_color(Theme::alpha(theme.on_surface, 220));
-        p.set_anti_alias(true);
-        draw_single_line_text(
+        field::draw_annotation(
             canvas,
             label,
-            (box_size + 8.0, size.1 / 2.0 + theme.font_body / 3.0),
-            &f,
-            &p,
+            SkiaRect::from_xywh(
+                box_size + 8.0,
+                0.0,
+                (size.0 - box_size - 8.0).max(0.0),
+                size.1,
+            ),
+            theme.font_body,
+            Theme::alpha(theme.on_surface, 220),
+            LayoutDirection::Ltr,
+            font_cache,
         );
     }
     if is_focused {
@@ -4960,7 +5016,7 @@ fn draw_checkbox(checked: bool, input: LabeledControlRenderInput<'_>) {
             SkiaRect::from_xywh(
                 -4.0,
                 (size.1 - focus_h) / 2.0 - 4.0,
-                focus_w + 8.0,
+                focus_w.min(size.0) + 8.0,
                 focus_h + 8.0,
             ),
             theme.radius_sm,
@@ -5063,16 +5119,19 @@ fn draw_radio(selected: bool, input: LabeledControlRenderInput<'_>) {
         canvas.draw_circle((cx, cy), r * 0.5, &hp);
     }
     if !label.is_empty() {
-        let f = get_cached_font(font_cache, "sans-serif", theme.font_body);
-        let mut p = Paint::default();
-        p.set_color(theme.on_surface);
-        p.set_anti_alias(true);
-        draw_single_line_text(
+        field::draw_annotation(
             canvas,
             label,
-            (r * 2.0 + 8.0, cy + theme.font_body / 3.0),
-            &f,
-            &p,
+            SkiaRect::from_xywh(
+                r * 2.0 + 8.0,
+                0.0,
+                (size.0 - r * 2.0 - 8.0).max(0.0),
+                size.1,
+            ),
+            theme.font_body,
+            theme.on_surface,
+            LayoutDirection::Ltr,
+            font_cache,
         );
     }
     if is_focused {
@@ -5090,7 +5149,7 @@ fn draw_radio(selected: bool, input: LabeledControlRenderInput<'_>) {
             SkiaRect::from_xywh(
                 -4.0,
                 (size.1 - focus_h) / 2.0 - 4.0,
-                focus_w + 8.0,
+                focus_w.min(size.0) + 8.0,
                 focus_h + 8.0,
             ),
             theme.radius_sm,
@@ -5432,12 +5491,43 @@ pub(crate) struct SelectTriggerRenderInput<'a> {
 }
 
 pub(crate) fn draw_select_trigger(input: SelectTriggerRenderInput<'_>) {
+    let body = crate::layout::field::FieldInsets::new(input.label, None).body(input.size);
+    let canvas = input.canvas;
+    canvas.save();
+    canvas.clip_rect(
+        SkiaRect::from_xywh(0.0, 0.0, input.size.0, input.size.1),
+        None,
+        false,
+    );
+    field::draw_annotations(
+        canvas,
+        input.size,
+        input.label,
+        None,
+        input.is_focused || input.is_open,
+        input.direction,
+        input.font_cache,
+        input.theme,
+    );
+    canvas.translate((body.left, body.top));
+    if body.width() > 0.0 && body.height() > 0.0 {
+        draw_select_trigger_body(SelectTriggerRenderInput {
+            size: (body.width(), body.height()),
+            mouse: Point::new(input.mouse.x - body.left, input.mouse.y - body.top),
+            label: "",
+            ..input
+        });
+    }
+    canvas.restore();
+}
+
+fn draw_select_trigger_body(input: SelectTriggerRenderInput<'_>) {
     let SelectTriggerRenderInput {
         canvas,
         options,
         selected_index,
         is_open,
-        label,
+        label: _,
         placeholder,
         is_focused,
         size,
@@ -5466,24 +5556,6 @@ pub(crate) fn draw_select_trigger(input: SelectTriggerRenderInput<'_>) {
     });
     brd.set_anti_alias(true);
     canvas.draw_rrect(rrect((size.0, closed_h), theme.radius_sm), &brd);
-    if !label.is_empty() {
-        let f = get_cached_font(font_cache, "sans-serif", theme.font_label);
-        let mut p = Paint::default();
-        p.set_color(if is_open || is_focused {
-            theme.primary
-        } else {
-            Theme::alpha(theme.on_surface, 160)
-        });
-        p.set_anti_alias(true);
-        let width = measure_single_line_text(&f, label, &p);
-        draw_single_line_text(
-            canvas,
-            label,
-            (inline_text_x(direction, size.0, width, 6.0), -4.0),
-            &f,
-            &p,
-        );
-    }
     let chevron_direction = if is_open {
         ControlChevronDirection::Up
     } else {

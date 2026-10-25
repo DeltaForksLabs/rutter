@@ -11,6 +11,7 @@ pub mod gpu;
 pub mod multi_runner;
 pub mod run_error;
 pub mod runner;
+mod scroll_runtime;
 mod table_runtime;
 #[cfg(test)]
 mod test_surface;
@@ -34,6 +35,7 @@ use winit::{
     event::{Modifiers, WindowEvent},
     window::{Window, WindowAttributes},
 };
+use zeroize::Zeroizing;
 
 use self::cursor::CursorBlink;
 use self::dropdown_menu_runtime::{DropdownMenuItemRuntime, DropdownMenuRuntime};
@@ -52,7 +54,7 @@ use crate::accessibility::{
     LazyActivationHandler,
 };
 use crate::app::{AppLogic, SurfaceConfig};
-use crate::input_limits::{InputKind, InputLimits};
+use crate::input_limits::{InputKind, InputLimitError, InputLimits};
 use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
 };
@@ -464,8 +466,34 @@ fn collect_table_of_contents_focus_order<Msg>(
     }
 }
 
+// Every owned model copy, including clones retained by the scratch cache, is
+// wiped on drop. Redact all values so changing password mode cannot expose one.
+#[derive(Clone)]
+struct CachedInputModel(Zeroizing<String>);
+
+impl CachedInputModel {
+    fn new(value: &str) -> Self {
+        Self(Zeroizing::new(value.to_owned()))
+    }
+}
+
+impl std::ops::Deref for CachedInputModel {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl std::fmt::Debug for CachedInputModel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[REDACTED]")
+    }
+}
+
 #[derive(Debug, Clone)]
 struct InputRuntime<Msg: Clone> {
+    model_value: Option<CachedInputModel>,
     on_change: fn(String) -> Msg,
     on_submit: Option<Msg>,
     is_password: bool,
@@ -474,6 +502,93 @@ struct InputRuntime<Msg: Clone> {
     visible_w: f32,
     visible_h: f32,
     limits: InputLimits,
+}
+
+impl<Msg: Clone> InputRuntime<Msg> {
+    fn presentation(&self) -> InputBufferMetadata<'_> {
+        InputBufferMetadata {
+            model_value: self.model_value.as_deref(),
+            is_password: self.is_password,
+            is_multiline: self.is_multiline,
+            visible_w: self.visible_w,
+            visible_h: self.visible_h,
+            limits: self.limits,
+        }
+    }
+
+    #[cfg(test)]
+    fn sync_model_value(
+        &self,
+        state: &mut crate::input_state::InputWidgetState,
+        font_system: &mut FontSystem,
+    ) -> Result<bool, InputLimitError> {
+        self.presentation().sync_model_value(state, font_system)
+    }
+}
+
+// Disabled fields publish text and geometry only; no application callbacks are
+// retained here and event routing continues to consult only `inputs`.
+#[derive(Debug)]
+struct DisabledInputPresentation {
+    model_value: CachedInputModel,
+    is_password: bool,
+    visible_w: f32,
+    visible_h: f32,
+    limits: InputLimits,
+}
+
+impl DisabledInputPresentation {
+    fn presentation(&self) -> InputBufferMetadata<'_> {
+        InputBufferMetadata {
+            model_value: Some(&self.model_value),
+            is_password: self.is_password,
+            is_multiline: false,
+            visible_w: self.visible_w,
+            visible_h: self.visible_h,
+            limits: self.limits,
+        }
+    }
+}
+
+struct InputBufferMetadata<'a> {
+    model_value: Option<&'a str>,
+    is_password: bool,
+    is_multiline: bool,
+    visible_w: f32,
+    visible_h: f32,
+    limits: InputLimits,
+}
+
+impl InputBufferMetadata<'_> {
+    fn sync_model_value(
+        &self,
+        state: &mut crate::input_state::InputWidgetState,
+        font_system: &mut FontSystem,
+    ) -> Result<bool, InputLimitError> {
+        state.set_limits(self.limits);
+        state.set_sensitive(self.is_password);
+        let Some(value) = self.model_value else {
+            return Ok(false);
+        };
+        // text() allocates; wipe the comparison copy even for a retained editor
+        // whose sensitivity predates this widget publication.
+        if Zeroizing::new(state.text()).as_str() == value {
+            return Ok(false);
+        }
+        // try_set_text validates atomically and clears editor selection only
+        // on replacement. The engine retains IME commits, not preedit state.
+        // Echoes never reach the replacement path.
+        if !state.try_set_text(font_system, value)? {
+            return Ok(false);
+        }
+        // External replacements begin a new history, so Undo cannot resurrect
+        // text from an earlier model value. Snapshot respects password/budgets.
+        state.undo.clear_secure();
+        state.snapshot();
+        state.scroll_x = 0.0;
+        state.scroll_y = 0.0;
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -641,9 +756,11 @@ impl<Msg> std::fmt::Debug for PointerRegionRuntime<Msg> {
 
 #[derive(Debug)]
 struct WidgetRuntimeCaches<Msg: Clone> {
+    viewport_geometry: scroll_runtime::ViewportGeometry,
     input_order: Vec<u64>,
     focus_order: Vec<u64>,
     inputs: HashMap<u64, InputRuntime<Msg>>,
+    disabled_input_presentations: HashMap<u64, DisabledInputPresentation>,
     buttons: HashMap<u64, Msg>,
     checkboxes: HashMap<u64, ToggleRuntime<Msg>>,
     switches: HashMap<u64, ToggleRuntime<Msg>>,
@@ -677,6 +794,7 @@ struct RuntimeMetadataTraversal {
     node: Option<NodeId>,
     abs: Point,
     spacing: f32,
+    disabled: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -688,9 +806,11 @@ struct RuntimeMetadataSources<'a> {
 impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
     fn default() -> Self {
         Self {
+            viewport_geometry: scroll_runtime::ViewportGeometry::default(),
             input_order: Vec::new(),
             focus_order: Vec::new(),
             inputs: HashMap::new(),
+            disabled_input_presentations: HashMap::new(),
             buttons: HashMap::new(),
             checkboxes: HashMap::new(),
             switches: HashMap::new(),
@@ -736,9 +856,11 @@ impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
     }
 
     fn clear(&mut self) {
+        self.viewport_geometry = scroll_runtime::ViewportGeometry::default();
         self.input_order.clear();
         self.focus_order.clear();
         self.inputs.clear();
+        self.disabled_input_presentations.clear();
         self.buttons.clear();
         self.checkboxes.clear();
         self.switches.clear();
@@ -1580,6 +1702,7 @@ fn sync_table_of_contents_runtime<Msg: Clone>(
             table_abs.y + viewport.location.y - offset_y,
         ),
         spacing,
+        disabled: false,
     }))
 }
 
@@ -1746,6 +1869,7 @@ pub struct RutterEngine<A: AppLogic> {
     virtual_multi_selection_states: HashMap<u64, VirtualMultiSelectionState>,
     widget_id_snapshot: Option<WidgetIdSnapshot>,
     pub focused_widget_id: Option<u64>,
+    pending_focus_reveal: bool,
     pub active_scroll_id: Option<u64>,
     pub drag_slider_id: Option<u64>,
     pub clipboard: Clipboard,
@@ -1850,6 +1974,7 @@ impl<A: AppLogic> RutterEngine<A> {
             virtual_multi_selection_states: HashMap::new(),
             widget_id_snapshot: None,
             focused_widget_id: None,
+            pending_focus_reveal: false,
             active_scroll_id: None,
             drag_slider_id: None,
             clipboard: Clipboard::new()?,
@@ -2232,13 +2357,24 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn any_popover_open(&self) -> bool {
-        self.widget_states
-            .values()
-            .filter_map(WidgetState::as_popover)
-            .any(|state| state.is_open)
+        !self
+            .runtime_caches
+            .viewport_geometry
+            .hidden_popovers
+            .is_empty()
+            || self
+                .widget_states
+                .values()
+                .filter_map(WidgetState::as_popover)
+                .any(|state| state.is_open)
     }
 
     pub fn close_popover(&mut self, id: u64) -> bool {
+        let hidden = self
+            .runtime_caches
+            .viewport_geometry
+            .hidden_popovers
+            .remove(&id);
         let Some(popover) = self
             .widget_states
             .get_mut(&id)
@@ -2246,7 +2382,7 @@ impl<A: AppLogic> RutterEngine<A> {
         else {
             return false;
         };
-        if popover.is_open {
+        if popover.is_open || hidden {
             popover.close();
             return true;
         }
@@ -2254,7 +2390,15 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn close_all_popovers(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = !self
+            .runtime_caches
+            .viewport_geometry
+            .hidden_popovers
+            .is_empty();
+        self.runtime_caches
+            .viewport_geometry
+            .hidden_popovers
+            .clear();
         for state in self.widget_states.values_mut() {
             if let Some(popover) = state.as_popover_mut()
                 && popover.is_open
@@ -2373,6 +2517,8 @@ impl<A: AppLogic> RutterEngine<A> {
 
     pub fn try_ensure_layout(&mut self, size: PhysicalSize<u32>) -> Result<(), WidgetIdError> {
         if !self.layout_dirty {
+            self.reconcile_viewport_geometry(size, self.pending_focus_reveal)?;
+            self.pending_focus_reveal = false;
             // Retained flags can be changed directly without changing the view.
             // Cached ownership still governs keyboard/native-menu liveness.
             reconcile_context_menu_owners(&self.runtime_caches, &mut self.widget_states);
@@ -2413,6 +2559,15 @@ impl<A: AppLogic> RutterEngine<A> {
             Some(root),
             theme.spacing,
         )?;
+        let revealed_scrolls = scroll_runtime::reconcile(
+            &widget_tree,
+            (&self.taffy, root),
+            &mut self.widget_states,
+            &mut self.runtime_cache_scratch.viewport_geometry,
+            (logical.width as f32, logical.height as f32),
+            self.focused_widget_id,
+            self.pending_focus_reveal,
+        );
         self.virtual_multi_selection_states.retain(|id, _| {
             self.runtime_cache_scratch
                 .virtual_multi_selections
@@ -2516,7 +2671,15 @@ impl<A: AppLogic> RutterEngine<A> {
             self.layout_revision.wrapping_add(1),
         );
         std::mem::swap(&mut self.runtime_caches, &mut self.runtime_cache_scratch);
+        // The scratch cache must not retain removed/disabled model copies until
+        // another publication (in particular, password values).
+        self.runtime_cache_scratch.clear();
         drop(widget_tree);
+        for id in revealed_scrolls {
+            self.cancel_smooth_scroll(id);
+        }
+        self.pending_focus_reveal = false;
+        self.clear_hidden_focus();
         self.sync_input_buffers();
         if let Some(id) = self.focused_widget_id
             && !runtime_focus_is_live(&self.runtime_caches, id)
@@ -2529,6 +2692,50 @@ impl<A: AppLogic> RutterEngine<A> {
         self.layout_dirty = false;
         self.layout_revision = self.layout_revision.wrapping_add(1);
         Ok(())
+    }
+
+    fn reconcile_viewport_geometry(
+        &mut self,
+        size: PhysicalSize<u32>,
+        reveal: bool,
+    ) -> Result<(), WidgetIdError> {
+        let widget = A::view(&mut self.app_state);
+        validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget)?;
+        let changed = scroll_runtime::reconcile(
+            &widget,
+            (&self.taffy, self.last_root_node),
+            &mut self.widget_states,
+            &mut self.runtime_caches.viewport_geometry,
+            (
+                size.width as f32 / self.scale_factor,
+                size.height as f32 / self.scale_factor,
+            ),
+            self.focused_widget_id,
+            reveal,
+        );
+        drop(widget);
+        for id in changed {
+            self.cancel_smooth_scroll(id);
+        }
+        self.clear_hidden_focus();
+        Ok(())
+    }
+
+    fn clear_hidden_focus(&mut self) {
+        if self.focused_widget_id.is_some_and(|id| {
+            self.runtime_caches
+                .viewport_geometry
+                .hidden_focus
+                .contains(&id)
+        }) {
+            if let Some(id) = self.focused_input_id()
+                && let Some(input) = self.input_states.get_mut(&id)
+            {
+                input.snapshot();
+            }
+            self.focused_widget_id = None;
+            self.runtime_caches.viewport_geometry.focused_input_rect = None;
+        }
     }
 
     fn sync_runtime_metadata<Msg: Clone>(
@@ -2551,6 +2758,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 node,
                 abs: Point::new(0.0, 0.0),
                 spacing,
+                disabled: false,
             },
             &mut path,
         )
@@ -2565,8 +2773,20 @@ impl<A: AppLogic> RutterEngine<A> {
         traversal: RuntimeMetadataTraversal,
         path: &mut Vec<usize>,
     ) -> Result<(), WidgetIdError> {
-        if matches!(widget, Widget::Disabled { .. }) {
-            return Ok(());
+        if let Widget::Disabled { child } = widget {
+            // Disabled is transparent to layout nodes and widget identity.
+            return Self::sync_runtime_metadata_impl(
+                runtime_caches,
+                widget_states,
+                selection_states,
+                sources,
+                child,
+                RuntimeMetadataTraversal {
+                    disabled: true,
+                    ..traversal
+                },
+                path,
+            );
         }
         let layout = traversal
             .node
@@ -2579,7 +2799,9 @@ impl<A: AppLogic> RutterEngine<A> {
                 )
             })
             .unwrap_or(traversal.abs);
-        if let Widget::ContextMenu { entries, .. } = widget {
+        if !traversal.disabled
+            && let Widget::ContextMenu { entries, .. } = widget
+        {
             insert_runtime_entry(
                 &mut runtime_caches.dropdown_menus,
                 widget.resolved_id(path).unwrap(),
@@ -2587,27 +2809,60 @@ impl<A: AppLogic> RutterEngine<A> {
                 "context menus",
             )?;
         }
+        // Input hit results and painting are body-relative. Use that same body
+        // for editor wrapping/scrolling; annotation rows are not editable space.
+        let input_body_layout = if matches!(
+            widget,
+            Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. }
+        ) {
+            layout.copied().map(|mut layout| {
+                let body = crate::layout::field::FieldInsets::for_widget(widget)
+                    .body((layout.size.width, layout.size.height));
+                layout.size.width = body.width();
+                layout.size.height = body.height();
+                layout
+            })
+        } else {
+            None
+        };
+        let layout = input_body_layout.as_ref().or(layout);
         match widget {
-            Widget::Button { on_press, .. } | Widget::ButtonContent { on_press, .. } => {
-                insert_runtime_entry(
-                    &mut runtime_caches.buttons,
-                    widget.keyboard_focus_id(path).unwrap(),
-                    on_press.clone(),
-                    "buttons",
-                )?;
-            }
             Widget::TextInput {
+                model_value,
                 on_change,
                 on_submit,
                 is_password,
                 ..
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
+                if traversal.disabled {
+                    if let Some(value) = model_value {
+                        insert_runtime_entry(
+                            &mut runtime_caches.disabled_input_presentations,
+                            resolved_id,
+                            DisabledInputPresentation {
+                                model_value: CachedInputModel::new(value),
+                                is_password: *is_password,
+                                visible_w: Self::visible_input_width(
+                                    layout,
+                                    traversal.spacing,
+                                    0.0,
+                                ),
+                                visible_h: Self::visible_input_height(layout, traversal.spacing),
+                                limits: A::input_limits(resolved_id, InputKind::TextInput)
+                                    .clamp_to_hard_caps(),
+                            },
+                            "disabled input presentations",
+                        )?;
+                    }
+                    return Ok(());
+                }
                 runtime_caches.input_order.push(resolved_id);
                 insert_runtime_entry(
                     &mut runtime_caches.inputs,
                     resolved_id,
                     InputRuntime {
+                        model_value: model_value.map(CachedInputModel::new),
                         on_change: *on_change,
                         on_submit: on_submit.clone(),
                         is_password: *is_password,
@@ -2619,6 +2874,15 @@ impl<A: AppLogic> RutterEngine<A> {
                             .clamp_to_hard_caps(),
                     },
                     "inputs",
+                )?;
+            }
+            _ if traversal.disabled => {}
+            Widget::Button { on_press, .. } | Widget::ButtonContent { on_press, .. } => {
+                insert_runtime_entry(
+                    &mut runtime_caches.buttons,
+                    widget.keyboard_focus_id(path).unwrap(),
+                    on_press.clone(),
+                    "buttons",
                 )?;
             }
             Widget::TextArea {
@@ -2636,6 +2900,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         on_submit: on_submit.clone(),
                         is_password: false,
                         is_multiline: true,
+                        model_value: None,
                         leading_text_inset: 0.0,
                         visible_w: Self::visible_input_width(layout, traversal.spacing, 0.0),
                         visible_h: Self::visible_input_height(layout, traversal.spacing),
@@ -2662,6 +2927,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         is_password: false,
                         is_multiline: false,
                         leading_text_inset: SEARCH_BAR_LEADING_TEXT_INSET,
+                        model_value: None,
                         visible_w: Self::visible_input_width(
                             layout,
                             traversal.spacing,
@@ -2795,30 +3061,13 @@ impl<A: AppLogic> RutterEngine<A> {
                     "dropdown menus",
                 )?;
             }
-            Widget::Accordion {
-                on_toggle, child, ..
-            } => {
+            Widget::Accordion { on_toggle, .. } => {
                 insert_runtime_entry(
                     &mut runtime_caches.accordions,
                     widget.keyboard_focus_id(path).unwrap(),
                     on_toggle.clone(),
                     "accordions",
                 )?;
-                path.push(0);
-                Self::sync_runtime_metadata_impl(
-                    runtime_caches,
-                    widget_states,
-                    selection_states,
-                    sources,
-                    child.as_ref(),
-                    RuntimeMetadataTraversal {
-                        node: Self::first_child(traversal.node, sources.taffy),
-                        abs: abs_pos,
-                        spacing: traversal.spacing,
-                    },
-                    path,
-                )?;
-                path.pop();
             }
             Widget::TabBar {
                 tabs, on_change, ..
@@ -2852,7 +3101,6 @@ impl<A: AppLogic> RutterEngine<A> {
             Widget::Dialog {
                 on_confirm,
                 on_cancel,
-                child,
                 ..
             } => {
                 if let Some(cancel_id) = widget.dialog_action_focus_id(path, DialogAction::Cancel) {
@@ -2872,21 +3120,6 @@ impl<A: AppLogic> RutterEngine<A> {
                         "buttons",
                     )?;
                 }
-                path.push(0);
-                Self::sync_runtime_metadata_impl(
-                    runtime_caches,
-                    widget_states,
-                    selection_states,
-                    sources,
-                    child.as_ref(),
-                    RuntimeMetadataTraversal {
-                        node: Self::first_child(traversal.node, sources.taffy),
-                        abs: abs_pos,
-                        spacing: traversal.spacing,
-                    },
-                    path,
-                )?;
-                path.pop();
             }
             Widget::Toast {
                 on_dismiss: Some(msg),
@@ -2899,7 +3132,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     "toast dismiss callbacks",
                 )?;
             }
-            Widget::PointerRegion { child, config, .. } => {
+            Widget::PointerRegion { config, .. } => {
                 insert_runtime_entry(
                     &mut runtime_caches.pointer_regions,
                     widget.resolved_id(path).unwrap(),
@@ -2912,23 +3145,8 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                     "pointer regions",
                 )?;
-                path.push(0);
-                Self::sync_runtime_metadata_impl(
-                    runtime_caches,
-                    widget_states,
-                    selection_states,
-                    sources,
-                    child.as_ref(),
-                    RuntimeMetadataTraversal {
-                        node: Self::first_child(traversal.node, sources.taffy),
-                        abs: abs_pos,
-                        spacing: traversal.spacing,
-                    },
-                    path,
-                )?;
-                path.pop();
             }
-            Widget::ScrollView { child, .. } => {
+            Widget::ScrollView { .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 if let Some(layout) = layout
                     && let Some(ws) = widget_states.get_mut(&resolved_id)
@@ -2938,48 +3156,6 @@ impl<A: AppLogic> RutterEngine<A> {
                 {
                     s.set_geometry(child_layout.size.height, layout.size.height);
                 }
-                path.push(0);
-                Self::sync_runtime_metadata_impl(
-                    runtime_caches,
-                    widget_states,
-                    selection_states,
-                    sources,
-                    child.as_ref(),
-                    RuntimeMetadataTraversal {
-                        node: Self::first_child(traversal.node, sources.taffy),
-                        abs: abs_pos,
-                        spacing: traversal.spacing,
-                    },
-                    path,
-                )?;
-                path.pop();
-            }
-            Widget::TableOfContents { child, .. } => {
-                let child_traversal = sync_table_of_contents_runtime(
-                    runtime_caches,
-                    widget_states,
-                    widget,
-                    child,
-                    sources.taffy,
-                    traversal.node,
-                    abs_pos,
-                    traversal.spacing,
-                    path,
-                )?;
-                let Some(child_traversal) = child_traversal else {
-                    return Ok(());
-                };
-                path.push(0);
-                Self::sync_runtime_metadata_impl(
-                    runtime_caches,
-                    widget_states,
-                    selection_states,
-                    sources,
-                    child.as_ref(),
-                    child_traversal,
-                    path,
-                )?;
-                path.pop();
             }
             Widget::Table { model, options, .. } => {
                 sync_table_runtime(
@@ -2998,7 +3174,6 @@ impl<A: AppLogic> RutterEngine<A> {
                 on_select,
                 ..
             } => {
-                let id = widget.resolved_id(path).unwrap();
                 sync_virtual_list_runtime(
                     runtime_caches,
                     widget_states,
@@ -3010,17 +3185,6 @@ impl<A: AppLogic> RutterEngine<A> {
                         item_height: *item_height,
                         item_count: items.len(),
                     },
-                )?;
-                let indices =
-                    interactive_list_visible_indices(widget_states, id, *item_height, items.len());
-                Self::sync_interactive_virtual_item_metadata(
-                    runtime_caches,
-                    widget_states,
-                    selection_states,
-                    sources,
-                    items,
-                    indices,
-                    path,
                 )?;
             }
             Widget::VirtualList {
@@ -3099,7 +3263,6 @@ impl<A: AppLogic> RutterEngine<A> {
                 config,
                 ..
             } => {
-                let id = widget.resolved_id(path).unwrap();
                 sync_carousel_runtime(
                     runtime_caches,
                     widget_states,
@@ -3111,30 +3274,6 @@ impl<A: AppLogic> RutterEngine<A> {
                         item_count: items.len(),
                         config: config.clone(),
                     },
-                )?;
-                let direction = traversal
-                    .node
-                    .and_then(|node| sources.taffy.style(node).ok())
-                    .map(|style| match style.direction {
-                        Direction::Rtl => crate::i18n::LayoutDirection::Rtl,
-                        Direction::Ltr => crate::i18n::LayoutDirection::Ltr,
-                    })
-                    .unwrap_or_default();
-                let indices = interactive_carousel_visible_indices(
-                    widget_states,
-                    id,
-                    config,
-                    items.len(),
-                    direction,
-                );
-                Self::sync_interactive_virtual_item_metadata(
-                    runtime_caches,
-                    widget_states,
-                    selection_states,
-                    sources,
-                    items,
-                    indices,
-                    path,
                 )?;
             }
             Widget::CarouselView {
@@ -3163,7 +3302,6 @@ impl<A: AppLogic> RutterEngine<A> {
                 on_select,
                 ..
             } => {
-                let id = widget.resolved_id(path).unwrap();
                 sync_virtual_grid_runtime(
                     runtime_caches,
                     widget_states,
@@ -3176,22 +3314,6 @@ impl<A: AppLogic> RutterEngine<A> {
                         item_height: *item_height,
                         item_count: items.len(),
                     },
-                )?;
-                let indices = interactive_grid_visible_indices(
-                    widget_states,
-                    id,
-                    *item_height,
-                    items.len(),
-                    *columns,
-                );
-                Self::sync_interactive_virtual_item_metadata(
-                    runtime_caches,
-                    widget_states,
-                    selection_states,
-                    sources,
-                    items,
-                    indices,
-                    path,
                 )?;
             }
             Widget::VirtualGrid {
@@ -3270,6 +3392,117 @@ impl<A: AppLogic> RutterEngine<A> {
                     )?
                 }
             },
+            _ => {}
+        }
+
+        // Share child/node/path traversal for active and presentation-only
+        // metadata. Disabled descendants never enter the registration above.
+        match widget {
+            Widget::TableOfContents { child, .. } => {
+                let child_traversal = if traversal.disabled {
+                    traversal
+                        .node
+                        .and_then(|node| layout_nodes(sources.taffy, node))
+                        .map(|nodes| RuntimeMetadataTraversal {
+                            node: Some(nodes.content),
+                            abs: abs_pos,
+                            spacing: traversal.spacing,
+                            disabled: true,
+                        })
+                } else {
+                    sync_table_of_contents_runtime(
+                        runtime_caches,
+                        widget_states,
+                        widget,
+                        child,
+                        sources.taffy,
+                        traversal.node,
+                        abs_pos,
+                        traversal.spacing,
+                        path,
+                    )?
+                };
+                if let Some(child_traversal) = child_traversal {
+                    path.push(0);
+                    Self::sync_runtime_metadata_impl(
+                        runtime_caches,
+                        widget_states,
+                        selection_states,
+                        sources,
+                        child,
+                        child_traversal,
+                        path,
+                    )?;
+                    path.pop();
+                }
+            }
+            Widget::InteractiveVirtualListContent {
+                items, item_height, ..
+            } => {
+                let id = widget.resolved_id(path).unwrap();
+                let indices =
+                    interactive_list_visible_indices(widget_states, id, *item_height, items.len());
+                Self::sync_interactive_virtual_item_metadata(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    (items, indices),
+                    traversal.disabled,
+                    path,
+                )?;
+            }
+            Widget::InteractiveVirtualGridContent {
+                items,
+                item_height,
+                columns,
+                ..
+            } => {
+                let id = widget.resolved_id(path).unwrap();
+                let indices = interactive_grid_visible_indices(
+                    widget_states,
+                    id,
+                    *item_height,
+                    items.len(),
+                    *columns,
+                );
+                Self::sync_interactive_virtual_item_metadata(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    (items, indices),
+                    traversal.disabled,
+                    path,
+                )?;
+            }
+            Widget::InteractiveCarouselView { items, config, .. } => {
+                let id = widget.resolved_id(path).unwrap();
+                let direction = traversal
+                    .node
+                    .and_then(|node| sources.taffy.style(node).ok())
+                    .map(|style| match style.direction {
+                        Direction::Rtl => crate::i18n::LayoutDirection::Rtl,
+                        Direction::Ltr => crate::i18n::LayoutDirection::Ltr,
+                    })
+                    .unwrap_or_default();
+                let indices = interactive_carousel_visible_indices(
+                    widget_states,
+                    id,
+                    config,
+                    items.len(),
+                    direction,
+                );
+                Self::sync_interactive_virtual_item_metadata(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    (items, indices),
+                    traversal.disabled,
+                    path,
+                )?;
+            }
             Widget::Popover {
                 anchor,
                 content,
@@ -3278,7 +3511,9 @@ impl<A: AppLogic> RutterEngine<A> {
                 ..
             } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
-                if let Some(message) = on_dismiss {
+                if !traversal.disabled
+                    && let Some(message) = on_dismiss
+                {
                     insert_runtime_entry(
                         &mut runtime_caches.popover_dismiss,
                         resolved_id,
@@ -3287,7 +3522,8 @@ impl<A: AppLogic> RutterEngine<A> {
                     )?;
                 }
                 let node_children = Self::children_for(traversal.node, sources.taffy);
-                if let Some(ws) = widget_states.get_mut(&resolved_id)
+                if !traversal.disabled
+                    && let Some(ws) = widget_states.get_mut(&resolved_id)
                     && let Some(popover) = ws.as_popover_mut()
                 {
                     popover.set_open(*open);
@@ -3315,6 +3551,7 @@ impl<A: AppLogic> RutterEngine<A> {
                             node: Some(anchor_node),
                             abs: abs_pos,
                             spacing: traversal.spacing,
+                            disabled: traversal.disabled,
                         },
                         path,
                     )?;
@@ -3336,6 +3573,7 @@ impl<A: AppLogic> RutterEngine<A> {
                             node: Some(content_node),
                             abs: Point::new(0.0, 0.0),
                             spacing: traversal.spacing,
+                            disabled: traversal.disabled,
                         },
                         path,
                     )?;
@@ -3356,6 +3594,7 @@ impl<A: AppLogic> RutterEngine<A> {
                             node: node_children.get(i).copied(),
                             abs: abs_pos,
                             spacing: traversal.spacing,
+                            disabled: traversal.disabled,
                         },
                         path,
                     )?;
@@ -3363,6 +3602,10 @@ impl<A: AppLogic> RutterEngine<A> {
                 }
             }
             Widget::Container { child, .. }
+            | Widget::Accordion { child, .. }
+            | Widget::Dialog { child, .. }
+            | Widget::PointerRegion { child, .. }
+            | Widget::ScrollView { child, .. }
             | Widget::Tooltip { child, .. }
             | Widget::ContextMenu { child, .. }
             | Widget::Modal { child, .. } => {
@@ -3377,6 +3620,27 @@ impl<A: AppLogic> RutterEngine<A> {
                         node: Self::first_child(traversal.node, sources.taffy),
                         abs: abs_pos,
                         spacing: traversal.spacing,
+                        disabled: traversal.disabled,
+                    },
+                    path,
+                )?;
+                path.pop();
+            }
+            // Active ButtonContent historically owns its child interaction.
+            // Presentation-only traversal still needs to reach nested fields.
+            Widget::ButtonContent { child, .. } if traversal.disabled => {
+                path.push(0);
+                Self::sync_runtime_metadata_impl(
+                    runtime_caches,
+                    widget_states,
+                    selection_states,
+                    sources,
+                    child,
+                    RuntimeMetadataTraversal {
+                        node: Self::first_child(traversal.node, sources.taffy),
+                        abs: abs_pos,
+                        spacing: traversal.spacing,
+                        disabled: true,
                     },
                     path,
                 )?;
@@ -3392,10 +3656,11 @@ impl<A: AppLogic> RutterEngine<A> {
         widget_states: &mut HashMap<u64, WidgetState>,
         selection_states: &mut HashMap<u64, VirtualMultiSelectionState>,
         sources: RuntimeMetadataSources<'_>,
-        items: &KeyedVirtualItems<'_, Msg>,
-        indices: impl IntoIterator<Item = usize>,
+        visible_items: (&KeyedVirtualItems<'_, Msg>, impl IntoIterator<Item = usize>),
+        disabled: bool,
         path: &mut Vec<usize>,
     ) -> Result<(), WidgetIdError> {
+        let (items, indices) = visible_items;
         for index in indices {
             let Some(key) = items.key_at(index) else {
                 continue;
@@ -3414,6 +3679,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     node: None,
                     abs: Point::new(0.0, 0.0),
                     spacing: 8.0,
+                    disabled,
                 },
                 path,
             );
@@ -3429,13 +3695,13 @@ impl<A: AppLogic> RutterEngine<A> {
         leading_text_inset: f32,
     ) -> f32 {
         layout
-            .map(|layout| (layout.size.width - spacing * 4.0 - leading_text_inset).max(24.0))
+            .map(|layout| (layout.size.width - spacing * 4.0 - leading_text_inset).max(1.0))
             .unwrap_or((260.0 - leading_text_inset).max(24.0))
     }
 
     fn visible_input_height(layout: Option<&taffy::tree::Layout>, spacing: f32) -> f32 {
         layout
-            .map(|layout| (layout.size.height - spacing * 2.0).max(18.0))
+            .map(|layout| (layout.size.height - spacing * 2.0).max(1.0))
             .unwrap_or(18.0)
     }
 
@@ -3444,13 +3710,38 @@ impl<A: AppLogic> RutterEngine<A> {
         let focused_input = self.focused_input_id();
         let mut fs = self.font_system.borrow_mut();
 
-        for (&id, runtime) in &self.runtime_caches.inputs {
+        let presentations = self
+            .runtime_caches
+            .inputs
+            .iter()
+            .map(|(&id, runtime)| (id, runtime.presentation()))
+            .chain(
+                self.runtime_caches
+                    .disabled_input_presentations
+                    .iter()
+                    .map(|(&id, runtime)| (id, runtime.presentation())),
+            );
+        for (id, runtime) in presentations {
+            if runtime.model_value.is_some() {
+                self.input_states.entry(id).or_insert_with(|| {
+                    crate::input_state::InputWidgetState::new_with_limits(&mut fs, runtime.limits)
+                });
+            }
             let Some(state) = self.input_states.get_mut(&id) else {
                 continue;
             };
 
-            state.set_limits(runtime.limits);
-            state.set_sensitive(runtime.is_password);
+            let model_replaced = match runtime.sync_model_value(state, &mut fs) {
+                Ok(replaced) => replaced,
+                Err(error) => {
+                    // Model rejection is recoverable and distinct from widget ID
+                    // validation; retain the last accepted text and report no text.
+                    eprintln!(
+                        "rutter: controlled TextInput value rejected; widget_id={id}; error={error}"
+                    );
+                    false
+                }
+            };
             state.sync_layout(
                 &mut fs,
                 runtime.visible_w,
@@ -3458,7 +3749,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 runtime.is_multiline,
             );
 
-            if focused_input == Some(id) {
+            if focused_input == Some(id) && (runtime.model_value.is_none() || model_replaced) {
                 state.update_scroll(
                     &mut fs,
                     runtime.visible_w,
@@ -3677,6 +3968,14 @@ mod context_menu_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/dropdown_menu_engine_unit_tests.rs"]
 mod dropdown_menu_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/controlled_text_input_engine_unit_tests.rs"]
+mod controlled_text_input_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/widget_spacing_engine_unit_tests.rs"]
+mod widget_spacing_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4087,6 +4386,7 @@ mod tests {
             children: vec![
                 Widget::TextInput {
                     id: 1,
+                    model_value: None,
                     on_change: Msg::Str,
                     on_submit: Some(Msg::Submit),
                     style: base_style(200.0, 40.0),
@@ -4510,6 +4810,7 @@ mod tests {
             visible: false,
             child: Box::new(Widget::TextInput {
                 id: 10,
+                model_value: None,
                 on_change: Msg::Str,
                 on_submit: Some(Msg::Submit),
                 style: base_style(220.0, 40.0),

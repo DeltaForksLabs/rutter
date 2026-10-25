@@ -11,6 +11,7 @@
 
 pub mod calendar_demo;
 pub mod carousel_demo;
+pub mod color_picker_demo;
 pub mod context_menu_demo;
 pub mod controls_demo;
 pub mod counter_demo;
@@ -45,3 +46,11 @@ pub mod text_area_demo;
 #[cfg(test)]
 #[path = "../../tests/unit/all_examples_theme_unit_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/all_examples_layout_unit_tests.rs"]
+mod layout_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/example_page_overlay_unit_tests.rs"]
+mod page_overlay_tests;

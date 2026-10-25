@@ -5,6 +5,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use rutter::{
     AppLogic, RutterRunner, TableAlignment, TableCell, TableColumn, TableColumnKey,
     TableColumnWidth, TableModel, TableOptions, TableRow, TableRowKey, TableSelection, TableSort,
@@ -71,15 +72,18 @@ impl AppLogic for TableDemo {
             ))
             .with_sorting(TableSorting::new(state.sort, Msg::SortRequested))
             .with_empty_label("No people match the current view");
-        Widget::Column {
-            style: page_style(),
-            children: vec![
-                example_theme_selector(state.theme, Msg::ThemeSelected),
-                description(),
-                Widget::table_with_options(table_model(&state.rows), options, table_style())
-                    .with_id(330),
-            ],
-        }
+        super::layout::page(
+            "Table",
+            Widget::Column {
+                style: page_style(),
+                children: vec![
+                    example_theme_selector(state.theme, Msg::ThemeSelected),
+                    description(),
+                    Widget::table_with_options(table_model(&state.rows), options, table_style())
+                        .with_id(330),
+                ],
+            },
+        )
     }
 
     fn update(state: &mut TableDemoState, message: Msg, _: &mut Clipboard) {
@@ -151,11 +155,8 @@ fn page_style() -> Style {
         flex_direction: FlexDirection::Column,
         align_items: Some(AlignItems::Stretch),
         size: Size::percent(1.0_f32),
-        padding: Rect::length(24.0_f32),
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(16.0),
-        },
+        padding: Rect::length(spacing::XL),
+        gap: Size::length(spacing::LG),
         ..Style::default()
     }
 }
@@ -220,11 +221,13 @@ mod tests {
     #[test]
     fn demo_exposes_a_controlled_multi_select_table() {
         let mut state = TableDemoState::default();
-        let Widget::Column { children, .. } = TableDemo::view(&mut state) else {
-            panic!("expected the demo root to be a column");
-        };
-        let Some(Widget::Table { model, options, .. }) = children.get(2) else {
-            panic!("expected the third demo child to be a Table widget");
+        let view = TableDemo::view(&mut state);
+        let children = super::super::layout::document_children(&view);
+        let Some(Widget::Table { model, options, .. }) = children
+            .iter()
+            .find(|child| matches!(child, Widget::Table { id: 330, .. }))
+        else {
+            panic!("expected the controlled table in the scrollable page document");
         };
 
         assert_eq!(model.rows().len(), 12);

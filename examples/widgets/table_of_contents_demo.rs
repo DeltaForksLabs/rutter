@@ -5,6 +5,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use rutter::{AppLogic, HeadingLevel, RutterRunner, TableOfContentsOptions, Theme, Widget};
 use taffy::prelude::*;
 
@@ -44,9 +45,11 @@ impl AppLogic for TableOfContentsDemo {
     }
 
     fn view<'a>(state: &'a mut TableOfContentsDemoState) -> Widget<'a, Msg> {
-        Widget::Column {
-            style: page_style(),
-            children: vec![
+        super::layout::page(
+            "Table of contents",
+            Widget::Column {
+                style: page_style(),
+                children: vec![
                 example_theme_selector(state.theme, Msg::ThemeChanged),
                 Widget::Text {
                     content:
@@ -66,7 +69,8 @@ impl AppLogic for TableOfContentsDemo {
                 )
                 .with_id(320),
             ],
-        }
+            },
+        )
     }
 
     fn update(state: &mut TableOfContentsDemoState, message: Msg, _: &mut Clipboard) {
@@ -89,11 +93,8 @@ fn page_style() -> Style {
             width: Dimension::percent(1.0),
             height: Dimension::percent(1.0),
         },
-        padding: Rect::length(24.0_f32),
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(16.0),
-        },
+        padding: Rect::length(spacing::XL),
+        gap: Size::length(spacing::LG),
         ..Style::default()
     }
 }
@@ -112,10 +113,7 @@ fn documentation<'a>() -> Widget<'a, Msg> {
 fn documentation_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(14.0),
-        },
+        gap: Size::length(spacing::XL),
         ..Style::default()
     }
 }
@@ -129,7 +127,7 @@ fn documentation_sections<'a>() -> Vec<Widget<'a, Msg>> {
         (HeadingLevel::H5, "Rolagem suave", "A animação é cancelada ao usar a roda do mouse ou arrastar a barra de rolagem."),
     ]
     .into_iter()
-    .flat_map(|(level, title, text)| section(level, title, text))
+    .map(|(level, title, text)| super::layout::section(section(level, title, text).into()))
     .collect()
 }
 
@@ -165,7 +163,10 @@ mod tests {
         };
 
         assert!(matches!(
-            children.first(),
+            match children.first().unwrap() {
+                Widget::Column { children, .. } => children.first(),
+                _ => panic!("documentation sections group headings with their paragraphs"),
+            },
             Some(Widget::Heading {
                 level: HeadingLevel::H1,
                 ..
@@ -176,11 +177,13 @@ mod tests {
     #[test]
     fn demo_starts_with_an_expanded_two_column_navigation() {
         let mut state = TableOfContentsDemoState::default();
-        let Widget::Column { children, .. } = TableOfContentsDemo::view(&mut state) else {
-            panic!("expected the demo root to be a column");
-        };
-        let Some(Widget::TableOfContents { options, .. }) = children.get(2) else {
-            panic!("expected the third demo child to be a TableOfContents widget");
+        let view = TableOfContentsDemo::view(&mut state);
+        let children = super::super::layout::document_children(&view);
+        let Some(Widget::TableOfContents { options, .. }) = children
+            .iter()
+            .find(|child| matches!(child, Widget::TableOfContents { id: 320, .. }))
+        else {
+            panic!("expected the table of contents in the scrollable page document");
         };
 
         assert_eq!(options.columns(), 2);

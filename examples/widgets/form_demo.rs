@@ -7,6 +7,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{
@@ -98,29 +99,18 @@ impl AppLogic for MyApp {
         let content_col = Style {
             flex_direction: FlexDirection::Column,
             align_items: Some(AlignItems::Stretch),
-            padding: Rect {
-                top: LengthPercentage::length(32.0),
-                left: LengthPercentage::length(0.0),
-                right: LengthPercentage::length(0.0),
-                bottom: LengthPercentage::length(32.0),
-            },
+            padding: Rect::zero(),
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(16.0),
-            },
-            flex_grow: 1.0,
+            gap: Size::length(spacing::LG),
+            flex_shrink: 0.0,
             ..Default::default()
         };
         let card_col = Style {
             flex_direction: FlexDirection::Column,
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(14.0),
-            },
+            gap: Size::length(spacing::MD),
             ..responsive_width(320.0, Dimension::auto())
         };
         let input_s = Style {
@@ -144,10 +134,7 @@ impl AppLogic for MyApp {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            gap: Size {
-                width: LengthPercentage::length(12.0),
-                height: LengthPercentage::length(0.0),
-            },
+            gap: Size::length(spacing::MD),
             ..Default::default()
         };
         let slider_s = Style {
@@ -220,6 +207,7 @@ impl AppLogic for MyApp {
                         style: Style::default(),
                     },
                     Widget::TextInput {
+                        model_value: None,
                         on_change: Msg::UsernameChanged,
                         on_submit: None,
                         style: input_s.clone(),
@@ -235,6 +223,7 @@ impl AppLogic for MyApp {
                         is_password: false,
                     },
                     Widget::TextInput {
+                        model_value: None,
                         on_change: Msg::PasswordChanged,
                         on_submit: Some(Msg::LoginPressed),
                         style: input_s,
@@ -484,11 +473,8 @@ impl AppLogic for MyApp {
                 style: Style {
                     flex_direction: FlexDirection::Column,
                     align_items: Some(AlignItems::Stretch),
-                    padding: Rect::length(24.0_f32),
-                    gap: Size {
-                        width: LengthPercentage::length(0.0),
-                        height: LengthPercentage::length(16.0),
-                    },
+                    padding: Rect::length(spacing::XL),
+                    gap: Size::length(spacing::LG),
                     ..responsive_width(320.0, Dimension::auto())
                 },
                 children: vec![
@@ -512,10 +498,7 @@ impl AppLogic for MyApp {
                                 width: Dimension::percent(1.0),
                                 height: Dimension::auto(),
                             },
-                            gap: Size {
-                                width: LengthPercentage::length(8.0),
-                                height: LengthPercentage::length(0.0),
-                            },
+                            gap: Size::length(spacing::SM),
                             ..Default::default()
                         },
                         children: vec![
@@ -572,19 +555,22 @@ impl AppLogic for MyApp {
             position: ToastPosition::BottomRight,
         };
 
-        Widget::Column {
-            style: root,
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                tabbar,
-                Widget::Column {
-                    style: content_col,
-                    children: vec![tab_content],
-                },
-                modal,
-                toast,
-            ],
-        }
+        super::layout::page(
+            "Form",
+            Widget::Column {
+                style: root,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    tabbar,
+                    Widget::Column {
+                        style: content_col,
+                        children: vec![tab_content],
+                    },
+                    modal,
+                    toast,
+                ],
+            },
+        )
     }
 
     fn update(s: &mut AppState, msg: Msg, _: &mut Clipboard) {

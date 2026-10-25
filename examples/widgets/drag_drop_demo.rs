@@ -3,6 +3,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use rutter::{
     AppLogic, ButtonVariant, DragBadge, DragBadgeIcon, DragEvent, DragPayload, DragPayloadKind,
     DragPhase, DragSource, DropTarget, InputState, LogicalPointerPosition, PointerEvent,
@@ -150,18 +151,21 @@ impl AppLogic for DragDropDemo {
 
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Msg> {
         let theme = state.theme.resolve();
-        Widget::Column {
-            style: page_style(),
-            children: vec![
-                example_theme_selector(state.theme, Msg::ThemeChanged),
-                label("Drag and drop", 26.0),
-                label("Drag a tile onto the drop zone.", 14.0),
-                drop_zone(state, &theme),
-                label(&format!("Status: {}", state.status), 14.0),
-                accessible_actions(),
-                source_grid(state),
-            ],
-        }
+        super::layout::page(
+            "Drag and drop",
+            Widget::Column {
+                style: page_style(),
+                children: vec![
+                    example_theme_selector(state.theme, Msg::ThemeChanged),
+                    label("Drag and drop", 26.0),
+                    label("Drag a tile onto the drop zone.", 14.0),
+                    drop_zone(state, &theme),
+                    label(&format!("Status: {}", state.status), 14.0),
+                    accessible_actions(),
+                    source_grid(state),
+                ],
+            },
+        )
     }
 
     fn update(state: &mut Self::State, message: Self::Message, _: &mut Clipboard) {
@@ -333,7 +337,7 @@ fn source_grid<'a>(state: &DragDropDemoState) -> Widget<'a, Msg> {
                             width: Dimension::percent(1.0),
                             height: Dimension::auto(),
                         },
-                        gap: Size::length(12.0_f32),
+                        gap: Size::length(spacing::MD),
                         ..Style::default()
                     },
                 },
@@ -345,13 +349,13 @@ fn source_grid<'a>(state: &DragDropDemoState) -> Widget<'a, Msg> {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                gap: Size::length(8.0_f32),
+                gap: Size::length(spacing::SM),
                 ..Style::default()
             },
         }),
         style: Style {
-            flex_grow: 1.0,
-            flex_shrink: 1.0,
+            flex_grow: 0.0,
+            flex_shrink: 0.0,
             align_items: Some(AlignItems::FlexStart),
             min_size: Size {
                 width: Dimension::auto(),
@@ -361,7 +365,7 @@ fn source_grid<'a>(state: &DragDropDemoState) -> Widget<'a, Msg> {
                 width: Dimension::length(680.0),
                 height: Dimension::length(360.0),
             },
-            ..responsive_width(680.0, Dimension::auto())
+            ..responsive_width(680.0, Dimension::length(240.0))
         },
     }
 }
@@ -411,6 +415,7 @@ fn text_tile<'a>() -> Widget<'a, Msg> {
             children: vec![
                 Widget::TextInput {
                     id: TEXT_INPUT_ID,
+                    model_value: None,
                     on_change: Msg::TextChanged,
                     on_submit: None,
                     style: responsive_width(300.0, Dimension::length(40.0)),
@@ -426,7 +431,7 @@ fn text_tile<'a>() -> Widget<'a, Msg> {
                 size: Size::percent(1.0_f32),
                 align_items: Some(AlignItems::Center),
                 justify_content: Some(JustifyContent::Center),
-                gap: Size::length(6.0_f32),
+                gap: Size::length(spacing::SM),
                 ..Style::default()
             },
         }),
@@ -461,13 +466,13 @@ fn source_card_face<'a>(card: DemoCard) -> Widget<'a, Msg> {
                 size: Size::percent(1.0_f32),
                 align_items: Some(AlignItems::Center),
                 justify_content: Some(JustifyContent::Center),
-                gap: Size::length(6.0_f32),
+                gap: Size::length(spacing::SM),
                 ..Style::default()
             },
         }),
         style: Style {
             size: Size::percent(1.0_f32),
-            padding: Rect::length(8.0_f32),
+            padding: Rect::length(spacing::SM),
             ..Style::default()
         },
         color: Some(card.background),
@@ -538,7 +543,7 @@ fn landscape_drop_zone<'a>(title: &str, background: Color, foreground: Color) ->
             style: Style {
                 align_items: Some(AlignItems::Center),
                 size: Size::percent(1.0_f32),
-                gap: Size::length(8.0_f32),
+                gap: Size::length(spacing::SM),
                 ..Style::default()
             },
         }),
@@ -547,7 +552,7 @@ fn landscape_drop_zone<'a>(title: &str, background: Color, foreground: Color) ->
                 width: Dimension::percent(1.0),
                 height: Dimension::length(96.0),
             },
-            padding: Rect::length(8.0_f32),
+            padding: Rect::length(spacing::SM),
             ..Style::default()
         },
         color: Some(background),
@@ -595,7 +600,7 @@ fn accessible_actions<'a>() -> Widget<'a, Msg> {
             .collect(),
         style: Style {
             flex_wrap: FlexWrap::Wrap,
-            gap: Size::length(6.0_f32),
+            gap: Size::length(spacing::SM),
             ..Style::default()
         },
     }
@@ -639,8 +644,8 @@ fn page_style() -> Style {
         flex_direction: FlexDirection::Column,
         align_items: Some(AlignItems::FlexStart),
         size: Size::percent(1.0_f32),
-        padding: Rect::length(12.0_f32),
-        gap: Size::length(8.0_f32),
+        padding: Rect::length(spacing::XL),
+        gap: Size::length(spacing::LG),
         ..Style::default()
     }
 }
@@ -836,7 +841,9 @@ mod tests {
             fonts,
             &RichTextRenderer::default(),
         );
-        let scroll_node = layout.children(root).unwrap()[6];
+        let page_node = *layout.children(root).unwrap().last().unwrap();
+        let document_node = layout.children(page_node).unwrap()[0];
+        let scroll_node = layout.children(document_node).unwrap()[4];
         let content_node = layout.children(scroll_node).unwrap()[0];
         let grid_node = layout.children(content_node).unwrap()[0];
         let tile_node = *layout.children(grid_node).unwrap().last().unwrap();
@@ -848,6 +855,15 @@ mod tests {
         let tile = layout.layout(tile_node).unwrap();
         let column = layout.layout(column_node).unwrap();
         let offset = content.size.height - scroll.size.height;
+        let page = layout.layout(page_node).unwrap();
+        let document = layout.layout(document_node).unwrap();
+        let page_offset = reveal_page_y(
+            &layout,
+            page_node,
+            document_node,
+            scroll.location.y + scroll.size.height * 0.5,
+            &mut states,
+        );
         states.insert(
             CARD_SCROLL_ID,
             WidgetState::Scroll(ScrollState {
@@ -857,17 +873,22 @@ mod tests {
             }),
         );
         let origin = skia_safe::Point::new(
-            scroll.location.x
+            page.location.x
+                + document.location.x
+                + scroll.location.x
                 + content.location.x
                 + grid.location.x
                 + tile.location.x
                 + column.location.x,
-            scroll.location.y
+            page.location.y
+                + document.location.y
+                + scroll.location.y
                 + content.location.y
                 + grid.location.y
                 + tile.location.y
                 + column.location.y
-                - offset,
+                - offset
+                - page_offset,
         );
         let control_hit = |index: usize| {
             let position = layout.layout(controls[index]).unwrap();
@@ -920,15 +941,13 @@ mod tests {
         let mut state = state();
         let view = DragDropDemo::view(&mut state);
         WidgetIdSnapshot::capture(&view).unwrap();
-        let Widget::Column { children, .. } = view else {
-            panic!("drag/drop demo must have a column root");
-        };
+        let children = super::super::layout::document_children(&view);
         assert!(
-            matches!(&children[3], Widget::PointerRegion { id, config, .. }
+            matches!(&children[1], Widget::PointerRegion { id, config, .. }
             if id.get() == TARGET_REGION
                 && config.drop_target.as_ref().is_some_and(|target| target.accepted_kind == ITEM_KIND))
         );
-        let Widget::ScrollView { id, child, .. } = &children[6] else {
+        let Widget::ScrollView { id, child, .. } = &children[4] else {
             panic!("demo cards must be in a scroll view");
         };
         assert_eq!(*id, CARD_SCROLL_ID);
@@ -954,7 +973,7 @@ mod tests {
                             == card_badge(card.value).as_ref().map(|badge| (badge.background, badge.foreground))));
         }
         assert!(matches!(sources.last(), Some(Widget::Container { .. })));
-        let Widget::Row { children, .. } = &children[5] else {
+        let Widget::Row { children, .. } = &children[3] else {
             panic!("keyboard-equivalent actions must be accessible buttons");
         };
         assert_eq!(children.len(), CARDS.len() + 2);
@@ -1006,24 +1025,42 @@ mod tests {
             fonts,
             &RichTextRenderer::default(),
         );
-        let children = layout.children(root).unwrap();
-        let target = layout.layout(children[3]).unwrap();
-        let scroll = layout.layout(children[6]).unwrap();
-        let content_node = layout.children(children[6]).unwrap()[0];
+        let page_node = *layout.children(root).unwrap().last().unwrap();
+        let document_node = layout.children(page_node).unwrap()[0];
+        let page = layout.layout(page_node).unwrap();
+        let document = layout.layout(document_node).unwrap();
+        let children = layout.children(document_node).unwrap();
+        let target = layout.layout(children[1]).unwrap();
+        let scroll = layout.layout(children[4]).unwrap();
+        let content_node = layout.children(children[4]).unwrap()[0];
         let content = layout.layout(content_node).unwrap();
         let grid_node = layout.children(content_node).unwrap()[0];
         let grid = layout.layout(grid_node).unwrap();
         let cards = layout.children(grid_node).unwrap();
 
         assert!(target.location.y + target.size.height < scroll.location.y);
+        let target_offset = reveal_page_y(
+            &layout,
+            page_node,
+            document_node,
+            target.location.y + target.size.height * 0.5,
+            &mut states,
+        );
         assert!(matches!(
             hit_test(
                 &view,
                 &layout,
                 root,
                 skia_safe::Point::new(
-                    target.location.x + target.size.width * 0.5,
-                    target.location.y + target.size.height * 0.5,
+                    page.location.x
+                        + document.location.x
+                        + target.location.x
+                        + target.size.width * 0.5,
+                    page.location.y
+                        + document.location.y
+                        + target.location.y
+                        + target.size.height * 0.5
+                        - target_offset,
                 ),
                 skia_safe::Point::default(),
                 &states,
@@ -1031,11 +1068,16 @@ mod tests {
             Some(HitResult::PointerRegion(TARGET_REGION))
         ));
         assert!(scroll.size.height >= 90.0);
+        let page_offset = reveal_page_y(
+            &layout,
+            page_node,
+            document_node,
+            scroll.location.y + scroll.size.height * 0.5,
+            &mut states,
+        );
         assert!(
-            scroll.location.y + scroll.size.height <= height as f32,
-            "grid outside {width}×{height} viewport: top={}, height={}",
-            scroll.location.y,
-            scroll.size.height
+            page.location.y + scroll.location.y - page_offset < height as f32,
+            "grid must be reachable by page scrolling at {width}×{height}"
         );
         assert!(content.size.height > scroll.size.height, "grid must scroll");
         let first = layout.layout(cards[0]).unwrap();
@@ -1062,17 +1104,22 @@ mod tests {
                 }),
             );
             let point = skia_safe::Point::new(
-                scroll.location.x
+                page.location.x
+                    + document.location.x
+                    + scroll.location.x
                     + content.location.x
                     + grid.location.x
                     + geometry.location.x
                     + geometry.size.width * 0.5,
-                scroll.location.y
+                page.location.y
+                    + document.location.y
+                    + scroll.location.y
                     + content.location.y
                     + grid.location.y
                     + geometry.location.y
                     + geometry.size.height * 0.5
-                    - offset,
+                    - offset
+                    - page_offset,
             );
             assert!(
                 matches!(hit_test(&view, &layout, root, point, skia_safe::Point::new(0.0, 0.0), &states), Some(HitResult::PointerRegion(id)) if id == card.region_id),
@@ -1080,13 +1127,29 @@ mod tests {
                 card.label
             );
         }
-        let actions_node = children[5];
+        let actions_node = children[3];
         let clear_node = *layout.children(actions_node).unwrap().last().unwrap();
         let actions = layout.layout(actions_node).unwrap();
         let clear = layout.layout(clear_node).unwrap();
-        let clear_position = skia_safe::Point::new(
-            actions.location.x + clear.location.x + clear.size.width * 0.5,
+        let actions_offset = reveal_page_y(
+            &layout,
+            page_node,
+            document_node,
             actions.location.y + clear.location.y + clear.size.height * 0.5,
+            &mut states,
+        );
+        let clear_position = skia_safe::Point::new(
+            page.location.x
+                + document.location.x
+                + actions.location.x
+                + clear.location.x
+                + clear.size.width * 0.5,
+            page.location.y
+                + document.location.y
+                + actions.location.y
+                + clear.location.y
+                + clear.size.height * 0.5
+                - actions_offset,
         );
         assert!(
             matches!(
@@ -1103,8 +1166,32 @@ mod tests {
                     ..
                 })
             ),
-            "fixed Clear button must remain clickable at {width}×{height}"
+            "Clear button must remain reachable and clickable at {width}×{height}"
         );
+    }
+
+    // Keep testing real full-page hit coordinates after the document gained an
+    // outer viewport. Each target is revealed before testing its nested scroll.
+    fn reveal_page_y(
+        layout: &TaffyTree<rutter::layout::RutterContext>,
+        page_node: NodeId,
+        document_node: NodeId,
+        document_y: f32,
+        states: &mut HashMap<u64, WidgetState>,
+    ) -> f32 {
+        let page = layout.layout(page_node).unwrap();
+        let document = layout.layout(document_node).unwrap();
+        let offset = (document_y - page.size.height * 0.5)
+            .clamp(0.0, (document.size.height - page.size.height).max(0.0));
+        states.insert(
+            super::super::layout::PAGE_SCROLL_ID,
+            WidgetState::Scroll(ScrollState {
+                offset_y: offset,
+                content_height: document.size.height,
+                viewport_h: page.size.height,
+            }),
+        );
+        offset
     }
 
     #[test]

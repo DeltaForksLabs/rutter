@@ -4,6 +4,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
@@ -54,21 +55,15 @@ impl AppLogic for AccordionDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(14.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
 
         let row = Style {
             flex_direction: FlexDirection::Row,
             flex_wrap: FlexWrap::Wrap,
-            gap: Size {
-                width: LengthPercentage::length(10.0),
-                height: LengthPercentage::length(0.0),
-            },
+            gap: Size::length(spacing::MD),
             ..responsive_width(560.0, Dimension::auto())
         };
         let btn = |w: f32| responsive_width(w, Dimension::length(38.0));
@@ -92,115 +87,115 @@ impl AppLogic for AccordionDemo {
                 height: Dimension::auto(),
             },
             padding: Rect {
-                top: LengthPercentage::length(16.0),
-                bottom: LengthPercentage::length(16.0),
-                left: LengthPercentage::length(24.0),
-                right: LengthPercentage::length(24.0),
+                top: LengthPercentage::length(spacing::LG),
+                bottom: LengthPercentage::length(spacing::LG),
+                left: LengthPercentage::length(spacing::XL),
+                right: LengthPercentage::length(spacing::XL),
             },
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(8.0),
-            },
+            gap: Size::length(spacing::SM),
             ..Default::default()
         };
 
-        Widget::Column {
-            style: root,
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                Widget::Text {
-                    content: "Accordion Demo".into(),
-                    color: None,
-                    size: 20.0,
-                    style: Style::default(),
-                },
-                Widget::Row {
-                    style: row,
-                    children: vec![
-                        Widget::Button {
-                            text: "Expandir tudo",
-                            on_press: Msg::ExpandAll,
-                            style: btn(150.0),
-                            color: None,
-                            variant: ButtonVariant::Primary,
-                        },
-                        Widget::Button {
-                            text: "Recolher tudo",
-                            on_press: Msg::CollapseAll,
-                            style: btn(150.0),
-                            color: None,
-                            variant: ButtonVariant::Ghost,
-                        },
-                    ],
-                },
-                Widget::Accordion {
-                    id: 501,
-                    title: "Configurações gerais",
-                    expanded: s.item_a_open,
-                    on_toggle: Msg::ToggleA,
-                    style: item_style.clone(),
-                    child: Box::new(Widget::Container {
-                        style: content_style.clone(),
-                        color: Some(skia_safe::Color::from_argb(15, 255, 255, 255)),
-                        radius: 8.0,
-                        child: Box::new(Widget::Text {
-                            content: format!(
-                                "• Tema: {}\n• Idioma: pt-BR\n• Autosave: habilitado",
-                                match s.theme {
-                                    ExampleTheme::Dark => "Escuro",
-                                    ExampleTheme::Light => "Claro",
-                                }
-                            ),
-                            color: None,
-                            size: 14.0,
-                            style: Style::default(),
+        super::layout::page(
+            "Accordion",
+            Widget::Column {
+                style: root,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    Widget::Text {
+                        content: "Accordion Demo".into(),
+                        color: None,
+                        size: 20.0,
+                        style: Style::default(),
+                    },
+                    Widget::Row {
+                        style: row,
+                        children: vec![
+                            Widget::Button {
+                                text: "Expandir tudo",
+                                on_press: Msg::ExpandAll,
+                                style: btn(150.0),
+                                color: None,
+                                variant: ButtonVariant::Primary,
+                            },
+                            Widget::Button {
+                                text: "Recolher tudo",
+                                on_press: Msg::CollapseAll,
+                                style: btn(150.0),
+                                color: None,
+                                variant: ButtonVariant::Ghost,
+                            },
+                        ],
+                    },
+                    Widget::Accordion {
+                        id: 501,
+                        title: "Configurações gerais",
+                        expanded: s.item_a_open,
+                        on_toggle: Msg::ToggleA,
+                        style: item_style.clone(),
+                        child: Box::new(Widget::Container {
+                            style: content_style.clone(),
+                            color: Some(skia_safe::Color::from_argb(15, 255, 255, 255)),
+                            radius: 8.0,
+                            child: Box::new(Widget::Text {
+                                content: format!(
+                                    "• Tema: {}\n• Idioma: pt-BR\n• Autosave: habilitado",
+                                    match s.theme {
+                                        ExampleTheme::Dark => "Escuro",
+                                        ExampleTheme::Light => "Claro",
+                                    }
+                                ),
+                                color: None,
+                                size: 14.0,
+                                style: Style::default(),
+                            }),
                         }),
-                    }),
-                },
-                Widget::Accordion {
-                    id: 502,
-                    title: "Rede e sincronização",
-                    expanded: s.item_b_open,
-                    on_toggle: Msg::ToggleB,
-                    style: item_style.clone(),
-                    child: Box::new(Widget::Container {
-                        style: content_style.clone(),
-                        color: Some(skia_safe::Color::from_argb(15, 255, 255, 255)),
-                        radius: 8.0,
-                        child: Box::new(Widget::Text {
-                            content: "• Endpoint: https://api.local\n• Timeout: 5s\n• Retry: 3"
-                                .into(),
-                            color: None,
-                            size: 14.0,
-                            style: Style::default(),
+                    },
+                    Widget::Accordion {
+                        id: 502,
+                        title: "Rede e sincronização",
+                        expanded: s.item_b_open,
+                        on_toggle: Msg::ToggleB,
+                        style: item_style.clone(),
+                        child: Box::new(Widget::Container {
+                            style: content_style.clone(),
+                            color: Some(skia_safe::Color::from_argb(15, 255, 255, 255)),
+                            radius: 8.0,
+                            child: Box::new(Widget::Text {
+                                content: "• Endpoint: https://api.local\n• Timeout: 5s\n• Retry: 3"
+                                    .into(),
+                                color: None,
+                                size: 14.0,
+                                style: Style::default(),
+                            }),
                         }),
-                    }),
-                },
-                Widget::Accordion {
-                    id: 503,
-                    title: "Diagnóstico",
-                    expanded: s.item_c_open,
-                    on_toggle: Msg::ToggleC,
-                    style: item_style,
-                    child: Box::new(Widget::Container {
-                        style: content_style,
-                        color: Some(skia_safe::Color::from_argb(15, 255, 255, 255)),
-                        radius: 8.0,
-                        child: Box::new(Widget::Text {
-                            content: format!(
-                                "• Painel A: {}\n• Painel B: {}\n• Painel C: {}",
-                                if s.item_a_open { "aberto" } else { "fechado" },
-                                if s.item_b_open { "aberto" } else { "fechado" },
-                                if s.item_c_open { "aberto" } else { "fechado" }
-                            ),
-                            color: None,
-                            size: 14.0,
-                            style: Style::default(),
+                    },
+                    Widget::Accordion {
+                        id: 503,
+                        title: "Diagnóstico",
+                        expanded: s.item_c_open,
+                        on_toggle: Msg::ToggleC,
+                        style: item_style,
+                        child: Box::new(Widget::Container {
+                            style: content_style,
+                            color: Some(skia_safe::Color::from_argb(15, 255, 255, 255)),
+                            radius: 8.0,
+                            child: Box::new(Widget::Text {
+                                content: format!(
+                                    "• Painel A: {}\n• Painel B: {}\n• Painel C: {}",
+                                    if s.item_a_open { "aberto" } else { "fechado" },
+                                    if s.item_b_open { "aberto" } else { "fechado" },
+                                    if s.item_c_open { "aberto" } else { "fechado" }
+                                ),
+                                color: None,
+                                size: 14.0,
+                                style: Style::default(),
+                            }),
                         }),
-                    }),
-                },
-            ],
-        }
+                    },
+                ],
+            },
+        )
     }
 
     fn update(s: &mut AccordionDemoState, msg: Msg, _: &mut Clipboard) {

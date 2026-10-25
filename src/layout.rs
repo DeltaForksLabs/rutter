@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+use cosmic_text::FontSystem;
 use taffy::Direction;
 use taffy::prelude::*;
 use winit::dpi::PhysicalSize;
@@ -18,7 +18,6 @@ use crate::engine::widget_state::WidgetState;
 use crate::i18n::LayoutDirection;
 use crate::render::RichTextRenderer;
 use crate::render::rich_text::{RichTextDirection, RichTextMetrics, RichTextWidth};
-use crate::text_controls::{TextControlPolicy, normalize_text_controls};
 use crate::widget::{CounterValue, Widget};
 use crate::widgets::counter::{COUNTER_DEFAULT_HEIGHT, counter_preferred_width};
 use crate::widgets::rich_text::OwnedRichTextSpec;
@@ -29,6 +28,12 @@ use crate::widgets::table_of_contents::{
     root_style as table_of_contents_root_style, viewport_style,
 };
 use crate::widgets::time::clock_layout_text;
+
+pub(crate) mod field;
+
+#[cfg(test)]
+#[path = "../tests/unit/widget_spacing_layout_unit_tests.rs"]
+mod widget_spacing_tests;
 
 const ACCORDION_HEADER_H: f32 = 44.0;
 
@@ -96,6 +101,10 @@ pub enum RutterContext {
     Text(TextContext),
     Counter(CounterContext),
     RichText(OwnedRichTextSpec),
+    /// Preferred field height, including annotation rows, before constraints.
+    Field {
+        intrinsic_height: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -362,8 +371,14 @@ impl LayoutBlueprint {
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
-            Widget::Select { style, .. } => {
-                Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
+            Widget::Select { style, .. } => Self::field(widget, path, style, 40.0),
+            Widget::TextInput { style, .. } | Widget::TextArea { style, .. } => {
+                let body_height = if matches!(widget, Widget::TextArea { .. }) {
+                    120.0
+                } else {
+                    40.0
+                };
+                Self::field(widget, path, style, body_height)
             }
             Widget::Custom { style, .. } => {
                 Self::leaf(Some(widget.resolved_id(path).unwrap()), style.clone())
@@ -430,8 +445,6 @@ impl LayoutBlueprint {
             | Widget::Spinner { style, .. }
             | Widget::TabBar { style, .. }
             | Widget::DropdownMenu { style, .. }
-            | Widget::TextArea { style, .. }
-            | Widget::TextInput { style, .. }
             | Widget::SearchBar { style, .. }
             | Widget::Slider { style, .. }
             | Widget::CarouselView { style, .. }
@@ -459,6 +472,22 @@ impl LayoutBlueprint {
                 },
             ),
         }
+    }
+
+    fn field<Msg>(
+        widget: &Widget<'_, Msg>,
+        path: &[usize],
+        style: &Style,
+        body_height: f32,
+    ) -> Self {
+        let insets = field::FieldInsets::for_widget(widget);
+        Self::leaf_with_context(
+            Some(widget.resolved_id(path).unwrap()),
+            insets.reserve(style),
+            RutterContext::Field {
+                intrinsic_height: insets.intrinsic_height(body_height),
+            },
+        )
     }
 }
 
@@ -778,7 +807,7 @@ pub fn compute_layout(
     taffy: &mut TaffyTree<RutterContext>,
     root: NodeId,
     size: PhysicalSize<u32>,
-    fs_rc: Rc<RefCell<FontSystem>>,
+    _fs_rc: Rc<RefCell<FontSystem>>,
     rich_text_renderer: &RichTextRenderer,
 ) {
     let available = Size {
@@ -789,9 +818,13 @@ pub fn compute_layout(
         .compute_layout_with_measure(root, available, |known, available, _, context, style| {
             match context {
                 Some(RutterContext::Text(text)) => {
-                    measure_plain_text(text, known, available, &fs_rc)
+                    measure_plain_text(text, known, available, style.direction, rich_text_renderer)
                 }
                 Some(RutterContext::Counter(counter)) => measure_counter(counter, known),
+                Some(RutterContext::Field { intrinsic_height }) => Size {
+                    width: known.width.unwrap_or(0.0),
+                    height: known.height.unwrap_or(*intrinsic_height),
+                },
                 Some(RutterContext::RichText(content)) => measure_rich_text(
                     content,
                     known,
@@ -819,46 +852,22 @@ fn measure_plain_text(
     text: &TextContext,
     known: Size<Option<f32>>,
     available: Size<AvailableSpace>,
-    font_system: &Rc<RefCell<FontSystem>>,
+    direction: Direction,
+    renderer: &RichTextRenderer,
 ) -> Size<f32> {
-    let content = normalize_text_controls(&text.content, TextControlPolicy::PreserveLineBreaks);
-    let mut font_system = font_system.borrow_mut();
-    let mut buffer = Buffer::new(
-        &mut font_system,
-        Metrics::new(text.font_size, text.font_size * 1.2),
+    let width = known
+        .width
+        .map(AvailableSpace::Definite)
+        .unwrap_or(available.width);
+    let measured = renderer.measure_plain(
+        &text.content,
+        text.font_size,
+        rich_text_width(width),
+        rich_text_direction(direction),
     );
-    configure_plain_text_width(&mut buffer, &mut font_system, available.width);
-    buffer.set_text(
-        &mut font_system,
-        content.as_ref(),
-        &Attrs::new(),
-        Shaping::Advanced,
-        None,
-    );
-    buffer.shape_until_scroll(&mut font_system, true);
-    let measured = plain_text_layout_size(&buffer);
     Size {
         width: known.width.unwrap_or(measured.width),
         height: known.height.unwrap_or(measured.height),
-    }
-}
-
-fn plain_text_layout_size(buffer: &Buffer) -> Size<f32> {
-    buffer.layout_runs().fold(Size::ZERO, |size, run| Size {
-        width: size.width.max(run.line_w),
-        height: size.height.max(run.line_top + run.line_height),
-    })
-}
-
-fn configure_plain_text_width(
-    buffer: &mut Buffer,
-    font_system: &mut FontSystem,
-    available: AvailableSpace,
-) {
-    match available {
-        AvailableSpace::Definite(width) => buffer.set_size(font_system, Some(width), None),
-        AvailableSpace::MaxContent => buffer.set_size(font_system, None, None),
-        AvailableSpace::MinContent => buffer.set_size(font_system, Some(0.0), None),
     }
 }
 
@@ -1026,7 +1035,7 @@ mod tests {
 
     #[test]
     fn plain_text_measurement_treats_carriage_return_as_a_line_break() {
-        let font_system = fs();
+        let renderer = RichTextRenderer::default();
         let raw = TextContext {
             content: "first\r\nsecond".to_string(),
             font_size: 16.0,
@@ -1041,8 +1050,9 @@ mod tests {
             height: AvailableSpace::MaxContent,
         };
 
-        let raw_size = measure_plain_text(&raw, known, available, &font_system);
-        let canonical_size = measure_plain_text(&canonical, known, available, &font_system);
+        let raw_size = measure_plain_text(&raw, known, available, Direction::Ltr, &renderer);
+        let canonical_size =
+            measure_plain_text(&canonical, known, available, Direction::Ltr, &renderer);
 
         assert_eq!(raw_size, canonical_size);
         assert!(raw_size.height > raw.font_size * 1.2);

@@ -9,6 +9,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
@@ -50,22 +51,21 @@ impl AppLogic for ScrollDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(24.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(16.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
         // ScrollView de altura fixa com conteúdo longo
         let scroll_s = responsive_width(400.0, Dimension::length(300.0));
-        // Coluna interna — mais alta que o viewport para forçar scroll
+        // Intrinsic document height includes the real item gaps, not a guessed extent.
         let inner_col = Style {
             flex_direction: FlexDirection::Column,
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(ITEM_COUNT as f32 * 44.0),
+                height: Dimension::auto(),
             },
+            flex_shrink: 0.0,
+            gap: Size::length(spacing::XS),
             ..Default::default()
         };
 
@@ -81,6 +81,7 @@ impl AppLogic for ScrollDemo {
                     },
                     on_press: Msg::ItemToggled(index),
                     style: Style {
+                        flex_shrink: 0.0,
                         size: Size {
                             width: Dimension::percent(1.0),
                             height: Dimension::length(40.0),
@@ -97,7 +98,7 @@ impl AppLogic for ScrollDemo {
             })
             .collect();
 
-        Widget::Column {
+        super::layout::page("ScrollView", Widget::Column {
             style: root,
             children: vec![
                 example_theme_selector(s.theme, Msg::ThemeChanged),
@@ -130,7 +131,7 @@ impl AppLogic for ScrollDemo {
                     style: Style::default(),
                 },
             ],
-        }
+        })
     }
 
     fn update(s: &mut ScrollDemoState, msg: Msg, _: &mut Clipboard) {

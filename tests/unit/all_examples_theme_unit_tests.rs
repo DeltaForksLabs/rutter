@@ -4,15 +4,16 @@ use rutter::{AppLogic, MultiWindowAppLogic, SurfaceId, Theme, Widget};
 use super::{
     accordion_demo::AccordionDemo, advanced_widgets_demo::AdvancedWidgetsDemo,
     button_content_demo::ButtonContentDemo, calendar_demo::CalendarDemo,
-    carousel_demo::CarouselDemo, context_menu_demo::ContextMenuDemo, controls_demo::ControlsDemo,
-    counter_demo::CounterDemo, dialog_demo::DialogDemo, drag_drop_demo::DragDropDemo,
-    dropdown_menu_demo::DropdownMenuDemo, form_demo::MyApp, image_viewer_demo::ImageViewerDemo,
-    modal_toast_demo::ModalToastDemo, multi_window_demo::MultiWindowDemo,
-    popover_demo::PopoverDemo, progress_demo::ProgressDemo, rich_text_demo::RichTextDemo,
-    scroll_demo::ScrollDemo, search_bar_demo::SearchBarDemo, slider_demo::SliderDemo,
-    tab_demo::TabDemo, table_demo::TableDemo, table_of_contents_demo::TableOfContentsDemo,
-    text_area_demo::TextAreaDemo, text_input_demo::TextInputDemo, time_demo::TimeDemo,
-    vgrid_demo::VGridDemo, vlist_demo::VListDemo,
+    carousel_demo::CarouselDemo, color_picker_demo::ColorPickerDemo,
+    context_menu_demo::ContextMenuDemo, controls_demo::ControlsDemo, counter_demo::CounterDemo,
+    dialog_demo::DialogDemo, drag_drop_demo::DragDropDemo, dropdown_menu_demo::DropdownMenuDemo,
+    form_demo::MyApp, image_viewer_demo::ImageViewerDemo, modal_toast_demo::ModalToastDemo,
+    multi_window_demo::MultiWindowDemo, popover_demo::PopoverDemo, progress_demo::ProgressDemo,
+    rich_text_demo::RichTextDemo, scroll_demo::ScrollDemo, search_bar_demo::SearchBarDemo,
+    slider_demo::SliderDemo, tab_demo::TabDemo, table_demo::TableDemo,
+    table_of_contents_demo::TableOfContentsDemo, text_area_demo::TextAreaDemo,
+    text_input_demo::TextInputDemo, time_demo::TimeDemo, vgrid_demo::VGridDemo,
+    vlist_demo::VListDemo,
 };
 
 #[test]
@@ -45,6 +46,7 @@ fn composite_examples_start_dark_with_theme_selectors() {
 
 #[test]
 fn input_and_virtual_examples_start_dark_with_theme_selectors() {
+    assert_single_window_theme::<ColorPickerDemo>();
     assert_single_window_theme::<SearchBarDemo>();
     assert_single_window_theme::<SliderDemo>();
     assert_single_window_theme::<TabDemo>();

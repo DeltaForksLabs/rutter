@@ -4,6 +4,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, InputState, RutterRunner, Theme, Widget};
@@ -47,17 +48,14 @@ impl AppLogic for TextAreaDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(18.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
 
         let area_style = |height: f32| responsive_width(560.0, Dimension::length(height));
 
-        Widget::Column {
+        super::layout::page("Text areas", Widget::Column {
             style: root,
             children: vec![
                 example_theme_selector(s.theme, Msg::Theme),
@@ -115,7 +113,7 @@ impl AppLogic for TextAreaDemo {
                 },
                 Widget::Container {
                     style: Style {
-                        padding: Rect::length(16.0_f32),
+                        padding: Rect::length(spacing::LG),
                         ..responsive_width(560.0, Dimension::auto())
                     },
                     color: Some(skia_safe::Color::from_argb(32, 255, 255, 255)),
@@ -133,7 +131,7 @@ impl AppLogic for TextAreaDemo {
                     }),
                 },
             ],
-        }
+        })
     }
 
     fn update(s: &mut TextAreaDemoState, msg: Msg, _: &mut Clipboard) {

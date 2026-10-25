@@ -1,7 +1,7 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
 
-use rutter::{ButtonVariant, Theme, Widget};
+use rutter::{ButtonVariant, Theme, Widget, spacing};
 use taffy::prelude::*;
 
 const SUN_ICON_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#F4B942" stroke-width="2" stroke-linecap="round">
@@ -66,15 +66,15 @@ fn theme_toggle_button_style() -> Style {
         position: Position::Absolute,
         inset: Rect {
             left: LengthPercentageAuto::auto(),
-            right: LengthPercentageAuto::length(16.0),
-            top: LengthPercentageAuto::length(16.0),
+            right: LengthPercentageAuto::length(spacing::LG),
+            top: LengthPercentageAuto::length(spacing::LG),
             bottom: LengthPercentageAuto::auto(),
         },
         align_items: Some(AlignItems::Center),
         justify_content: Some(JustifyContent::Center),
         size: Size {
-            width: Dimension::length(44.0),
-            height: Dimension::length(44.0),
+            width: Dimension::length(super::layout::THEME_BUTTON_SIZE),
+            height: Dimension::length(super::layout::THEME_BUTTON_SIZE),
         },
         ..Style::default()
     }

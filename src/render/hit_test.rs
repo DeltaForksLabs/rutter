@@ -597,12 +597,22 @@ fn hit_test_impl<Msg: Clone>(
             })
         }
         Widget::TextInput { .. } | Widget::TextArea { .. } | Widget::SearchBar { .. } => {
+            let body = crate::layout::field::FieldInsets::for_widget(widget)
+                .body((layout.size.width, layout.size.height));
+            let local = Point::new(
+                mouse.x - abs_pos.x - body.left,
+                mouse.y - abs_pos.y - body.top,
+            );
+            if local.x < 0.0 || local.y < 0.0 || local.x >= body.width() || local.y >= body.height()
+            {
+                return None;
+            }
             Some(HitResult::InputFocus {
                 id: widget.resolved_id(path).unwrap(),
-                local_x: mouse.x - abs_pos.x,
-                local_y: mouse.y - abs_pos.y,
-                width: layout.size.width,
-                height: layout.size.height,
+                local_x: local.x,
+                local_y: local.y,
+                width: body.width(),
+                height: body.height(),
             })
         }
         Widget::Checkbox {
@@ -651,7 +661,12 @@ fn hit_test_impl<Msg: Clone>(
                 CounterSegment::Value => Some(HitResult::CounterFocus(id)),
             }
         }
-        Widget::Select { .. } => Some(HitResult::SelectToggle(widget.resolved_id(path).unwrap())),
+        Widget::Select { .. } => {
+            let body = crate::layout::field::FieldInsets::for_widget(widget)
+                .body((layout.size.width, layout.size.height));
+            body.contains(Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y))
+                .then(|| HitResult::SelectToggle(widget.resolved_id(path).unwrap()))
+        }
         Widget::DropdownMenu { .. } => Some(HitResult::DropdownMenuToggle(
             widget.resolved_id(path).unwrap(),
         )),
@@ -1164,6 +1179,23 @@ fn hit_test_impl<Msg: Clone>(
                 path.pop();
                 if let Some(r) = result {
                     return Some(r);
+                }
+                if matches!(
+                    child,
+                    Widget::Modal { visible: true, .. } | Widget::Dialog { visible: true, .. }
+                ) {
+                    let overlay = taffy.layout(ids[i]).unwrap();
+                    let frame = SkiaRect::from_xywh(
+                        abs_pos.x + overlay.location.x,
+                        abs_pos.y + overlay.location.y,
+                        overlay.size.width,
+                        overlay.size.height,
+                    );
+                    // Empty card space is deliberately inert, not a request to
+                    // continue searching controls underneath a blocking overlay.
+                    if frame.contains(mouse) {
+                        return None;
+                    }
                 }
             }
             None
@@ -2054,6 +2086,8 @@ fn find_toast_dismiss_msg_impl<Msg: Clone>(
     }
 }
 
+/// Returns the editable body size, including its internal text padding but
+/// excluding any separately reserved label and validation-message rows.
 pub fn find_input_geometry<Msg>(
     widget: &Widget<Msg>,
     taffy: &TaffyTree<RutterContext>,
@@ -2076,9 +2110,11 @@ fn find_input_geometry_impl<Msg>(
             if widget.resolved_id(path) == Some(target_id) =>
         {
             let layout = taffy.layout(node_id).ok()?;
+            let body = crate::layout::field::FieldInsets::for_widget(widget)
+                .body((layout.size.width, layout.size.height));
             Some(InputGeometry {
-                width: layout.size.width,
-                height: layout.size.height,
+                width: body.width(),
+                height: body.height(),
             })
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {

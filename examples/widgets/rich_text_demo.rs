@@ -3,6 +3,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{
@@ -33,17 +34,20 @@ impl AppLogic for RichTextDemo {
     }
 
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message> {
-        Widget::Column {
-            style: page_style(),
-            children: vec![
-                example_theme_selector(state.theme, Message::ThemeChanged),
-                Widget::rich_text(title_content(), line_style()),
-                Widget::rich_text(emphasis_content(), line_style()),
-                Widget::rich_text(inherited_content(), line_style()),
-                Widget::rich_text(multilingual_content(), wrapping_style()),
-                Widget::rich_text(control_normalization_content(), line_style()),
-            ],
-        }
+        super::layout::page(
+            "Rich text",
+            Widget::Column {
+                style: page_style(),
+                children: vec![
+                    example_theme_selector(state.theme, Message::ThemeChanged),
+                    Widget::rich_text(title_content(), line_style()),
+                    Widget::rich_text(emphasis_content(), line_style()),
+                    Widget::rich_text(inherited_content(), line_style()),
+                    Widget::rich_text(multilingual_content(), wrapping_style()),
+                    Widget::rich_text(control_normalization_content(), line_style()),
+                ],
+            },
+        )
     }
 
     fn update(state: &mut Self::State, message: Self::Message, _: &mut Clipboard) {
@@ -110,8 +114,8 @@ fn page_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
         size: Size::percent(1.0_f32),
-        padding: Rect::length(40.0_f32),
-        gap: Size::length(24.0_f32),
+        padding: Rect::length(spacing::XL),
+        gap: Size::length(spacing::XL),
         ..Style::default()
     }
 }

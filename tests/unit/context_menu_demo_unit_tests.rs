@@ -3,9 +3,8 @@ use super::*;
 #[test]
 fn demo_wraps_a_visible_right_click_area_in_context_menu() {
     let mut state = ContextMenuDemoState::default();
-    let Widget::Column { children, .. } = ContextMenuDemo::view(&mut state) else {
-        panic!("expected widget demo column");
-    };
+    let view = ContextMenuDemo::view(&mut state);
+    let children = super::super::layout::document_children(&view);
     let menu = children
         .iter()
         .find(|child| matches!(child, Widget::ContextMenu { id, .. } if *id == CONTEXT_MENU_ID))
@@ -18,7 +17,13 @@ fn demo_wraps_a_visible_right_click_area_in_context_menu() {
         Widget::Container { color: Some(_), .. }
     ));
     assert_eq!(entries.len(), 8);
-    assert!(children.iter().any(|child| matches!(child,
+    let Widget::Column {
+        children: header, ..
+    } = &children[0]
+    else {
+        panic!("page header must keep the heading and description together");
+    };
+    assert!(header.iter().any(|child| matches!(child,
         Widget::Text { content, .. } if content.contains("Right-click the highlighted area"))));
 }
 
@@ -32,9 +37,8 @@ fn demo_nested_leaf_updates_the_displayed_last_action() {
     let projects = find_entry(move_to.submenu_entries().unwrap(), "Projects");
     let message = projects.action_message().unwrap().clone();
     apply_demo_message(&mut state, message);
-    let Widget::Column { children, .. } = ContextMenuDemo::view(&mut state) else {
-        panic!("expected widget demo column");
-    };
+    let view = ContextMenuDemo::view(&mut state);
+    let children = super::super::layout::document_children(&view);
     assert!(children.iter().any(|child| matches!(child,
         Widget::Text { content, .. } if content == "Last action: Selected: Move to Projects")));
 }

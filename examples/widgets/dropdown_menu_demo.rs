@@ -3,6 +3,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use rutter::{AppLogic, DropdownMenuEntry, RutterRunner, Theme, Widget};
 use taffy::prelude::*;
 
@@ -42,10 +43,13 @@ impl AppLogic for DropdownMenuDemo {
     }
 
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message> {
-        Widget::Column {
-            children: demo_children(state),
-            style: root_style(),
-        }
+        super::layout::page(
+            "Dropdown menu",
+            Widget::Column {
+                children: demo_children(state),
+                style: root_style(),
+            },
+        )
     }
 
     fn update(state: &mut Self::State, message: Self::Message, _: &mut Clipboard) {
@@ -184,11 +188,8 @@ fn root_style() -> Style {
         flex_direction: FlexDirection::Column,
         align_items: Some(AlignItems::Stretch),
         size: Size::percent(1.0_f32),
-        padding: Rect::length(32.0_f32),
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(16.0),
-        },
+        padding: Rect::length(spacing::XL),
+        gap: Size::length(spacing::LG),
         ..Style::default()
     }
 }

@@ -3,6 +3,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use rutter::{
     AppLogic, ContextMenuEntry, RutterRunner, ShortcutEvent, ShortcutKey, ShortcutNamedKey,
     ShortcutOutcome, Theme, Widget,
@@ -55,10 +56,13 @@ impl AppLogic for ContextMenuDemo {
     }
 
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Msg> {
-        Widget::Column {
-            children: demo_children(state),
-            style: root_style(),
-        }
+        super::layout::page(
+            "Context menu",
+            Widget::Column {
+                children: demo_children(state),
+                style: root_style(),
+            },
+        )
     }
 
     fn update(state: &mut Self::State, message: Msg, _: &mut Clipboard) {
@@ -189,12 +193,12 @@ fn context_area<'a>(theme: &Theme) -> Widget<'a, Msg> {
                 size: Size::percent(1.0_f32),
                 flex_direction: FlexDirection::Column,
                 justify_content: Some(JustifyContent::Center),
-                gap: Size::length(12.0_f32),
+                gap: Size::length(spacing::MD),
                 ..Style::default()
             },
         }),
         style: Style {
-            padding: Rect::length(24.0_f32),
+            padding: Rect::length(spacing::XL),
             ..responsive_width(560.0, Dimension::length(200.0))
         },
         color: Some(Theme::alpha(theme.primary, 28)),
@@ -216,8 +220,8 @@ fn root_style() -> Style {
         flex_direction: FlexDirection::Column,
         align_items: Some(AlignItems::FlexStart),
         size: Size::percent(1.0_f32),
-        padding: Rect::length(32.0_f32),
-        gap: Size::length(16.0_f32),
+        padding: Rect::length(spacing::XL),
+        gap: Size::length(spacing::LG),
         ..Style::default()
     }
 }

@@ -327,6 +327,7 @@ fn text_selection_pixel(selection: Option<TextSelection>, menu_open: bool, mouse
         id: CONTEXT_MENU_ID,
         child: Box::new(Widget::TextInput {
             id: TEXT_INPUT_ID,
+            model_value: None,
             on_change: change_text,
             on_submit: None,
             style: fixed_style(320.0, 100.0),

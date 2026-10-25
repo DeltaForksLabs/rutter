@@ -1,5 +1,172 @@
 # Development Log
 
+## [2026-10-25T14:07:27-03:00] - Prepare the 0.43.0 Release Commit - 0.43.0
+
+**Context:** The user requested a version update and a commit of the completed Color Picker and widget-design work.
+
+**Challenge:** Synchronize package metadata without changing dependency resolution, include the new source/skill/test files, and exclude the user's unrelated `.gitignore` edit.
+
+**Decision:** Advance the experimental pre-1.0 release from 0.42.0 to 0.43.0, following the repository's minor-release sequence for feature/API changes. Change the authoritative Cargo manifest and let Cargo refresh its generated lockfile entry. Document the release and source migrations in the README: direct TextInput literals require `model_value`, exhaustive layout-context matches require `Field`, and annotated fields require additional allocation. Preserve historical Unreleased validation entries, vendor code and global OpenCode configuration. Use an English commit with per-file descriptions and a BREAKING CHANGE footer; stage only explicit task paths, never `.gitignore`. No tag, push or package publication is requested.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log; the requested commit also includes the implementation, examples, design skill/configuration and regression tests described in the preceding entries.
+
+**Validation:** Commands actually run after the version update, sequentially:
+
+```bash
+CARGO_BUILD_JOBS=2 cargo check --offline --all-targets --all-features
+git diff -- Cargo.toml Cargo.lock
+cargo fmt --all -- --check
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --example native_popup_clock -- --test-threads=2
+```
+
+The versioned full root suite passed **811 library tests (35 existing ignored), 70 binary/demo tests, 248 integration tests and 312 doctests**. All three native clock example tests also passed. Formatting, all-target/all-feature check and warnings-denied Clippy passed. The manifest/lockfile diff changes only Rutter's own version to 0.43.0; no dependencies were added, upgraded or removed. The lockfile is the only generated metadata changed. Disposable Xvfb isolates display/clipboard state. Manual visual, live assistive-technology, opt-in compositor/native, non-Linux and fork-only acceptance remain unperformed as documented above; no inherited desktop was driven.
+
+## [2026-10-24T08:57:28-03:00] - Establish Widget Design Skill and Responsive Example Layouts - Unreleased
+
+**Context:** Request 61 establishes a permanent, reusable design workflow and applies it to all 30 launcher demos plus the native popup clock; the user explicitly included widget internals.
+
+**Challenge:** Larger gaps alone could not fix mismatches between measured and painted text, annotations outside field allocations, compressed documents, or overlays and keyboard focus retaining document coordinates after scrolling. Preserve widget identity, callbacks, controlled text, accessibility and the earlier Color Picker work.
+
+**Alternatives:** Example-only spacing changes would leave shared painting and interaction defects intact. The user selected the broader internal correction instead. Use a project-local skill and an explicit instruction document rather than modifying global OpenCode configuration or relying on the ignored local AGENTS file.
+
+**Decision:** Add public logical-pixel spacing tokens (4/8/12/16/24/32/48), a framework-independent `widget-design` skill and an objective design standard loaded by `opencode.json`. Assign spacing to page/section/group owners instead of globally enlarging margins. Migrate all 31 example sources, grouping related controls, promoting semantic titles, bounding fluid widths, providing wrapped-row gaps and preserving intrinsic document height inside scroll viewports. Reserve a real header safe row for the theme action.
+
+Share paragraph measurement/painting for padded Text/Heading. Reserve bounded label/error rows inside field allocation without adding ID-bearing nodes, share control-body geometry across paint/editor/pointer/select paths, bound long checkbox/radio/button text, and keep full validation feedback and invalid state in AccessKit. Preserve Auto/stretch and parent-relative percentage sizing rather than replacing Auto with a fixed body height. Absolute length heights/min/max remain body-relative with annotation space added. Resolve annotation direction from the layout node; use grapheme-safe ellipsis for text buttons without clipping their frames or focus rings.
+
+Reconcile retained viewport geometry from live scroll offsets even without a layout rebuild. Popover anchors track nested scrolls; clipped/collapsed triggers suppress presentation while retaining logical open/dismissal state. Reveal focused controls inside-out through ancestor scroll viewports on Tab/Shift+Tab, isolate portaled content from document scroll ancestors, and cancel conflicting smooth scrolls when focus reveal moves a viewport. Place page overlays after document siblings for paint/hit priority and stop empty modal/dialog card space from leaking pointer interactions to underlying controls.
+
+**Files Changed:** `.opencode/skills/widget-design/SKILL.md`, `opencode.json`, `docs/WIDGET_DESIGN.md`, `src/spacing.rs` and exports; `examples/widgets/{layout,theme_selector,mod}.rs` and all launcher demos; `examples/native_popup_clock.rs`; layout/render field modules and paragraph/button rendering; `src/accessibility/mod.rs`; `src/engine/{mod,runner,scroll_runtime}.rs`; spacing, page-overlay, example-layout and runner-scroll regression tests; existing semantic demo test lookups; `README.md`; this log.
+
+**Validation:** All resource-intensive operations ran sequentially. Final commands actually executed:
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --lib task61_ -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --bin rutter page_overlay_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --bin rutter focused_form_error -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --lib widget_spacing -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --example native_popup_clock -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+python3 -m json.tool opencode.json
+cargo fmt --all -- --check
+git diff --check
+git diff --exit-code -- Cargo.toml Cargo.lock ':(glob)vendor/**'
+git diff --cached --exit-code
+git status --short --untracked-files=all
+```
+
+Final root results: **811 library tests passed (35 existing ignored), 70 binary/demo tests, 248 integration tests and 312 doctests**; all result summaries were inspected. The native clock example's **3 tests** also passed. Targeted checks passed **22 spacing/accessibility/layout/render/engine tests, 9 runner scroll/focus/popover tests and 2 open-modal/dialog raster/pointer tests**. All-target/all-feature check, warnings-denied Clippy, formatting and Git checks passed. JSON syntax was validated and instruction paths/skill frontmatter reviewed against the OpenCode configuration guidance; actual startup discovery requires restarting OpenCode.
+
+The example inventory checks real views at 320/800px widths and 260/700px heights, both themes, grouping/alignment/wrap/scroll reachability and title raster safe areas, including both multi-window surfaces. Additional tests cover form tabs/errors/long content, native popup Close reachability, field Auto/stretch/length/percentage/min/max, disabled and sensitive accessibility, RTL annotations, representative button raster scales 1/1.5/2x, actual runner Tab/Shift+Tab/activation/IME, wheel/page/drag/smooth scrolling, nested clips, clipped popover dismissal/restoration and overlay interaction isolation. Whole-example raster coverage is at 1x; representative internal tests do not establish every example at every scale.
+
+Intermediate validation exposed and corrected a narrow Live HEX overflow, a native size type mismatch, strict Clippy findings, and an initial overlay test attempting to import private card geometry. The overlay test now identifies opaque pixels by transparent-backed rendering without exporting internals. After correcting overlay stacking, the full suite found a form test assuming the viewport was the final root child; it now finds the semantic ScrollView while preserving all annotation and pointer assertions. An earlier full-suite run exceeded a 120-second timeout; the final full run completed with a longer timeout.
+
+Compatibility: `layout::RutterContext` gains a public `Field` variant, requiring downstream exhaustive-match updates. Annotated fields need additional total height in custom fixed layouts, and wrapped/padded text now follows its actual content box. These intentional layout/source changes are documented; no persisted-data migration is needed. No new dependencies, version, lockfile, vendor or generated-file changes. The preexisting `.gitignore` edit and earlier uncommitted work were preserved; nothing staged, committed or pushed. The disposable Xvfb harness isolated display/clipboard/session state. Manual GUI/visual acceptance, live assistive-technology acceptance, opt-in native/compositor suites, non-Linux execution and fork-only suites were not performed; automated tests do not establish those checks. OpenCode must be quit and restarted to discover the new skill/configuration.
+
+## [2026-10-24T00:58:18-03:00] - Show Preview Checkerboard Only at Zero Alpha - Unreleased
+
+**Context:** For request 60.2, the user explicitly selected a uniform color-preview background with checkerboard only at exactly zero alpha, leaving the alpha adjustment strip unchanged.
+
+**Challenge:** Keep partial transparency meaningful against both themes without incorrectly classifying a small positive model alpha as zero after conversion to eight-bit paint values.
+
+**Decision:** In the shared preview painter used by the picker and standalone `color_swatch`, composite positive-alpha colors over `theme.surface`; reserve checkerboard for `color.rgba()[3] == 0.0`. Test the original normalized model alpha, not an epsilon or rounded byte. Preserve the alpha strip's checkerboard/gradient, preview border, state, callbacks and public signatures. Update current API/README descriptions while preserving historical development entries.
+
+**Files Changed:** `src/widgets/color_picker/{paint,widgets,widget_tests}.rs`; `tests/color_picker_widget_tests.rs`; `README.md`; this log.
+
+**Validation:** All resource-intensive commands ran sequentially. Commands actually executed:
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features color_picker -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --test color_picker_widget_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+cargo fmt --all -- --check
+git diff --check
+git diff --exit-code -- Cargo.toml Cargo.lock ':(glob)vendor/**'
+git diff --cached --exit-code
+git status --short --untracked-files=all
+```
+
+Targeted runs passed **39 Color Picker library tests, 13 demo tests and 6 public integration tests**. Software raster regressions verify zero-alpha checkerboard, opaque color, partial-alpha composition against each theme surface, positive alpha `1e-6` that rounds to byte zero, and unchanged checkerboard under the alpha strip at the same gradient position. The composed picker raster test now requires a uniform partial-alpha preview at 240/360px in both themes while retaining gradient assertions for the other controls. The complete root suite passed **780 library tests (35 existing ignored), 64 binary/example tests, 248 integration tests and 312 doctests**. Warnings-denied all-target/all-feature Clippy, formatting and Git checks passed.
+
+Manual GUI/visual acceptance, real-screen-reader acceptance, non-Linux execution and fork-only suites were not performed; validation used isolated Xvfb and software raster tests, not the inherited desktop. This intentionally changes preview appearance, not color values or public APIs; no migration or security behavior changes. No new dependencies, version, lockfile, vendor or generated-file changes. The preexisting `.gitignore` edit and other uncommitted work were preserved; nothing staged, committed or pushed.
+
+## [2026-10-23T19:27:41-03:00] - Expand Color Picker Popover and Add SVG Copy Button - Unreleased
+
+**Context:** Address request 60.1: stop compressing the Color Picker popup and add a hard-coded SVG copy button to the right of its color editors.
+
+**Challenge:** Percentage popup widths resolve against the popover host, which was limited to the 160px trigger width. The demo's scroll document also inherited row cross-axis stretching, constraining its intrinsic height. Clipboard effects must report failures without changing the selected color, invalid drafts, representation or popup state.
+
+**Decision:** Fix the example's sizing rather than changing shared popover infrastructure: cap the host and popup at 384px, keep the trigger at 160px, and allow a 360px picker inside 12px padding on wide surfaces while shrinking responsively on narrow ones. Set the scroll viewport's cross-axis alignment to `FlexStart` so the document retains intrinsic height and can scroll.
+
+Add the opt-in `ColorPickerCallbacks::with_copy_button` builder without changing its existing constructor or eleven reserved manual IDs. Compose a 44px native Ghost button containing an original embedded overlapping-page SVG, with the accessible label `Copy color as HEX`. Keep it to the right of the editors while numeric fields wrap. The button emits an application message; the widget performs no clipboard I/O. Enable it on both demo pickers and inject clipboard writing into the application update path. Copy the last valid canonical `#RRGGBBAA`, including alpha, independent of the selected representation or incomplete drafts, and show explicit success/failure status.
+
+**Files Changed:** `src/widgets/color_picker/{widgets,widget_tests}.rs`; `examples/widgets/color_picker_demo.rs`; `tests/color_picker_widget_tests.rs`; `tests/unit/color_picker_demo_unit_tests.rs`; `README.md`; this log.
+
+**Validation:** Resource-intensive commands ran sequentially with two Cargo build jobs. Commands actually executed:
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --bin rutter widget_examples::color_picker_demo -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features color_picker -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --test color_picker_widget_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+cargo fmt --all -- --check
+git diff --check
+git diff --exit-code -- Cargo.toml Cargo.lock ':(glob)vendor/**'
+git diff --cached --exit-code
+git status --short --untracked-files=all
+```
+
+Targeted results: **36 Color Picker library tests, 13 demo tests and 6 public integration tests passed**. The initial full-view layout regression exposed subpixel Taffy rounding between document and last-child bounds; its bottom-bound comparison now allows one pixel, preserving the width, height, overflow and scroll assertions. Tests cover the actual complete example view at 800px and 320px in every format, 240/360px public picker layouts, button placement and message routing through a popover, disabled behavior, stable identities, SVG parsing/software rasterization, canonical copy with transparent/partial/opaque alpha, invalid drafts, clipboard failure/success and absence of clipboard effects for unrelated messages. Clipboard effects use a named fake rather than the inherited desktop.
+
+The final complete root suite passed **777 library tests (35 existing ignored), 64 binary/example tests, 248 integration tests and 312 doctests**, including the new copy-builder example. All-target/all-feature check, warnings-denied Clippy, formatting and Git whitespace/metadata checks passed. The disposable Xvfb harness isolates display/clipboard/session state. Manual GUI/real-desktop clipboard acceptance, real-screen-reader acceptance, non-Linux execution and fork-only suites were not performed; automated tests do not claim those checks. No new dependencies, version, lockfile, vendor or generated-file changes. Preserve the user's preexisting `.gitignore` edit; nothing staged, committed or pushed.
+
+## [2026-10-23T13:59:22-03:00] - Add Controlled Color Picker and Interactive Example - Unreleased
+
+**Context:** Add a Color Picker with RGB, HEX and HSL, include HSV and CMYK, and provide the explicitly requested runnable widget example.
+
+**Challenge:** Keep gestures, five editable representations and external presets synchronized without byte quantization, losing achromatic hue/component intent, overwriting incomplete drafts or resetting input focus. Existing text inputs were uncontrolled, and disabled presentation must not acquire interactive callbacks.
+
+**Alternatives:** A monolithic custom canvas would duplicate existing text editing, selection and popup infrastructure. Composing native controls with small custom gradient leaves reuses those established paths and their keyboard/accessibility behavior.
+
+**Decision:** Add a controlled `Widget::color_picker` family, renderer-independent `PickerColor` conversions and `ColorPickerState` reducer, typed callbacks, and eleven stable reserved manual IDs per instance. Use custom leaves only for the SV plane, hue/alpha strips and checkerboard preview; reuse Select, TextInput and ordinary Popover hosting. Keep finite unpremultiplied encoded-sRGB `f32` components, rounding only for byte/HEX export. Retain hue through gray/black, HSV saturation at black, and active HSL/CMYK components at degenerate colors, including same-RGB/alpha-only external replacements. Invalid numeric/HEX drafts retain the last valid color and expose feedback; the reducer boolean reports color changes, not all view changes. CMYK is mathematical, not ICC/profile-aware printing.
+
+Add opt-in `controlled_text_input` and `TextInput.model_value`, preserving the uncontrolled constructor. Materialize controlled buffers during layout before focus, separate callback-free disabled presentation metadata from active input runtime registration, and share metadata child traversal without enabling disabled descendants. External replacements clear stale selection/history/scroll; equal-text echoes preserve editor state. Cache model copies in redacted zeroizing storage using the existing dependency, wipe comparison temporaries, and retire scratch-cache copies after publication. Application-owned password strings/messages remain outside this memory-cleanup guarantee. Input limits still reject replacements atomically without logging text.
+
+Register `examples/widgets/color_picker_demo.rs` as `cargo run -- color_picker`. Its pure reducer drives inline and anchored popup pickers sharing a model but distinct IDs, a live HEX/swatch summary, external presets/reset, explicit validation status and the shared Dark/Light theme selector. Document the direct-literal source migration to `model_value: None` or `Some(value)`. No additional public Widget enum variant is introduced.
+
+**Files Changed:** `src/widgets/color_picker/{color,state,widgets,controls,paint,mod,widget_tests}.rs`; public exports; `src/widget/mod.rs`; engine metadata/buffer synchronization; existing TextInput literals in examples, accessibility and tests; demo module/launcher/theme registration; `tests/color_picker_widget_tests.rs`, `tests/unit/{controlled_text_input_engine,color_picker_demo}_unit_tests.rs`; `README.md`; this log.
+
+**Validation:** Resource-intensive operations ran sequentially with two Cargo build jobs. Commands actually executed:
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 cargo check --locked --offline --all-targets --all-features
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features color_picker -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --lib controlled_text_input -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --test color_picker_widget_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --lib controlled_text_input_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+cargo fmt --all -- --check
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+git diff --check
+git diff --exit-code -- Cargo.toml Cargo.lock ':(glob)vendor/**'
+git diff --cached --exit-code
+```
+
+Targeted runs passed 33 Color Picker library tests, 10 demo tests, 4 public integration tests and, after lifecycle fixes, 14 controlled-input tests. Final full root results: **774 library tests passed (35 existing ignored), 61 binary/example tests, 246 integration tests and 311 doctests**; full result summaries were inspected. Tests cover independent conversion references, deterministic round trips, nonfinite/range/syntax rejection, retained degenerate components, invalid drafts, keyboard/pointer/capture outcomes, accessibility metadata/actions, stable IDs, real layout/input lifecycle, disabled state/cache pruning, redacted model diagnostics, 240/360-pixel layout and wrapping, public hit/popover routing and software raster gradients/transparency in both themes. Initial compilation exposed custom-constructor/select signature and invariant-lifetime mistakes; those were corrected before successful all-target check and warnings-denied Clippy. Read-only review identified the same-RGB component-loss and missing initial/disabled/unfocused presentation paths; regression tests now cover those corrections.
+
+The disposable Xvfb harness isolates display/clipboard/session state; no inherited desktop was driven. `cargo run -- color_picker` was registered and compiled, but manual GUI execution/visual acceptance, real-screen-reader acceptance, non-Linux execution and fork-only suites were not performed. Automated layout/raster/input tests do not claim those checks. No new dependencies, version, lockfile, vendor or generated-file changes. Preserve the user's preexisting `.gitignore` edit; nothing staged, committed or pushed.
+
 ## [2026-10-23T01:39:55-03:00] - Unify Integer and Floating-Point Counter APIs - Unreleased
 
 **Context:** The user requested a single Counter instead of separate integer and floating-point widgets.

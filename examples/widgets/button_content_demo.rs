@@ -5,6 +5,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, RutterRunner, Theme, Widget};
@@ -50,20 +51,23 @@ impl AppLogic for ButtonContentDemo {
     }
 
     fn view<'a>(s: &'a mut ButtonContentDemoState) -> Widget<'a, Msg> {
-        Widget::Column {
-            style: page_style(),
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                heading("ButtonContent"),
-                label(format!(
-                    "Cliques: {} | Opcao: {}",
-                    s.clicks,
-                    selected_label(s.selected)
-                )),
-                action_row(s.theme),
-                preview_row(),
-            ],
-        }
+        super::layout::page(
+            "Button content",
+            Widget::Column {
+                style: page_style(),
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    heading("ButtonContent"),
+                    label(format!(
+                        "Cliques: {} | Opcao: {}",
+                        s.clicks,
+                        selected_label(s.selected)
+                    )),
+                    action_row(s.theme),
+                    preview_row(),
+                ],
+            },
+        )
     }
 
     fn update(s: &mut ButtonContentDemoState, msg: Msg, _: &mut Clipboard) {
@@ -225,20 +229,14 @@ fn page_style() -> Style {
             width: Dimension::percent(1.0),
             height: Dimension::percent(1.0),
         },
-        padding: Rect::length(40.0_f32),
-        gap: gap_size(16.0, 16.0),
+        padding: Rect::length(spacing::XL),
+        gap: gap_size(spacing::LG, spacing::LG),
         ..Default::default()
     }
 }
 
 fn row_style() -> Style {
-    Style {
-        flex_direction: FlexDirection::Row,
-        flex_wrap: FlexWrap::Wrap,
-        align_items: Some(AlignItems::Center),
-        gap: gap_size(12.0, 0.0),
-        ..Default::default()
-    }
+    super::layout::flow()
 }
 
 fn button_style() -> Style {
@@ -261,7 +259,7 @@ fn button_body_style() -> Style {
     Style {
         flex_direction: FlexDirection::Row,
         align_items: Some(AlignItems::Center),
-        gap: gap_size(8.0, 0.0),
+        gap: gap_size(spacing::SM, spacing::SM),
         ..Default::default()
     }
 }

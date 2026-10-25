@@ -7,6 +7,7 @@
 use arboard::Clipboard;
 use chrono::{Datelike, Utc};
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use rutter::{
     ButtonVariant, CalendarConfig, CalendarDate, CalendarLabels, CalendarMonth, ClockConfig,
     ClockFormat, MultiWindowAppLogic, MultiWindowRunner, PanelConfig, PanelEdge, PanelFocus,
@@ -77,51 +78,75 @@ impl MultiWindowAppLogic for ClockCalendar {
                 ButtonVariant::Text,
             );
         }
-        Widget::Column {
-            children: vec![
-                Widget::clock_with_config(
-                    TimeZone::UTC,
-                    ClockConfig::new(ClockFormat::twenty_four_hour().with_time_zone(false), 28.0)
-                        .expect("28 logical pixels is a valid clock font size"),
-                    Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::length(38.0),
-                        },
-                        ..Style::default()
-                    },
-                    "UTC time, hours minutes seconds",
-                )
-                .with_id(20),
-                Widget::calendar_with_config(
-                    state.month,
-                    state.selected,
-                    Message::Select,
-                    Message::Navigate,
-                    CalendarConfig::new(CalendarLabels::PORTUGUESE, WeekStart::Monday),
-                    Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::length(330.0),
-                        },
-                        flex_shrink: 0.0,
-                        ..Style::default()
-                    },
-                ),
-                Widget::Button {
-                    text: "Close",
-                    on_press: Message::Close,
-                    style: Style::default(),
-                    color: None,
-                    variant: ButtonVariant::Text,
-                },
-            ],
+        Widget::ScrollView {
+            id: 21,
             style: Style {
                 size: Size::percent(1.0_f32),
-                padding: Rect::length(12.0_f32),
-                gap: Size::length(8.0_f32),
+                align_items: Some(AlignItems::FlexStart),
+                min_size: Size::from_lengths(0.0, 0.0),
                 ..Style::default()
             },
+            child: Box::new(Widget::Column {
+                children: vec![
+                    Widget::clock_with_config(
+                        TimeZone::UTC,
+                        ClockConfig::new(
+                            ClockFormat::twenty_four_hour().with_time_zone(false),
+                            28.0,
+                        )
+                        .expect("28 logical pixels is a valid clock font size"),
+                        Style {
+                            flex_shrink: 0.0,
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::length(38.0),
+                            },
+                            ..Style::default()
+                        },
+                        "UTC time, hours minutes seconds",
+                    )
+                    .with_id(20),
+                    Widget::calendar_with_config(
+                        state.month,
+                        state.selected,
+                        Message::Select,
+                        Message::Navigate,
+                        CalendarConfig::new(CalendarLabels::PORTUGUESE, WeekStart::Monday),
+                        Style {
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::length(330.0),
+                            },
+                            flex_shrink: 0.0,
+                            ..Style::default()
+                        },
+                    ),
+                    Widget::Button {
+                        text: "Close",
+                        on_press: Message::Close,
+                        style: Style {
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::length(36.0),
+                            },
+                            flex_shrink: 0.0,
+                            ..Style::default()
+                        },
+                        color: None,
+                        variant: ButtonVariant::Text,
+                    },
+                ],
+                style: Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    flex_shrink: 0.0,
+                    padding: Rect::length(spacing::MD),
+                    gap: Size::length(spacing::SM),
+                    ..Style::default()
+                },
+            }),
         }
     }
 
@@ -163,10 +188,10 @@ impl MultiWindowAppLogic for ClockCalendar {
 
 fn popup_request(direction: PopupDirection) -> Result<SurfaceRequest, PopupConfigError> {
     let offset = match direction {
-        PopupDirection::Above => (0, -4),
-        PopupDirection::Below => (0, 4),
-        PopupDirection::Left => (-4, 0),
-        PopupDirection::Right => (4, 0),
+        PopupDirection::Above => (0, -(spacing::XS as i32)),
+        PopupDirection::Below => (0, spacing::XS as i32),
+        PopupDirection::Left => (-(spacing::XS as i32), 0),
+        PopupDirection::Right => (spacing::XS as i32, 0),
     };
     let popup = PopupConfig::new(
         SurfaceId::PRIMARY,
@@ -213,6 +238,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/native_popup_clock_layout_unit_tests.rs"]
+mod layout_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -227,7 +256,10 @@ mod tests {
         };
         {
             let widget = ClockCalendar::view(&mut state, CLOCK_POPUP);
-            let Widget::Column { children, .. } = widget else {
+            let Widget::ScrollView { child, .. } = widget else {
+                panic!("popup must retain a scrollable document on short surfaces");
+            };
+            let Widget::Column { children, .. } = *child else {
                 panic!("popup must be a column");
             };
             assert!(

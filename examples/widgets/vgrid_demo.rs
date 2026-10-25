@@ -6,6 +6,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, VirtualSelection, Widget};
@@ -47,16 +48,13 @@ impl AppLogic for VGridDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(24.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(14.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
         let grid_s = responsive_width(720.0, Dimension::length(420.0));
 
-        Widget::Column {
+        super::layout::page("Virtual grid", Widget::Column {
             style: root,
             children: vec![
                 example_theme_selector(s.theme, Msg::ThemeChanged),
@@ -92,7 +90,7 @@ impl AppLogic for VGridDemo {
                     style: Style::default(),
                 },
             ],
-        }
+        })
     }
 
     fn update(s: &mut VGridDemoState, msg: Msg, _: &mut Clipboard) {

@@ -5,6 +5,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use skia_safe::Color;
 use taffy::prelude::*;
 
@@ -39,10 +40,13 @@ impl AppLogic for CarouselDemo {
     }
 
     fn view<'a>(state: &'a mut CarouselDemoState) -> Widget<'a, Msg> {
-        Widget::Column {
-            style: root_style(),
-            children: carousel_demo_children(state),
-        }
+        super::layout::page(
+            "Carousel",
+            Widget::Column {
+                style: root_style(),
+                children: carousel_demo_children(state),
+            },
+        )
     }
 
     fn update(state: &mut CarouselDemoState, message: Msg, _: &mut Clipboard) {
@@ -62,10 +66,14 @@ fn carousel_demo_children<'a>(state: &CarouselDemoState) -> Vec<Widget<'a, Msg>>
     vec![
         example_theme_selector(state.theme, Msg::ThemeChanged),
         heading("CarouselView", 26.0),
-        status_text("Weighted [1, 6, 2]", state.weighted_selection),
-        weighted_carousel(),
-        status_text("Uncontained 220 px + snapping", state.fixed_selection),
-        fixed_carousel(),
+        super::layout::section(vec![
+            status_text("Weighted [1, 6, 2]", state.weighted_selection),
+            weighted_carousel(),
+        ]),
+        super::layout::section(vec![
+            status_text("Uncontained 220 px + snapping", state.fixed_selection),
+            fixed_carousel(),
+        ]),
         heading(
             "Use the wheel or trackpad over a carousel. Click a card, then use Left/Right, Home, or End.",
             12.0,
@@ -158,17 +166,15 @@ fn root_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
         size: Size::percent(1.0_f32),
-        padding: Rect::length(24.0_f32),
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(10.0),
-        },
+        padding: Rect::length(spacing::XL),
+        gap: Size::length(spacing::LG),
         ..Style::default()
     }
 }
 
 fn carousel_style(height: f32) -> Style {
     Style {
+        flex_shrink: 0.0,
         size: Size {
             width: Dimension::percent(1.0),
             height: Dimension::length(height),
@@ -181,8 +187,8 @@ fn card_content_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
         justify_content: Some(JustifyContent::Center),
-        padding: Rect::length(16.0_f32),
-        gap: Size::length(8.0_f32),
+        padding: Rect::length(spacing::LG),
+        gap: Size::length(spacing::SM),
         size: Size::percent(1.0_f32),
         ..Style::default()
     }

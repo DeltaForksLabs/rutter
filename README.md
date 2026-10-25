@@ -12,6 +12,7 @@ The project is focused on building a pragmatic foundation for desktop interfaces
 - [Features](#features)
 - [Project Status](#project-status)
 - [Demo](#demo)
+- [Widget Design and Layout](#widget-design-and-layout)
 - [Quick Start](#quick-start)
 - [Custom Widgets](#custom-widgets)
 - [Pointer Regions and In-Surface Drag](#pointer-regions-and-in-surface-drag)
@@ -103,6 +104,16 @@ The framework is still evolving, but it already includes a broad set of widgets,
 ## Project Status
 
 Rutter is under active development. APIs may change while the framework settles.
+
+**Current version: 0.43.0.** This pre-1.0 release adds the controlled five-format
+Color Picker, opt-in controlled text inputs, reusable design guidance and spacing
+tokens, responsive examples, and scroll-aware popover/focus geometry. Direct
+`Widget::TextInput` literals must specify `model_value`, exhaustive
+`layout::RutterContext` matches must handle `Field`, and fixed layouts must allow
+for field annotation rows. See [controlled inputs](#controlled-text-inputs),
+[Color Picker](#color-picker) and [layout compatibility](#widget-design-and-layout)
+for migration details. Existing constructor-based uncontrolled inputs remain
+supported; no stored-data migration is required.
 
 Rutter now uses the local [rutter-winit](vendor/rutter-winit/RUTTER_FORK.md) fork at `0.31.0-beta.3`, [AccessKit Winit adapter](vendor/rutter-accesskit-winit/README.md) at `0.34.1` (with `accesskit 0.25.1`), and [glutin-winit bridge](vendor/rutter-glutin-winit/README.md) at `0.5.0`. The core `glutin 0.32.3` remains unchanged. These path dependencies require the `vendor/` directories when building from source and are not suitable for publishing Rutter as-is.
 
@@ -218,6 +229,7 @@ cargo run -- context_menu
 cargo run -- dropdown_menu
 cargo run -- calendar
 cargo run -- time
+cargo run -- color_picker
 cargo run -- carousel
 cargo run -- multi_window
 cargo run -- rich_text
@@ -251,6 +263,52 @@ ContextMenuEntry::item("Copy", Msg::Action("Copy"))
 Shortcut labels **do not register or parse bindings**. Applications define bindings through `AppLogic::shortcut`. The example maps CTRL+C, CTRL+O, F2 and Delete to the same status-only messages as Copy, Open, Rename and Delete. CTRL+V remains unbound because Paste is disabled. These are surface-local shortcuts, not desktop-wide hotkeys. SVG/shortcut metadata does not affect typeahead, submenu paths or command identity.
 
 **Source compatibility:** `ContextMenuEntry` includes new `Submenu` and `Decorated` variants, and `ContextMenuOverlayHit` includes `Submenu`; downstream exhaustive matches must handle them. Existing constructors and original variant field shapes remain unchanged. Use `label()`, `action_message()`, `submenu_entries()` and `is_disabled()` to inspect decorated entries semantically instead of matching only `Item`/`Submenu`. `ContextMenuState` gains `navigation`; use `..Default::default()` or initialize it when constructing the state explicitly. No configuration or stored-data migration is required.
+
+## Widget Design and Layout
+
+The reusable [Widget Design skill](.opencode/skills/widget-design/SKILL.md) and
+[design standard](docs/WIDGET_DESIGN.md) guide spacing, alignment, grouping,
+hierarchy and responsive behavior. Project-local `opencode.json` loads the
+standard as permanent instructions; no global configuration is changed.
+**Quit and restart OpenCode** after adding or changing these files: configuration
+and skill discovery are not hot-reloaded. The skill guides development; it is
+not a runtime layout engine or automatic visual acceptance.
+
+`rutter::spacing` exports logical-pixel constants `XS`, `SM`, `MD`, `LG`, `XL`,
+`TWO_XL`, `THREE_XL` (4, 8, 12, 16, 24, 32, 48). Use parent gaps for siblings
+and container padding for edges, with closer spacing within a group than between
+independent sections. These are relationship-based references, not a requirement
+to round control dimensions, typography or optical corrections to the same scale.
+
+All 30 launcher demos and `examples/native_popup_clock.rs` use these tokens.
+Launcher pages share bounded fluid content, semantic titles, wrapping action
+groups, an explicit safe row for the theme action, and an intrinsic-height
+scrolling document. Modal/dialog overlays remain above the document for painting
+and pointer routing, including inert card space. Generic popover anchors follow
+live ancestor scroll offsets; a clipped-out trigger suppresses popup presentation
+without losing its logical open state, so scrolling it back restores it and
+Escape/outside-click dismissal still works. Tab/Shift+Tab reveals focused
+controls through ancestor scroll viewports, including nested viewports.
+
+**Layout compatibility:** `Text` and `Heading` now measure and paint the same
+wrapped, direction-aware paragraph inside their padded content box. Narrow text
+buttons ellipsize within their padded bounds; full button semantics remain
+available. `TextInput`, `TextArea` and `Select` reserve a 20px row for a nonempty
+label; text inputs/areas reserve another 20px row for a nonempty error. Absolute
+length heights and bounds continue to describe the control body, with annotation
+space added outside it. Auto heights retain intrinsic/stretch behavior;
+percentage heights remain parent-relative total allocations. Custom layouts may
+need more total height when fields have annotations. Compact annotations
+ellipsize, while accessibility retains the full label/error and invalid state,
+including on disabled controls. Paint, editor viewport, pointer coordinates and
+select anchors share the resulting body geometry. No extra widget IDs are added.
+`layout::RutterContext` gains a `Field` variant; downstream exhaustive matches
+must handle it. No configuration or persisted-data migration is needed.
+
+The design standard specifies geometry, raster and interaction checks at narrow,
+desktop and short sizes, both themes, localized text and representative scales.
+Automated checks do not establish manual visual, real assistive-technology or
+non-Linux acceptance; record actual coverage and remaining gaps separately.
 
 ## Quick Start
 
@@ -774,6 +832,59 @@ There is only one public `Widget::Counter`, one `RutterContext::Counter`, and on
 
 `Select` chooses one value. `DropdownMenu` instead exposes commands and optional checkbox/radio state; it does not represent a selected form value.
 
+### Controlled Text Inputs
+
+`Widget::controlled_text_input(value, on_change, on_submit, style, label, placeholder, state, error_msg, is_password)` presents application-owned text. Feed `on_change` messages back into the model. Initial values are visible before focus, and external replacements synchronize even while disabled. Equal-text echoes preserve caret, selection and undo/redo history; a different accepted model value clears selection and stale history and resets the viewport without sending another callback. The engine retains committed IME text, not a separate preedit composition.
+
+Application `input_limits` still apply. Rejected model values leave the last accepted editor text intact and report only the widget ID and limit error to stderr, never the value. Framework-owned model copies are zeroized on drop and redacted from runtime diagnostics; application-owned strings and callback messages remain the application's responsibility, including in password mode.
+
+`Widget::text_input` keeps its existing uncontrolled behavior and signature. **Source migration:** direct `Widget::TextInput` literals must now specify `model_value: None`, or `Some(value)` to opt into controlled text. Prefer constructors when possible.
+
+### Color Picker
+
+`Widget::color_picker` composes a saturation/value plane, hue and alpha strips, color preview, format selector and controlled channel editors. The preview composites over the uniform theme surface when alpha is greater than zero and shows a checkerboard only at exactly zero alpha. The alpha adjustment strip keeps its checkerboard throughout the gradient. It supports **RGB, HEX, HSL, HSV and CMYK**, inline or inside an ordinary `Widget::popover`. `Widget::color_swatch` also exposes the preview separately. Run **`cargo run -- color_picker`** or see [`examples/widgets/color_picker_demo.rs`](examples/widgets/color_picker_demo.rs) for a complete application with inline/popup pickers, synchronized presets, live HEX and a theme selector.
+
+Enable the embedded SVG copy button through `callbacks.with_copy_button(Msg::CopyColor)`. It sits to the right of the color editors, has a keyboard-accessible “Copy color as HEX” label, and leaves numeric fields free to wrap. Handle the message in application `update` by calling `clipboard.set_text(state.picker.color().to_hex())` and reporting its result. Copy the canonical last valid `#RRGGBBAA`, including alpha, rather than an incomplete draft; copying does not change drafts, format or popup state. The example enables this on both pickers and reports success/failure. Existing callback constructors and the eleven-ID range remain unchanged; without the builder, the original editor layout is retained.
+
+For responsive popover hosting, percentage popup widths resolve against the popover host, not the viewport. Reserve the intended popup width in the host even when the anchor button is smaller: the example caps the host/popup at 384px, keeps the trigger at 160px, and provides a 360px picker inside 12px padding. Its scroll document retains intrinsic height rather than being stretched into the viewport.
+
+Store a `ColorPickerState` and translate the typed callbacks into `ColorPickerEvent` messages. Always publish state changes, including when `update` returns `Ok(false)` or `Err`: the boolean reports **color changes only**, while representation, retained hue, drafts and validation feedback can change independently. Invalid/incomplete drafts remain editable without replacing the last valid color.
+
+```rust
+use rutter::{ColorPickerCallbacks, ColorPickerEvent, ColorPickerIds, ColorPickerState, PickerColor, Widget};
+use taffy::prelude::{Dimension, Size, Style};
+
+let mut state = ColorPickerState::new(PickerColor::from_rgb8(103, 80, 164));
+// In application update: match state.update(event) and display any ColorError.
+state.update(ColorPickerEvent::Alpha(0.5)).expect("normalized alpha");
+let callbacks = ColorPickerCallbacks::new(
+    |(saturation, value)| ColorPickerEvent::SaturationValue { saturation, value },
+    ColorPickerEvent::Hue,
+    ColorPickerEvent::Alpha,
+    ColorPickerEvent::Format,
+    ColorPickerEvent::Hex,
+    [
+        |text| ColorPickerEvent::Channel { index: 0, text },
+        |text| ColorPickerEvent::Channel { index: 1, text },
+        |text| ColorPickerEvent::Channel { index: 2, text },
+        |text| ColorPickerEvent::Channel { index: 3, text },
+        |text| ColorPickerEvent::Channel { index: 4, text },
+    ],
+);
+let picker = Widget::color_picker(
+    &state,
+    ColorPickerIds::new(100).expect("reserve 100..=110; use a different range per instance"),
+    callbacks,
+    Style { size: Size { width: Dimension::length(360.0), height: Dimension::auto() }, ..Style::default() },
+);
+```
+
+- RGB editors use `0..=255`; hue uses `0..=360` degrees; saturation, lightness, value, CMYK and alpha editors use percentages. Plane/alpha callback values and conversion API components are normalized `0..=1`. Nonfinite and out-of-range values are rejected.
+- HEX accepts optional `#` and 3/4/6/8 ASCII digits, with **alpha last**. `PickerColor::from_hex` defaults missing alpha to opaque; editing RGB-only HEX in the picker preserves existing alpha. `to_hex()` exports uppercase `#RRGGBBAA`.
+- The canonical color is unpremultiplied encoded sRGB in `f32`; gestures/conversions do not quantize through bytes. Floating conversions are approximate (typically compare unit components within `1e-6`, allowing more for hue); byte/HEX export rounds to eight bits. Hue survives gray/black, HSV saturation survives black, and active HSL/CMYK components retain degenerate-color intent. Switching representations derives the new representation from the color, not rounded draft text.
+- CMYK is a mathematical encoded-sRGB conversion, **not** ICC/profile-aware printing, ink-limit handling or a soft proof. No eyedropper, palette persistence or desktop color sampling is provided.
+- Keep the eleven reserved manual IDs stable across edits/formats. Numeric editors wrap at narrower widths. Arrow keys adjust S/V on the plane and hue/alpha on strips; Shift uses larger steps, Page Up/Down adjust by ten percent, and Home/End select endpoints (S on the plane). AccessKit nodes describe values and expose increment/decrement; the plane's assistive actions adjust V, with text channels available for other components. `.enabled(false)` blocks interaction while maintaining the controlled display.
+
 ### Search Suggestions
 
 `SearchBar` gains an integrated suggestions popup when built through `Widget::search_bar_with_suggestions`. The popup opens while the field is focused and its text is non-empty, ranks a borrowed `&[&str]` item slice every frame, and closes on Escape until the text changes again. Keyboard users navigate with Arrow keys, Home, End, Page Up, and Page Down; Enter selects the highlighted row (falling back to the normal submit when nothing is highlighted), mouse clicks route to the original item index, and the wheel scrolls the row window. An empty result set renders an explicit no-matches label that consumes pointer input without activating a row or leaking clicks to covered widgets. Assistive technologies receive an editable combobox, list autocomplete metadata, a controlled listbox, active-option selection, and Focus/Expand/Collapse/Click actions.
@@ -847,6 +958,7 @@ let widget: Widget<'_, ()> = Widget::rich_text(content, Style::default());
 - `Calendar`
 - `DatePicker`
 - `TimePicker`
+- `ColorPicker` (composed; no additional `Widget` enum variant)
 - `CarouselView`
 - `VirtualList`
 - `VirtualListContent`

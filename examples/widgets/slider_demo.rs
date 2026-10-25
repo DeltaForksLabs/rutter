@@ -7,6 +7,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, Widget};
@@ -55,78 +56,84 @@ impl AppLogic for SliderDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(40.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(24.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::XL),
             ..Default::default()
         };
         let slider_s = responsive_width(360.0, Dimension::length(36.0));
 
-        Widget::Column {
-            style: col,
-            children: vec![
-                example_theme_selector(s.theme, Msg::Theme),
-                // ── Volume: step 1.0 (linear, padrão correto — FIX-6) ──
-                Widget::Text {
-                    content: format!("Volume: {:.0}%", s.volume),
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::Slider {
-                    id: 10,
-                    value: s.volume,
-                    min: 0.0,
-                    max: 100.0,
-                    step: 1.0, // FIX-6: era 5.0 no demo original
-                    on_change: Msg::Volume,
-                    style: slider_s.clone(),
-                    label: "",
-                },
-                // ── Balance: step 0.5 ─────────────────────────────────
-                Widget::Text {
-                    content: format!("Balance: {:.1}", s.balance),
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::Slider {
-                    id: 11,
-                    value: s.balance,
-                    min: -10.0,
-                    max: 10.0,
-                    step: 0.5,
-                    on_change: Msg::Balance,
-                    style: slider_s.clone(),
-                    label: "",
-                },
-                // ── Brightness: step 5.0 (granular — uso explícito) ───
-                Widget::Text {
-                    content: format!("Brightness: {:.0}%", s.brightness),
-                    color: None,
-                    size: 14.0,
-                    style: Style::default(),
-                },
-                Widget::Slider {
-                    id: 12,
-                    value: s.brightness,
-                    min: 0.0,
-                    max: 100.0,
-                    step: 5.0, // granular intencional
-                    on_change: Msg::Brightness,
-                    style: slider_s,
-                    label: "",
-                },
-                Widget::Text {
-                    content: "Arraste, clique na track ou use setas".into(),
-                    color: None,
-                    size: 11.0,
-                    style: Style::default(),
-                },
-            ],
-        }
+        super::layout::page(
+            "Sliders",
+            Widget::Column {
+                style: col,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::Theme),
+                    super::layout::section(vec![
+                        // ── Volume: step 1.0 (linear, padrão correto — FIX-6) ──
+                        Widget::Text {
+                            content: format!("Volume: {:.0}%", s.volume),
+                            color: None,
+                            size: 14.0,
+                            style: Style::default(),
+                        },
+                        Widget::Slider {
+                            id: 10,
+                            value: s.volume,
+                            min: 0.0,
+                            max: 100.0,
+                            step: 1.0, // FIX-6: era 5.0 no demo original
+                            on_change: Msg::Volume,
+                            style: slider_s.clone(),
+                            label: "",
+                        },
+                        // ── Balance: step 0.5 ─────────────────────────────────
+                    ]),
+                    super::layout::section(vec![
+                        Widget::Text {
+                            content: format!("Balance: {:.1}", s.balance),
+                            color: None,
+                            size: 14.0,
+                            style: Style::default(),
+                        },
+                        Widget::Slider {
+                            id: 11,
+                            value: s.balance,
+                            min: -10.0,
+                            max: 10.0,
+                            step: 0.5,
+                            on_change: Msg::Balance,
+                            style: slider_s.clone(),
+                            label: "",
+                        },
+                        // ── Brightness: step 5.0 (granular — uso explícito) ───
+                    ]),
+                    super::layout::section(vec![
+                        Widget::Text {
+                            content: format!("Brightness: {:.0}%", s.brightness),
+                            color: None,
+                            size: 14.0,
+                            style: Style::default(),
+                        },
+                        Widget::Slider {
+                            id: 12,
+                            value: s.brightness,
+                            min: 0.0,
+                            max: 100.0,
+                            step: 5.0, // granular intencional
+                            on_change: Msg::Brightness,
+                            style: slider_s,
+                            label: "",
+                        },
+                    ]),
+                    Widget::Text {
+                        content: "Arraste, clique na track ou use setas".into(),
+                        color: None,
+                        size: 11.0,
+                        style: Style::default(),
+                    },
+                ],
+            },
+        )
     }
 
     fn update(s: &mut SliderDemoState, msg: Msg, _: &mut Clipboard) {

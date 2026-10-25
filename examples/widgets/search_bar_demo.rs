@@ -7,6 +7,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::search::SearchScoreFn;
@@ -106,11 +107,8 @@ impl AppLogic for SearchBarDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(16.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
 
@@ -124,7 +122,7 @@ impl AppLogic for SearchBarDemo {
                 .expect("demo suggestions use a valid configuration")
                 .with_labels(SearchLabels::PORTUGUESE);
 
-        Widget::Column {
+        super::layout::page("Search", Widget::Column {
             style: root,
             children: vec![
                 example_theme_selector(s.theme, Msg::ThemeChanged),
@@ -134,6 +132,7 @@ impl AppLogic for SearchBarDemo {
                     size: 20.0,
                     style: Style::default(),
                 },
+                super::layout::section(vec![
                 Widget::Text {
                     content: "Modo fuzzy (padrão): ignora acentos e maiúsculas, ranqueia por relevância.".into(),
                     color: None,
@@ -149,6 +148,8 @@ impl AppLogic for SearchBarDemo {
                     movie_suggestions,
                     field(560.0),
                 ),
+                ]),
+                super::layout::section(vec![
                 Widget::Text {
                     content: "Modo personalizado: casa as iniciais de cada palavra (ex.: \"rf\" → Rutter Framework).".into(),
                     color: None,
@@ -164,6 +165,7 @@ impl AppLogic for SearchBarDemo {
                     framework_suggestions,
                     field(560.0),
                 ),
+                ]),
                 Widget::Button {
                     text: "Limpar buscas",
                     on_press: Msg::ClearSearches,
@@ -173,7 +175,7 @@ impl AppLogic for SearchBarDemo {
                 },
                 Widget::Container {
                     style: Style {
-                        padding: Rect::length(16.0_f32),
+                        padding: Rect::length(spacing::LG),
                         ..responsive_width(560.0, Dimension::auto())
                     },
                     color: Some(skia_safe::Color::from_argb(32, 255, 255, 255)),
@@ -192,7 +194,7 @@ impl AppLogic for SearchBarDemo {
                     }),
                 },
             ],
-        }
+        })
     }
 
     fn update(state: &mut Self::State, message: Self::Message, _: &mut Clipboard) {

@@ -4,6 +4,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, DialogPosition, RutterRunner, Theme, Widget};
@@ -54,135 +55,132 @@ impl AppLogic for DialogDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(32.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(16.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
 
         let row = Style {
             flex_direction: FlexDirection::Row,
             flex_wrap: FlexWrap::Wrap,
-            gap: Size {
-                width: LengthPercentage::length(12.0),
-                height: LengthPercentage::length(0.0),
-            },
+            gap: Size::length(spacing::MD),
             ..responsive_width(480.0, Dimension::auto())
         };
         let btn = |w: f32| responsive_width(w, Dimension::length(40.0));
 
-        Widget::Column {
-            style: root,
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                Widget::Text {
-                    content: "Dialog Demo".into(),
-                    color: None,
-                    size: 20.0,
-                    style: Style::default(),
-                },
-                Widget::Text {
-                    content: s.last_action.clone(),
-                    color: None,
-                    size: 13.0,
-                    style: Style::default(),
-                },
-                Widget::Row {
-                    style: row,
-                    children: vec![
-                        Widget::Button {
-                            text: "Abrir confirmação",
-                            on_press: Msg::OpenConfirm,
-                            style: btn(170.0),
-                            color: None,
-                            variant: ButtonVariant::Primary,
-                        },
-                        Widget::Button {
-                            text: "Abrir exclusão",
-                            on_press: Msg::OpenDelete,
-                            style: btn(150.0),
-                            color: None,
-                            variant: ButtonVariant::Ghost,
-                        },
-                        Widget::Button {
-                            text: "Abrir info",
-                            on_press: Msg::OpenInfo,
-                            style: btn(120.0),
-                            color: None,
-                            variant: ButtonVariant::Ghost,
-                        },
-                    ],
-                },
-                Widget::Dialog {
-                    id: 401,
-                    visible: s.confirm_open,
-                    title: "Salvar alterações",
-                    message: "Deseja persistir as alterações realizadas neste formulário?",
-                    confirm_label: "Salvar",
-                    cancel_label: "Cancelar",
-                    on_confirm: Msg::ConfirmSave,
-                    on_cancel: Msg::CloseAll,
-                    position: DialogPosition::Center,
-                    style: Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
-                        ..Default::default()
-                    },
-                    on_dismiss: None,
-                    child: Box::new(Widget::Spacer {
+        super::layout::page(
+            "Dialog",
+            Widget::Column {
+                style: root,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    Widget::Text {
+                        content: "Dialog Demo".into(),
+                        color: None,
+                        size: 20.0,
                         style: Style::default(),
-                    }),
-                },
-                Widget::Dialog {
-                    id: 402,
-                    visible: s.delete_open,
-                    title: "Excluir item",
-                    message: "Esta ação é destrutiva e não poderá ser desfeita.",
-                    confirm_label: "Excluir",
-                    cancel_label: "Voltar",
-                    on_confirm: Msg::ConfirmDelete,
-                    on_cancel: Msg::CloseAll,
-                    position: DialogPosition::Bottom,
-                    style: Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
-                        ..Default::default()
                     },
-                    on_dismiss: None,
-                    child: Box::new(Widget::Spacer {
+                    Widget::Text {
+                        content: s.last_action.clone(),
+                        color: None,
+                        size: 13.0,
                         style: Style::default(),
-                    }),
-                },
-                Widget::Dialog {
-                    id: 403,
-                    visible: s.info_open,
-                    title: "Informação",
-                    message: "Este diálogo é somente informativo e pode ser fechado sem efeito colateral.",
-                    confirm_label: "Ok",
-                    cancel_label: "Fechar",
-                    on_confirm: Msg::CloseAll,
-                    on_cancel: Msg::CloseAll,
-                    position: DialogPosition::Top,
-                    style: Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
-                        ..Default::default()
                     },
-                    on_dismiss: None,
-                    child: Box::new(Widget::Spacer {
-                        style: Style::default(),
-                    }),
-                },
-            ],
-        }
+                    Widget::Row {
+                        style: row,
+                        children: vec![
+                            Widget::Button {
+                                text: "Abrir confirmação",
+                                on_press: Msg::OpenConfirm,
+                                style: btn(170.0),
+                                color: None,
+                                variant: ButtonVariant::Primary,
+                            },
+                            Widget::Button {
+                                text: "Abrir exclusão",
+                                on_press: Msg::OpenDelete,
+                                style: btn(150.0),
+                                color: None,
+                                variant: ButtonVariant::Ghost,
+                            },
+                            Widget::Button {
+                                text: "Abrir info",
+                                on_press: Msg::OpenInfo,
+                                style: btn(120.0),
+                                color: None,
+                                variant: ButtonVariant::Ghost,
+                            },
+                        ],
+                    },
+                    Widget::Dialog {
+                        id: 401,
+                        visible: s.confirm_open,
+                        title: "Salvar alterações",
+                        message: "Deseja persistir as alterações realizadas neste formulário?",
+                        confirm_label: "Salvar",
+                        cancel_label: "Cancelar",
+                        on_confirm: Msg::ConfirmSave,
+                        on_cancel: Msg::CloseAll,
+                        position: DialogPosition::Center,
+                        style: Style {
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::percent(1.0),
+                            },
+                            ..Default::default()
+                        },
+                        on_dismiss: None,
+                        child: Box::new(Widget::Spacer {
+                            style: Style::default(),
+                        }),
+                    },
+                    Widget::Dialog {
+                        id: 402,
+                        visible: s.delete_open,
+                        title: "Excluir item",
+                        message: "Esta ação é destrutiva e não poderá ser desfeita.",
+                        confirm_label: "Excluir",
+                        cancel_label: "Voltar",
+                        on_confirm: Msg::ConfirmDelete,
+                        on_cancel: Msg::CloseAll,
+                        position: DialogPosition::Bottom,
+                        style: Style {
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::percent(1.0),
+                            },
+                            ..Default::default()
+                        },
+                        on_dismiss: None,
+                        child: Box::new(Widget::Spacer {
+                            style: Style::default(),
+                        }),
+                    },
+                    Widget::Dialog {
+                        id: 403,
+                        visible: s.info_open,
+                        title: "Informação",
+                        message: "Este diálogo é somente informativo e pode ser fechado sem efeito colateral.",
+                        confirm_label: "Ok",
+                        cancel_label: "Fechar",
+                        on_confirm: Msg::CloseAll,
+                        on_cancel: Msg::CloseAll,
+                        position: DialogPosition::Top,
+                        style: Style {
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::percent(1.0),
+                            },
+                            ..Default::default()
+                        },
+                        on_dismiss: None,
+                        child: Box::new(Widget::Spacer {
+                            style: Style::default(),
+                        }),
+                    },
+                ],
+            },
+        )
     }
 
     fn update(s: &mut DialogDemoState, msg: Msg, _: &mut Clipboard) {

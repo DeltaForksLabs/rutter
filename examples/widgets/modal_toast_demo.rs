@@ -4,6 +4,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::widget::{ToastKind, ToastPosition};
@@ -61,12 +62,8 @@ impl AppLogic for ModalToastDemo {
         let col = Style {
             flex_direction: FlexDirection::Column,
             align_items: Some(AlignItems::Stretch),
-            padding: Rect::length(32.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(16.0),
-            },
-            flex_grow: 1.0,
+            gap: Size::length(spacing::MD),
+            flex_shrink: 0.0,
             ..responsive_width(560.0, Dimension::auto())
         };
         let btn_s = |w: f32| responsive_width(w, Dimension::length(38.0));
@@ -77,10 +74,7 @@ impl AppLogic for ModalToastDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            gap: Size {
-                width: LengthPercentage::length(10.0),
-                height: LengthPercentage::length(0.0),
-            },
+            gap: Size::length(spacing::MD),
             ..Default::default()
         };
 
@@ -99,11 +93,8 @@ impl AppLogic for ModalToastDemo {
                 style: Style {
                     flex_direction: FlexDirection::Column,
                     align_items: Some(AlignItems::Stretch),
-                    padding: Rect::length(24.0_f32),
-                    gap: Size {
-                        width: LengthPercentage::length(0.0),
-                        height: LengthPercentage::length(16.0),
-                    },
+                    padding: Rect::length(spacing::XL),
+                    gap: Size::length(spacing::LG),
                     size: Size {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
@@ -187,49 +178,42 @@ impl AppLogic for ModalToastDemo {
             on_dismiss: Some(Msg::DismissToast(93)),
         };
 
-        Widget::Column {
-            style: root,
-            children: vec![
-                Widget::Column {
-                    style: col,
-                    children: vec![
-                        Widget::Text {
-                            content: "Modal & Toast".into(),
-                            color: None,
-                            size: 18.0,
-                            style: Style::default(),
-                        },
-                        if s.confirmed {
-                            Widget::Text {
-                                content: "✓ Ação confirmada!".into(),
-                                color: None,
-                                size: 13.0,
-                                style: Style::default(),
-                            }
-                        } else {
-                            Widget::Spacer {
-                                style: Style {
-                                    size: Size {
-                                        height: Dimension::length(0.0),
-                                        width: Dimension::length(0.0),
-                                    },
-                                    ..Default::default()
-                                },
-                            }
-                        },
-                        Widget::Button {
-                            text: "Abrir Modal",
-                            on_press: Msg::OpenModal,
-                            style: btn_s(200.0),
-                            color: None,
-                            variant: ButtonVariant::Primary,
-                        },
-                        Widget::Text {
-                            content: "Tipos de Toast (Posições diferentes):".into(),
-                            color: None,
-                            size: 13.0,
-                            style: Style::default(),
-                        },
+        let mut modal_actions = vec![Widget::heading(
+            rutter::HeadingLevel::H2,
+            "Modal confirmation",
+            Style::default(),
+        )];
+        if s.confirmed {
+            modal_actions.push(Widget::Text {
+                content: "✓ Ação confirmada!".into(),
+                color: None,
+                size: 13.0,
+                style: Style::default(),
+            });
+        }
+        modal_actions.push(Widget::Button {
+            text: "Abrir Modal",
+            on_press: Msg::OpenModal,
+            style: btn_s(200.0),
+            color: None,
+            variant: ButtonVariant::Primary,
+        });
+
+        super::layout::page(
+            "Modal & Toast",
+            Widget::Column {
+                style: root,
+                children: vec![
+                    Widget::Column {
+                        style: col,
+                        children: modal_actions,
+                    },
+                    super::layout::section(vec![
+                        Widget::heading(
+                            rutter::HeadingLevel::H2,
+                            "Tipos de Toast (Posições diferentes):",
+                            Style::default(),
+                        ),
                         Widget::Row {
                             style: row_s.clone(),
                             children: vec![
@@ -268,16 +252,16 @@ impl AppLogic for ModalToastDemo {
                                 },
                             ],
                         },
-                    ],
-                },
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                modal,
-                toast_info,
-                toast_success,
-                toast_warning,
-                toast_error,
-            ],
-        }
+                    ]),
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    modal,
+                    toast_info,
+                    toast_success,
+                    toast_warning,
+                    toast_error,
+                ],
+            },
+        )
     }
 
     fn update(s: &mut ModalToastDemoState, msg: Msg, _: &mut Clipboard) {

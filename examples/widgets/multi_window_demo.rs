@@ -3,6 +3,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{
@@ -162,7 +163,7 @@ fn with_theme_selector<'a>(view: Widget<'a, Message>, theme: ExampleTheme) -> Wi
             style,
         } => {
             children.insert(0, example_theme_selector(theme, Message::ThemeChanged));
-            Widget::Column { children, style }
+            super::layout::page("Multi-window", Widget::Column { children, style })
         }
         other => other,
     }
@@ -220,8 +221,8 @@ fn centered_surface_column<'a>(children: Vec<Widget<'a, Message>>) -> Widget<'a,
             align_items: Some(AlignItems::Center),
             justify_content: Some(JustifyContent::Center),
             size: Size::percent(1.0_f32),
-            padding: Rect::length(28.0_f32),
-            gap: Size::length(20.0_f32),
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Style::default()
         },
     }

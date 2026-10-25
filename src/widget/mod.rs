@@ -677,6 +677,9 @@ pub enum Widget<'a, Msg> {
         variant: ButtonVariant,
     },
     TextInput {
+        /// Optional application-owned text. Direct enum literals must specify
+        /// `None` to retain the uncontrolled behavior of [`Widget::text_input`].
+        model_value: Option<&'a str>,
         on_change: fn(String) -> Msg,
         on_submit: Option<Msg>,
         style: Style,
@@ -1105,6 +1108,45 @@ impl<'a, Msg> Widget<'a, Msg> {
         is_password: bool,
     ) -> Self {
         Self::TextInput {
+            model_value: None,
+            on_change,
+            on_submit,
+            style,
+            id: AUTO_ID,
+            label,
+            placeholder,
+            state,
+            error_msg,
+            is_password,
+        }
+    }
+
+    /// Creates a single-line input whose text follows the application model.
+    ///
+    /// Feed edits from `on_change` back into `value`. Equal-text echoes preserve
+    /// the caret, selection, and undo history. A different value replaces the
+    /// editor text after layout, clears selection and stale undo/redo history,
+    /// and starts a new undo baseline without calling `on_change`. The engine
+    /// retains only committed IME text, not a separate preedit composition.
+    /// Values rejected by the application's input limits leave the editor text
+    /// intact and report the widget ID and limit error to stderr, never the value.
+    ///
+    /// [`Widget::text_input`] remains uncontrolled. Direct `TextInput` enum
+    /// literals now require `model_value: None` (or `Some(value)` to opt in).
+    #[allow(clippy::too_many_arguments)]
+    pub fn controlled_text_input(
+        value: &'a str,
+        on_change: fn(String) -> Msg,
+        on_submit: Option<Msg>,
+        style: Style,
+        label: &'a str,
+        placeholder: &'a str,
+        state: InputState,
+        error_msg: Option<String>,
+        is_password: bool,
+    ) -> Self {
+        Self::TextInput {
+            model_value: Some(value),
             on_change,
             on_submit,
             style,

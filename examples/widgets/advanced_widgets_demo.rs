@@ -6,6 +6,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, ButtonVariant, DialogPosition, InputState, RutterRunner, Theme, Widget};
@@ -55,11 +56,8 @@ impl AppLogic for AdvancedWidgetsDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(24.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(16.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
 
@@ -85,11 +83,8 @@ impl AppLogic for AdvancedWidgetsDemo {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                padding: Rect::length(16.0_f32),
-                gap: Size {
-                    width: LengthPercentage::length(0.0),
-                    height: LengthPercentage::length(10.0),
-                },
+                padding: Rect::length(spacing::LG),
+                gap: Size::length(spacing::MD),
                 ..Default::default()
             },
             children: vec![
@@ -131,11 +126,8 @@ impl AppLogic for AdvancedWidgetsDemo {
                 style: Style {
                     flex_direction: FlexDirection::Column,
                     align_items: Some(AlignItems::Stretch),
-                    padding: Rect::length(24.0_f32),
-                    gap: Size {
-                        width: LengthPercentage::length(0.0),
-                        height: LengthPercentage::length(16.0),
-                    },
+                    padding: Rect::length(spacing::XL),
+                    gap: Size::length(spacing::LG),
                     ..responsive_width(460.0, Dimension::auto())
                 },
                 children: vec![
@@ -162,84 +154,84 @@ impl AppLogic for AdvancedWidgetsDemo {
             }),
         };
 
-        Widget::Column {
-            style: root,
-            children: vec![
-                example_theme_selector(s.theme, Msg::ThemeChanged),
-                Widget::Text {
-                    content: "Advanced widgets".into(),
-                    color: None,
-                    size: 18.0,
-                    style: Style::default(),
-                },
-                Widget::SearchBar {
-                    id: 120,
-                    on_change: Msg::SearchChanged,
-                    on_submit: Some(Msg::SubmitSearch),
-                    on_search: Some(Msg::SubmitSearch),
-                    on_clear: Some(Msg::SearchChanged(String::new())),
-                    style: field.clone(),
-                    placeholder: "Buscar widgets...",
-                    suggestions: None,
-                },
-                Widget::TextArea {
-                    id: 121,
-                    on_change: Msg::NotesChanged,
-                    on_submit: None,
-                    style: text_area_style,
-                    label: "Notas",
-                    placeholder: "Digite múltiplas linhas...",
-                    state: InputState::Idle,
-                    error_msg: None,
-                },
-                Widget::Accordion {
-                    id: 122,
-                    title: "Accordion component",
-                    expanded: s.accordion_open,
-                    on_toggle: Msg::ToggleAccordion,
-                    style: accordion_style,
-                    child: Box::new(accordion_body),
-                },
-                Widget::Row {
-                    style: Style {
-                        flex_direction: FlexDirection::Row,
-                        flex_wrap: FlexWrap::Wrap,
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::auto(),
-                        },
-                        gap: Size {
-                            width: LengthPercentage::length(12.0),
-                            height: LengthPercentage::length(0.0),
-                        },
-                        ..Default::default()
+        super::layout::page(
+            "Advanced widgets",
+            Widget::Column {
+                style: root,
+                children: vec![
+                    example_theme_selector(s.theme, Msg::ThemeChanged),
+                    Widget::Text {
+                        content: "Advanced widgets".into(),
+                        color: None,
+                        size: 18.0,
+                        style: Style::default(),
                     },
-                    children: vec![
-                        Widget::Button {
-                            text: "Toggle Accordion",
-                            on_press: Msg::ToggleAccordion,
-                            style: responsive_width(160.0, Dimension::length(36.0)),
-                            color: None,
-                            variant: ButtonVariant::Ghost,
+                    Widget::SearchBar {
+                        id: 120,
+                        on_change: Msg::SearchChanged,
+                        on_submit: Some(Msg::SubmitSearch),
+                        on_search: Some(Msg::SubmitSearch),
+                        on_clear: Some(Msg::SearchChanged(String::new())),
+                        style: field.clone(),
+                        placeholder: "Buscar widgets...",
+                        suggestions: None,
+                    },
+                    Widget::TextArea {
+                        id: 121,
+                        on_change: Msg::NotesChanged,
+                        on_submit: None,
+                        style: text_area_style,
+                        label: "Notas",
+                        placeholder: "Digite múltiplas linhas...",
+                        state: InputState::Idle,
+                        error_msg: None,
+                    },
+                    Widget::Accordion {
+                        id: 122,
+                        title: "Accordion component",
+                        expanded: s.accordion_open,
+                        on_toggle: Msg::ToggleAccordion,
+                        style: accordion_style,
+                        child: Box::new(accordion_body),
+                    },
+                    Widget::Row {
+                        style: Style {
+                            flex_direction: FlexDirection::Row,
+                            flex_wrap: FlexWrap::Wrap,
+                            size: Size {
+                                width: Dimension::percent(1.0),
+                                height: Dimension::auto(),
+                            },
+                            gap: Size::length(spacing::MD),
+                            ..Default::default()
                         },
-                        Widget::Button {
-                            text: "Toggle Dialog",
-                            on_press: Msg::ToggleDialog,
-                            style: responsive_width(160.0, Dimension::length(36.0)),
-                            color: None,
-                            variant: ButtonVariant::Primary,
-                        },
-                    ],
-                },
-                Widget::Text {
-                    content: format!("Search='{}' | Notes={} chars", s.search, s.notes.len()),
-                    color: None,
-                    size: 12.0,
-                    style: Style::default(),
-                },
-                dialog,
-            ],
-        }
+                        children: vec![
+                            Widget::Button {
+                                text: "Toggle Accordion",
+                                on_press: Msg::ToggleAccordion,
+                                style: responsive_width(160.0, Dimension::length(36.0)),
+                                color: None,
+                                variant: ButtonVariant::Ghost,
+                            },
+                            Widget::Button {
+                                text: "Toggle Dialog",
+                                on_press: Msg::ToggleDialog,
+                                style: responsive_width(160.0, Dimension::length(36.0)),
+                                color: None,
+                                variant: ButtonVariant::Primary,
+                            },
+                        ],
+                    },
+                    Widget::Text {
+                        content: format!("Search='{}' | Notes={} chars", s.search, s.notes.len()),
+                        color: None,
+                        size: 12.0,
+                        style: Style::default(),
+                    },
+                    dialog,
+                ],
+            },
+        )
     }
 
     fn update(s: &mut AdvancedWidgetsState, msg: Msg, _: &mut Clipboard) {

@@ -737,6 +737,7 @@ fn no_duplicate_scroll_id_in_collect() {
 fn inputs_collected_inside_modal() {
     let inner: Widget<M> = Widget::TextInput {
         id: 55,
+        model_value: None,
         on_change: M::Str,
         on_submit: None,
         style: Style::default(),
@@ -763,6 +764,7 @@ fn inputs_collected_inside_context_menu_child() {
     let entries = [ContextMenuEntry::item("Open", M::A)];
     let inner: Widget<M> = Widget::TextInput {
         id: 56,
+        model_value: None,
         on_change: M::Str,
         on_submit: None,
         style: Style::default(),

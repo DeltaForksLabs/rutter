@@ -236,7 +236,13 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
         let Some(state) = self.widget_states.get(&id).and_then(WidgetState::as_select) else {
             return;
         };
-        let anchor = SkiaRect::from_xywh(absolute.x, absolute.y, size.0, size.1);
+        let body = crate::layout::field::FieldInsets::for_widget(widget).body(size);
+        let anchor = SkiaRect::from_xywh(
+            absolute.x + body.left,
+            absolute.y + body.top,
+            body.width(),
+            body.height(),
+        );
         if !state.is_open || self.clip.is_some_and(|clip| !rects_overlap(anchor, clip)) {
             return;
         }

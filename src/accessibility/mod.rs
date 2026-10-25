@@ -8,8 +8,8 @@ use std::{
 };
 
 use accesskit::{
-    Action, ActivationHandler, DeactivationHandler, Node, NodeId, Orientation as AccessOrientation,
-    Rect, Role, Toggled, TreeId, TreeInfo, TreeUpdate,
+    Action, ActivationHandler, DeactivationHandler, Invalid, Node, NodeId,
+    Orientation as AccessOrientation, Rect, Role, Toggled, TreeId, TreeInfo, TreeUpdate,
 };
 use cosmic_text::FontSystem;
 use skia_safe::{Point, Rect as SkiaRect};
@@ -32,8 +32,8 @@ use crate::render::select_overlay::collector::{
 use crate::widget::id::resolve_accessibility_path_id;
 use crate::widget::{
     CounterConfig, CustomAccessibility, CustomAccessibilityActions, CustomAccessibilityRole,
-    CustomAccessibilityState, DialogAction, KeyedVirtualItems, VirtualSelection, Widget,
-    pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
+    CustomAccessibilityState, DialogAction, InputState, KeyedVirtualItems, VirtualSelection,
+    Widget, pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
     resolve_table_of_contents_accordion_id, resolve_table_of_contents_navigation_id,
     resolve_table_of_contents_viewport_id,
 };
@@ -51,6 +51,10 @@ pub(crate) use action_queue::AccessibilityActionInbox;
 #[cfg(test)]
 #[path = "table_tests.rs"]
 mod table_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/widget_spacing_accessibility_unit_tests.rs"]
+mod widget_spacing_tests;
 
 const ROOT_ACCESSIBILITY_ID: u64 = 0;
 
@@ -1252,6 +1256,23 @@ fn apply_input_props<Msg>(
     input_states: &HashMap<u64, InputWidgetState>,
     path: &[usize],
 ) {
+    if let Widget::TextInput {
+        state, error_msg, ..
+    }
+    | Widget::TextArea {
+        state, error_msg, ..
+    } = widget
+    {
+        let error = error_msg.as_deref().filter(|message| !message.is_empty());
+        if *state == InputState::Error || error.is_some() {
+            node.set_invalid(Invalid::True);
+        }
+        if let Some(message) = error {
+            // This is application-provided feedback, not the editor/model value.
+            // Preserve the full message when its visual annotation is ellipsized.
+            node.set_description(message);
+        }
+    }
     match widget {
         Widget::TextInput { placeholder, .. }
         | Widget::TextArea { placeholder, .. }
@@ -1450,7 +1471,7 @@ fn set_input_value<Msg>(
     let Some(id) = widget.resolved_id(path) else {
         return;
     };
-    if let Some(input) = input_states.get(&id) {
+    if let Some(input) = input_states.get(&id).filter(|input| !input.is_sensitive()) {
         node.set_value(input.text());
     }
 }
@@ -2156,6 +2177,7 @@ mod tests {
         const INPUT_ID: u64 = 42;
         const PASSWORD: &str = "correct horse battery staple";
         let widget = Widget::TextInput {
+            model_value: None,
             on_change: |_| (),
             on_submit: None,
             style: base_style(180.0, 40.0),

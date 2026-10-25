@@ -6,6 +6,7 @@
 use arboard::Clipboard;
 use chrono::{Datelike, Local};
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use rutter::{
     AppLogic, CalendarConfig, CalendarDate, CalendarLabels, CalendarMonth, RutterRunner, Theme,
     WeekStart, Widget,
@@ -70,15 +71,18 @@ impl AppLogic for CalendarDemo {
     }
 
     fn view<'a>(state: &'a mut Self::State) -> Widget<'a, Self::Message> {
-        Widget::Column {
-            children: vec![
-                example_theme_selector(state.theme, Msg::ThemeChanged),
-                demo_text("Calendário e Date Picker", 24.0),
-                demo_text("Navegue por mês ou ano e selecione uma única data.", 14.0),
-                calendar_showcase(state),
-            ],
-            style: root_style(),
-        }
+        super::layout::page(
+            "Calendar",
+            Widget::Column {
+                children: vec![
+                    example_theme_selector(state.theme, Msg::ThemeChanged),
+                    demo_text("Calendário e Date Picker", 24.0),
+                    demo_text("Navegue por mês ou ano e selecione uma única data.", 14.0),
+                    calendar_showcase(state),
+                ],
+                style: root_style(),
+            },
+        )
     }
 
     fn update(state: &mut Self::State, message: Self::Message, _: &mut Clipboard) {
@@ -198,11 +202,8 @@ fn root_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
         size: Size::percent(1.0_f32),
-        padding: Rect::length(32.0_f32),
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(12.0),
-        },
+        padding: Rect::length(spacing::XL),
+        gap: Size::length(spacing::LG),
         ..Style::default()
     }
 }
@@ -216,10 +217,7 @@ fn showcase_style() -> Style {
             width: Dimension::percent(1.0),
             height: Dimension::auto(),
         },
-        gap: Size {
-            width: LengthPercentage::length(28.0),
-            height: LengthPercentage::length(0.0),
-        },
+        gap: Size::length(spacing::XL),
         ..Style::default()
     }
 }
@@ -231,10 +229,7 @@ fn calendar_style() -> Style {
 fn picker_column_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(14.0),
-        },
+        gap: Size::length(spacing::MD),
         ..responsive_width(340.0, Dimension::auto())
     }
 }

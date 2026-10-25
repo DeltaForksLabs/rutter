@@ -6,6 +6,7 @@
 
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
+use rutter::spacing;
 use taffy::prelude::*;
 
 use rutter::{AppLogic, RutterRunner, Theme, VirtualSelection, Widget};
@@ -49,17 +50,14 @@ impl AppLogic for VListDemo {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            padding: Rect::length(24.0_f32),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(14.0),
-            },
+            padding: Rect::length(spacing::XL),
+            gap: Size::length(spacing::LG),
             ..Default::default()
         };
         let list_s = responsive_width(420.0, Dimension::length(400.0));
         let inp_s = responsive_width(420.0, Dimension::length(40.0));
 
-        Widget::Column {
+        super::layout::page("Virtual list", Widget::Column {
             style: root,
             children: vec![
                 example_theme_selector(s.theme, Msg::Theme),
@@ -71,6 +69,7 @@ impl AppLogic for VListDemo {
                 },
                 Widget::TextInput {
                     id: 1,
+                    model_value: None,
                     on_change: Msg::Filter,
                     on_submit: None,
                     style: inp_s,
@@ -108,7 +107,7 @@ impl AppLogic for VListDemo {
                     style: Style::default(),
                 },
             ],
-        }
+        })
     }
 
     fn update(s: &mut VListDemoState, msg: Msg, _: &mut Clipboard) {

@@ -463,6 +463,7 @@ fn collect_ignores_slider_spinner_progress() {
 fn collect_descends_into_scroll_view() {
     let inner: Widget<M> = Widget::TextInput {
         id: 77,
+        model_value: None,
         on_change: M::Str,
         on_submit: None,
         style: Style::default(),
@@ -486,6 +487,7 @@ fn collect_descends_into_scroll_view() {
 fn collect_descends_into_tooltip() {
     let inner: Widget<M> = Widget::TextInput {
         id: 88,
+        model_value: None,
         on_change: M::Str,
         on_submit: None,
         style: Style::default(),
