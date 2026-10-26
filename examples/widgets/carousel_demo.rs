@@ -71,7 +71,7 @@ fn carousel_demo_children<'a>(state: &CarouselDemoState) -> Vec<Widget<'a, Msg>>
             weighted_carousel(),
         ]),
         super::layout::section(vec![
-            status_text("Uncontained 220 px + snapping", state.fixed_selection),
+            status_text("Uncontained 220 px — free scroll", state.fixed_selection),
             fixed_carousel(),
         ]),
         heading(
@@ -99,7 +99,7 @@ fn weighted_carousel<'a>() -> Widget<'a, Msg> {
 fn fixed_carousel<'a>() -> Widget<'a, Msg> {
     let config = CarouselConfig::uncontained(220.0)
         .expect("demo item extent must be finite and >= 1 logical pixel")
-        .with_item_snapping(true)
+        .with_item_snapping(false)
         .with_accessibility_label("Recent projects");
     Widget::carousel_view(
         ITEM_COUNT,

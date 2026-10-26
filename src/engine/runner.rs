@@ -58,6 +58,9 @@ use crate::text_controls::{TextControlNormalizer, TextControlPolicy};
 use crate::widget::{CustomPoint, CustomPointerEvent, CustomSize};
 
 mod accessibility_actions;
+#[cfg(test)]
+#[path = "../../tests/unit/carousel_runner_unit_tests.rs"]
+mod carousel_regressions;
 mod counter;
 mod custom;
 mod dropdown_keyboard;
@@ -2677,7 +2680,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let Some(runtime) = self.engine.runtime_caches.carousels.get(&id).cloned() else {
             return false;
         };
-        let current = self.carousel_current_index(id, runtime.item_count);
+        let current = self.carousel_current_index(id, &runtime);
         let Some(next) =
             carousel_key_index(key, current, runtime.item_count, A::locale().direction())
         else {
@@ -2687,12 +2690,16 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         true
     }
 
-    fn carousel_current_index(&self, id: u64, item_count: usize) -> usize {
+    fn carousel_current_index(
+        &self,
+        id: u64,
+        runtime: &super::CarouselRuntime<A::Message>,
+    ) -> usize {
         self.engine
             .widget_states
             .get(&id)
             .and_then(WidgetState::as_carousel)
-            .and_then(|state| state.current_index(item_count))
+            .and_then(|state| state.current_index(&runtime.config, runtime.item_count))
             .unwrap_or(0)
     }
 

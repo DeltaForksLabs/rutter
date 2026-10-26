@@ -2,9 +2,10 @@
 // Licensed under the MIT License OR Apache 2.0.
 
 use super::geometry::{
-    carousel_index_at, carousel_max_position, carousel_prominent_index, carousel_scroll_step,
+    carousel_index_at, carousel_item_frames, carousel_max_position, carousel_prominent_index,
+    carousel_scroll_step,
 };
-use super::{CarouselConfig, CarouselPosition};
+use super::{CarouselConfig, CarouselPosition, CarouselSizing};
 use crate::i18n::LayoutDirection;
 
 /// Runtime scroll and selection state retained for one carousel instance.
@@ -62,10 +63,25 @@ impl CarouselState {
         )
     }
 
-    pub(crate) fn current_index(&self, count: usize) -> Option<usize> {
+    pub(crate) fn current_index(&self, config: &CarouselConfig, count: usize) -> Option<usize> {
         self.selected_item
             .filter(|index| *index < count)
+            .filter(|index| self.item_is_visible(*index, config, count))
             .or_else(|| carousel_prominent_index(self.position, count))
+    }
+
+    fn item_is_visible(&self, index: usize, config: &CarouselConfig, count: usize) -> bool {
+        carousel_item_frames(
+            config,
+            self.position,
+            self.viewport_width,
+            count,
+            LayoutDirection::Ltr,
+        )
+        .iter()
+        .any(|frame| {
+            frame.index == index && frame.x < self.viewport_width && frame.x + frame.width > 0.0
+        })
     }
 
     fn scroll_target(&self, delta: f32, config: &CarouselConfig, count: usize) -> CarouselPosition {
@@ -84,6 +100,19 @@ impl CarouselState {
         count: usize,
     ) -> CarouselPosition {
         let maximum = carousel_max_position(config, self.viewport_width, count);
+        if let CarouselSizing::Uncontained { item_extent } = config.sizing {
+            // Selection belongs to the source item, not the viewport's leading slot.
+            // Keep even a partially visible clicked card under the pointer.
+            if self.item_is_visible(index, config, count) {
+                return self.position;
+            }
+            if index > self.position.index && self.viewport_width > 0.0 {
+                let extent = item_extent.min(self.viewport_width);
+                return CarouselPosition::exact(index.saturating_add(1))
+                    .shifted(-self.viewport_width / extent)
+                    .clamped(maximum);
+            }
+        }
         CarouselPosition::exact(index).clamped(maximum)
     }
 }
@@ -147,12 +176,104 @@ mod tests {
     }
 
     #[test]
-    fn current_index_prefers_explicit_selection() {
+    fn current_index_prefers_visible_explicit_selection_over_prominent_item() {
         let state = CarouselState {
             position: CarouselPosition::exact(4),
             viewport_width: 800.0,
-            selected_item: Some(2),
+            selected_item: Some(3),
         };
-        assert_eq!(state.current_index(10), Some(2));
+        let config = CarouselConfig::weighted([1, 6, 1]).unwrap();
+        assert_eq!(state.current_index(&config, 10), Some(3));
+    }
+
+    #[test]
+    fn weighted_keyboard_origin_tracks_fractional_viewport_and_retains_visible_selection() {
+        let config = CarouselConfig::weighted([1, 6, 1]).unwrap();
+        let mut state = CarouselState::default();
+        state.sync_viewport(800.0, &config, 30);
+        state.select(0, &config, 30);
+        assert!(state.scroll_by_pixels(1025.0, &config, 30));
+        assert_eq!(state.position, CarouselPosition::with_progress(10, 0.25));
+        assert_eq!(state.selected_item, Some(0));
+        assert_eq!(state.current_index(&config, 30), Some(10));
+        assert!(state.scroll_by_pixels(50.0, &config, 30));
+        assert_eq!(state.current_index(&config, 30), Some(11));
+        state.select(12, &config, 30);
+        assert_eq!(state.position, CarouselPosition::exact(12));
+        assert!(state.scroll_by_pixels(-175.0, &config, 30));
+        // The small entering frame still belongs to selected source item 12.
+        assert_eq!(state.position, CarouselPosition::with_progress(10, 0.25));
+        assert_eq!(state.current_index(&config, 30), Some(12));
+        assert!(state.scroll_by_pixels(-25.0, &config, 30));
+        assert_eq!(state.selected_item, Some(12));
+        assert_eq!(state.current_index(&config, 30), Some(10));
+        assert!(state.scroll_by_pixels(-1000.0, &config, 30));
+        assert_eq!(state.current_index(&config, 30), Some(0));
+    }
+
+    #[test]
+    fn visible_selection_preserves_fractional_position_with_or_without_snapping() {
+        for snapping in [false, true] {
+            let config = fixed(snapping);
+            let mut state = CarouselState {
+                position: CarouselPosition::with_progress(4, 0.25),
+                viewport_width: 500.0,
+                selected_item: None,
+            };
+            for index in [5, 6, 4] {
+                state.select(index, &config, 20);
+                assert_eq!(state.selected_item, Some(index));
+                assert_eq!(state.position, CarouselPosition::with_progress(4, 0.25));
+                assert_eq!(state.current_index(&config, 20), Some(index));
+            }
+        }
+    }
+
+    #[test]
+    fn offscreen_selection_reveals_nearest_edge_and_clamps_fractional_tail() {
+        let config = fixed(false);
+        let mut state = CarouselState::default();
+        state.sync_viewport(500.0, &config, 10);
+        state.select(4, &config, 10);
+        assert_eq!(state.position, CarouselPosition::with_progress(2, 0.5));
+        state.select(1, &config, 10);
+        assert_eq!(state.position, CarouselPosition::exact(1));
+        state.select(9, &config, 10);
+        assert_eq!(state.position, CarouselPosition::with_progress(7, 0.5));
+        state.select(8, &config, 10);
+        assert_eq!(state.position, CarouselPosition::with_progress(7, 0.5));
+        state.select(0, &config, 10);
+        assert_eq!(state.position, CarouselPosition::default());
+    }
+
+    #[test]
+    fn keyboard_origin_tracks_viewport_without_changing_explicit_selection() {
+        let config = fixed(false);
+        let mut state = CarouselState::default();
+        state.sync_viewport(500.0, &config, 30);
+        state.select(0, &config, 30);
+        state.scroll_by_pixels(2050.0, &config, 30);
+        assert_eq!(state.selected_item, Some(0));
+        assert_eq!(state.current_index(&config, 30), Some(10));
+        state.scroll_by_pixels(100.0, &config, 30);
+        assert_eq!(state.current_index(&config, 30), Some(11));
+        state.scroll_by_pixels(-2150.0, &config, 30);
+        assert_eq!(state.current_index(&config, 30), Some(0));
+    }
+
+    #[test]
+    fn reveal_preserves_large_source_indices() {
+        let config = fixed(false);
+        let mut state = CarouselState::default();
+        state.sync_viewport(500.0, &config, usize::MAX);
+        state.select(usize::MAX - 1, &config, usize::MAX);
+        assert_eq!(
+            state.position,
+            CarouselPosition::with_progress(usize::MAX - 3, 0.5)
+        );
+        assert_eq!(
+            state.current_index(&config, usize::MAX),
+            Some(usize::MAX - 1)
+        );
     }
 }

@@ -105,8 +105,14 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.44.2.** This patch restores complete calendar day, weekday
-and month/year labels, lets narrow calendar headings wrap safely, and preserves
+**Current version: 0.44.3.** This patch keeps visible uncontained carousel cards
+in place when selected and makes keyboard navigation follow the current viewport
+in both uncontained and weighted layouts after the previous selection scrolls out
+of view. The uncontained demo now uses free scrolling; configurable snapping
+remains supported, and scrolling does not select cards or emit selection callbacks.
+
+Version 0.44.2 restored complete calendar day, weekday
+and month/year labels, allowed narrow calendar headings to wrap safely, and preserved
 variant contrast for composed button content. Version 0.44.1 removed the redundant
 focus outline from the selected tab while preserving its underline and focus indication on inactive
 tabs. Version 0.44.0 introduced the controlled editable

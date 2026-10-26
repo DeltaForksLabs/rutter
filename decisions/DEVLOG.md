@@ -1,5 +1,70 @@
 # Development Log
 
+## [2026-10-26T10:35:17-03:00] - Prepare the Carousel Fix Version and Commit - 0.44.3
+
+**Context:** The user requested a version update and commit for request 63.3 and its weighted-navigation followup, explicitly waiving another test run this time.
+
+**Challenge:** Include both carousel fixes and their regression coverage while synchronizing package metadata and leaving the user's unrelated `.gitignore` edit outside the commit.
+
+**Decision:** Bump 0.44.2 to 0.44.3 for the navigation corrections. Let Cargo synchronize the lockfile's Rutter version, update README status and use an English fix title without release wording. Preserve configurable snapping, explicit selection callbacks and weighted selection placement. Do not tag or push.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log, `examples/widgets/carousel_demo.rs`, `src/engine/runner.rs`, `src/widgets/carousel/{config.rs,state.rs}` and `tests/unit/carousel_runner_unit_tests.rs`.
+
+**Validation:** `CARGO_BUILD_JOBS=2 cargo check --offline --lib`, `cargo fmt --all -- --check` and `git diff --check` passed sequentially. The manifest/lockfile diff changes only Rutter's version, with no dependency resolution changes. Tests were not rerun, as explicitly requested; earlier test and Clippy results in the entries below belong to the implementation validation, not this version update. No new dependencies, public API signatures or stored-data migrations are involved; the intentional selection/reveal and keyboard-origin behavior changes are documented below. No generated files other than the synchronized lockfile changed.
+
+## [2026-10-26T09:46:12-03:00] - Extend Viewport-Based Keyboard Origin to Weighted Carousels - Unreleased
+
+**Context:** The followup to request 63.3 requires weighted keyboard navigation to follow the current viewport after scrolling an explicit selection out of view, matching uncontained navigation.
+
+**Challenge:** Distinguish stale selection from still-visible weighted transition frames without changing weighted selection placement or turning wheel movement into selection callbacks.
+
+**Decision:** Apply the existing frame-visibility filter in `CarouselState::current_index` to both layouts. Keep a visible explicit selection as the keyboard origin, including partially visible entering frames; otherwise use the viewport's rounded prominent index. Weighted `select` continues positioning its target in the prominent slot. Document the shared navigation rule on `CarouselConfig`. Retain the historical uncontained entry below as the record of the earlier scope. No spacing, layout, typography or painting changes are required for this extension.
+
+**Files Changed:** `src/widgets/carousel/state.rs`, `src/widgets/carousel/config.rs`, `tests/unit/carousel_runner_unit_tests.rs`, and this log. The runner regression file remains untracked from the preceding work; existing request 63.3 runner/demo edits are preserved.
+
+**Validation:** Loaded the widget-design skill and read `docs/WIDGET_DESIGN.md`; reviewed shared frame geometry, directional hit testing, callback dispatch and the final diff. Ran resource-intensive checks sequentially, with no detached work:
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --lib carousel -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --lib -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --test carousel_widget_tests -- --test-threads=2
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The initial targeted run passed 53 tests and failed the unfinished weighted runner regression because it incorrectly expected duplicate selection callbacks at collection boundaries. Corrected the regression to require unhandled/no-callback boundary arrows, preserving established behavior; the targeted rerun passed **54/54**. The all-feature library suite passed **838 tests, with 35 existing ignored and no failures**. Carousel integration tests passed **7/7**; warnings-denied all-target/all-feature Clippy passed. The first final format check found one assertion needing wrapping; `cargo fmt --all` and the subsequent format/whitespace checks passed. Weighted state coverage checks fractional prominent-index rounding, stale selection retention without callbacks, a partially visible entering selection, and visible source item 3 taking priority over prominent item 4. The runner regression exercises actual directional layout hits and application callbacks in LTR/RTL at 320/800px widths in a short 100px viewport: click, forward/reverse fractional wheel input, both arrow directions, visible-selection priority at position 4.25, Home/End, tail return and no duplicate boundary callbacks. The targeted/full library runs also pass the existing 48-case uncontained selection raster matrix across both themes and 1x/1.5x/2x scales; this is not new weighted raster evidence.
+
+**Compatibility and limitations:** The weighted keyboard origin intentionally changes only when the explicit selection is no longer visible. Weighted selection placement, wheel callback behavior, public signatures, IDs, focus ownership, accessibility metadata and configuration formats are preserved. No new dependencies, migration, security-policy changes, version bump, lockfile or generated-file changes. `.gitignore` is preserved; nothing is staged or committed. All requested automated checks ran; full binary/demo/doctest suites were not rerun for this followup (the broader test run here is explicitly `--all-features --lib`). Automated Linux in-memory-window/Xvfb coverage is not manual visual, physical native input-event, real screen-reader or non-Linux acceptance. No new weighted theme/scale, long-label, disabled or focus-paint matrix was added because rendering is unchanged; validation-error and popup states do not apply to this carousel interaction change.
+
+## [2026-10-25T22:00:17-03:00] - Restore Free Uncontained Carousel Navigation (Request 63.3) - Unreleased
+
+**Context:** Selecting a visible uncontained carousel card moved it into the leading slot, while keyboard navigation after scrolling could return to an old offscreen selection. The demo also explicitly enabled snapping.
+
+**Challenge:** Keep explicit source-item selection, callbacks and painted highlights aligned without treating wheel movement as selection; preserve fractional offsets, mirrored geometry, trailing clamps, large indices and weighted-carousel behavior.
+
+**Decision:** For uncontained layouts, retain the viewport position when the selected item's frame intersects the viewport, including partially visible cards. Reveal an offscreen target at the nearest edge: leading alignment for earlier targets, trailing alignment for later targets, clamped to the collection's scroll range. Reuse carousel frame geometry to determine visibility. Keyboard navigation retains a visible explicit selection as its origin and otherwise uses the current viewport's prominent index. This changes only crate-private state/runner signatures. Weighted selection retains its existing leading/prominent positioning and selection-origin behavior. The uncontained demo now uses free fractional scrolling and a truthful status caption; IDs 810/811 and callbacks are preserved. Existing card spacing, page/group composition and painting remain suitable for this interaction fix; no spacing or typography changes were needed. Document the intentional interaction behavior on `CarouselConfig` and clarify that opt-in scroll snapping remains supported independently of selection.
+
+**Files Changed:** `src/widgets/carousel/{state.rs,config.rs}`, `src/engine/runner.rs`, `examples/widgets/carousel_demo.rs`, `tests/unit/carousel_runner_unit_tests.rs`, and this log.
+
+**Validation:** Loaded the widget-design skill and read `docs/WIDGET_DESIGN.md` before editing; reviewed geometry, painting, hit mapping and composition again at completion. Resource-intensive commands ran sequentially:
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --lib carousel -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The targeted command passed 51 tests initially and 52 after completing reverse/tail, RTL and actual layout-hit coverage. The first full-suite invocation was interrupted by the shell's 120-second timeout during compilation; process inspection confirmed termination before retrying with a longer timeout. The complete retry passed **836 library tests (35 existing ignored), 71 binary/demo tests, 253 integration tests (including all 7 carousel integration tests), and 313 doctests**. Warnings-denied Clippy, formatting and whitespace checks passed. Eight new regressions cover visible second/third and partially visible selection, free fractional wheel movement without callbacks, keyboard origin after scrolling away from selection, reverse input, Home/End, fractional trailing clamp, opt-in snapping and exact source indices through `usize::MAX`. Runner tests exercise published runtime caches, stateful hit testing, selection dispatch and application callbacks using an in-memory window and disposable Xvfb clipboard service. RTL wheel/key mapping is composed explicitly with state rather than changing the application's global locale. The raster test checks **48 selection comparisons** across 320/800px allocations, a short 100px viewport, LTR/RTL, both themes, and 1x/1.5x/2x scaling: every changed pixel must belong to the selected source card's horizontal bounds (<=1 logical px tolerance), and the highlight must actually change. Hits at all intersecting frame centers resolve to their source indices in the same directional Taffy tree. Existing focus-owner, offscreen focus-fallback, weighted rendering/hits, accessibility and demo responsive/scroll tests also pass.
+
+**Compatibility and limitations:** Public constructors, configuration types, IDs and callbacks are compatible. Uncontained selection intentionally stops promoting visible items to the first slot; keyboard origin intentionally follows the viewport when explicit selection is offscreen. Scrolling never emits selection. Explicit `with_item_snapping(true)` still snaps scroll input, while selecting an already-visible card preserves its offset. No migration, new dependency, security-policy change, version bump, lockfile or generated-file change is involved. The unrelated user `.gitignore` edit is untouched; nothing is staged or committed. Automated Linux software-raster/Xvfb evidence is not manual visual, real screen-reader, full native RTL input-event or non-Linux acceptance. The new raster matrix uses unfocused enabled cards and representative bilingual labels, not a dedicated focus/disabled/arbitrarily-long-text matrix; carousel validation-error and popup states do not apply to this fix. No manual display review was performed.
+
 ## [2026-10-25T21:37:46-03:00] - Prepare the Calendar Fix Version and Commit - 0.44.2
 
 **Context:** The user requested a version update and commit for request 63.2, explicitly waiving another test run this time.

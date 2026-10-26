@@ -12,6 +12,11 @@ pub(crate) enum CarouselSizing {
 }
 
 /// Validated layout and interaction options for [`Widget::carousel_view`](crate::Widget::carousel_view).
+///
+/// In both layouts, keyboard navigation starts from the explicit selection while
+/// it remains visible (even partially). After scrolling it out of view, navigation
+/// starts from the current viewport's prominent item. Scrolling itself does not
+/// select an item or emit a selection callback.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CarouselConfig {
     pub(crate) sizing: CarouselSizing,
@@ -49,6 +54,8 @@ impl std::error::Error for CarouselConfigError {}
 
 impl CarouselConfig {
     /// Creates an uncontained layout whose items keep one fixed horizontal extent.
+    /// Selecting a visible item preserves its position, including fractional scroll
+    /// offsets. Offscreen targets are revealed at the nearest viewport edge.
     ///
     /// ```rust
     /// use rutter::CarouselConfig;
@@ -62,6 +69,8 @@ impl CarouselConfig {
     }
 
     /// Creates a layout whose visible items interpolate between relative weights.
+    /// Selecting an item positions it in the prominent slot. Keyboard navigation
+    /// uses the shared visibility-based origin described on [`CarouselConfig`].
     ///
     /// ```rust
     /// use rutter::CarouselConfig;
@@ -76,6 +85,7 @@ impl CarouselConfig {
     }
 
     /// Enables or disables settling on item boundaries after each scroll input.
+    /// This does not move a visible uncontained item when it is selected.
     ///
     /// ```rust
     /// use rutter::CarouselConfig;
