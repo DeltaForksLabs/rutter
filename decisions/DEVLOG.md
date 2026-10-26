@@ -1,5 +1,50 @@
 # Development Log
 
+## [2026-10-25T21:37:46-03:00] - Prepare the Calendar Fix Version and Commit - 0.44.2
+
+**Context:** The user requested a version update and commit for request 63.2, explicitly waiving another test run this time.
+
+**Challenge:** Synchronize package metadata while retaining the calendar fix's prior validation evidence and leaving the user's `.gitignore` edit outside the commit.
+
+**Decision:** Bump 0.44.1 to 0.44.2 for the calendar rendering correction. Let Cargo synchronize Rutter's lockfile version, update README status, and commit the fix and regression tests with an English title without release wording. Do not tag or push. The composed-tree and default foreground compatibility considerations remain documented in the preceding fix entry below.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log, `src/widgets/calendar/{widgets.rs,styles.rs,widget_tests.rs}`, `src/render/mod.rs`, `src/widget/mod.rs`, `tests/calendar_widget_tests.rs` and `tests/unit/button_content_render_unit_tests.rs`.
+
+**Validation:** `CARGO_BUILD_JOBS=2 cargo check --offline --lib`, `cargo fmt --all -- --check` and `git diff --check` passed sequentially. Reviewed the manifest/lockfile diff: only Rutter's version changed, with no dependency resolution changes. Tests were not rerun, as explicitly requested; the full-suite, targeted raster and Clippy results below belong to the preceding fix validation, not this version update. No new dependencies or generated files other than the synchronized lockfile were introduced.
+
+## [2026-10-25T21:30:14-03:00] - Restore Complete Calendar Labels and Responsive Headings (Request 63.2) - Unreleased
+
+**Context:** The Portuguese May 2028 screenshot showed only days 1–9, truncated Sunday (`Do` instead of `Dom`), and clipped month/year text.
+
+**Challenge:** Generic button painting reserves 32 logical pixels horizontally, leaving insufficient text space in seven-column calendars. Calendar text also used character-count width estimates and fixed estimated heights instead of the paragraph renderer's real intrinsic metrics. The demo has only 272px of calendar width at a 320px viewport, so restoring intrinsic month/year widths also requires a genuine navigation safe area.
+
+**Alternatives:** Keeping generic day buttons would require changing their padding globally. A fixed wider heading would still collide with navigation in narrow layouts. Calendar-owned button content and wrapping the existing heading row keep the density local and preserve all four navigation targets.
+
+**Decision:** Use centered, intrinsically measured `ButtonContent` day labels at the existing built-in 16px body size. Remove estimated widths/heights from month, bold year and weekday labels. Let the month/year row wrap with its existing 4px sibling gaps and natural height; prevent the 34px navigation buttons from shrinking. Retain the dense calendar's 8px outer padding, 4px grid gaps and 36px day targets rather than changing theme spacing. To preserve primary/on-primary contrast, muted adjacent-month labels and hover colors, default `ButtonContent` content foreground now follows the existing text-button variant colors; explicit child text colors still override it. This foreground behavior is documented on the public variant.
+
+**Files Changed:** `src/widgets/calendar/{widgets.rs,styles.rs,widget_tests.rs}`, `src/render/mod.rs`, `src/widget/mod.rs`, `tests/calendar_widget_tests.rs`, `tests/unit/button_content_render_unit_tests.rs`, and this log.
+
+**Validation:** Loaded the widget-design skill and read `docs/WIDGET_DESIGN.md` before editing; reviewed geometry, composition, containment and interaction evidence again at completion. Commands executed sequentially (including development reruns):
+
+```bash
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --test calendar_widget_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --test calendar_widget_tests open_date_picker_matches -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib button_content_render_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-features --example native_popup_clock -- --test-threads=2
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The complete all-feature run passed **828 library tests (35 existing ignored), 71 binary/demo tests, 253 integration tests (including all 7 calendar tests), and 313 doctests**. The separately targeted popup and foreground tests passed (1 each), all 3 native clock example tests passed, and warnings-denied Clippy passed. Initial development runs exposed a private focus accessor in the integration test (moved the legacy-ID comparison into calendar unit tests), fractional-scale paragraph edge quantization, and an incorrect disabled-hover expectation in the new foreground test; these were resolved before the full successful run. Reference raster comparisons allow at most 12/255 RGB edge-coverage difference between unbounded and bounded Skia paragraphs, while requiring complete intrinsic width/height, nonempty reference glyphs and comparing every pixel around each label. Popup-versus-standalone content comparison is exact.
+
+Coverage includes Portuguese May 2028, Portuguese `Setembro` and English `September`; full labels 9/10/28/31, `Dom`/`Sun`, month and bold year; 272/320/340/800px calendar allocations, both themes and 1x/1.5x/2x scaling (72 standalone raster/geometry cases). The 272/340px cases represent usable demo calendar widths at 320/800px viewports. Geometry checks recursively reject sibling intersections and out-of-parent children with <=1px rounding tolerance and require positive dimensions. All 42 day callbacks, accessible labels, selected/current/adjacent variants and unique focus/hit owners are checked at each width. Unit coverage compares each new day control's focus ID with its legacy Button ID at the same path and validates month reconstruction stability. Open Portuguese date-picker content matches the validated standalone raster across both themes/scales and both demo widths in a 420px-high viewport (12 cases), with exact date hits for 9/10/28/31. Foreground tests cover all button variants, hover, focus, disabled compositing, custom accents and explicit text colors (48 cases). Existing all-demo responsive/scroll and native short-popup tests also pass.
+
+**Compatibility and limitations:** Calendar constructors, labels, callbacks and navigation/day control paths are retained; day nodes change from `Button` to `ButtonContent` with new descendant container/text accessibility leaves. Legacy day focus IDs are preserved, but downstream code inspecting composed enum trees or comparing strict snapshots from the old implementation must account for the new structure. Other uncolored `ButtonContent` descendants now use variant foreground colors; explicit colors are retained. Calendar day typography is explicitly 16px (matching built-in body typography), rather than the generic button's runtime `Theme.font_body`. No stored-data migration, dependency, security-policy, version, lockfile or generated-file changes are involved. Software raster tests and disposable Xvfb suite execution are automated Linux evidence, not manual visual, real screen-reader or non-Linux acceptance. Arbitrarily long custom locale strings, RTL calendar rendering, a dedicated calendar Tab/Shift+Tab traversal scenario, and calendar-specific disabled/error UI were not added to this matrix; calendars have no native validation-error state. The unrelated `.gitignore` edit is preserved, and nothing is staged or committed.
+
 ## [2026-10-25T20:41:09-03:00] - Prepare the Tab Outline Fix Version and Commit - 0.44.1
 
 **Context:** The user requested a version update and commit for request 63.1, explicitly waiving another test run this time.

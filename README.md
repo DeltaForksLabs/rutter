@@ -105,8 +105,10 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.44.1.** This patch removes the redundant focus outline from
-the selected tab while preserving its underline and focus indication on inactive
+**Current version: 0.44.2.** This patch restores complete calendar day, weekday
+and month/year labels, lets narrow calendar headings wrap safely, and preserves
+variant contrast for composed button content. Version 0.44.1 removed the redundant
+focus outline from the selected tab while preserving its underline and focus indication on inactive
 tabs. Version 0.44.0 introduced the controlled editable
 [ComboBox](#editable-combobox), with empty-query browsing, original-source-index
 selection, keyboard navigation and accessible popup semantics. Its right-hand

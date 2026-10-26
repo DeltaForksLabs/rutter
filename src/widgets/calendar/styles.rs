@@ -2,7 +2,8 @@
 // Licensed under the MIT License OR Apache 2.0.
 
 use taffy::prelude::{
-    AlignItems, Dimension, FlexDirection, JustifyContent, LengthPercentage, Rect, Size, Style,
+    AlignItems, Dimension, FlexDirection, FlexWrap, JustifyContent, LengthPercentage, Rect, Size,
+    Style,
 };
 
 const CALENDAR_GAP: f32 = 4.0;
@@ -28,8 +29,9 @@ pub(super) fn calendar_header_style() -> Style {
         align_items: Some(AlignItems::Center),
         size: Size {
             width: Dimension::percent(1.0),
-            height: Dimension::length(CALENDAR_NAVIGATION_SIZE),
+            height: Dimension::auto(),
         },
+        flex_shrink: 0.0,
         gap: Size::length(CALENDAR_GAP),
         ..Style::default()
     }
@@ -39,9 +41,11 @@ pub(super) fn calendar_heading_style() -> Style {
     Style {
         flex_grow: 1.0,
         flex_basis: Dimension::length(0.0),
+        min_size: Size::length(0.0_f32),
+        align_items: Some(AlignItems::Center),
         size: Size {
             width: Dimension::auto(),
-            height: Dimension::length(CALENDAR_NAVIGATION_SIZE),
+            height: Dimension::auto(),
         },
         ..Style::default()
     }
@@ -50,9 +54,14 @@ pub(super) fn calendar_heading_style() -> Style {
 pub(super) fn calendar_heading_content_style() -> Style {
     Style {
         flex_direction: FlexDirection::Row,
+        // Keep all four navigation targets intact; a narrow title wraps the year.
+        flex_wrap: FlexWrap::Wrap,
         align_items: Some(AlignItems::Center),
         justify_content: Some(JustifyContent::Center),
-        size: Size::percent(1.0_f32),
+        size: Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::auto(),
+        },
         gap: Size::length(CALENDAR_GAP),
         ..Style::default()
     }
@@ -61,6 +70,7 @@ pub(super) fn calendar_heading_content_style() -> Style {
 pub(super) fn navigation_button_style() -> Style {
     Style {
         size: Size::length(CALENDAR_NAVIGATION_SIZE),
+        flex_shrink: 0.0,
         ..Style::default()
     }
 }
@@ -114,14 +124,18 @@ pub(super) fn calendar_weekday_cell_style() -> Style {
     }
 }
 
-pub(super) fn calendar_label_text_style(width: f32, font_size: f32) -> Style {
+pub(super) fn calendar_label_text_style() -> Style {
     Style {
         flex_shrink: 0.0,
-        size: Size {
-            width: Dimension::length(width),
-            height: Dimension::length(font_size * 1.2),
-        },
         ..Style::default()
+    }
+}
+
+pub(super) fn calendar_day_content_style() -> Style {
+    Style {
+        align_items: Some(AlignItems::Center),
+        justify_content: Some(JustifyContent::Center),
+        ..fill_parent_style()
     }
 }
 

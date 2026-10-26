@@ -669,6 +669,9 @@ pub enum Widget<'a, Msg> {
         color: Option<SkiaColor>,
         variant: ButtonVariant,
     },
+    /// A button with application-owned compact content layout. The content's
+    /// default surface foreground follows the button variant and hover state;
+    /// explicit text colors remain unchanged.
     ButtonContent {
         label: &'a str,
         child: Box<Widget<'a, Msg>>,

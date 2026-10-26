@@ -43,6 +43,10 @@ mod context_menu_decoration_render_tests;
 mod focus_ring_render_tests;
 
 #[cfg(test)]
+#[path = "../../tests/unit/button_content_render_unit_tests.rs"]
+mod button_content_render_tests;
+
+#[cfg(test)]
 #[path = "../../tests/unit/widget_spacing_unit_tests.rs"]
 mod widget_spacing_tests;
 
@@ -1542,6 +1546,17 @@ fn draw_widgets_impl<'w, Msg>(
             );
             let ids = taffy.children(node).unwrap();
             if let Some(child_node) = ids.first().copied() {
+                // Uncolored content uses the same foreground as a text button,
+                // including selected/primary contrast and muted text variants.
+                let content_theme = Theme {
+                    on_surface: button_text_color(
+                        *color,
+                        *variant,
+                        button_hovered(size, local_mouse),
+                        theme,
+                    ),
+                    ..theme.clone()
+                };
                 path.push(0);
                 draw_widgets_impl(
                     canvas,
@@ -1561,7 +1576,7 @@ fn draw_widgets_impl<'w, Msg>(
                     image_cache,
                     layout_fs.clone(),
                     cursor_visible,
-                    theme,
+                    &content_theme,
                     scale,
                     path,
                 );

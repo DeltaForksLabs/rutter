@@ -5,9 +5,10 @@ use taffy::prelude::Style;
 
 use super::styles::{
     CALENDAR_DAY_HEIGHT, CALENDAR_WEEKDAY_HEIGHT, calendar_cell_style, calendar_content_style,
-    calendar_header_style, calendar_heading_content_style, calendar_heading_style,
-    calendar_label_text_style, calendar_row_style, calendar_weekday_cell_style,
-    date_picker_value_style, fill_parent_style, navigation_button_style, navigation_icon_style,
+    calendar_day_content_style, calendar_header_style, calendar_heading_content_style,
+    calendar_heading_style, calendar_label_text_style, calendar_row_style,
+    calendar_weekday_cell_style, date_picker_value_style, fill_parent_style,
+    navigation_button_style, navigation_icon_style,
 };
 use super::{
     CalendarConfig, CalendarDate, CalendarGridCell, CalendarMonth, calendar_grid, day_number_label,
@@ -306,13 +307,11 @@ fn calendar_month_heading<'a, Msg>(
 fn calendar_heading_text<'a, Msg>(month_name: &str, year: i32) -> Vec<Widget<'a, Msg>> {
     let month_name = month_name.to_owned();
     let year = year.to_string();
-    let month_style = measured_calendar_text_style(&month_name, 16.0);
-    let year_style = measured_calendar_text_style(&year, 16.0);
     vec![
-        Widget::rich_text(RichText::plain(month_name), month_style),
+        Widget::rich_text(RichText::plain(month_name), calendar_label_text_style()),
         Widget::rich_text(
             RichText::from_span(RichTextSpan::owned(year).bold()),
-            year_style,
+            calendar_label_text_style(),
         ),
     ]
 }
@@ -332,7 +331,7 @@ fn calendar_weekday_heading<'a, Msg>(label: &str) -> Widget<'a, Msg> {
     Widget::Container {
         child: Box::new(Widget::Text {
             content: label.into(),
-            style: measured_calendar_text_style(label, 11.0),
+            style: calendar_label_text_style(),
             color: None,
             size: 11.0,
         }),
@@ -340,11 +339,6 @@ fn calendar_weekday_heading<'a, Msg>(label: &str) -> Widget<'a, Msg> {
         color: None,
         radius: 0.0,
     }
-}
-
-fn measured_calendar_text_style(text: &str, font_size: f32) -> Style {
-    let estimated_width = text.chars().count() as f32 * font_size * 0.62 + 2.0;
-    calendar_label_text_style(estimated_width.max(font_size), font_size)
 }
 
 fn calendar_weeks<'a, Msg>(
@@ -386,8 +380,21 @@ fn calendar_day_button<'a, Msg>(
         Some(date) => (day_number_label(date.day()), on_select(date)),
         None => ("", on_month_change(visible_month)),
     };
-    Widget::Button {
-        text,
+    // Generic Button text reserves 32px horizontally, which cannot fit two digits
+    // in a seven-column calendar. Own the compact content layout locally instead.
+    Widget::ButtonContent {
+        label: text,
+        child: Box::new(Widget::Container {
+            child: Box::new(Widget::Text {
+                content: text.into(),
+                style: calendar_label_text_style(),
+                color: None,
+                size: 16.0,
+            }),
+            style: calendar_day_content_style(),
+            color: None,
+            radius: 0.0,
+        }),
         on_press,
         style: calendar_cell_style(CALENDAR_DAY_HEIGHT),
         color: None,

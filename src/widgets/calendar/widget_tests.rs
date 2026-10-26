@@ -107,6 +107,47 @@ fn configured_date_picker_uses_custom_weekday_labels() {
 }
 
 #[test]
+fn compact_day_controls_preserve_legacy_button_focus_ids() {
+    let widget = Widget::calendar(
+        CalendarMonth::new(2028, 5).unwrap(),
+        None,
+        Msg::Select,
+        Msg::Navigate,
+        Style::default(),
+    );
+    for (week_index, week) in calendar_sections(&widget)[2..].iter().enumerate() {
+        let Widget::Row { children, .. } = week else {
+            unreachable!()
+        };
+        for (column, day) in children.iter().enumerate() {
+            let Widget::ButtonContent {
+                label,
+                on_press,
+                style,
+                color,
+                variant,
+                ..
+            } = day
+            else {
+                panic!("expected compact day control")
+            };
+            let legacy = Widget::Button {
+                text: label,
+                on_press: *on_press,
+                style: style.clone(),
+                color: *color,
+                variant: *variant,
+            };
+            let path = [0, week_index + 2, column];
+            assert_eq!(
+                day.keyboard_focus_id(&path),
+                legacy.keyboard_focus_id(&path)
+            );
+        }
+    }
+}
+
+#[test]
 fn calendar_centers_heading_and_weekday_content() {
     let widget = Widget::calendar(
         CalendarMonth::new(2026, 7).unwrap(),
