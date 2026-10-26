@@ -13,6 +13,7 @@ use cosmic_text::{
 
 mod buffer;
 mod edit;
+mod navigation;
 mod normalization;
 mod undo;
 

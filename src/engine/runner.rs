@@ -65,6 +65,8 @@ mod counter;
 mod custom;
 mod dropdown_keyboard;
 mod dropdown_pointer;
+#[cfg(test)]
+mod input_navigation_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod native_integration;
 mod native_menu;
@@ -217,19 +219,41 @@ fn update_shift_selection(
     key: &Key,
     ctrl: bool,
     font_system: &mut FontSystem,
+    page_height: Option<f32>,
 ) {
     let Ok(before) = state.try_cursor_byte_index() else {
         state.clear_selection();
         return;
     };
-    let Some(action) = map_key(key, ctrl) else {
-        return;
-    };
     state.selection_anchor.get_or_insert(before);
-    state.normalize_cursor();
-    state.editor.action(font_system, action);
-    state.normalize_cursor();
+    move_input_cursor(state, key, ctrl, font_system, page_height);
     update_selection_after_motion(state);
+}
+
+fn move_input_cursor(
+    state: &mut InputWidgetState,
+    key: &Key,
+    ctrl: bool,
+    fonts: &mut FontSystem,
+    page_height: Option<f32>,
+) {
+    state.normalize_cursor();
+    match key {
+        Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) if ctrl => {
+            state.move_word_start(fonts, *key == Key::Named(NamedKey::ArrowRight));
+        }
+        Key::Named(NamedKey::PageUp | NamedKey::PageDown) => {
+            if let Some(height) = page_height {
+                state.move_page(fonts, height, *key == Key::Named(NamedKey::PageDown));
+            }
+        }
+        _ => {
+            if let Some(action) = map_key(key, ctrl) {
+                state.editor.action(fonts, action);
+            }
+        }
+    }
+    state.normalize_cursor();
 }
 
 fn update_selection_after_motion(state: &mut InputWidgetState) {
@@ -263,8 +287,6 @@ fn zeroize_sensitive_text(is_sensitive: bool, text: &mut String) {
 
 fn map_key(key: &Key, ctrl: bool) -> Option<Action> {
     match key {
-        Key::Named(NamedKey::ArrowLeft) if ctrl => Some(Action::Motion(Motion::Left)),
-        Key::Named(NamedKey::ArrowRight) if ctrl => Some(Action::Motion(Motion::Right)),
         Key::Named(NamedKey::ArrowUp) if ctrl => Some(Action::Motion(Motion::ParagraphStart)),
         Key::Named(NamedKey::ArrowDown) if ctrl => Some(Action::Motion(Motion::ParagraphEnd)),
         Key::Named(NamedKey::Home) if ctrl => Some(Action::Motion(Motion::BufferStart)),
@@ -3005,6 +3027,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 | Key::Named(NamedKey::ArrowUp)
                 | Key::Named(NamedKey::ArrowDown)
         );
+        let is_page = matches!(key, Key::Named(NamedKey::PageUp | NamedKey::PageDown));
         let is_del_key = matches!(
             key,
             Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete)
@@ -3025,6 +3048,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         // Suggestions capture navigation only while their popup is visible;
         // Enter without a selectable hover falls through to normal submit.
         if self.handle_search_input_key(fid, key) {
+            return;
+        }
+        // Focused single-line editors consume page keys without moving their
+        // caret/selection or leaking scrolling to the containing document.
+        if is_page && !is_multiline {
             return;
         }
 
@@ -3062,24 +3090,27 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             }
 
             if deleted_selection.is_none() && !selection_rejected {
-                if is_arrow && is_shift {
+                if (is_arrow || is_page) && is_shift {
                     let mut fs = self.engine.font_system.borrow_mut();
                     update_shift_selection(
                         ist,
                         key,
                         self.engine.modifiers.state().control_key(),
                         &mut fs,
+                        is_multiline.then_some(visible_h),
                     );
                     visual_changed = true;
-                } else if is_arrow {
+                } else if is_arrow || is_page {
                     ist.clear_selection();
-                    if let Some(action) = map_key(key, self.engine.modifiers.state().control_key())
-                    {
-                        let mut fs = self.engine.font_system.borrow_mut();
-                        ist.normalize_cursor();
-                        ist.editor.action(&mut fs, action);
-                        ist.normalize_cursor();
-                    }
+                    ist.editor.set_selection(cosmic_text::Selection::None);
+                    let mut fs = self.engine.font_system.borrow_mut();
+                    move_input_cursor(
+                        ist,
+                        key,
+                        self.engine.modifiers.state().control_key(),
+                        &mut fs,
+                        is_multiline.then_some(visible_h),
+                    );
                     visual_changed = true;
                 } else {
                     ist.clear_selection();

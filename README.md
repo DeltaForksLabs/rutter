@@ -105,7 +105,14 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.44.5.** This patch expands the table-of-contents demo with
+**Current version: 0.45.0.** This release adds Ctrl+Left/Right word-start
+navigation, Ctrl+Shift word selection and viewport-aware Page Up/Down navigation
+for multiline editors, including Shift selection. See
+[text editing keyboard navigation](#text-editing-keyboard-navigation) for Unicode,
+direction, shortcut precedence and paging behavior. Existing public APIs remain
+supported; no stored-data migration is required.
+
+Version 0.44.5 expanded the table-of-contents demo with
 an attributed Solar System article, clearer navigation/document spacing and a
 reading viewport that fills the available height. A reserved scrollbar gutter
 keeps text clear of the track; short windows retain reachable overflow.
@@ -857,6 +864,42 @@ Floating-point mode uses standard IEEE-754 arithmetic and `f64::to_string()` for
 There is only one public `Widget::Counter`, one `RutterContext::Counter`, and one Counter ID family. Published numeric-mode changes can keep the same ID; an active pointer hold is cancelled instead of being transferred to the other numeric mode. Migration for direct enum construction or field patterns: numeric fields and the typed callback now live in `config: CounterConfig::Integer(parameters)` or `CounterConfig::Float(parameters)`, where `parameters` is `CounterParameters<N, Msg>`. Prefer the shared constructors. `layout::CounterContext.value` now holds `CounterValue` (use `value.into()` for direct context construction). No additional widget/context variant or float-specific constructor is needed.
 
 `Select` chooses one value. `DropdownMenu` instead exposes commands and optional checkbox/radio state; it does not represent a selected form value.
+
+### Text editing keyboard navigation
+
+`TextInput`, `TextArea`, `SearchBar` and `ComboBox` share these editor bindings:
+
+| Keys | Behavior |
+| --- | --- |
+| Left / Right | Move by character using the editor's text direction. |
+| Ctrl+Left / Ctrl+Right | Jump to the **start** of the previous / next Unicode word, rather than the end of the current word. |
+| Ctrl+Shift+Left / Ctrl+Shift+Right | Make the same word jumps while keeping the initial selection anchor, including when reversing or crossing it. |
+| Page Up / Page Down (`TextArea`) | Move by one editable viewport of complete wrapped visual rows (at least one row), scroll that viewport, and keep the caret visible. |
+| Shift+Page Up / Shift+Page Down (`TextArea`) | Make the same page moves while retaining the selection anchor. |
+
+Word navigation skips punctuation, repeated spaces and empty lines, keeps UTF-8
+and combining sequences intact, and uses Unicode word segmentation (including
+CJK). In RTL paragraphs, Left advances and Right goes backward in logical word
+order, matching the editor's directional arrows. When no further word exists,
+the caret stops at the document boundary. Password fields use the same navigation
+without exposing text through clipboard or drag operations.
+
+Page size comes from the current control body minus text padding, excluding label
+and error rows; resizing and wrapping change the number of rows traversed. The
+document remains unbounded and scrollable. Paging retains Cosmic-text's preferred
+vertical glyph column across short lines (not a new pixel-exact horizontal-position
+algorithm), clamps at the first/last row, and reaches the document boundary on a
+further page press. Closed single-line editors consume page keys without moving
+the caret/selection or scrolling the parent. Open suggestion popups retain their
+existing page-navigation priority.
+
+Navigation alone does not call `on_change` or add undo history. Disabled fields
+do not receive editing keys. Application shortcuts retain priority: return
+`ShortcutOutcome::Ignored` to allow these bindings. Existing Home/End,
+Ctrl+Home/End, Up/Down and Ctrl+Up/Down bindings and platform modifier handling
+remain in place; these new word bindings explicitly use **Ctrl**, including on
+macOS, and do not reinterpret Command. IME committed-text handling is unchanged;
+Rutter does not retain a separate preedit composition.
 
 ### Controlled Text Inputs
 

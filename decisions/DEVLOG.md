@@ -1,5 +1,52 @@
 # Development Log
 
+## [2026-10-26T13:00:16-03:00] - Prepare the Editor Navigation Version and Commit - 0.45.0
+
+**Context:** The user requested a version update and commit for feature 63.6, explicitly waiving another test run this time.
+
+**Challenge:** Synchronize package metadata and include word/page navigation with its regression coverage while leaving the user's unrelated `.gitignore` edit outside the commit.
+
+**Decision:** Advance 0.44.5 to 0.45.0 for the new editor functionality. Let Cargo synchronize Rutter's lockfile version, update README status and use an English feature title without release wording. Preserve public API signatures and document intentional Ctrl word-start and multiline page-key behavior. Do not tag or push.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log, `src/input/state/{mod,navigation}.rs`, `src/engine/runner.rs` and `src/engine/runner/input_navigation_tests.rs`.
+
+**Validation:** `CARGO_BUILD_JOBS=2 cargo check --offline --lib`, `cargo fmt --all -- --check` and `git diff --check` passed sequentially. The manifest/lockfile diff changes only Rutter's version, with no dependency resolution changes. Tests were not rerun, as explicitly requested; the preceding implementation entry records the earlier targeted/full-suite and Clippy evidence. No new dependencies, stored-data migrations or generated files other than the synchronized lockfile are involved. Platform modifier semantics and paging limitations remain documented in README and the implementation entry below.
+
+## [2026-10-26T12:53:18-03:00] - Add Word-Start and Viewport Page Navigation (63.6) - Unreleased
+
+**Context:** Implement Ctrl+Left/Right word-start jumps, anchored Ctrl+Shift selection and viewport-aware TextArea Page Up/Down without changing text or undo history.
+
+**Challenge:** The existing Ctrl bindings used character motions. Cosmic-text 0.18.2's NextWord/RightWord lands at word ends, and its built-in page motions depend on a buffer height while Rutter intentionally keeps the document buffer unbounded. Paging must use wrapped visual rows and the live text body, excluding field annotations. Repeated paging also exposed an upstream layout-cursor edge case: after reaching a wrapped document end, another downward motion could return to an early row.
+
+**Alternatives:** Direct LeftWord/RightWord would retain directional handling but violate the requested next-word-start destination. Giving the editor buffer a viewport height would enable its page motions but introduce a second internal scrolling model alongside Rutter's painting offsets. Reusing Up/Down over a viewport-sized number of visual rows preserves the existing document and editor column behavior.
+
+**Decision:** Add a focused private input-state navigation module. Reuse the existing direct `unicode-segmentation` dependency over borrowed buffer lines; skip separators and empty lines, preserve Unicode word starts and use the shaped paragraph direction to interpret Left/Right consistently with plain arrows. No additional plaintext document copy is needed for word movement, including passwords. Reset the editor's vertical preferred column on horizontal word moves. For pages, traverse `floor(visible_h / line_height)` visual rows, with a minimum of one, retaining Cosmic-text's preferred glyph column across short lines. Advance Rutter's scroll offset and use the existing caret-reveal/clamping path; guard document boundaries before and during traversal. Existing runtime viewport metadata already excludes label/error rows and text padding, so no layout or painting changes are required.
+
+Route word/page movements through the same Shift-anchor path, keeping the anchor when reversing, shrinking to zero or crossing it. Unshifted navigation clears selection. Closed single-line editors consume page keys while retaining caret/selection and parent scroll; open suggestion popups keep their established priority. Application shortcuts still run first and can consume the event. Navigation does not dispatch `on_change` or schedule snapshots. Existing Ctrl+Home/End, Ctrl+Up/Down, ordinary arrows, committed IME insertion, disabled-input routing, password copy/drag restrictions and Command handling remain in place. The new word modifier is explicitly Ctrl on all platforms; no public API signatures change.
+
+**Files Changed:** `src/input/state/navigation.rs`, its registration in `src/input/state/mod.rs`, `src/engine/runner.rs`, `src/engine/runner/input_navigation_tests.rs`, `README.md` shortcut documentation, and this log.
+
+**Validation:** Read AGENTS, widget-design and `docs/WIDGET_DESIGN.md`; inspected shared input state/limits, Cosmic-text motion implementation, application shortcut/modifier routing, IME commit handling, disabled metadata, search/combobox publication and annotation-free wrapping/viewport metrics. Resource-intensive validation ran sequentially with two Cargo jobs, locked/offline resolution and test debug info disabled:
+
+```bash
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib input::state::navigation -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --lib input_navigation -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --lib navigation -- --test-threads=2
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-targets --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=2
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+Early targeted runs caught the wrapped-end paging regression, an affinity-sensitive cursor assertion and test-fixture setup issues (initial undo history, widget-family reuse and opening suggestions); these were corrected. The final targeted `navigation` run passed **33/33**, including **11 new regressions** (six state tests and five runner tests). The first full-suite invocation hit the terminal's 120-second timeout; process inspection confirmed no test/build/Xvfb children remained before retrying sequentially with a longer timeout. The completed full run passed **851 library tests (35 existing ignored), 76 demo-runner tests, 253 integration tests and 3 example tests**. **313 doctests** passed (311 ordinary/compile and two compile-fail). Clippy with warnings denied, formatting and diff checks passed.
+
+Coverage includes exact next-word-start destinations; punctuation/repeated spaces/empty lines; UTF-8, combining marks, CJK and Hebrew RTL; empty/minimal inputs; repeated selection growth/reversal/shrink/cross-anchor across logical lines; wrapped page rows and stable document boundaries; preferred column recovery across short lines; caret visibility at 320/800px text widths and 20/80px short viewports; exact annotation-free runtime height; real runner event routing through consumed/ignored application shortcuts; no navigation callbacks/snapshots; undo without intermediate navigation entries; single-line parent-scroll isolation; password masking/history; disabled publication; open search/combobox selection preservation across republication; and committed IME replacement of a word selection. Existing full-suite geometry/raster checks cover field annotation containment and both themes/scales. No new paint geometry was introduced, so no new raster fixtures were needed.
+
+**Coverage limits and compatibility:** Automated display-dependent checks used isolated Xvfb, not manual desktop or native non-Linux acceptance. No new manual visual, screen-reader or preedit-composition acceptance is claimed. Cosmic-text retains a preferred glyph column rather than a pixel-exact x coordinate for proportional fonts; paging deliberately preserves that existing capability. Single-line page keys now preserve selection instead of clearing it incidentally. No dependencies, version, lockfiles or generated files changed; no migrations or public API breaks. The user's pre-existing `.gitignore` edit was preserved. Nothing staged or committed.
+
 ## [2026-10-26T12:21:24-03:00] - Prepare the Table-of-Contents Fix Version and Commit - 0.44.5
 
 **Context:** The user requested a version update and commit for request 63.5 and its viewport/gutter followup, explicitly waiving another test run this time.
