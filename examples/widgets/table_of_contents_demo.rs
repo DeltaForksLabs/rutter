@@ -6,8 +6,11 @@
 use arboard::Clipboard;
 use cosmic_text::FontSystem;
 use rutter::spacing;
-use rutter::{AppLogic, HeadingLevel, RutterRunner, TableOfContentsOptions, Theme, Widget};
+use rutter::{AppLogic, RutterRunner, TableOfContentsOptions, Theme, Widget};
 use taffy::prelude::*;
+
+#[path = "table_of_contents_article.rs"]
+mod article;
 
 use super::{
     layout::responsive_width,
@@ -45,7 +48,7 @@ impl AppLogic for TableOfContentsDemo {
     }
 
     fn view<'a>(state: &'a mut TableOfContentsDemoState) -> Widget<'a, Msg> {
-        super::layout::page(
+        let mut page = super::layout::page(
             "Table of contents",
             Widget::Column {
                 style: page_style(),
@@ -70,7 +73,20 @@ impl AppLogic for TableOfContentsDemo {
                 .with_id(320),
             ],
             },
-        )
+        );
+        // Opt this reading page into available-height layout without changing
+        // the intrinsic-document policy used by the other examples. Min-height
+        // still allows the navigation and a usable article to overflow together.
+        if let Widget::Column { children, .. } = &mut page {
+            for child in children {
+                if let Widget::ScrollView { child, .. } = child
+                    && let Widget::Column { style, .. } = child.as_mut()
+                {
+                    style.min_size.height = Dimension::percent(1.0);
+                }
+            }
+        }
+        page
     }
 
     fn update(state: &mut TableOfContentsDemoState, message: Msg, _: &mut Clipboard) {
@@ -100,7 +116,13 @@ fn page_style() -> Style {
 }
 
 fn document_viewport_style() -> Style {
-    responsive_width(680.0, Dimension::length(420.0))
+    Style {
+        // The shared page owns the XL gap above navigation; this section owns
+        // navigation/document separation, independently of the theme's density.
+        gap: Size::length(spacing::TWO_XL),
+        flex_grow: 1.0,
+        ..responsive_width(680.0, Dimension::auto())
+    }
 }
 
 fn documentation<'a>() -> Widget<'a, Msg> {
@@ -113,26 +135,35 @@ fn documentation<'a>() -> Widget<'a, Msg> {
 fn documentation_style() -> Style {
     Style {
         flex_direction: FlexDirection::Column,
-        gap: Size::length(spacing::XL),
+        gap: Size::length(spacing::TWO_XL),
+        flex_shrink: 0.0,
+        // ScrollView paints its 8px track 2px inside the physical right edge,
+        // in both text directions. Keep an SM gap before it; padding participates
+        // in both text measurement and painting, including heading destinations.
+        padding: Rect {
+            right: LengthPercentage::length(rutter::layout::SCROLLBAR_W + 2.0 + spacing::SM),
+            ..Rect::zero()
+        },
         ..Style::default()
     }
 }
 
 fn documentation_sections<'a>() -> Vec<Widget<'a, Msg>> {
-    [
-        (HeadingLevel::H1, "Visão geral", "O sumário é gerado a partir dos headings semânticos do documento."),
-        (HeadingLevel::H2, "Instalação", "Cada item navega para a posição calculada pelo layout, sem IDs manuais por seção."),
-        (HeadingLevel::H3, "Navegação", "Os links podem receber foco pelo teclado e expõem papéis de heading e link para tecnologias assistivas."),
-        (HeadingLevel::H4, "Rolagem suave", "A animação é cancelada ao usar a roda do mouse ou arrastar a barra de rolagem."),
-        (HeadingLevel::H5, "Rolagem suave", "A animação é cancelada ao usar a roda do mouse ou arrastar a barra de rolagem."),
-    ]
-    .into_iter()
-    .map(|(level, title, text)| super::layout::section(section(level, title, text).into()))
-    .collect()
-}
-
-fn section<'a>(level: HeadingLevel, title: &str, text: &str) -> [Widget<'a, Msg>; 2] {
-    [Widget::heading(level, title, Style::default()), body(text)]
+    let mut sections: Vec<_> = article::SECTIONS
+        .iter()
+        .map(|section| {
+            let mut children = vec![Widget::heading(
+                section.level,
+                section.title,
+                Style::default(),
+            )];
+            children.extend(section.paragraphs.iter().map(|paragraph| body(paragraph)));
+            super::layout::section(children)
+        })
+        .collect();
+    // Attribution is supporting text, not an extra document navigation entry.
+    sections.push(super::layout::section(vec![body(article::ATTRIBUTION)]));
+    sections
 }
 
 fn body<'a>(content: &str) -> Widget<'a, Msg> {
@@ -150,11 +181,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use rutter::AppLogic;
+    use rutter::{AppLogic, HeadingLevel};
 
-    use super::{
-        HeadingLevel, TableOfContentsDemo, TableOfContentsDemoState, Widget, documentation,
-    };
+    use super::{TableOfContentsDemo, TableOfContentsDemoState, Widget, documentation};
 
     #[test]
     fn documentation_contains_semantic_headings() {
@@ -191,3 +220,7 @@ mod tests {
         assert!(options.is_expanded());
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/table_of_contents_demo_unit_tests.rs"]
+mod article_tests;

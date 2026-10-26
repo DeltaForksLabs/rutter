@@ -105,8 +105,13 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.44.4.** This patch contains checkbox/radio outlines and
-Select borders/focus inside their painted bodies, and gives Controls demo sections
+**Current version: 0.44.5.** This patch expands the table-of-contents demo with
+an attributed Solar System article, clearer navigation/document spacing and a
+reading viewport that fills the available height. A reserved scrollbar gutter
+keeps text clear of the track; short windows retain reachable overflow.
+
+Version 0.44.4 contained checkbox/radio outlines and
+Select borders/focus inside their painted bodies, and gave Controls demo sections
 internal clearance for compact-control focus rings. Hit areas, callbacks and
 popup anchors remain unchanged.
 
@@ -1292,6 +1297,18 @@ Rutter is licensed under either of:
 - Apache License 2.0, see `LICENSE_APACHE_2.0`.
 
 You may choose either license when using, modifying, or distributing the project.
+
+### Table-of-contents example source
+
+The static English article in `examples/widgets/table_of_contents_article.rs` is
+an original, shortened factual summary informed by Wikipedia contributors,
+[“Solar System”](https://en.wikipedia.org/wiki/Solar_System). It was reorganized
+and summarized for the scrolling demonstration; no Wikipedia prose or media is
+reproduced. The example displays this attribution in its document footer and
+requires no network access. Wikipedia's source text is available under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), as verified in the
+article footer. This source notice does not change Rutter's code license; the
+new summary uses original wording under the project's existing license.
 
 ## Credits
 

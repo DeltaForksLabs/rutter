@@ -129,7 +129,12 @@ fn assert_page<Message>(view: &Widget<'_, Message>, fonts: &Fonts, name: &str) {
             document.height() > 0.0 && document.width() <= viewport.width() + 1.0,
             "{name}: intrinsic document"
         );
-        assert_document_hierarchy(&tree, document_node, name);
+        assert_document_hierarchy(
+            &tree,
+            document_node,
+            super::layout::document_children(view),
+            name,
+        );
         let mut headings = Vec::new();
         inspect(view, &tree, root, Point::default(), &mut headings, name);
         let title = headings.first().expect("every page needs a semantic H1");
@@ -298,7 +303,12 @@ fn inspect<Message>(
     }
 }
 
-fn assert_document_hierarchy(tree: &TaffyTree<RutterContext>, document: NodeId, name: &str) {
+fn assert_document_hierarchy<Message>(
+    tree: &TaffyTree<RutterContext>,
+    document: NodeId,
+    widgets: &[Widget<'_, Message>],
+    name: &str,
+) {
     let sections = tree.children(document).unwrap();
     for pair in sections.windows(2) {
         let previous = bounds(tree, pair[0], Point::default());
@@ -308,7 +318,20 @@ fn assert_document_hierarchy(tree: &TaffyTree<RutterContext>, document: NodeId, 
             "{name}: independent page blocks need clear separation"
         );
     }
-    for section in sections {
+    for (section, widget) in sections.into_iter().zip(widgets) {
+        // A TOC contains independent navigation and document regions, rather
+        // than compact peers. Keep checking the article's actual text groups.
+        if let Widget::TableOfContents { child, .. } = widget {
+            let nodes = tree.children(section).unwrap();
+            let navigation = bounds(tree, nodes[0], Point::default());
+            let viewport = bounds(tree, nodes[1], Point::default());
+            assert!(viewport.top - navigation.bottom >= rutter::spacing::XL - 1.0);
+            let Widget::Column { children, .. } = child.as_ref() else {
+                panic!("{name}: expected grouped article sections");
+            };
+            assert_document_hierarchy(tree, tree.children(nodes[1]).unwrap()[0], children, name);
+            continue;
+        }
         if tree.style(section).unwrap().flex_direction != FlexDirection::Column {
             continue;
         }

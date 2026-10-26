@@ -111,15 +111,21 @@ fn fixed_viewport_style(table_style: &Style) -> Style {
 
 fn bounded_viewport_style() -> Style {
     Style {
+        // This is a scroll viewport, not an intrinsic contribution of its full
+        // article to an ancestor's automatic minimum height.
+        overflow: taffy::geometry::Point {
+            x: taffy::style::Overflow::Hidden,
+            y: taffy::style::Overflow::Hidden,
+        },
         flex_direction: FlexDirection::Column,
         size: Size {
             width: Dimension::percent(1.0),
-            height: Dimension::length(0.0),
+            height: Dimension::length(TABLE_OF_CONTENTS_MIN_VIEWPORT_HEIGHT),
         },
         min_size: height_limit(Dimension::length(TABLE_OF_CONTENTS_MIN_VIEWPORT_HEIGHT)),
         flex_grow: 1.0,
         flex_shrink: 0.0,
-        flex_basis: Dimension::length(0.0),
+        flex_basis: Dimension::length(TABLE_OF_CONTENTS_MIN_VIEWPORT_HEIGHT),
         ..Style::default()
     }
 }

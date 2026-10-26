@@ -1,5 +1,83 @@
 # Development Log
 
+## [2026-10-26T12:21:24-03:00] - Prepare the Table-of-Contents Fix Version and Commit - 0.44.5
+
+**Context:** The user requested a version update and commit for request 63.5 and its viewport/gutter followup, explicitly waiving another test run this time.
+
+**Challenge:** Include the static article, source attribution, layout corrections and regression coverage while synchronizing metadata and leaving the user's `.gitignore` edit outside the commit.
+
+**Decision:** Bump 0.44.4 to 0.44.5 for the example and reading-layout corrections. Let Cargo synchronize Rutter's lockfile version, update README status and use an English fix title without release wording. Preserve existing IDs, navigation controls, callbacks and offline execution. Do not tag or push.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log, `examples/widgets/table_of_contents_{demo,article}.rs`, `src/widgets/table_of_contents/styles.rs`, `tests/unit/all_examples_layout_unit_tests.rs` and `tests/unit/table_of_contents_demo_unit_tests.rs`.
+
+**Validation:** `CARGO_BUILD_JOBS=2 cargo check --offline --lib`, `cargo fmt --all -- --check` and `git diff --check` passed sequentially. The manifest/lockfile diff changes only Rutter's version, with no dependency resolution changes. Tests were not rerun, as explicitly requested; prior regression, full-suite and Clippy evidence belongs to the implementation entries below. No new dependencies, public API signatures, stored-data migrations or generated files other than the synchronized lockfile are involved. Source attribution and the viewport minimum-height behavior are documented below and in README.
+
+## [2026-10-26T12:01:42-03:00] - Fill the TOC Reading View and Reserve Its Scrollbar Gutter (63.5 Follow-up) - Unreleased
+
+**Context:** The collapsed dark reading demo left a large empty area below its fixed 420px article viewport, and wrapped paragraphs could paint underneath the scrollbar.
+
+**Challenge:** The shared example page deliberately keeps its outer document intrinsic. Simply growing the TOC cannot fill an indefinite-height parent; its full article also contributed to automatic minimum sizing. Short windows still need reachable navigation and an article viewport, rather than compressed or hidden text. Existing uncommitted article, attribution, README, hierarchy tests, earlier log entry and user `.gitignore` changes were preserved.
+
+**Alternatives:** Changing the shared page's sizing policy would affect every demo. A screenshot-derived height would fail on resize. The selected example-local minimum height keeps the shared page helper intact. Initial sizing regressions exposed both the article's intrinsic minimum contribution and a zero-basis viewport whose 44px minimum overflowed its parent's measured allocation; the final bounded viewport sizing addresses both.
+
+**Decision:** Opt only this page's outer document into `min-height: 100%`, preserving auto/intrinsic height when its header, navigation and minimum viewport exceed the window. Give the TOC auto height and flex growth instead of its earlier fixed 420px viewport. In the shared TOC's bounded/flex viewport style, declare layout overflow hidden (the renderer already clips this scroll viewport), and use the existing 44px minimum for its preferred height and flex basis as well. This prevents the full article from inflating automatic ancestor minima and makes the minimum viewport part of the measured outer document. Fixed-height and intrinsic TOC policies remain intact; no root public API changed.
+
+Reserve physical-right article padding of `SCROLLBAR_W + 2 + spacing::SM` (18 logical pixels): the actual renderer/hit track is 8px wide, inset 2px from the physical right edge in both LTR and RTL, with 8px of clear separation before it. The same padded text width drives layout and rasterization; live heading offsets naturally reflect rewrapping. ID 320, theme control, controlled accordion, two-column option, all 11 headings, paragraphs, attribution and callbacks remain present. No navigation/animation coordinate code was changed.
+
+**Files Changed:** `examples/widgets/table_of_contents_demo.rs`, `src/widgets/table_of_contents/styles.rs`, `tests/unit/table_of_contents_demo_unit_tests.rs`, and this log. The prior article module, README and generic launcher-test changes were retained without further edits.
+
+**Validation:** Applied AGENTS, widget-design and `docs/WIDGET_DESIGN.md`; inspected Git status/diffs, shared page flow, layout core, bounded TOC styles, physical scrollbar paint/hit geometry and existing navigation tests. Resource-intensive commands ran sequentially:
+
+```bash
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --bin rutter table_of_contents_demo -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --bin rutter every_article_link -- --test-threads=2
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-targets --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=2
+```
+
+Initial targeted runs failed while resolving the minimum-size issues described above. Another failure identified a raster assertion that sampled a final 4px line-leading fragment of a wrapped heading as if it must contain ink; the check now partitions the complete text allocation into evenly sized bands, preserving ink coverage without demanding glyphs in line leading. The final targeted run passed **6/6** tests. The complete Xvfb run passed **840 library tests (35 existing ignored), 76 demo-runner tests, 253 integration tests and 3 example tests**. Clippy with warnings denied and **313 doctests** passed. Final `cargo fmt --all -- --check`, `git diff --check` and `git status --short` checks passed; status retained the same pre-existing files plus the focused TOC style edit.
+
+Geometry covers **18 page arrangements**: 320/800/1920px widths, 260/700/981px heights and both accordion states. It checks the article's bottom within 1px of the 24px page inset when it fits, no outer double-scroll in those arrangements, exact retained 12/24/32px relationships, padded section bounds, intrinsic article height, and outer scroll reachability when navigation plus minimum article exceed a short viewport. Existing article navigation coverage checks all 11 pointer targets against live rewrapped heading offsets at 272/680px document widths, clamps the destinations, and reaches the last heading and attribution footer. First/last heading and footer raster ink/clipping checks pass in both themes. New **96 raster/reference pairs** cover LTR/RTL, both document widths, both accordion states, first/bottom article offsets, both themes and 1x/1.5x/2x scaling; every gutter pixel matches the same scrollbar/layout without article ink. Existing full-suite keyboard/focus, wheel/drag, TOC runtime and smooth-scroll tests also passed.
+
+**Coverage limits and compatibility:** No manual desktop, real screen-reader or non-Linux acceptance is claimed; display-dependent enabled tests used isolated Xvfb and raster comparisons use software surfaces. The new article tests verify deep destination coordinates, pointer hits and scroll-clamped reachability, not a timed end-to-end keyboard animation through this particular article. The existing runtime/keyboard/smooth-scroll tests provide the interaction coverage. Validation/disabled/popup states do not belong to this reading interface. Bounded TOCs now correctly include their existing minimum viewport in intrinsic ancestor sizing, which can increase an overflowing ancestor's measured document height; this is intentional so short-window content remains reachable. No new dependencies, version, lockfile, generated-file, migration or security changes. No staging or commit.
+
+## [2026-10-26T11:26:43-03:00] - Expand the Table-of-Contents Reading Demo (Request 63.5) - Unreleased
+
+**Context:** Replace the very short TOC sample with a medium-length factual article so smooth scrolling has meaningful destinations, and improve the internal navigation/document separation.
+
+**Challenge:** Retain intrinsic document height, the 420px document viewport, two-column controlled accordion, theme selector, ID 320 and existing accessibility/navigation behavior on narrow and short surfaces. Attribution must remain readable without becoming an extra TOC entry.
+
+**Alternatives:** Copying Wikipedia passages would require treating the reproduced/adapted prose as separately licensed content. An original factual summary provides realistic reading material without importing article prose or media. Changing shared widget spacing would affect unrelated consumers; the example's own style can express the needed relationship.
+
+**Decision:** Store the static original English summary in the focused `table_of_contents_article.rs` example module. Its 11 semantic headings comprise one H1, five H2 sections and five H3 subsections, with 13 distinct paragraphs and a test-enforced 700–1,100-word body. Facts were checked against the actual `functions.webfetch` response for https://en.wikipedia.org/wiki/Solar_System; its footer explicitly identifies Creative Commons Attribution-ShareAlike 4.0. The visible footer credits Wikipedia contributors, identifies the original shortened/reorganized factual summary and source URL, and names the source's CC BY-SA 4.0 license. README explains that no source prose/media is reproduced and the original wording retains the project's existing code license. No revision identifier is asserted. No network access occurs in the example or its tests.
+
+The shared page remains the sole owner of the 24px (`spacing::XL`) header-to-navigation gap. The example owns a new 32px (`TWO_XL`) navigation-to-document gap and 32px between independent article sections; shared section groups retain 12px (`MD`) heading/paragraph gaps. Text remains naturally wrapped and non-shrinking. No core widget, renderer, theme density or navigation runtime changes were needed. The launcher geometry test now recognizes the TOC's navigation and article as separate regions and recursively checks article groups, rather than incorrectly applying compact-group spacing to that boundary.
+
+**Files Changed:** `examples/widgets/table_of_contents_demo.rs`, new `examples/widgets/table_of_contents_article.rs`, new `tests/unit/table_of_contents_demo_unit_tests.rs`, `tests/unit/all_examples_layout_unit_tests.rs`, `README.md`, and this log.
+
+**Validation:** Read AGENTS, widget-design skill, `docs/WIDGET_DESIGN.md`, shared page layout, TOC geometry/styles, target resolution, runtime/focus and existing geometry/hit/raster tests before editing. Resource-intensive commands executed sequentially:
+
+```bash
+git status --short
+git diff -- .gitignore
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --bin rutter table_of_contents_demo -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-targets --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=2
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The targeted run passed **5/5** tests (three new regressions plus two existing tests). Geometry covers 320/800px page widths, 260/700px heights and both accordion states (eight combinations), aligned groups, positive text bounds, exact 12/24/32px gaps within 1px tolerance, a 420px viewport and intrinsic content taller than four document viewports. Navigation checks all 11 link hit coordinates against actual heading offsets at 272/680px document widths, clamps each destination while retaining visible heading bounds, and verifies the attribution footer reaches the viewport bottom. Twelve software raster scenes cover first/last destination headings and wrapped attribution in both themes at those widths; text bands contain ink and the navigation gap and area below the document viewport remain clear, without font-shape snapshots.
+
+The first full-suite attempt exceeded the tool's 120-second timeout during library tests; process inspection confirmed it had terminated before retrying. The next attempt passed the library but found the generic launcher test's compact-group assumption at the new navigation/document gap. After the semantic hierarchy-test correction, the final full all-target/all-feature run passed **840 library tests (35 existing ignored), 75 demo-runner tests, 253 integration tests and 3 example tests**, including all launcher layout/theme tests and existing TOC geometry, accessibility, hit, runtime/focus, smooth-scroll and general keyboard/scroll regressions. Warnings-denied Clippy, **313 doctests**, formatting and whitespace checks passed. Final scoped diff/status inspection includes the two new untracked task files, the four modified tracked task files (including this log), and the unchanged pre-existing `.gitignore` edit. Although the user's ignore rules name `decisions`, this existing tracked log remains visible to Git and was updated without staging.
+
+**Coverage limits and compatibility:** New article-specific rasters use 1x scale; the full existing rendering suite also exercises fractional/high-DPI cases, but the article itself was not visually reviewed at 1.5x/2x. No manual desktop, real screen-reader or non-Linux acceptance is claimed; display-dependent enabled tests used isolated Xvfb. New article tests exercise hit targets and destination geometry, not a timed end-to-end keyboard animation; existing runtime/focus/smooth-scroll and keyboard regressions passed. Narrow TOC titles retain the widget's existing single-line ellipsis/accessibility behavior. The article introduces no validation fields, disabled controls or popup states; broader existing coverage passed. No new dependencies, public API/security changes, migration, version bump, lockfile or generated-file changes. No staging or commit was performed.
+
 ## [2026-10-26T11:07:54-03:00] - Prepare the Controls Fix Version and Commit - 0.44.4
 
 **Context:** The user requested a version update and commit for request 63.4, explicitly waiving another test run this time.
