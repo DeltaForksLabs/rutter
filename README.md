@@ -105,7 +105,12 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.45.0.** This release adds Ctrl+Left/Right word-start
+**Current version: 0.45.1.** This patch restores ScrollView document sizing,
+focus-scoped keyboard scrolling and nested scrollbar track jumps/dragging.
+Pixel input respects display scale, and the scroll demo reserves a gutter between
+its cards and scrollbar. See [ScrollView navigation](#scrollview-navigation).
+
+Version 0.45.0 added Ctrl+Left/Right word-start
 navigation, Ctrl+Shift word selection and viewport-aware Page Up/Down navigation
 for multiline editors, including Shift selection. See
 [text editing keyboard navigation](#text-editing-keyboard-navigation) for Unicode,
@@ -554,6 +559,14 @@ Run `cargo run -- drag_drop` for four hardcoded cards and a text-entry tile in a
 A single click inside a highlighted word clears the selection and places the caret at the original press position; the text drag begins only after the pointer moves at least five logical pixels. Double-click selects the full contiguous word, including mixed-case words such as `chatGPT`.
 
 The bundled [`yosemite_falls.jpg`](examples/widgets/yosemite_falls.jpg) and [`yosemite_falls_badge.jpg`](examples/widgets/yosemite_falls_badge.jpg) are resized and JPEG-reencoded copies of the [Yosemite Falls and Merced River spring photo](https://www.nps.gov/common/uploads/structured_data/05383E91-AA28-2DDC-AB517507594F9FA6.jpg) credited **NPS Photo** on the [Yosemite National Park page](https://www.nps.gov/yose/index.htm). The original U.S. Government work is [public domain under the NPS ownership notice](https://www.nps.gov/aboutus/disclaimer.htm#ownership); no protection is claimed in original U.S. Government works. No image network request is needed at runtime.
+
+### ScrollView navigation
+
+Run `cargo run -- scroll` for 60 independently selectable buttons in a 300-logical-pixel viewport. Their intrinsic document height includes the real item gaps; no estimated or fixed content height is needed. A vertical `ScrollView` prevents its document from being stretched to the viewport height by row alignment or compressed by column flex shrinking. Explicit document heights and non-stretch alignment remain available.
+
+Mouse-wheel input scrolls the viewport under the pointer. Pixel-wheel movement and scrollbar dragging are converted from physical to logical coordinates once; line-wheel input keeps its 40-logical-pixel step. Clicking an unoccupied scrollbar track centers the thumb on the requested destination, clamped to the document bounds, and can continue directly into a drag. Nested ScrollViews, virtual lists and virtual grids use live ancestor offsets and viewport clipping for track hits; a viewport's own scrollbar remains above its document.
+
+After clicking or tabbing to a button inside a ScrollView, unconsumed **Up/Down** scroll by 40 logical pixels, **PageUp/PageDown** by 90% of the viewport, and **Home/End** reach the document boundaries. These keys belong to the nearest scroll ancestor of the focused control, even when the pointer is over another viewport. Application shortcuts, editors, menus and virtual-collection navigation retain priority. Portaled popup focus does not scroll the underlying page, and Tab/Shift+Tab still reveals controls through their own scroll ancestors. With no focused control, navigation uses the pointer-selected scroll viewport, including its empty gaps.
 
 ### Multi-window applications
 

@@ -1,5 +1,84 @@
 # Development Log
 
+## [2026-10-26T15:00:36-03:00] - Prepare the ScrollView Fix Version and Commit - 0.45.1
+
+**Context:** The user requested a version update and commit for requests 63.7/63.8 and the card/scrollbar spacing followup, explicitly waiving another test run this time.
+
+**Challenge:** Include the document sizing, input routing, nested scrollbar and scale corrections with their regressions, synchronize metadata and preserve the user's `.gitignore` edit outside the commit.
+
+**Decision:** Bump 0.45.0 to 0.45.1 for the scrolling fixes. Let Cargo synchronize Rutter's lockfile version, update README status and use an English fix title without release wording. Preserve public API signatures, explicit document sizing and priority for focused editors, collections and portals. Do not tag or push.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log, `examples/widgets/scroll_demo.rs` and its geometry tests, `src/layout.rs`, `src/widget/mod.rs`, `src/engine/scroll_runtime.rs`, runner keyboard/wheel/drag and native-menu integration, `src/render/hit_test.rs`, and runner scroll regression modules.
+
+**Validation:** `CARGO_BUILD_JOBS=2 cargo check --offline --lib`, `cargo fmt --all -- --check` and `git diff --check` passed sequentially. Reviewed the manifest/lockfile diff: only Rutter's version changed, with no dependency resolution changes. Tests were not rerun, as explicitly requested; prior targeted/full-suite and Clippy evidence belongs to the implementation entries below. No new dependencies, stored-data migrations or generated files other than the synchronized lockfile are involved. The intentional intrinsic-height and focus-scoped navigation compatibility effects remain documented below and in README.
+
+## [2026-10-26T14:01:28-03:00] - Separate Scroll Demo Cards and Nested Scrollbar Lanes - Unreleased
+
+**Context:** Follow up on 63.7/63.8: list cards in the real ScrollView demo occupied the scrollbar's painted lane.
+
+**Challenge:** The translucent 8px track sits 2px inside the physical right edge. On narrow pages, the inner and outer tracks also coincided, so the page's topmost track intercepted inner scrollbar presses. Horizontal spacing must preserve the intrinsic 2636px document, 300px viewport, 2336px maximum offset and actual card hit bounds.
+
+**Decision:** Reserve `SCROLLBAR_W + 2 + spacing::SM` (18 logical px) as physical-right document padding, leaving an 8px card-to-track gap. Give the inner viewport the same physical-right margin and an auto/stretch width, retaining its 400px maximum; this separates the two tracks without overflowing the narrow page. Padding and margin own different relationships (cards/internal track and inner/outer tracks). Keep item height, gaps, IDs, selection and existing navigation. This is localized to the demo; no shared ScrollView API, layout or renderer changes were needed.
+
+**Files Changed:** `examples/widgets/scroll_demo.rs`; extend the already-uncommitted `examples/widgets/scroll_demo_geometry_tests.rs`; this log. Preserve all preceding 63.7/63.8 changes and the user's `.gitignore` edit.
+
+**Validation:** Read widget-design and `docs/WIDGET_DESIGN.md` before editing and reviewed the final geometry/paint evidence against them. Initial regression runs exposed the coincident outer track; after reserving its lane, raster checks exposed the Ghost button's existing centered 1px border and a final selected item outside the short page's visible region. The raster assertion explicitly allows <=1 logical px at the card edge for border/antialiasing, while requiring the remainder of the gutter and track to match the unselected reference exactly. Reveal the final item through the outer viewport for the bottom raster comparison, and clamp simulated ancestor positions to their real scrollable range rather than using impossible offsets on tall pages.
+
+Commands ran sequentially, with two Cargo jobs, locked/offline resolution and test debug info disabled:
+
+```bash
+rustfmt --edition 2024 examples/widgets/scroll_demo.rs examples/widgets/scroll_demo_geometry_tests.rs
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features task63_real_scroll_demo -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --bin rutter --all-features scroll_demo -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --lib --all-features scroll_regressions -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --bin rutter --all-features all_launcher_demos_reflow_and_retain_reachable_documents -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The final demo run passed **2 tests**, including the enhanced real-demo matrix; all **22 scroll runner regressions** and the **1 all-launcher responsive-layout matrix** passed. Clippy with warnings denied, formatting and diff whitespace checks passed. The demo matrix covers 320/800px widths, 260/700px heights, both themes and 1x/1.5x/2x software raster output. It asserts equal positive-width cards, unchanged vertical extents and gaps, separate scrollbar lanes, correct card identity immediately inside the painted edge, inert selection gutter, exact inner track-jump destination and unchanged thumb press offset through live inner/outer positions. Selected versus unselected raster references include the first selected card and final selected card, prohibit card background under the translucent bar and retain the existing scroll-clipping regression. The unchanged runner tests verify subsequent drags, keyboard focus navigation and scale-normalized input.
+
+**Coverage limits and compatibility:** Software raster and isolated Linux Xvfb checks are automated evidence; no manual desktop, screen-reader or non-Linux acceptance was performed. The demo uses its actual Portuguese labels and selected/unselected states; no new localized/long-label, RTL, disabled, validation or popup matrix was run for this spacing-only followup. Full suite and doctests were not repeated because production changes are confined to the example; targeted interaction/paint/layout checks and all-target/all-feature Clippy were run instead. Narrow cards intentionally become narrower to reserve the two physical-right lanes. No dependencies, public API, version, lockfile, generated files or migrations changed. DEVLOG updated; nothing staged or committed.
+
+## [2026-10-26T13:38:19-03:00] - Restore ScrollView Input and Nested Track Navigation (63.7/63.8) - Unreleased
+
+**Context:** Repair mouse scrolling and keyboard navigation in the ScrollView demo, and existing scrollbar track jumps/drags in nested examples.
+
+**Challenge:** Default row cross-axis stretching allocated the demo's auto-height document only 300px, hiding its actual 2636px extent from runtime geometry. Focused buttons suppressed generic scroll keys; nested scrollbar traversal omitted live ancestor offsets; physical pixel-wheel and drag distances were applied to logical geometry without scale conversion.
+
+**Alternatives:** An example-only `align_items: FlexStart` would repair this demo but leave the same intrinsic-height failure in other vertical ScrollViews. Removing the keyboard focus guard would target a hovered viewport unrelated to the focused control. Fixed/estimated content heights and a new public jump controller were unnecessary: the existing track-click destination calculation already provides jump-to-position behavior.
+
+**Decision:** Keep the existing ScrollView styles and widget paths, but prevent vertical document stretching in row viewports and flex shrinking in column viewports during blueprint construction. Preserve explicit heights and non-stretch child alignment. Reuse the live focus-reveal geometry pass to retain the nearest focused scroll ancestor; portaled content keeps its independent scope. Route only unconsumed focused-widget navigation to that owner, after application shortcuts, menus, virtual controls and editors. Without focus, retain pointer-selected viewport navigation. Add Home/End boundaries alongside 40px arrows and 90%-viewport page steps, canceling conflicting smooth scrolls. Keep the small keyboard policy in a private runner module and remove duplicate generic-scroll branches from the older virtual-navigation fallback.
+
+Scrollbar traversal now applies each ancestor's live offset while retaining viewport clipping. Test the viewport's own bar before its document, matching paint order, and traverse PointerRegion wrappers. Popup content hits cannot start a drag on a document track behind the popup. Normalize pixel-wheel deltas at dispatch using the current surface scale (configured popup scale for native menus); line deltas remain 40 logical pixels per line. Store drag anchors in logical coordinates. No new public API or runtime dependency is needed.
+
+**Files Changed:** `src/layout.rs`; `src/engine/scroll_runtime.rs`; `src/engine/runner.rs`; new `src/engine/runner/scroll_navigation.rs`; `src/engine/runner/native_menu.rs`; `src/render/hit_test.rs`; ScrollView API documentation in `src/widget/mod.rs`; runner fixtures/regressions in `src/engine/runner/scroll_regressions.rs` and new `scroll_requests.rs`; example guidance in `examples/widgets/scroll_demo.rs` and new `scroll_demo_geometry_tests.rs`; `README.md`; this log.
+
+**Validation:** Read AGENTS, widget-design and `docs/WIDGET_DESIGN.md`; initial Git status contained only the user's `.gitignore` edit. Before production edits, four new runner regressions all failed with the expected symptoms: 300px rather than 2636px content, focused-button arrows leaving offset zero, nested track targeting the outer viewport, and a 40-logical-pixel wheel producing 60px at 1.5x. The nested fixture was subsequently narrowed so its track does not coincide with the outer track painted above it. A follow-up test setup needed publication after the button callback before measuring an independent scroll, because normal focus reveal runs on publication. Intermediate builds caught a popup-scale field assumption and a missing Skia trait import; both were corrected. The initial `python` wrapper command could not run because only `python3` is installed.
+
+Resource-intensive commands ran sequentially, with `CARGO_BUILD_JOBS=2` (also set by the isolated Xvfb wrapper), locked/offline dependency resolution and test debug information disabled:
+
+```bash
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib task63_ -- --test-threads=1
+cargo fmt --all
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features task63_ -- --test-threads=1
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib scroll_regressions -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The completed targeted request run passed **14 tests** (13 runner tests and one real-demo matrix). The full suite passed **864 library tests, 77 launcher tests, 253 integration tests and 3 example tests**, with **35 existing ignored tests**. **313 doctests** passed (311 ordinary/compile and two compile-fail). Clippy passed with warnings denied; final formatting and whitespace checks passed, and Git status was reviewed. After strengthening the exact nested track midpoint assertion, all **22 scroll regressions** passed, including prior Tab/Shift+Tab, popup-anchor reconciliation, smooth-scroll and pointer-identity coverage.
+
+Geometry evidence includes exactly 60 non-shrinking 40px items, 4px gaps, intrinsic height 2636px, 300px viewport and maximum offset 2336px; wheel movement exposes the correct next button hit. The real demo's geometry/raster matrix covers 320/800px widths, 260/700px viewport heights, both themes and 1x/1.5x/2x rendering, requiring selected content to visibly move without painting outside its viewport. Runner event tests cover clicked-button arrows/page/boundaries, focused inner versus outer ownership, editor/virtual-selection priority, portaled focus isolation, popup interception above a track, clipped nested tracks, exact inner track destination, virtual-list/grid jumps and subsequent drags through two live scrolled ancestors, invariant logical wheel/drag distances across scales, and unfocused pointer-selected navigation. Existing full-suite tests cover localized/long strings, disabled controls, validation annotations, RTL and open overlays; the new demo matrix itself uses the demo's actual Portuguese labels and selected states rather than claiming every such combination.
+
+**Coverage limits and compatibility:** Isolated Linux Xvfb, memory-window runner events and software raster tests are automated evidence, not manual desktop, screen-reader, native popup or non-Linux acceptance. The 35 ignored tests remain explicit limitations: 34 specialized native/compositor/driver tests and one opt-in CPU profiling probe were not requested with `--ignored` and were not run. Layouts relying on a scroll document being vertically stretched/compressed now retain its intrinsic height; focused buttons intentionally gain nearest-ancestor document navigation, and scaled pixel input now has consistent logical distance. Public signatures, IDs, selection callbacks and serialization remain compatible. No new dependencies, version bump, lockfile, generated files, migration, staging or commit; the user's `.gitignore` edit is preserved.
+
 ## [2026-10-26T13:00:16-03:00] - Prepare the Editor Navigation Version and Commit - 0.45.0
 
 **Context:** The user requested a version update and commit for feature 63.6, explicitly waiving another test run this time.

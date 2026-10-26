@@ -531,7 +531,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 }
                 match self.refresh_dropdown_scroll_target() {
                     Ok(Some(target)) => {
-                        self.scroll_open_dropdown(target, wheel_deltas(delta).1);
+                        let scale = self
+                            .native_menu
+                            .as_ref()
+                            .and_then(|popup| popup.configured.as_ref())
+                            .map_or(self.engine.scale_factor, |geometry| {
+                                geometry.scale_factor as f32
+                            });
+                        self.scroll_open_dropdown(target, wheel_deltas(delta, scale).1);
                         self.redraw();
                     }
                     Ok(None) => {}

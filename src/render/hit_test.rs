@@ -2822,38 +2822,37 @@ fn find_scrollbar_drag_hit_impl<Msg>(
         Widget::ScrollView { child, .. } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let ids = taffy.children(node_id).ok()?;
+            let s = widget_states.get(&resolved_id)?.as_scroll()?;
+            // The viewport's own bar paints above its translated document.
+            if s.content_height > s.viewport_h
+                && let Some(hit) = scrollbar_drag_hit(
+                    resolved_id,
+                    abs_pos,
+                    (layout.size.width, layout.size.height),
+                    ScrollbarMetrics {
+                        current_offset: s.offset_y,
+                        viewport_h: s.viewport_h.max(layout.size.height),
+                        content_h: s.content_height,
+                        thumb_y: s.thumb_y(),
+                        thumb_h: (layout.size.height * s.thumb_ratio()).max(20.0),
+                    },
+                    mouse,
+                )
+            {
+                return Some(hit);
+            }
             path.push(0);
             let child_hit = find_scrollbar_drag_hit_impl(
                 child,
                 taffy,
                 ids[0],
                 mouse,
-                abs_pos,
+                Point::new(abs_pos.x, abs_pos.y - s.offset_y),
                 widget_states,
                 path,
             );
             path.pop();
-            if let Some(hit) = child_hit {
-                return Some(hit);
-            }
-            let s = widget_states.get(&resolved_id)?.as_scroll()?;
-            if s.content_height <= s.viewport_h {
-                return None;
-            }
-            let thumb_h = (layout.size.height * s.thumb_ratio()).max(20.0);
-            scrollbar_drag_hit(
-                resolved_id,
-                abs_pos,
-                (layout.size.width, layout.size.height),
-                ScrollbarMetrics {
-                    current_offset: s.offset_y,
-                    viewport_h: s.viewport_h.max(layout.size.height),
-                    content_h: s.content_height,
-                    thumb_y: s.thumb_y(),
-                    thumb_h,
-                },
-                mouse,
-            )
+            child_hit
         }
         Widget::TableOfContents { child, .. } => table_of_contents_scrollbar_hit(
             widget,
@@ -2984,6 +2983,7 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::Accordion { child, .. }

@@ -20,6 +20,8 @@ pub(super) struct ViewportGeometry {
     pub hidden_popovers: HashSet<u64>,
     pub hidden_focus: HashSet<u64>,
     pub focused_input_rect: Option<Rect>,
+    // Nearest live scroll ancestor; portaled branches do not bubble to the page.
+    pub focused_scroll: Option<u64>,
 }
 
 pub(super) fn reconcile<Msg>(
@@ -54,6 +56,7 @@ pub(super) fn reconcile<Msg>(
     };
     pass.geometry.hidden_focus.clear();
     pass.geometry.focused_input_rect = None;
+    pass.geometry.focused_scroll = None;
     pass.visit(
         widget,
         root,
@@ -338,6 +341,7 @@ impl GeometryPass<'_> {
 
     fn reveal_scroll(&mut self, id: u64, viewport: Rect, target: Option<Rect>) -> Option<Rect> {
         let mut target = target?;
+        self.geometry.focused_scroll.get_or_insert(id);
         if self.reveal {
             let state = self
                 .states

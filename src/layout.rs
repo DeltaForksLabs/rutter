@@ -220,8 +220,20 @@ impl LayoutBlueprint {
             Widget::ScrollView { child, style, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 path.push(0);
-                let child = Self::from_widget_with_path(child, path);
+                let mut child = Self::from_widget_with_path(child, path);
                 path.pop();
+                // Vertical documents must not be stretched to a row viewport's
+                // height or shrunk into a column viewport's available height.
+                if matches!(
+                    style.flex_direction,
+                    FlexDirection::Row | FlexDirection::RowReverse
+                ) {
+                    if matches!(child.style.align_self, None | Some(AlignSelf::Stretch)) {
+                        child.style.align_self = Some(AlignSelf::FlexStart);
+                    }
+                } else {
+                    child.style.flex_shrink = 0.0;
+                }
                 Self::with_children(Some(resolved_id), style.clone(), vec![child])
             }
             Widget::TableOfContents {

@@ -789,6 +789,10 @@ pub enum Widget<'a, Msg> {
         id: u64,
         style: Style,
     },
+    /// Vertical viewport retaining the child's intrinsic document height.
+    /// Unconsumed Up/Down, PageUp/PageDown and Home/End navigate the nearest
+    /// scroll ancestor of the focused control. Editors and collection navigation
+    /// retain priority; without focus, the pointer-selected viewport is used.
     ScrollView {
         id: u64,
         child: Box<Widget<'a, Msg>>,

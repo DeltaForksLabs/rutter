@@ -72,6 +72,7 @@ mod native_integration;
 mod native_menu;
 mod pointer_region;
 mod popup_coordination;
+mod scroll_navigation;
 #[cfg(test)]
 mod scroll_regressions;
 mod search;
@@ -368,10 +369,10 @@ pub fn snap_to_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
     (snapped * factor).round() / factor
 }
 
-fn wheel_deltas(delta: MouseScrollDelta) -> (f32, f32) {
+fn wheel_deltas(delta: MouseScrollDelta, scale: f32) -> (f32, f32) {
     match delta {
         MouseScrollDelta::LineDelta(x, y) => (-x * 40.0, -y * 40.0),
-        MouseScrollDelta::PixelDelta(point) => (-point.x as f32, -point.y as f32),
+        MouseScrollDelta::PixelDelta(point) => (-point.x as f32 / scale, -point.y as f32 / scale),
         _ => (0.0, 0.0),
     }
 }
@@ -746,7 +747,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         ScrollbarAxis::Horizontal => self.cursor_pos.x,
                         ScrollbarAxis::Vertical => self.cursor_pos.y,
                     };
-                    let pointer_delta = pointer - drag.start_pointer;
+                    let pointer_delta = pointer / self.engine.scale_factor - drag.start_pointer;
                     let signed_delta = if drag.reversed {
                         -pointer_delta
                     } else {
@@ -1065,6 +1066,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                     let scroll_drag_hit = if button == MouseButton::Left
                         && select_overlay_hit.is_none()
                         && search_overlay_hit.is_none()
+                        && popover_overlay_hit.is_none()
                     {
                         find_scrollbar_drag_hit(
                             &wt,
@@ -1559,7 +1561,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         return;
                     }
                 };
-                let (delta_x, delta_y) = wheel_deltas(delta);
+                let (delta_x, delta_y) = wheel_deltas(delta, self.engine.scale_factor);
                 if let Some(target) = dropdown_target {
                     let _ = self.scroll_open_dropdown(target, delta_y);
                     self.redraw();
@@ -2256,7 +2258,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         let start_pointer = match hit.axis {
             ScrollbarAxis::Horizontal => self.cursor_pos.x,
             ScrollbarAxis::Vertical => self.cursor_pos.y,
-        };
+        } / self.engine.scale_factor;
         self.scroll_drag = Some(ScrollDrag {
             id: hit.id,
             axis: hit.axis,
@@ -2755,6 +2757,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if self.handle_context_menu_key(key) {
             return;
         }
+        if self.engine.focused_widget_id.is_none() && self.handle_scroll_navigation_key(key) {
+            return;
+        }
         if self.engine.focused_widget_id.is_none()
             && let Some(sid) = self.engine.active_scroll_id
         {
@@ -2782,11 +2787,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             match key {
                 Key::Named(NamedKey::ArrowDown) => {
                     if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                        if let Some(s) = ws.as_scroll_mut() {
-                            s.scroll_by(40.0);
-                            self.redraw();
-                            return;
-                        } else if let Some(s) = ws.as_vlist_mut() {
+                        if let Some(s) = ws.as_vlist_mut() {
                             if let Some((ih, ic, cb)) = vlist_props {
                                 let new_sel = s.selected_row.unwrap_or(0) + 1;
                                 if new_sel < ic {
@@ -2822,11 +2823,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                        if let Some(s) = ws.as_scroll_mut() {
-                            s.scroll_by(-40.0);
-                            self.redraw();
-                            return;
-                        } else if let Some(s) = ws.as_vlist_mut() {
+                        if let Some(s) = ws.as_vlist_mut() {
                             if let Some((ih, ic, cb)) = vlist_props {
                                 let new_sel = s.selected_row.unwrap_or(0).saturating_sub(1);
                                 s.selected_row = Some(new_sel);
@@ -2860,11 +2857,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 }
                 Key::Named(NamedKey::PageDown) => {
                     if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                        if let Some(s) = ws.as_scroll_mut() {
-                            s.scroll_by(s.viewport_h * 0.9);
-                            self.redraw();
-                            return;
-                        } else if let Some(s) = ws.as_vlist_mut() {
+                        if let Some(s) = ws.as_vlist_mut() {
                             if let Some((ih, ic, _)) = vlist_props {
                                 s.scroll_by(s.viewport_h * 0.9, ih, ic);
                                 self.redraw();
@@ -2881,11 +2874,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 }
                 Key::Named(NamedKey::PageUp) => {
                     if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
-                        if let Some(s) = ws.as_scroll_mut() {
-                            s.scroll_by(-s.viewport_h * 0.9);
-                            self.redraw();
-                            return;
-                        } else if let Some(s) = ws.as_vlist_mut() {
+                        if let Some(s) = ws.as_vlist_mut() {
                             if let Some((ih, ic, _)) = vlist_props {
                                 s.scroll_by(-s.viewport_h * 0.9, ih, ic);
                                 self.redraw();
@@ -2965,7 +2954,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.handle_text_input(key);
             return;
         }
-        let _ = self.handle_focused_widget_key(key, repeat);
+        if !self.handle_focused_widget_key(key, repeat) {
+            self.handle_scroll_navigation_key(key);
+        }
     }
 
     fn handle_tab(&mut self) {
@@ -3466,13 +3457,14 @@ mod tests {
     #[test]
     fn wheel_deltas_preserve_horizontal_trackpad_input() {
         assert_eq!(
-            wheel_deltas(MouseScrollDelta::LineDelta(2.0, -1.0)),
+            wheel_deltas(MouseScrollDelta::LineDelta(2.0, -1.0), 1.0),
             (-80.0, 40.0)
         );
         assert_eq!(
-            wheel_deltas(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
-                12.0, -8.0
-            ))),
+            wheel_deltas(
+                MouseScrollDelta::PixelDelta(PhysicalPosition::new(12.0, -8.0)),
+                1.0
+            ),
             (-12.0, 8.0)
         );
     }

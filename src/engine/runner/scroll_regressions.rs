@@ -6,10 +6,16 @@ use taffy::prelude::{Dimension, FlexDirection, Size, Style};
 use winit::dpi::PhysicalSize;
 use winit::keyboard::{KeyCode, KeyLocation, ModifiersState, PhysicalKey};
 
+#[path = "scroll_requests.rs"]
+mod requests;
+
 struct ScrollApp;
 
 #[derive(Default)]
 struct Model {
+    demo: bool,
+    outer_button: bool,
+    collection: u8,
     nested: bool,
     popover: bool,
     open: bool,
@@ -79,6 +85,50 @@ impl AppLogic for ScrollApp {
         Model::default()
     }
     fn view(model: &mut Model) -> Widget<'_, u64> {
+        if model.demo {
+            return Widget::scroll_view(
+                Widget::Column {
+                    style: Style {
+                        flex_direction: FlexDirection::Column,
+                        flex_shrink: 0.0,
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
+                        gap: Size::length(4.0_f32),
+                        ..Style::default()
+                    },
+                    children: (0..60)
+                        .map(|index| {
+                            Widget::Button {
+                                text: "Item da lista",
+                                on_press: index,
+                                style: Style {
+                                    flex_shrink: 0.0,
+                                    size: Size {
+                                        width: Dimension::percent(1.0),
+                                        height: Dimension::length(40.0),
+                                    },
+                                    ..Style::default()
+                                },
+                                color: None,
+                                variant: Default::default(),
+                            }
+                            .with_id(100 + index)
+                        })
+                        .collect(),
+                },
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(300.0),
+                    },
+                    flex_shrink: 0.0,
+                    ..Style::default()
+                },
+            )
+            .with_id(70);
+        }
         let content = if model.popover {
             let popup = if model.overlay_scroll {
                 Widget::scroll_view(column(vec![button(4), spacer(200.0), input()]), fixed(90.0))
@@ -117,10 +167,57 @@ impl AppLogic for ScrollApp {
                 button(3),
             ])
         };
+        let content = if model.collection > 0 {
+            let style = Style {
+                size: Size {
+                    width: Dimension::length(160.0),
+                    height: Dimension::length(80.0),
+                },
+                ..fixed(80.0)
+            };
+            let items = &|index| Some(format!("Item {index}"));
+            let collection = if model.collection == 1 {
+                Widget::VirtualList {
+                    id: 13,
+                    item_height: 40.0,
+                    item_count: 60,
+                    items,
+                    on_select: |index| index as u64,
+                    style,
+                }
+            } else {
+                Widget::VirtualGrid {
+                    id: 13,
+                    columns: 2,
+                    item_height: 40.0,
+                    item_count: 60,
+                    items,
+                    on_select: |index| index as u64,
+                    style,
+                }
+            };
+            column(vec![spacer(80.0), collection, spacer(400.0)])
+        } else {
+            content
+        };
         let content = if model.nested {
             column(vec![
-                spacer(160.0),
-                Widget::scroll_view(content, fixed(100.0)).with_id(11),
+                if model.outer_button {
+                    button(8)
+                } else {
+                    spacer(160.0)
+                },
+                Widget::scroll_view(
+                    content,
+                    Style {
+                        size: Size {
+                            width: Dimension::length(180.0),
+                            height: Dimension::length(100.0),
+                        },
+                        ..fixed(100.0)
+                    },
+                )
+                .with_id(11),
                 spacer(200.0),
             ])
         } else {
@@ -486,4 +583,86 @@ fn task61_smooth_scroll_updates_anchor_and_keyboard_reveal_cancels_animation() {
     );
     assert!(!runner.engine.has_pending_smooth_scroll());
     assert!(!anchor(&runner).is_open);
+}
+
+#[test]
+fn task63_demo_intrinsic_extent_wheel_and_visible_button_identity() {
+    let mut runner = runner(Model {
+        demo: true,
+        ..Model::default()
+    });
+    let state = runner.engine.widget_states[&70].as_scroll().unwrap();
+    assert_eq!(state.content_height, 2636.0);
+    assert_eq!(state.viewport_h, 300.0);
+    runner.update_cursor_position(PhysicalPosition::new(40.0, 10.0));
+    runner.window_event(
+        &MemoryEventLoop::default(),
+        WindowId::from_raw(1),
+        WindowEvent::MouseWheel {
+            device_id: None,
+            delta: MouseScrollDelta::LineDelta(0.0, -1.1),
+            phase: winit::event::TouchPhase::Moved,
+        },
+    );
+    assert_eq!(offset(&runner, 70), 44.0);
+    click(&mut runner, 40.0, 10.0);
+    assert_eq!(runner.engine.app_state.messages, vec![1]);
+    publish(&mut runner);
+    scroll(&mut runner, 70, 10000.0);
+    assert_eq!(offset(&runner, 70), 2336.0);
+}
+
+#[test]
+fn task63_clicked_button_navigation_uses_focused_scroll_ancestor() {
+    let mut runner = runner(Model::default());
+    click(&mut runner, 40.0, 10.0);
+    assert!(runner.engine.focused_widget_id.is_some());
+    runner.engine.active_scroll_id = None;
+    key(&mut runner, NamedKey::ArrowDown, false);
+    assert_eq!(offset(&runner, 10), 40.0);
+    key(&mut runner, NamedKey::PageDown, false);
+    assert_eq!(offset(&runner, 10), 148.0);
+    key(&mut runner, NamedKey::End, false);
+    let state = runner.engine.widget_states[&10].as_scroll().unwrap();
+    assert_eq!(state.offset_y, state.content_height - state.viewport_h);
+    key(&mut runner, NamedKey::Home, false);
+    assert_eq!(offset(&runner, 10), 0.0);
+}
+
+#[test]
+fn task63_nested_track_jump_uses_live_parent_offset() {
+    let mut runner = runner(Model {
+        nested: true,
+        ..Model::default()
+    });
+    scroll(&mut runner, 10, 150.0);
+    // Inner viewport is painted at y=10, not its document y=160.
+    click(&mut runner, 170.0, 85.0);
+    assert_eq!(runner.scroll_drag.as_ref().map(|drag| drag.id), Some(11));
+    let state = runner.engine.widget_states[&11].as_scroll().unwrap();
+    let thumb = (state.viewport_h * state.thumb_ratio()).max(20.0);
+    let expected = (75.0 - thumb * 0.5) / (state.viewport_h - thumb)
+        * (state.content_height - state.viewport_h);
+    assert!((state.offset_y - expected).abs() < 0.001);
+    assert_eq!(offset(&runner, 10), 150.0);
+}
+
+#[test]
+fn task63_pixel_wheel_uses_logical_units_at_all_scales() {
+    for scale in [1.0, 1.5, 2.0] {
+        let mut runner = runner(Model::default());
+        runner.engine.update_scale(scale);
+        publish(&mut runner);
+        runner.update_cursor_position(PhysicalPosition::new(40.0 * scale, 8.0 * scale));
+        runner.window_event(
+            &MemoryEventLoop::default(),
+            WindowId::from_raw(1),
+            WindowEvent::MouseWheel {
+                device_id: None,
+                delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -40.0 * scale)),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        assert_eq!(offset(&runner, 10), 40.0, "scale {scale}");
+    }
 }

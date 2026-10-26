@@ -1,10 +1,7 @@
 // ============================================================
 // Rutter Framework — demos/scroll_demo.rs
 // Demo isolada de Widget::ScrollView.
-// FIX-4: scroll agora funciona com:
-//   • Roda do mouse (já funcionava)
-//   • Teclas ↑↓ / PageUp / PageDown (quando o ScrollView tem foco)
-//   • Arrastar o polegar da scrollbar com o mouse
+// Scroll por roda, navegação no ancestral do controle focado e trilha/polegar.
 // ============================================================
 
 use arboard::Clipboard;
@@ -56,7 +53,20 @@ impl AppLogic for ScrollDemo {
             ..Default::default()
         };
         // ScrollView de altura fixa com conteúdo longo
-        let scroll_s = responsive_width(400.0, Dimension::length(300.0));
+        let scrollbar_gutter = rutter::layout::SCROLLBAR_W + 2.0 + spacing::SM;
+        let scroll_s = Style {
+            // The outer page also scrolls on short windows. Keep the inner
+            // track clear of its physical-right track, including narrow widths.
+            size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length(300.0),
+            },
+            margin: Rect {
+                right: LengthPercentageAuto::length(scrollbar_gutter),
+                ..Rect::zero()
+            },
+            ..responsive_width(400.0, Dimension::length(300.0))
+        };
         // Intrinsic document height includes the real item gaps, not a guessed extent.
         let inner_col = Style {
             flex_direction: FlexDirection::Column,
@@ -66,6 +76,12 @@ impl AppLogic for ScrollDemo {
             },
             flex_shrink: 0.0,
             gap: Size::length(spacing::XS),
+            // The track occupies 8px, inset 2px from the physical right edge
+            // even in RTL. Reserve its lane plus an SM gap in the document.
+            padding: Rect {
+                right: LengthPercentage::length(scrollbar_gutter),
+                ..Rect::zero()
+            },
             ..Default::default()
         };
 
@@ -124,7 +140,7 @@ impl AppLogic for ScrollDemo {
                     }),
                 },
                 Widget::Text {
-                    content: "Clique em itens para alternar a seleção; clique na área para usar ↑↓ e PageUp/PageDown."
+                    content: "Clique em itens para alternar a seleção; use ↑↓, PageUp/PageDown e Home/End para navegar."
                         .into(),
                     color: None,
                     size: 11.0,
@@ -182,3 +198,7 @@ mod tests {
         assert_eq!(scroll_selection_caption(&selected), "2 itens selecionados");
     }
 }
+
+#[cfg(test)]
+#[path = "scroll_demo_geometry_tests.rs"]
+mod geometry_tests;
