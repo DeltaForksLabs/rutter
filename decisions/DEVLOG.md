@@ -1,5 +1,50 @@
 # Development Log
 
+## [2026-10-26T11:07:54-03:00] - Prepare the Controls Fix Version and Commit - 0.44.4
+
+**Context:** The user requested a version update and commit for request 63.4, explicitly waiving another test run this time.
+
+**Challenge:** Include the authorized internal paint fixes and example focus clearance, synchronize package metadata and preserve the user's unrelated `.gitignore` edit outside the commit.
+
+**Decision:** Bump 0.44.3 to 0.44.4 for the compatible control-rendering fixes. Let Cargo synchronize Rutter's lockfile version, update README status and use an English fix title without release wording. Preserve control hit allocations, popup anchors, callbacks and IDs. Do not tag or push.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, this log, `src/render/mod.rs`, `examples/widgets/controls_demo.rs`, `tests/unit/control_edge_render_unit_tests.rs`, `tests/unit/controls_demo_layout_unit_tests.rs` and `tests/unit/widget_spacing_unit_tests.rs`.
+
+**Validation:** `CARGO_BUILD_JOBS=2 cargo check --offline --lib`, `cargo fmt --all -- --check` and `git diff --check` passed sequentially. The manifest/lockfile diff changes only Rutter's version, with no dependency resolution changes. Tests were not rerun, as explicitly requested; the regression, full-suite and Clippy results below belong to the preceding implementation validation. No new dependencies, public API changes or stored-data migrations are involved; optical changes and shared Select/dropdown rendering effects are documented below. No generated files other than the synchronized lockfile changed.
+
+## [2026-10-26T10:59:19-03:00] - Contain Compact Control Edges and Reserve Demo Focus Space (Request 63.4) - Unreleased
+
+**Context:** After notification and explicit authorization, correct the clipped checkbox/radio edges and thin Select border reported in the Controls demo, including its narrow dark presentation.
+
+**Challenge:** Centered strokes escaped the checkbox/radio bodies at the scroll viewport's start edge. Select clipped its own boundary-centered border and focus outline. Switch normal paint was already contained; its external focus outline still needed local viewport clearance. Preserve field-body hit geometry, popup anchors, IDs and callbacks.
+
+**Alternatives:** Moving the shared page inset or changing global focus painting would affect unrelated demos and controls. Keeping compact-control focus external and giving these demo sections their own safe area preserves the existing focus convention and localizes layout changes.
+
+**Decision:** Inset checkbox and radio stroke paths by half their stroke width, retaining their original body centers, label positions and hit allocations. Inset the Select border by 0.5px and its focus path by 2.5px to contain the shared outline's 1.75px extent plus antialias fringe. This also applies to dropdown-menu triggers that reuse Select painting. Keep the shared focus renderer unchanged. Each Controls demo section owns 8px (`spacing::SM`) padding inside the scroll document; section headings and their controls share the same start edge, while the page title and shared page inset retain their existing positions. Existing 12px within-section and 24px between-section gaps remain. Stroke-path offsets are optical containment corrections, not spacing tokens.
+
+**Files Changed:** `src/render/mod.rs`, `examples/widgets/controls_demo.rs`, `tests/unit/control_edge_render_unit_tests.rs`, `tests/unit/widget_spacing_unit_tests.rs`, `tests/unit/controls_demo_layout_unit_tests.rs`, and this log.
+
+**Validation:** Loaded widget-design, read `docs/WIDGET_DESIGN.md`, inspected existing layout/render/focus/hit/overlay tests, and reviewed the final scoped diff. Resource-intensive commands ran sequentially:
+
+```bash
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib control_edge_render_tests -- --test-threads=2
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib widget_spacing_tests -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --bin rutter controls_demo -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 python3 /tmp/opencode/with_xvfb.py cargo test --locked --offline --all-targets --all-features -- --test-threads=2
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=2
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The first raster run failed on the original unchecked checkbox edge, reproducing the issue before production edits. Intermediate raster runs exposed Select focus/antialias and clip-fast-path differences; the final comparison permits at most 8/255 channel difference inside the clip (Skia rounded-edge coverage changes), with exact equality outside it. The final raster test passed its 1,152 clipped/reference pairs across four controls, both themes, 320/469/800px viewport scenarios, 1x/1.5x/2x scales, both value/open states, focus and empty/long localized compact-control labels. Select's reference bypasses its internal clip so truncated paint cannot disappear from both images. Select option text is long; its label remains covered by existing field tests. Switch geometry uses the unchanged filled track, not a speculative normal-stroke fix.
+
+Targeted spacing tests passed **18/18**, including enabled/disabled control paint and allocation-edge hits, Select label/body hit separation and open-popup anchor geometry. Demo tests passed **2/2**, including all seven controls at 320/469/800px widths, 260/700px heights, local horizontal focus clearance and hits after page scrolling. The full all-feature/all-target run passed **840 library tests (35 existing ignored), 72 demo-runner tests, 253 integration tests and 3 example tests**, with no failures. This includes existing compact global-focus, keyboard/scroll/overlay, annotation/validation, menu and all-launcher geometry/raster coverage. Warnings-denied Clippy passed. Doctests passed **313/313**. Final formatting and whitespace checks passed; status showed only these task files and the pre-existing `.gitignore` edit.
+
+**Compatibility and limitations:** No new dependencies, public API changes, serialized-data changes, migrations or security-policy changes. Hit allocations, body coordinates, Select popup anchors, callbacks, manual IDs and the Switch's label-before-track ordering are preserved. Compact-control outlines remain intentionally external and require clearance from their containing view; this demo now explicitly provides it. Normal checkbox/radio optical outer dimensions now match their declared 18px bodies, and Select borders/focus are intentionally fully visible inside the allocation. Linux software raster/Xvfb checks are not manual visual, physical-device, screen-reader or non-Linux acceptance; those were not performed in this headless workflow. No version bump, lockfile or generated-file edits. The user's `.gitignore` changes are preserved; nothing is staged or committed.
+
 ## [2026-10-26T10:35:17-03:00] - Prepare the Carousel Fix Version and Commit - 0.44.3
 
 **Context:** The user requested a version update and commit for request 63.3 and its weighted-navigation followup, explicitly waiving another test run this time.

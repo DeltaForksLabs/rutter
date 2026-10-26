@@ -40,6 +40,16 @@ pub enum Msg {
 
 pub struct ControlsDemo;
 
+fn controls_section<'a>(children: Vec<Widget<'a, Msg>>) -> Widget<'a, Msg> {
+    let mut section = super::layout::section(children);
+    if let Widget::Column { style, .. } = &mut section {
+        // Compact controls intentionally paint focus outside their bodies.
+        // Own that safe area here, inside the page's scrolling viewport.
+        style.padding = Rect::length(spacing::SM);
+    }
+    section
+}
+
 impl AppLogic for ControlsDemo {
     type State = ControlsDemoState;
     type Message = Msg;
@@ -107,7 +117,7 @@ impl AppLogic for ControlsDemo {
                         size: 24.0,
                         style: Style::default(),
                     },
-                    super::layout::section(vec![
+                    controls_section(vec![
                         // ── Checkboxes ───────────────────────────────────────
                         Widget::heading(rutter::HeadingLevel::H2, "Checkboxes", Style::default()),
                         Widget::Row {
@@ -129,7 +139,7 @@ impl AppLogic for ControlsDemo {
                         },
                         // ── Switch ───────────────────────────────────────────
                     ]),
-                    super::layout::section(vec![
+                    controls_section(vec![
                         Widget::heading(rutter::HeadingLevel::H2, "Switch", Style::default()),
                         Widget::Row {
                             style: item_row,
@@ -152,7 +162,7 @@ impl AppLogic for ControlsDemo {
                         },
                         // ── Radio ────────────────────────────────────────────
                     ]),
-                    super::layout::section(vec![
+                    controls_section(vec![
                         Widget::heading(rutter::HeadingLevel::H2, "Radio", Style::default()),
                         Widget::Radio {
                             selected: s.radio_sel == 0,
@@ -174,7 +184,7 @@ impl AppLogic for ControlsDemo {
                         },
                         // ── Select ───────────────────────────────────────────
                     ]),
-                    super::layout::section(vec![
+                    controls_section(vec![
                         Widget::heading(
                             rutter::HeadingLevel::H2,
                             "Select (dropdown)",

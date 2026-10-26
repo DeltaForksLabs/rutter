@@ -105,8 +105,13 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.44.3.** This patch keeps visible uncontained carousel cards
-in place when selected and makes keyboard navigation follow the current viewport
+**Current version: 0.44.4.** This patch contains checkbox/radio outlines and
+Select borders/focus inside their painted bodies, and gives Controls demo sections
+internal clearance for compact-control focus rings. Hit areas, callbacks and
+popup anchors remain unchanged.
+
+Version 0.44.3 kept visible uncontained carousel cards
+in place when selected and made keyboard navigation follow the current viewport
 in both uncontained and weighted layouts after the previous selection scrolls out
 of view. The uncontained demo now uses free scrolling; configurable snapping
 remains supported, and scrolling does not select cards or emit selection callbacks.

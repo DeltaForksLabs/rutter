@@ -43,6 +43,10 @@ mod context_menu_decoration_render_tests;
 mod focus_ring_render_tests;
 
 #[cfg(test)]
+#[path = "../../tests/unit/control_edge_render_unit_tests.rs"]
+mod control_edge_render_tests;
+
+#[cfg(test)]
 #[path = "../../tests/unit/button_content_render_unit_tests.rs"]
 mod button_content_render_tests;
 
@@ -5119,7 +5123,11 @@ fn draw_checkbox(checked: bool, input: LabeledControlRenderInput<'_>) {
         Theme::alpha(theme.on_surface, 120)
     });
     border.set_anti_alias(true);
-    canvas.draw_rrect(RRect::new_rect_xy(box_rect, 3.0, 3.0), &border);
+    // A centered stroke must fit inside the same 18px body as the fill.
+    canvas.draw_rrect(
+        RRect::new_rect_xy(inset_rect(box_rect, 0.75), 2.25, 2.25),
+        &border,
+    );
     if checked {
         let cx = box_rect.left + box_size / 2.0;
         let cy = box_rect.top + box_size / 2.0;
@@ -5254,7 +5262,8 @@ fn draw_radio(selected: bool, input: LabeledControlRenderInput<'_>) {
         Theme::alpha(theme.on_surface, 120)
     });
     bp.set_anti_alias(true);
-    canvas.draw_circle((cx, cy), r, &bp);
+    // Keep the 2px stroke inside the 18px body, including at a viewport edge.
+    canvas.draw_circle((cx, cy), r - 1.0, &bp);
     if selected {
         let mut dp = Paint::default();
         dp.set_color(theme.primary);
@@ -5703,7 +5712,14 @@ fn draw_select_trigger_body(input: SelectTriggerRenderInput<'_>) {
         Theme::alpha(theme.on_surface, 80)
     });
     brd.set_anti_alias(true);
-    canvas.draw_rrect(rrect((size.0, closed_h), theme.radius_sm), &brd);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(
+            inset_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, closed_h), 0.5),
+            (theme.radius_sm - 0.5).max(0.0),
+            (theme.radius_sm - 0.5).max(0.0),
+        ),
+        &brd,
+    );
     let chevron_direction = if is_open {
         ControlChevronDirection::Up
     } else {
@@ -5761,7 +5777,9 @@ fn draw_select_trigger_body(input: SelectTriggerRenderInput<'_>) {
     if is_focused {
         draw_focus_outline(
             canvas,
-            SkiaRect::from_xywh(1.0, 1.0, (size.0 - 2.0).max(0.0), (closed_h - 2.0).max(0.0)),
+            // The shared outline extends 1.75px beyond its path. Keep the
+            // complete ring and its antialias fringe inside the clipped body.
+            inset_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, closed_h), 2.5),
             theme.radius_sm,
             theme,
         );

@@ -355,6 +355,74 @@ fn checkbox_and_radio_long_labels_do_not_paint_into_the_next_control() {
 }
 
 #[test]
+fn compact_control_bodies_keep_edge_hits_and_disabled_paint_in_bounds() {
+    for theme in [Theme::light(), Theme::dark()] {
+        for enabled in [false, true] {
+            for active in [false, true] {
+                let style = Style {
+                    size: Size::from_lengths(140.0, 28.0),
+                    ..Style::default()
+                };
+                let controls = [
+                    Widget::Checkbox {
+                        checked: active,
+                        label: "Lembrar",
+                        on_change: |_| (),
+                        style: style.clone(),
+                    },
+                    Widget::Radio {
+                        selected: active,
+                        label: "Opção",
+                        on_select: || (),
+                        style: style.clone(),
+                    },
+                    Widget::Switch {
+                        checked: active,
+                        on_change: |_| (),
+                        style: style.clone(),
+                    },
+                    Widget::Select {
+                        id: 19,
+                        options: &["Rust"],
+                        selected_index: 0,
+                        on_change: |_| (),
+                        label: "",
+                        placeholder: "Escolha...",
+                        style,
+                    },
+                ];
+                for control in controls {
+                    let control = control.enabled(enabled);
+                    let (taffy, root) = layout_widget(&control, 140);
+                    let mut surface = raster_widget(&control, &taffy, root, &theme, None);
+                    assert_ink_contained(
+                        &mut surface,
+                        SkiaRect::from_xywh(12.0, 12.0, 140.0, 28.0),
+                    );
+                    assert!(ink_in(
+                        &mut surface,
+                        SkiaRect::from_xywh(12.0, 16.0, 18.0, 18.0)
+                    ));
+                    // Both edges of the allocated hit target still activate;
+                    // optical stroke insets must not move pointer coordinates.
+                    for x in [0.5, 139.5] {
+                        let hit = hit_test(
+                            &control,
+                            &taffy,
+                            root,
+                            Point::new(x, 14.0),
+                            Point::default(),
+                            &HashMap::new(),
+                        );
+                        assert_eq!(hit.is_some(), enabled);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn changing_field_annotations_reserves_sibling_space_without_replacing_keyed_nodes() {
     let column = |error| Widget::Column {
         children: vec![
