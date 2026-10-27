@@ -90,6 +90,7 @@ fn install(runtime: &mut MultiWindowRunner<PopupApp>, surface: SurfaceId, popup:
         },
         scale,
         popup,
+        popup_state: None,
     });
     let drops = if popup {
         runtime.canonical_state.popup_drops.clone()
@@ -119,6 +120,7 @@ fn install(runtime: &mut MultiWindowRunner<PopupApp>, surface: SurfaceId, popup:
         surface: skia_safe::surfaces::raster_n32_premul((1, 1)).unwrap(),
         frames: Rc::new(Cell::new(0)),
         drops,
+        configure_on_frame: None,
     }));
     if runtime.canonical_state.menu_requested_on == Some(surface) {
         engine

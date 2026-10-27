@@ -134,6 +134,7 @@ impl<'a> ContextRaster<'a> {
             &view.theme,
             view.scale,
             None,
+            None,
         );
     }
 }

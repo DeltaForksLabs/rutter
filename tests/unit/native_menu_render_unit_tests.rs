@@ -193,6 +193,77 @@ fn pixel_at(surface: &mut Surface, point: Point, origin: Point, scale: f32) -> C
 }
 
 #[test]
+fn pending_native_dropdown_does_not_reappear_clamped_in_parent_without_layout() {
+    for direction in [LayoutDirection::Ltr, LayoutDirection::Rtl] {
+        let mut menu = NativeMenuRaster::dropdown(direction, Color::RED);
+        for width in [320, 800] {
+            compute_layout(
+                &mut menu.taffy,
+                menu.root,
+                PhysicalSize::new(width, 220),
+                Rc::new(RefCell::new(FontSystem::new())),
+                &RichTextRenderer::default(),
+            );
+            assert!(menu.panels().iter().skip(1).any(|panel| {
+                panel.left < 0.0 || panel.right > width as f32 || panel.bottom > 220.0
+            }));
+            for theme in [Theme::light(), Theme::dark()] {
+                for scale in [1.0, 1.5, 2.0] {
+                    let mut painted_pixels = Vec::new();
+                    // No resolved native layout is available while configure is
+                    // pending. Only established paint ownership suppresses the
+                    // fallback panels, which otherwise clamp into this parent.
+                    for owner in [Some(NativeMenuKind::Dropdown(MENU_ID)), None] {
+                        let mut surface = surfaces::raster_n32_premul((
+                            (width as f32 * scale) as i32,
+                            (220.0 * scale) as i32,
+                        ))
+                        .unwrap();
+                        surface.canvas().clear(Color::RED);
+                        surface.canvas().scale((scale, scale));
+                        draw_widgets_with_cache_and_custom_state(
+                            surface.canvas(),
+                            &menu.taffy,
+                            menu.root,
+                            &menu.widget,
+                            &mut FontSystem::new(),
+                            &mut SwashCache::new(),
+                            Point::new(-10.0, -10.0),
+                            None,
+                            &HashMap::new(),
+                            &menu.states,
+                            &HashMap::new(),
+                            &mut HashMap::new(),
+                            &mut TextBufferCache::default(),
+                            &mut ImageRenderCache::default(),
+                            true,
+                            &theme,
+                            scale,
+                            owner,
+                            None,
+                        );
+                        let pixels = surface.peek_pixels().unwrap();
+                        let count = ((80.0 * scale) as i32..(220.0 * scale) as i32)
+                            .flat_map(|y| (0..(width as f32 * scale) as i32).map(move |x| (x, y)))
+                            .filter(|point| pixels.get_color(*point) != Color::RED)
+                            .count();
+                        painted_pixels.push(count);
+                    }
+                    assert_eq!(
+                        painted_pixels[0], 0,
+                        "owned native panels leaked into parent"
+                    );
+                    assert!(
+                        painted_pixels[1] > 0,
+                        "initial pending/failure fallback must still paint"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn configured_native_context_paint_and_hit_use_resized_layout_outside_thin_parent() {
     use crate::widgets::dropdown_menu::{
         build_native_menu_surfaces, point_to_entry, resolve_native_menu_surfaces, row_rect,

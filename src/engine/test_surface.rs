@@ -36,6 +36,29 @@ pub(super) struct MemoryWindow {
     pub size: PhysicalSize<u32>,
     pub scale: f64,
     pub popup: bool,
+    pub popup_state: Option<std::sync::Arc<PopupState>>,
+}
+
+#[derive(Debug)]
+pub(super) struct PopupState {
+    pub geometry: SharedCell<PopupSurfaceGeometry>,
+    pub asynchronous: bool,
+    pub requests: SharedCell<usize>,
+}
+
+#[derive(Debug)]
+pub(super) struct SharedCell<T>(std::sync::Mutex<T>);
+
+impl<T: Copy> SharedCell<T> {
+    pub fn new(value: T) -> Self {
+        Self(std::sync::Mutex::new(value))
+    }
+    pub fn get(&self) -> T {
+        *self.0.lock().unwrap()
+    }
+    pub fn set(&self, value: T) {
+        *self.0.lock().unwrap() = value;
+    }
 }
 
 impl HasDisplayHandle for MemoryWindow {
@@ -69,7 +92,21 @@ impl Window for MemoryWindow {
     }
     fn request_redraw(&self) {}
     fn pre_present_notify(&self) {}
+    fn request_popup_layout(&self, _: WindowPositioner, _: Size) -> Option<PhysicalSize<u32>> {
+        assert!(
+            self.popup,
+            "only popup windows accept placement transactions"
+        );
+        if let Some(state) = &self.popup_state {
+            state.requests.set(state.requests.get() + 1);
+            return (!state.asynchronous).then_some(state.geometry.get().surface_size);
+        }
+        Some(self.size)
+    }
     fn popup_surface_geometry(&self, _: f64) -> Result<PopupSurfaceGeometry, RequestError> {
+        if let Some(state) = &self.popup_state {
+            return Ok(state.geometry.get());
+        }
         Ok(PopupSurfaceGeometry {
             parent_position: winit::dpi::LogicalPosition::new(20.0, 60.0),
             surface_size: self.size,
@@ -175,6 +212,7 @@ pub(super) struct RasterPopup {
     pub surface: Surface,
     pub frames: Rc<Cell<usize>>,
     pub drops: Rc<Cell<usize>>,
+    pub configure_on_frame: Option<(std::sync::Arc<PopupState>, PopupSurfaceGeometry)>,
 }
 
 impl GraphicsBackend for RasterPopup {
@@ -186,6 +224,9 @@ impl GraphicsBackend for RasterPopup {
     }
     fn end_frame(&mut self) -> Result<(), GraphicsError> {
         self.frames.set(self.frames.get() + 1);
+        if let Some((state, geometry)) = self.configure_on_frame.take() {
+            state.geometry.set(geometry);
+        }
         Ok(())
     }
     fn resize(&mut self, _: PhysicalSize<u32>) -> Result<(), GraphicsError> {

@@ -26,6 +26,7 @@ fn task63_thumb_drag_is_logical_at_each_scale_and_preserves_outer_offset() {
             size: PhysicalSize::new((240.0 * scale) as u32, (120.0 * scale) as u32),
             scale,
             popup: false,
+            popup_state: None,
         }));
         runner.engine.update_scale(scale);
         publish(&mut runner);

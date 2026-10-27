@@ -284,6 +284,7 @@ pub fn draw_widgets_with_cache<'w, Msg>(
         theme,
         scale,
         None,
+        None,
     );
 }
 
@@ -306,12 +307,12 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
+    native_menu: Option<NativeMenuKind>,
     native_layout: Option<&(
         NativeMenuKind,
         Vec<crate::widgets::dropdown_menu::DropdownMenuSurface>,
     )>,
 ) {
-    let native_menu = native_layout.map(|(kind, _)| *kind);
     image_cache.exposed_combo_box = select_overlay::collector::collect_open_search_overlays(
         widget,
         taffy,

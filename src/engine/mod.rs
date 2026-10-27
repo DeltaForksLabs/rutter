@@ -3879,13 +3879,14 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub fn try_redraw(&mut self, cursor_pos: Point) -> Result<(), RutterRunError> {
-        self.try_redraw_with_native_menu(cursor_pos, None)
+        self.try_redraw_with_native_menu(cursor_pos, None, None)
     }
 
     pub(crate) fn try_redraw_with_native_menu(
         &mut self,
         cursor_pos: Point,
         native_menu: Option<crate::render::NativeMenuKind>,
+        native_paint_owner: Option<crate::render::NativeMenuKind>,
     ) -> Result<(), RutterRunError> {
         let window = match self.window.as_ref() {
             Some(w) => w.clone(),
@@ -3958,6 +3959,7 @@ impl<A: AppLogic> RutterEngine<A> {
                 self.cursor_blink.is_visible(),
                 &theme,
                 self.scale_factor,
+                native_paint_owner,
                 self.native_menu_layout
                     .as_ref()
                     .filter(|(kind, _)| Some(*kind) == native_menu),

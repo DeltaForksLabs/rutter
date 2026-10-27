@@ -240,6 +240,7 @@ fn runner(model: Model) -> RutterRunner<ScrollApp> {
         size: PhysicalSize::new(240, 120),
         scale: 1.0,
         popup: false,
+        popup_state: None,
     }));
     let mut runner = RutterRunner::with_engine(engine);
     runner.active_window_id = Some(WindowId::from_raw(1));

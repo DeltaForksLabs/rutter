@@ -20,6 +20,9 @@ use crate::widgets::dropdown_menu::DropdownMenuEntry;
 use crate::engine::test_surface as fixture;
 use fixture::{MemoryEventLoop, MemoryWindow, RasterPopup};
 
+mod paint_ownership_tests;
+mod transaction_tests;
+
 struct MenuApp;
 
 struct MenuModel {
@@ -35,6 +38,7 @@ struct MenuModel {
     owner_width: f32,
     entry_label: &'static str,
     publish_on_failure: bool,
+    failures: std::cell::RefCell<Vec<(bool, String)>>,
 }
 
 fn owner_style(width: f32) -> Style {
@@ -68,6 +72,7 @@ impl AppLogic for MenuApp {
             owner_width: 100.0,
             entry_label: "Run",
             publish_on_failure: false,
+            failures: Default::default(),
         }
     }
 
@@ -123,7 +128,14 @@ impl AppLogic for MenuApp {
         }
     }
 
-    fn native_menu_unavailable(state: &MenuModel, _: crate::app::NativeMenuFailure) -> Option<u64> {
+    fn native_menu_unavailable(
+        state: &MenuModel,
+        failure: crate::app::NativeMenuFailure,
+    ) -> Option<u64> {
+        state
+            .failures
+            .borrow_mut()
+            .push((failure.overlay_usable, failure.reason));
         state.publish_on_failure.then_some(999)
     }
 }
@@ -135,6 +147,13 @@ struct OpenMenu {
 }
 
 fn open_menu(context: bool, scale: f64) -> OpenMenu {
+    let mut menu = pending_menu(context, scale);
+    assert!(menu.runner.present_native_menu_frame().unwrap());
+    assert_eq!(menu.frames.get(), 1);
+    menu
+}
+
+fn pending_menu(context: bool, scale: f64) -> OpenMenu {
     let mut engine = RutterEngine::<MenuApp>::new().expect("runner test clipboard service");
     engine.app_state.context = context;
     engine.scale_factor = scale as f32;
@@ -142,6 +161,7 @@ fn open_menu(context: bool, scale: f64) -> OpenMenu {
         size: winit::dpi::LogicalSize::new(800, 500).to_physical(scale),
         scale,
         popup: false,
+        popup_state: None,
     }));
     let mut runner = RutterRunner::with_engine(engine);
     runner.reconcile_native_menu_model().unwrap();
@@ -172,6 +192,7 @@ fn open_menu(context: bool, scale: f64) -> OpenMenu {
                 size,
                 scale,
                 popup: true,
+                popup_state: None,
             }),
             surface: skia_safe::surfaces::raster_n32_premul((
                 size.width as i32,
@@ -180,12 +201,15 @@ fn open_menu(context: bool, scale: f64) -> OpenMenu {
             .unwrap(),
             frames: frames.clone(),
             drops: drops.clone(),
+            configure_on_frame: None,
         }),
         kind: placement.kind,
         ready: false,
+        owns_paint: false,
         parent_layout_revision: runner.engine.layout_revision,
-        configure_deadline: Instant::now() + Duration::from_secs(60),
+        pending_deadline: Some(Instant::now() + Duration::from_secs(60)),
         placement,
+        desired_placement: placement,
         requested_origin: Point::new(
             placement.position.x as f32 / scale as f32,
             placement.position.y as f32 / scale as f32,
@@ -197,8 +221,6 @@ fn open_menu(context: bool, scale: f64) -> OpenMenu {
         allocated_size: size,
         last_pointer: None,
     });
-    assert!(runner.present_native_menu_frame().unwrap());
-    assert_eq!(frames.get(), 1);
     OpenMenu {
         runner,
         frames,
@@ -294,6 +316,22 @@ fn assert_current_snapshot(runner: &mut RutterRunner<MenuApp>) {
         .unwrap()
         .validate_reconstruction(&current)
         .unwrap();
+}
+
+#[test]
+fn wayland63_8_ready_popup_invalidation_does_not_reuse_expired_deadline() {
+    for context in [true, false] {
+        let OpenMenu {
+            mut runner, frames, ..
+        } = open_menu(context, 1.0);
+        // A completed frame retires its budget even when the old deadline has
+        // elapsed by the next publication (no wall-clock sleep required).
+        assert_eq!(runner.pending_native_menu_deadline(), None);
+        runner.invalidate_published_model();
+        assert!(runner.present_native_menu_frame().unwrap());
+        assert_eq!(frames.get(), 2);
+        assert!(!runner.native_menus_unavailable);
+    }
 }
 
 #[test]

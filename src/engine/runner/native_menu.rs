@@ -31,6 +31,7 @@ use crate::widgets::dropdown_menu::{
 mod geometry;
 mod presentation;
 mod reconciliation;
+mod transaction;
 use geometry::*;
 
 enum NativeMenuRequest {
@@ -57,9 +58,15 @@ pub(super) struct NativeMenuSurface {
     pub(super) backend: Box<dyn GraphicsBackend>,
     pub(super) kind: NativeMenuKind,
     pub(super) ready: bool,
+    // The live surface retains its last presented pixels while a later
+    // transaction is pending. This owns paint only, never input geometry.
+    owns_paint: bool,
     parent_layout_revision: u64,
-    configure_deadline: Instant,
+    // A completed matching frame retires the transaction. Polling and repeated
+    // content invalidation must not renew a still-pending budget.
+    pending_deadline: Option<Instant>,
     placement: MenuPlacement,
+    desired_placement: MenuPlacement,
     requested_origin: Point,
     requested_surfaces: Vec<DropdownMenuSurface>,
     awaiting_configure: bool,
@@ -124,12 +131,30 @@ fn native_hover_redraw(
 }
 
 impl NativeMenuSurface {
+    fn begin_pending(&mut self) {
+        self.ready = false;
+        self.pending_deadline
+            .get_or_insert_with(|| Instant::now() + POPUP_CONFIGURE_TIMEOUT);
+    }
+
+    fn expired(&self) -> bool {
+        self.pending_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
     pub(super) fn id(&self) -> WindowId {
         self.backend.window().id()
     }
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    pub(super) fn native_menu_paint_owner(&self) -> Option<NativeMenuKind> {
+        self.native_menu
+            .as_ref()
+            .filter(|popup| popup.owns_paint)
+            .map(|popup| popup.kind)
+    }
+
     // The caller has reconciled parent state/layout. Keep measurement separate
     // from the guard so it can also refresh an already-created popup's panels.
     fn requested_native_menu(&mut self) -> Result<NativeMenuRequest, RutterRunError> {
@@ -206,8 +231,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
     pub(crate) fn pending_native_menu_deadline(&self) -> Option<Instant> {
         self.native_menu
             .as_ref()
-            .filter(|popup| !popup.ready)
-            .map(|popup| popup.configure_deadline)
+            .and_then(|popup| popup.pending_deadline)
     }
 
     pub(crate) fn sync_native_menu(
@@ -256,63 +280,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.native_menu = None;
         }
         if let Some(popup) = self.native_menu.as_mut() {
-            let mut placement_changed = false;
-            if popup.placement != placement {
-                let window = popup.backend.window();
-                let before = match window
-                    .popup_surface_geometry(self.engine.window.as_ref().unwrap().scale_factor())
-                {
-                    Ok(geometry) => geometry,
-                    Err(error) => {
-                        let kind = popup.kind;
-                        self.disable_native_menus(
-                            kind,
-                            format!("read popup configure before reposition: {error}"),
-                        )?;
-                        return Ok(());
-                    }
-                };
-                if let Err(reason) = configured_rect(before) {
-                    let kind = popup.kind;
-                    self.disable_native_menus(kind, reason)?;
-                    return Ok(());
-                }
-                popup.configure_serial_before_request = before.configure_serial;
-                let actual_size = window.request_popup_layout(
-                    menu_positioner(
-                        placement.position,
-                        self.engine.window.as_ref().unwrap().surface_size(),
-                        self.engine.scale_factor,
-                    ),
-                    placement
-                        .size
-                        .to_logical::<f64>(f64::from(self.engine.scale_factor))
-                        .into(),
-                );
-                popup.awaiting_configure = actual_size.is_none();
-                if let Some(actual_size) = actual_size
-                    && let Err(reason) = validate_native_popup_size(actual_size)
-                {
-                    let kind = popup.kind;
-                    self.disable_native_menus(kind, reason)?;
-                    return Ok(());
-                }
-                popup.placement = placement;
-                popup.ready = false;
-                self.engine.native_menu_layout = None;
-                popup.configure_deadline = Instant::now() + POPUP_CONFIGURE_TIMEOUT;
-                popup.backend.window().request_redraw();
-                placement_changed = true;
-            }
+            popup.desired_placement = placement;
             popup.requested_surfaces = surfaces;
             popup.requested_origin = Point::new(
                 placement.position.x as f32 / self.engine.scale_factor,
                 placement.position.y as f32 / self.engine.scale_factor,
             );
             self.resolve_native_menu()?;
-            if placement_changed {
-                self.redraw();
-            }
             return Ok(());
         }
         self.create_native_menu(event_loop, placement, surfaces)
@@ -354,9 +328,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     backend,
                     kind: placement.kind,
                     ready: false,
+                    owns_paint: false,
                     parent_layout_revision: self.engine.layout_revision,
-                    configure_deadline: Instant::now() + POPUP_CONFIGURE_TIMEOUT,
+                    pending_deadline: Some(Instant::now() + POPUP_CONFIGURE_TIMEOUT),
                     placement,
+                    desired_placement: placement,
                     requested_origin: Point::new(
                         placement.position.x as f32 / self.engine.scale_factor,
                         placement.position.y as f32 / self.engine.scale_factor,

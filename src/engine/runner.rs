@@ -1593,6 +1593,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                         .as_ref()
                         .filter(|popup| popup.ready)
                         .map(|popup| popup.kind),
+                    self.native_menu_paint_owner(),
                 ) {
                     self.terminate_for_error(el, error);
                 }

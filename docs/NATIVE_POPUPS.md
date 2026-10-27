@@ -185,6 +185,93 @@ matches over that error enum need a corresponding arm. The Winit grab default
 remains `Auto` for existing callers; only the new Rutter popup API selects
 `Required` by default. This API ships with Rutter 0.42.0 and adds no dependencies.
 
+## Wayland DropdownMenu ghost/timeout repair — new report 63.8
+
+This report concerns built-in `DropdownMenu`/`ContextMenu` native surfaces, which
+share the parent runner's model. The number 63.8 was also used for an earlier
+ScrollView request; this is the **Wayland popup** report.
+
+The reported symptom was an `xdg_popup` menu appearing at the wrong position,
+then moving, followed by native menus being disabled with:
+
+```text
+rutter: native menu unavailable; overlay_usable=true: popup configure/presentation timed out
+```
+
+Two client-side defects were identified:
+
+- A successful frame left its old deadline attached to the popup. Later parent
+  invalidation revoked readiness without renewing that deadline, so an otherwise
+  healthy menu open for over two seconds could fail immediately.
+- Parent reconciliation refreshed desired panels/origin before requesting their
+  placement. Popup redraw or input could therefore present the new content using
+  the previous configured rectangle before `about_to_wait` sent the request.
+
+The runner now tracks an optional pending deadline, retiring it after a successful
+frame with matching configured geometry. Content invalidation starts a budget
+only when no transaction is pending. Configure waiting and presentation waiting
+are distinct states, reported as `popup configure timed out` and
+`popup presentation timed out`. Polling, unchanged requests and repeated model
+invalidation do not extend a pending budget. An actual new placement request
+starts a fresh two-second budget after the preceding request is acknowledged.
+Geometry-read errors take the observable failure path with operation context.
+
+Every popup frame/input path reconciles placement first. Only one asynchronous
+request is in flight; newer desired placements coalesce until its configure,
+then the latest placement is requested before any intermediate frame or hit layout
+is authorized. Synchronous responses are reread too. Configured position, size
+and scale remain authoritative, including compositor adjustments and negative
+origins. A geometry change during presentation requires another matching frame.
+The existing configure-serial-change/serial-less geometry contract is retained;
+this does not add protocol token correlation to the vendored backend.
+
+The parent overlay remains available until the first matching native presentation
+succeeds. That live native surface then retains **paint ownership** across later
+pending updates, independently of current-frame readiness and resolved layout.
+Otherwise, the parent repaints its viewport-constrained fallback while the native
+surface still displays its previous buffer. Submenus extending outside the parent
+make the different placements particularly visible. Pending native paint ownership
+does not authorize stale pointer or accessibility geometry.
+
+Failure, timeout, retirement or replacement releases that surface's ownership.
+Timeout/failure keeps a usable overlay and reports once for that failed native
+transaction; an unusable overlay is dismissed, and later unusable opening attempts
+remain observable. Hiding the fallback at initial allocation would remove visible
+content before any usable native frame exists. A brief overlap at the **initial**
+handoff remains possible because compositor presentation is asynchronous; window
+visibility flags are not a Wayland mapping handshake.
+
+Deterministic regressions cover invalidation after completed presentation,
+non-renewing pending budgets, timeout phases, callback counts, unusable-overlay
+reopen, placement before redraw/input, coalesced requests, adjusted geometry and
+configure-during-frame. Additional ownership regressions cover initial pending,
+later pending without resolved layout, stale input rejection and release on
+failure/timeout/retirement/replacement. A parent raster regression verifies that
+an out-of-parent submenu does not reappear clamped in the parent during established
+native ownership, while unowned fallback still paints: 320/800px widths, a short
+viewport, both themes, LTR/RTL and 1x/1.5x/2x. Placement/input coverage also includes
+1x/1.5x/2x. The ignored
+`native_wayland63_8_dropdown_revalidates_after_old_timeout_then_selects_submenu`
+test holds a real native dropdown open for 2.1 seconds, invalidates its parent,
+then expands/selects its submenu. Run display-dependent tests **one per Cargo
+process**, sequentially, on an owned disposable compositor/display. For example,
+with its private `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` and clipboard `DISPLAY`:
+
+```bash
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib --all-features native_wayland63_8_dropdown_revalidates_after_old_timeout_then_selects_submenu -- --ignored --test-threads=1
+```
+
+This passed on headless Weston/pixman with software OpenGL and an isolated Xvfb
+clipboard display, alongside the existing Wayland placement, CPU submenu fallback,
+first-frame-failure and input-before-redraw probes. X11 dropdown, submenu and
+outside-dismissal probes passed on isolated Xvfb. Native tests use synthetic runner
+events on Wayland and XTEST on X11; they do not establish compositor screenshot
+pixels or manual visual acceptance. The full software suite retains existing
+narrow/desktop, theme, clipping, keyboard and menu-raster coverage; this repair
+does not add a complete native theme/RTL/localization/responsive-state matrix.
+No guarantee that all compositor-visible ghosts are gone is made without that
+pixel evidence. Public APIs, dependencies, versions and fork sources are unchanged.
+
 ## Clock/calendar example and validation boundary
 
 Run `cargo run --example native_popup_clock -- top` (or `bottom`, `left`,

@@ -8,6 +8,9 @@ use super::*;
 impl<A: AppLogic + 'static> RutterRunner<A> {
     pub(super) fn resolve_native_menu(&mut self) -> Result<bool, RutterRunError> {
         self.reconcile_native_menu_model()?;
+        if !self.reconcile_native_menu_placement()? {
+            return Ok(false);
+        }
         let Some(popup) = self.native_menu.as_ref() else {
             return Ok(false);
         };
@@ -19,12 +22,10 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                if Instant::now() >= popup.configure_deadline {
-                    self.disable_native_menus(
-                        kind,
-                        format!("read configured popup geometry: {error}"),
-                    )?;
-                }
+                self.disable_native_menus(
+                    kind,
+                    format!("read configured popup geometry: {error}"),
+                )?;
                 return Ok(false);
             }
         };
@@ -46,21 +47,6 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 return Ok(false);
             }
         };
-        if !popup.ready && Instant::now() >= popup.configure_deadline {
-            self.disable_native_menus(kind, "popup configure/presentation timed out".into())?;
-            return Ok(false);
-        }
-        if !configure_acknowledged(
-            popup.awaiting_configure,
-            popup.configure_serial_before_request,
-            popup.configured,
-            snapshot,
-        ) {
-            if Instant::now() >= popup.configure_deadline {
-                self.disable_native_menus(kind, "popup configure timed out".into())?;
-            }
-            return Ok(false);
-        }
         let requested_origin = popup.requested_origin;
         let viewport = self
             .engine
@@ -146,8 +132,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         popup.configured = Some(snapshot);
         self.engine.native_menu_layout = Some((kind, resolved));
         if drawable_changed || layout_changed {
-            popup.ready = false;
-            popup.configure_deadline = Instant::now() + POPUP_CONFIGURE_TIMEOUT;
+            popup.begin_pending();
             self.redraw();
         }
         Ok(true)
@@ -211,6 +196,8 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return Ok(false);
         }
         popup.ready = true;
+        popup.owns_paint = true;
+        popup.pending_deadline = None;
         if !was_ready {
             self.redraw_parent_after_native_presentation();
         }

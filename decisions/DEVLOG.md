@@ -1,5 +1,85 @@
 # Development Log
 
+## [2026-10-26T23:44:10-03:00] - Keep Native Menu Paint Ownership Across Pending Updates - Unreleased
+
+**Context:** Follow up on the user's remaining Wayland DropdownMenu ghost, reported only when submenus exceed the parent viewport, with the supplied 20.24-second screen recording.
+
+**User acceptance:** After the fix, the user explicitly confirmed that the problem was successfully resolved. This is user-reported acceptance in their environment, not an agent-performed compositor capture or cross-platform validation.
+
+**Challenge:** Current-frame readiness also controlled parent-overlay suppression. Invalidating an already-presented native surface cleared readiness and resolved layout, restoring the viewport-constrained overlay while the native surface still retained its previous pixels. The two placement policies diverge outside the parent. This is independent of the deadline/placement transaction defects repaired in the preceding entry.
+
+**Alternatives:** Keeping stale layout or marking the popup ready would incorrectly authorize stale input geometry. Suppressing fallback from allocation would break initial pending/first-frame-failure behavior. A potential old-buffer viewport stretch was also inspected in the Wayland fork: configure queues a viewport destination but deliberately does not commit; no offending old-content commit was established, so no speculative fork change was made.
+
+**Decision:** Track paint ownership on each live native menu surface, acquired only by the first successful matching presentation. Keep ownership across later pending updates, passing suppression independently of resolved layout through internal runner/engine/render calls. Keep readiness strict for input and accessibility. Failure, timeout, retirement and replacement release ownership with the surface, preserving usable fallback and existing dismissal/error behavior. No spacing, hierarchy, typography, IDs or callbacks change.
+
+**Files Changed:** `src/engine/runner/native_menu.rs`, `native_menu/presentation.rs`, `src/engine/runner.rs`, `src/engine/mod.rs`, `src/render/mod.rs`; new `native_menu/reconciliation_tests/paint_ownership_tests.rs`, test module/fixture visibility wiring; `tests/unit/native_menu_render_unit_tests.rs` and the context-menu decoration render call site; `docs/NATIVE_POPUPS.md`; this log. Preserve all preceding uncommitted transaction fixes and constructor updates.
+
+**Validation:** Read the widget-design skill, relevant implementation, tests and native-popup documentation. Inspected the recording using a 2fps contact sheet and a 30fps sheet around 9.7–10.5 seconds, generated in `/tmp/opencode` without altering the source. Frames show a transient change in menu extent/appearance, but do not identify which surface produced each pixel. The deterministic code path establishes duplicate-paint exposure; the recording alone does not prove it explains every visual artifact.
+
+The implementation subagent ran focused reconciliation tests (**20 passed**), native-menu raster tests (**5 passed**), targeted rustfmt and `cargo clippy --lib --tests -- -D warnings`, all sequentially. Final broader validation ran sequentially with two Cargo jobs, locked/offline resolution and `CARGO_PROFILE_TEST_DEBUG=0`:
+
+```bash
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+python3 /tmp/opencode/with_xvfb.py python3 /tmp/opencode/with_wayland63_8.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib --all-features native_wayland63_8_dropdown_revalidates_after_old_timeout_then_selects_submenu -- --ignored --test-threads=1
+python3 /tmp/opencode/with_xvfb.py python3 /tmp/opencode/with_wayland63_8.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib --all-features native_wayland_dropdown_stays_at_parent_anchor_during_submenu_expansion -- --ignored --test-threads=1
+python3 /tmp/opencode/with_xvfb.py python3 /tmp/opencode/with_wayland63_8.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib --all-features native_first_frame_failure_keeps_overlay_pending_and_reports_failure -- --ignored --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The full suite passed **1,210 tests, 36 ignored** (877 library, 77 launcher, 253 integration and 3 example tests). All three separately invoked native probes passed on owned headless Weston/pixman plus isolated Xvfb; no inherited desktop input or display was used. An initial full-suite invocation waited on a build lock and exceeded the tool's 120-second limit during compilation; verified no Cargo/compiler process remained, then reran with a longer limit successfully. Final Clippy, formatting and whitespace checks passed. New parent raster coverage exercises out-of-parent panels at 320/800px, short viewport, light/dark, LTR/RTL and 1x/1.5x/2x; five new runner tests cover pending ownership and release without sleeps. Intermediate subagent fixture/import failures were corrected before the passing focused reruns.
+
+**Coverage limits and compatibility:** No post-fix compositor pixel capture, manual visual acceptance, non-Linux test or new localization/validation-error matrix was performed. Native probes check actual configure/GL presentation and selection boundaries, not screenshot pixels. Initial allocation still paints fallback until the first valid native frame, so asynchronous initial handoff overlap is not claimed eliminated. Doctests and the remaining ignored native probes were not rerun for this internal paint-routing followup; the preceding entry's results are historical, not new coverage. Public APIs, input readiness, security/grab policy, dependencies and stored formats are unchanged. DEVLOG and popup documentation updated; no version bump, lockfile/generated-file/vendor changes, staging or commit. The user's `.gitignore` edit remains untouched.
+
+## [2026-10-26T15:32:34-03:00] - Wayland DropdownMenu Ghost Placement and Stale Timeout (New 63.8) - Unreleased
+
+**Context:** Implement the new Wayland `xdg_popup` DropdownMenu report: wrong-position/transient menu followed by `native menu unavailable; overlay_usable=true: popup configure/presentation timed out`. This reuses number 63.8 independently of the earlier ScrollView work.
+
+**Challenge:** A ready popup retained an old configure deadline; parent invalidation revoked readiness without creating a fresh budget. Separately, reconciliation updated desired panels/origin before `about_to_wait` issued their placement, so popup redraw/input could authorize new content at the old rectangle. Resource-intensive validation must run sequentially, and native tests must use owned displays.
+
+**Alternatives:** Hiding the parent overlay immediately on native allocation would remove visible fallback content before any successful native frame; retain the existing presentation/hit contract instead. Renewing the timeout on every resolve/publication would conceal genuine stalls. A vendored reposition-token redesign was considered unnecessary for these demonstrated client defects; preserve the existing configure snapshot contract and serialize requests in the runner.
+
+**Decision:** Store an optional pending deadline and clear it only after successful presentation with matching geometry. Content invalidation starts a budget only when none is pending; repeated invalidation/polls do not renew it. Issue desired placement from the common resolution guard before frame/input authorization. Keep one asynchronous request in flight, coalesce newer desired placements, and issue the newest request after acknowledgement with a fresh request budget. Do not paint intermediate desired content at the previous placement. Reread synchronous configured geometry, preserve compositor-adjusted position/size/scale, and reject readiness when geometry changes during presentation. Keep configure/presentation timeout phases distinct without parsing error strings, and report geometry-read failures immediately with operation context. Preserve callback routing, usable overlay fallback, dismissal and observable unusable reopens.
+
+**Files Changed:** `src/engine/runner/native_menu.rs`, its `presentation.rs`/`reconciliation.rs` and new `transaction.rs`; `reconciliation_tests.rs` and new `reconciliation_tests/transaction_tests.rs`; `src/engine/runner/native_integration.rs` (real >2-second Wayland regression and X11 fixture readiness guard); `src/engine/test_surface.rs` (controlled synchronous/asynchronous snapshots, request/frame observation and configure-during-frame); existing MemoryWindow/RasterPopup constructor sites in multi-runner, counter, navigation, scroll, carousel and combo-box tests (defaulted fixture fields only); `docs/NATIVE_POPUPS.md`; this log.
+
+**Validation:** Read AGENTS, widget-design, `docs/WIDGET_DESIGN.md`, native popup contracts and `vendor/rutter-winit/RUTTER_FORK.md`, plus relevant fork APIs. Initial Git status contained only the user's `.gitignore` edit. Before production edits, the new stale-deadline regression failed with the exact reported `overlay_usable=true` timeout. Intermediate fixture compilation exposed Window's Send/Sync requirement, two additional constructor sites and a private presentation method; corrected these with Arc/Mutex-backed test state, explicit defaults and normal runner event delivery.
+
+Commands ran sequentially. Cargo tests used two build jobs, locked/offline resolution and `CARGO_PROFILE_TEST_DEBUG=0`; the Xvfb wrapper also sets `CARGO_BUILD_JOBS=2`:
+
+```bash
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib wayland63_8_ready_popup -- --test-threads=1
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib native_menu::reconciliation_tests -- --test-threads=1
+cargo fmt --all
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib native_menu -- --test-threads=1
+python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+git status --short
+```
+
+The final native-menu filter passed **31 tests, 2 ignored**. The full suite passed **1,204 tests, 36 ignored** (871 library, 77 launcher, 253 integration and 3 example tests). All **313 doctests** passed. Formatting, final all-target/all-feature Clippy with warnings denied and whitespace checks passed. Full-suite coverage includes existing menu raster/transparent-gap/clipping, keyboard, accessible-model, narrow/desktop, theme and scale tests. Seven new deterministic regressions cover completed-deadline retirement, pending deadlines not extending, genuine configure/presentation expiry, callback-once/usable fallback, unusable dismissal/reopen, placement before redraw/button/pointer at 1x/1.5x/2x, serial acknowledgement/coalescing, synchronous adjusted geometry and geometry changing during a frame. No sleeps were added to unit tests.
+
+A temporary `/tmp/opencode/with_wayland63_8.py` harness starts owned Weston headless/pixman inside the isolated Xvfb wrapper's environment, with a new private runtime/socket and software GL. No inherited desktop/socket or session bus was used. Each of these native Wayland filters passed in its own Cargo process using:
+
+```bash
+python3 /tmp/opencode/with_xvfb.py python3 /tmp/opencode/with_wayland63_8.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib --all-features <filter> -- --ignored --test-threads=1
+```
+
+- `native_wayland63_8_dropdown_revalidates_after_old_timeout_then_selects_submenu`: hold a real native dropdown open for 2.1 seconds, invalidate the parent, successfully present, expand and select the submenu.
+- `native_wayland_dropdown_stays_at_parent_anchor_during_submenu_expansion`.
+- `wayland_cpu_dropdown_falls_back_to_overlay_and_selects_submenu`.
+- `native_first_frame_failure_keeps_overlay_pending_and_reports_failure`.
+- `native_configure_before_redraw_pointer_selects_the_new_scrolled_row`.
+
+The X11 filters `native_dropdown_selects_a_rutter_entry_on_its_popup_window`, `native_dropdown_submenu_selects_a_rutter_entry` and `native_dropdown_dismisses_on_outside_click_without_selection` each passed with the same Cargo flags under `/tmp/opencode/with_xvfb.py`, without the Wayland harness. An initial combined `native_dropdown_` run passed dismissal but the other two hit Winit's one-event-loop-per-process `RecreationAttempt`; reran separately. The separate submenu run exposed the fixture's unconditional inspection of a queued, not-yet-presentable redraw; added a readiness guard before geometry assertions/clicks, retaining all bounds and selection assertions, then it passed. An initial Xvfb-only first-frame-failure probe returned `NoCompositor` because it explicitly requires Wayland; rerunning on owned Weston passed. These were corrected harness/fixture failures, not weakened production checks.
+
+**Coverage limits and compatibility:** Widget-design final review preserves spacing, hierarchy, IDs, callbacks and configured paint/hit geometry; no composition or typography values changed. New native tests exercise a 400×220 parent at 1x; deterministic placement/input tests exercise 1x/1.5x/2x, and the full suite retains existing responsive/theme/raster matrices. No new exhaustive native 320/800px, short-viewport, RTL, long/localized-label, disabled or validation-error matrix, live screen-reader, non-Linux or manual visual review was performed. Wayland native tests use synthetic runner input and verify actual configure/GL presentation boundaries, not compositor screenshot pixels. X11 uses XTEST only on the owned display. A transient parent/native overlap can remain while compositor presentation catches up: retaining the parent fallback until a matching native frame is intentional, and no claim that every visible ghost is eliminated is made. Configure acknowledgement retains the fork's serial-change/serial-less-geometry contract; no new per-request protocol token guarantee is claimed. Other ignored native suites, Vulkan/native GPU and unrelated clock/calendar compositor pixel probes were not run because they are outside the repaired menu transaction boundary; their coverage is not inferred from these checks. Public APIs and security/grab policy are unchanged; timeout reason strings now identify the phase and snapshot-read errors are surfaced immediately. No new dependencies, migrations, version bump, lockfile/generated-file or vendor/fork metadata changes. DEVLOG updated; no staging or commit. The user's `.gitignore` edit is preserved.
+
 ## [2026-10-26T15:00:36-03:00] - Prepare the ScrollView Fix Version and Commit - 0.45.1
 
 **Context:** The user requested a version update and commit for requests 63.7/63.8 and the card/scrollbar spacing followup, explicitly waiving another test run this time.

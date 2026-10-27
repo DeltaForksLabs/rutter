@@ -32,7 +32,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             // Revoke the old hit/paint layout until the current frame is resolved.
             self.engine.native_menu_layout = None;
             if let Some(popup) = self.native_menu.as_mut() {
-                popup.ready = false;
+                popup.begin_pending();
                 popup.parent_layout_revision = self.engine.layout_revision;
             }
         }
@@ -44,12 +44,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return Ok(());
         }
         if parent_dirty || layout_changed {
-            // Resolve against freshly measured panels, not the old model's
-            // widths/content heights. The configured native rectangle remains
-            // authoritative until sync_native_menu obtains a new configure.
+            // Queue the newest placement before any paint/input consumer. The
+            // transaction guard requests it before resolving the new panels.
             match self.requested_native_menu()? {
                 NativeMenuRequest::Menu(placement, surfaces) if placement.kind == kind => {
                     let popup = self.native_menu.as_mut().unwrap();
+                    popup.desired_placement = placement;
                     popup.requested_surfaces = surfaces;
                     popup.requested_origin = Point::new(
                         placement.position.x as f32 / self.engine.scale_factor,

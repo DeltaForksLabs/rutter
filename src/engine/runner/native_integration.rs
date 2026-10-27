@@ -340,6 +340,11 @@ impl ApplicationHandler for NativeDropdownTest {
             self.opened = true;
             click_at(parent, 40.min(self.parent_size.width as i16 / 2), 20);
         } else if Some(id) == popup && redraw && !self.pressed_popup {
+            // A queued redraw can now submit a placement transaction instead of
+            // presenting. Inspect/click only a frame for acknowledged geometry.
+            if !self.runner.native_menu.as_ref().unwrap().ready {
+                return;
+            }
             let (connection, _) = x11rb::connect(None).unwrap();
             let native_popup = id.into_raw() as u32;
             let tree = connection
@@ -918,6 +923,8 @@ struct WaylandDropdownPositionTest {
     first_frame_at: Option<Instant>,
     deadline: Instant,
     parent_size: PhysicalSize<u32>,
+    revalidate_after_timeout: bool,
+    invalidate_at: Option<Instant>,
 }
 
 fn assert_wayland_initial_popup_geometry(event_loop: &dyn ActiveEventLoop, parent: &dyn Window) {
@@ -1010,6 +1017,34 @@ impl ApplicationHandler for WaylandDropdownPositionTest {
                     is_macos_activation_click: false,
                 },
             );
+        }
+        if self.revalidate_after_timeout
+            && self
+                .runner
+                .native_menu
+                .as_ref()
+                .is_some_and(|popup| popup.ready)
+        {
+            let invalidate_at = *self
+                .invalidate_at
+                .get_or_insert_with(|| Instant::now() + Duration::from_millis(2100));
+            if Instant::now() < invalidate_at {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(invalidate_at));
+                return;
+            }
+            self.revalidate_after_timeout = false;
+            self.runner.invalidate_published_model();
+            let popup_id = self.runner.native_menu_window_id().unwrap();
+            self.runner
+                .window_event(event_loop, popup_id, WindowEvent::RedrawRequested);
+            assert!(
+                self.runner
+                    .native_menu
+                    .as_ref()
+                    .is_some_and(|popup| popup.ready)
+            );
+            assert!(!self.runner.native_menus_unavailable);
+            assert_eq!(self.runner.pending_native_menu_deadline(), None);
         }
         if self.opened && self.runner.native_menus_unavailable {
             assert_eq!(self.backend, BackendType::CpuSoftbuffer);
@@ -1122,6 +1157,12 @@ fn native_wayland_dropdown_stays_at_parent_anchor_during_submenu_expansion() {
 }
 
 #[test]
+#[ignore = "requires a disposable Wayland compositor and an EGL driver with alpha support"]
+fn native_wayland63_8_dropdown_revalidates_after_old_timeout_then_selects_submenu() {
+    run_wayland_dropdown_with_revalidation(BackendType::OpenGl, PhysicalSize::new(400, 220), true);
+}
+
+#[test]
 #[ignore = "requires a disposable Wayland compositor with wl_shm support"]
 fn wayland_cpu_dropdown_falls_back_to_overlay_and_selects_submenu() {
     run_wayland_dropdown_test(BackendType::CpuSoftbuffer);
@@ -1132,6 +1173,14 @@ fn run_wayland_dropdown_test(backend: BackendType) {
 }
 
 fn run_wayland_dropdown_with_size(backend: BackendType, parent_size: PhysicalSize<u32>) {
+    run_wayland_dropdown_with_revalidation(backend, parent_size, false);
+}
+
+fn run_wayland_dropdown_with_revalidation(
+    backend: BackendType,
+    parent_size: PhysicalSize<u32>,
+    revalidate_after_timeout: bool,
+) {
     let mut builder = EventLoop::builder();
     winit::platform::wayland::EventLoopBuilderExtWayland::with_wayland(&mut builder);
     winit::platform::wayland::EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
@@ -1154,6 +1203,8 @@ fn run_wayland_dropdown_with_size(backend: BackendType, parent_size: PhysicalSiz
             first_frame_at: None,
             deadline: Instant::now() + Duration::from_secs(20),
             parent_size,
+            revalidate_after_timeout,
+            invalidate_at: None,
         })
         .unwrap();
     assert_eq!(selected.get(), 1);

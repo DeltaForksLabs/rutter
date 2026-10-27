@@ -93,6 +93,7 @@ fn runner(query: &str) -> RutterRunner<ComboApp> {
         size: PhysicalSize::new(320, 240),
         scale: 1.0,
         popup: false,
+        popup_state: None,
     }));
     let mut runner = RutterRunner::with_engine(engine);
     runner.active_window_id = Some(WindowId::from_raw(1));
