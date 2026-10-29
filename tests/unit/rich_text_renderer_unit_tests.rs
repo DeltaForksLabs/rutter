@@ -18,6 +18,63 @@ fn owned_content() -> OwnedRichTextSpec {
 }
 
 #[test]
+#[ignore = "manual raster CPU profiling probe; no display required or timing assertions"]
+fn rich_paragraph_cpu_profile() {
+    use std::{hint::black_box, time::Instant};
+
+    let renderer = RichTextRenderer::new();
+    let content = owned_content();
+    let mut surface = surfaces::raster_n32_premul((800, 120)).unwrap();
+    // Warm font discovery without warming any of the measured paint keys.
+    renderer.measure(
+        &content,
+        RichTextWidth::MaxContent,
+        RichTextDirection::LeftToRight,
+    );
+    let builds_before = renderer.paragraph_builds.get();
+    let mut samples = Vec::new();
+    for _ in 0..32 {
+        let start = Instant::now();
+        for frame in 0..120 {
+            let width = [288.0, 368.0, 736.0][frame % 3];
+            let direction = if frame % 2 == 0 {
+                RichTextDirection::LeftToRight
+            } else {
+                RichTextDirection::RightToLeft
+            };
+            let color = if frame % 4 < 2 {
+                Color::BLACK
+            } else {
+                Color::WHITE
+            };
+            black_box(renderer.measure(
+                black_box(&content),
+                RichTextWidth::Definite(width),
+                direction,
+            ));
+            surface.canvas().clear(Color::TRANSPARENT);
+            renderer.draw(
+                surface.canvas(),
+                black_box(&content),
+                (width, 120.0),
+                color,
+                direction,
+            );
+        }
+        samples.push(start.elapsed().as_micros());
+    }
+    samples.sort_unstable();
+    println!(
+        "rich_paragraph_cpu_profile: samples=32 frames/sample=120 measure+draw=3840 builds={} min={}us median={}us p95={}us max={}us",
+        renderer.paragraph_builds.get() - builds_before,
+        samples[0],
+        samples[16],
+        samples[30],
+        samples[31]
+    );
+}
+
+#[test]
 fn bounded_single_line_resolves_missing_primary_glyphs_and_shapes_both_scripts() {
     use crate::i18n::LayoutDirection;
     let mut renderer = RichTextRenderer::new();
@@ -272,4 +329,195 @@ fn rich_text_draw_changes_raster_pixels() {
     let pixels = surface.peek_pixels().unwrap();
     let bytes = pixels.bytes().unwrap();
     assert!(bytes.chunks_exact(4).any(|pixel| pixel[3] != 0));
+}
+
+#[test]
+fn cached_paint_matches_fresh_pixels_and_does_not_change_measurement() {
+    let renderer = RichTextRenderer::new();
+    let content = RichText::from_spans([
+        RichTextSpan::new("東京 القاهرة alpha beta "),
+        RichTextSpan::new("bold wrapped text").bold().underline(),
+    ])
+    .to_owned_spec();
+    for direction in [
+        RichTextDirection::LeftToRight,
+        RichTextDirection::RightToLeft,
+    ] {
+        for width in [80.0, 288.0, 736.0] {
+            let metrics = [
+                RichTextWidth::Definite(width),
+                RichTextWidth::MinContent,
+                RichTextWidth::MaxContent,
+            ]
+            .map(|constraint| renderer.measure(&content, constraint, direction));
+            for color in [Color::BLACK, Color::WHITE] {
+                for scale in [1.0, 1.5, 2.0] {
+                    for height in [60.0, 100.0] {
+                        let mut cached = surfaces::raster_n32_premul((1600, 240)).unwrap();
+                        let mut fresh = surfaces::raster_n32_premul((1600, 240)).unwrap();
+                        for canvas in [cached.canvas(), fresh.canvas()] {
+                            canvas.clear(Color::TRANSPARENT);
+                            canvas.scale((scale, scale));
+                            canvas.translate((3.0, 2.0));
+                            canvas.clip_rect(
+                                skia_safe::Rect::from_xywh(0.0, 0.0, width, height),
+                                None,
+                                true,
+                            );
+                        }
+                        renderer.draw(cached.canvas(), &content, (width, height), color, direction);
+                        let mut paragraph = renderer.build_paragraph(&content, color, direction);
+                        paragraph.layout(width);
+                        paragraph.paint(
+                            fresh.canvas(),
+                            (0.0, ((height - paragraph.height()) / 2.0).max(0.0)),
+                        );
+                        assert_eq!(
+                            cached.peek_pixels().unwrap().bytes(),
+                            fresh.peek_pixels().unwrap().bytes()
+                        );
+                    }
+                }
+            }
+            for (constraint, expected) in [
+                RichTextWidth::Definite(width),
+                RichTextWidth::MinContent,
+                RichTextWidth::MaxContent,
+            ]
+            .into_iter()
+            .zip(metrics)
+            {
+                assert_eq!(renderer.measure(&content, constraint, direction), expected);
+            }
+        }
+    }
+}
+
+fn paint_for_cache(
+    renderer: &RichTextRenderer,
+    content: &OwnedRichTextSpec,
+    width: f32,
+    color: Color,
+    direction: RichTextDirection,
+) {
+    let mut surface = surfaces::raster_n32_premul((400, 100)).unwrap();
+    renderer.draw(surface.canvas(), content, (width, 100.0), color, direction);
+}
+
+#[test]
+fn paint_cache_keys_full_spec_exact_width_direction_and_fallback_color() {
+    let renderer = RichTextRenderer::new();
+    let content = owned_content();
+    let draw = |content: &OwnedRichTextSpec, width, color, direction| {
+        paint_for_cache(&renderer, content, width, color, direction)
+    };
+    let ltr = RichTextDirection::LeftToRight;
+    draw(&content, 288.0, Color::BLACK, ltr);
+    draw(&content.clone(), 288.0, Color::BLACK, ltr);
+    assert_eq!(renderer.paragraph_builds.get(), 1);
+    draw(
+        &content,
+        f32::from_bits(288.0_f32.to_bits() + 1),
+        Color::BLACK,
+        ltr,
+    );
+    draw(&content, 288.0, Color::WHITE, ltr);
+    draw(
+        &content,
+        288.0,
+        Color::BLACK,
+        RichTextDirection::RightToLeft,
+    );
+    let changed = RichText::from_spans(
+        content
+            .spans()
+            .iter()
+            .map(|span| RichTextSpan::new(span.text()).with_style(*span.style())),
+    )
+    .with_default_style(
+        content
+            .default_style()
+            .with_size(RichTextSize::new(20.0).unwrap()),
+    )
+    .to_owned_spec();
+    draw(&changed, 288.0, Color::BLACK, ltr);
+    let changed = RichText::from_spans(content.spans().iter().map(|span| {
+        RichTextSpan::new(span.text())
+            .with_style(span.style().with_size(RichTextSize::new(19.0).unwrap()))
+    }))
+    .to_owned_spec();
+    draw(&changed, 288.0, Color::BLACK, ltr);
+    draw(
+        &RichText::plain("different text").to_owned_spec(),
+        288.0,
+        Color::BLACK,
+        ltr,
+    );
+    assert_eq!(renderer.paragraph_builds.get(), 7);
+    for width in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
+        draw(&content, width, Color::BLACK, ltr);
+    }
+    assert_eq!(renderer.paragraph_builds.get(), 7);
+}
+
+#[test]
+fn paint_cache_ignores_visual_offsets_and_accessibility_metadata() {
+    let renderer = RichTextRenderer::new();
+    let text = RichText::plain("Moving summary");
+    let content = text.to_owned_spec();
+    let moved = text
+        .with_visual_offset(10.0, -5.0)
+        .with_bounds_relative_visual_offset(0.0, -1.0)
+        .with_accessibility_label("Current semantic summary")
+        .to_owned_spec();
+    for spec in [&content, &moved] {
+        paint_for_cache(
+            &renderer,
+            spec,
+            288.0,
+            Color::BLACK,
+            RichTextDirection::LeftToRight,
+        );
+    }
+    assert_eq!(renderer.paragraph_builds.get(), 1);
+}
+
+#[test]
+fn paint_cache_evicts_lru_bounds_bytes_bypasses_oversized_and_clears() {
+    let mut renderer = RichTextRenderer::new();
+    let content = owned_content();
+    let direction = RichTextDirection::LeftToRight;
+    for width in 1..=MAX_PAINT_CACHE_ENTRIES {
+        paint_for_cache(&renderer, &content, width as f32, Color::BLACK, direction);
+    }
+    // Touch the oldest key so the next-oldest, rather than this key, is evicted.
+    paint_for_cache(&renderer, &content, 1.0, Color::BLACK, direction);
+    paint_for_cache(&renderer, &content, 100.0, Color::BLACK, direction);
+    let builds = renderer.paragraph_builds.get();
+    paint_for_cache(&renderer, &content, 1.0, Color::BLACK, direction);
+    assert_eq!(renderer.paragraph_builds.get(), builds);
+    paint_for_cache(&renderer, &content, 2.0, Color::BLACK, direction);
+    assert_eq!(renderer.paragraph_builds.get(), builds + 1);
+    renderer.clear();
+    assert!(renderer.paint_cache.borrow().entries.is_empty());
+    assert_eq!(renderer.paint_cache.borrow().bytes, 0);
+    for index in 0..10 {
+        let large = RichText::plain(format!("{index} {}", "a ".repeat(4000))).to_owned_spec();
+        paint_for_cache(&renderer, &large, 300.0, Color::BLACK, direction);
+        let cache = renderer.paint_cache.borrow();
+        assert!(cache.bytes <= MAX_PAINT_CACHE_BYTES);
+        assert!(cache.entries.len() < MAX_PAINT_CACHE_ENTRIES);
+    }
+    let retained = renderer.paint_cache.borrow().bytes;
+    let oversized = RichText::plain("a".repeat(MAX_PAINT_ENTRY_BYTES)).to_owned_spec();
+    let builds = renderer.paragraph_builds.get();
+    for _ in 0..2 {
+        paint_for_cache(&renderer, &oversized, 300.0, Color::BLACK, direction);
+    }
+    assert_eq!(renderer.paragraph_builds.get(), builds + 2);
+    assert_eq!(renderer.paint_cache.borrow().bytes, retained);
+    renderer.clear();
+    let builds = renderer.paragraph_builds.get();
+    paint_for_cache(&renderer, &content, 1.0, Color::BLACK, direction);
+    assert_eq!(renderer.paragraph_builds.get(), builds + 1);
 }

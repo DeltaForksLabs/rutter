@@ -681,6 +681,25 @@ fn hit_test_impl<Msg: Clone>(
                 focuses_keyboard: custom.interaction().supports_keyboard(),
             })
         }
+        Widget::PointerRegion { child, config, .. }
+            if config.on_hover.is_some()
+                && !config.capture_on_press
+                && config.drag_source.is_none() =>
+        {
+            let child_node = taffy.children(node_id).ok()?.first().copied()?;
+            path.push(0);
+            let hit = hit_test_impl(
+                child,
+                taffy,
+                child_node,
+                mouse,
+                abs_pos,
+                widget_states,
+                path,
+            );
+            path.pop();
+            hit.or_else(|| Some(HitResult::PointerRegion(widget.resolved_id(path).unwrap())))
+        }
         Widget::PointerRegion { .. } => {
             Some(HitResult::PointerRegion(widget.resolved_id(path).unwrap()))
         }

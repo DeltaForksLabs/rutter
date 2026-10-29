@@ -72,6 +72,29 @@ impl RetainedLayerTest {
             assert_eq!(window.surface_size(), PhysicalSize::default());
             assert!(window.request_surface_size(LogicalSize::new(200, 60).into()).is_none());
             assert!(window.set_cursor_hittest(false).is_err());
+            for policy in [
+                winit_core::window::LayerKeyboardInteractivity::None,
+                winit_core::window::LayerKeyboardInteractivity::OnDemand,
+                winit_core::window::LayerKeyboardInteractivity::Exclusive,
+            ] {
+                assert!(matches!(
+                    window.set_layer_keyboard_interactivity(policy),
+                    Err(winit_core::error::RequestError::Ignored)
+                ));
+            }
+            for policy in [
+                winit_core::window::SurfaceInputRegion::Full,
+                winit_core::window::SurfaceInputRegion::Empty,
+                winit_core::window::SurfaceInputRegion::rectangles([
+                    winit_core::window::SurfaceInputRect::new(-4, 0, 16, 8).unwrap(),
+                ])
+                .unwrap(),
+            ] {
+                assert!(matches!(
+                    window.set_surface_input_region(&policy),
+                    Err(winit_core::error::RequestError::Ignored)
+                ));
+            }
             assert!(window.set_cursor_grab(CursorGrabMode::None).is_err());
             window.request_redraw();
             window.pre_present_notify();

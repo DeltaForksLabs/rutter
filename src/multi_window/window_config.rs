@@ -116,6 +116,7 @@ pub struct WindowConfig {
     popup: Option<Box<super::PopupConfig>>,
     panel: Option<Box<winit::window::PanelConfig>>,
     layer_shell: Option<winit::window::LayerShellConfig>,
+    input_region: winit::window::SurfaceInputRegion,
     title: String,
     transparent: bool,
     decorations: bool,
@@ -136,6 +137,7 @@ impl Default for WindowConfig {
             popup: None,
             panel: None,
             layer_shell: None,
+            input_region: winit::window::SurfaceInputRegion::Full,
             title: "Rutter".to_string(),
             transparent: false,
             decorations: true,
@@ -167,6 +169,19 @@ macro_rules! bool_window_setting {
 }
 
 impl WindowConfig {
+    /// Sets native pointer/touch input geometry in surface-local logical pixels.
+    /// Does not change alpha, keyboard focus, popup grabs or native shell roles.
+    /// Non-default policies fail creation on unsupported backends.
+    pub fn with_input_region(mut self, region: winit::window::SurfaceInputRegion) -> Self {
+        self.input_region = region;
+        self
+    }
+
+    /// Returns the owned input policy, preserved across native suspension/resume.
+    pub fn input_region(&self) -> &winit::window::SurfaceInputRegion {
+        &self.input_region
+    }
+
     /// Opts into a native parented popup with ordinary application content.
     /// By default, Wayland requires opening inside the actual parent's input press
     /// callback; use [`super::PopupConfig::with_grab(false)`] for a non-grabbing popup.
@@ -395,6 +410,21 @@ impl WindowConfig {
 
     pub(crate) fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+    }
+
+    pub(crate) fn set_input_region(&mut self, region: winit::window::SurfaceInputRegion) {
+        self.input_region = region;
+    }
+
+    pub(crate) fn set_layer_keyboard_interactivity(
+        &mut self,
+        interactivity: winit::window::LayerKeyboardInteractivity,
+    ) {
+        let layer = self
+            .layer_shell
+            .take()
+            .expect("validated layer configuration");
+        self.layer_shell = Some(layer.with_keyboard_interactivity(interactivity));
     }
 
     pub(crate) fn window_attributes(&self) -> WindowAttributes {

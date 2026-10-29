@@ -20,6 +20,11 @@ impl<'a> RichText<'a> {
         RichText {
             spans,
             default_style: self.default_style,
+            visual_offset: self.visual_offset,
+            bounds_relative_visual_offset: self.bounds_relative_visual_offset,
+            accessibility_label: self
+                .accessibility_label
+                .map(|label| Cow::Owned(label.into_owned())),
         }
     }
 

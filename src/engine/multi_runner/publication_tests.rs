@@ -126,6 +126,7 @@ fn runtime_with_clock(context: bool, live_clock: bool) -> MultiWindowRunner<Publ
             scale: 1.0,
             popup: false,
             popup_state: None,
+            input_state: None,
         }));
         engine.try_ensure_layout_for_input(size).unwrap();
         if context {

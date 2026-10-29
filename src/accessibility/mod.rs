@@ -1384,7 +1384,9 @@ fn set_widget_label<Msg>(
     match widget {
         Widget::Text { content, .. } => node.set_label(content.clone()),
         Widget::Heading { content, .. } => node.set_label(content.clone()),
-        Widget::RichText { content, .. } => node.set_label(content.plain_text()),
+        Widget::RichText { content, .. } => {
+            node.set_label(content.accessibility_label().into_owned())
+        }
         Widget::Button { text, .. } => node.set_label(*text),
         Widget::ButtonContent { label, .. } => node.set_label(*label),
         Widget::TextInput { label, .. }
@@ -1581,6 +1583,37 @@ mod tests {
 
     fn build_update(widget: &Widget<'_, ()>) -> TreeUpdate {
         build_update_with_inputs(widget, &HashMap::new())
+    }
+
+    #[test]
+    fn rich_text_accessibility_uses_current_override_during_outgoing_visuals() {
+        for owned in [false, true] {
+            let content = crate::RichText::plain("Outgoing summary")
+                .with_bounds_relative_visual_offset(0.0, -0.5)
+                .with_accessibility_label("Current summary");
+            let content = if owned { content.into_owned() } else { content };
+            let widget = Widget::rich_text(content, Style::default()).enabled(false);
+            let update = build_update(&widget);
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Current summary"))
+            );
+            assert!(
+                !update
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Outgoing summary"))
+            );
+        }
+        let widget = Widget::rich_text(crate::RichText::plain("Default summary"), Style::default());
+        assert!(
+            build_update(&widget)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Default summary"))
+        );
     }
 
     #[test]

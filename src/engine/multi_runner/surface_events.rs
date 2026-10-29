@@ -1,7 +1,8 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
 
-use winit::event::WindowEvent;
+use crate::app::LogicalPointerPosition;
+use winit::event::{PointerKind, PointerSource, WindowEvent};
 
 use super::*;
 
@@ -13,6 +14,12 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         native: WindowId,
         event: WindowEvent,
     ) {
+        let hover = self
+            .routes
+            .surface_for(native)
+            .filter(|routed| *routed == surface)
+            .and_then(|_| self.surface_runners.get(&surface)?.native_window())
+            .and_then(|window| mouse_hover_position(&event, window.scale_factor()));
         let surface_event = routed_surface_event(
             &event,
             self.routes.surface_for(native) == Some(surface),
@@ -35,6 +42,22 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             || !self.surface_configs.contains_key(&surface)
         {
             return;
+        }
+        if let Some(position) = hover
+            && self.routes.surface_for(native) == Some(surface)
+            && let Some(commands) =
+                A::surface_pointer_hovered(&mut self.canonical_state, surface, position)
+        {
+            self.revision += 1;
+            // Observation alone must not turn every native motion into a redraw.
+            // Commands and next_wakeup drive any application-owned animation.
+            self.publish_wakeup_state(self.canonical_state.clone(), self.revision);
+            if let Err(error) = self.apply_surface_commands(event_loop, commands) {
+                return self.terminate_for_error(event_loop, error);
+            }
+            if event_loop.exiting() || !self.surface_configs.contains_key(&surface) {
+                return;
+            }
         }
         if let Some(surface_event) = surface_event {
             self.dispatch_application_surface_event(event_loop, surface, surface_event);
@@ -115,6 +138,28 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             }
         }
     }
+}
+
+fn mouse_hover_position(event: &WindowEvent, scale: f64) -> Option<Option<LogicalPointerPosition>> {
+    let position = match event {
+        WindowEvent::PointerMoved {
+            position,
+            source: PointerSource::Mouse,
+            ..
+        }
+        | WindowEvent::PointerEntered {
+            position,
+            kind: PointerKind::Mouse,
+            ..
+        } => position,
+        WindowEvent::PointerLeft {
+            kind: PointerKind::Mouse,
+            ..
+        } => return Some(None),
+        _ => return None,
+    };
+    let logical = position.to_logical::<f32>(scale);
+    Some(Some(LogicalPointerPosition::new(logical.x, logical.y)))
 }
 
 pub(super) fn translate_surface_event(event: &WindowEvent) -> Option<SurfaceEvent> {

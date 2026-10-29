@@ -204,3 +204,19 @@ fn fill_style() -> Style {
 pub fn run() {
     RutterRunner::<CarouselDemo>::run();
 }
+
+#[cfg(test)]
+mod page_tests {
+    use super::CarouselDemo;
+
+    #[test]
+    fn page_reflows_and_retains_a_reachable_document() {
+        let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
+        super::super::layout::test_support::assert_application::<CarouselDemo>(&fonts);
+    }
+
+    #[test]
+    fn starts_dark_with_a_theme_selector() {
+        super::super::theme_selector::test_support::assert_single_window_theme::<CarouselDemo>();
+    }
+}

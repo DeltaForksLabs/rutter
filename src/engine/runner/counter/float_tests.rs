@@ -322,6 +322,7 @@ fn counter_runner() -> RutterRunner<CounterApp> {
         scale: 1.0,
         popup: false,
         popup_state: None,
+        input_state: None,
     }));
     let mut runner = RutterRunner::with_engine(engine);
     refresh(&mut runner);

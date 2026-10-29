@@ -657,3 +657,172 @@ mod tests {
         assert_eq!(log_selection_caption(&[1, 3]), "2 log entries selected");
     }
 }
+
+#[cfg(test)]
+mod page_tests {
+    use super::MyApp;
+
+    #[test]
+    fn page_reflows_and_retains_a_reachable_document() {
+        let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
+        super::super::layout::test_support::assert_application::<MyApp>(&fonts);
+    }
+
+    #[test]
+    fn starts_dark_with_a_theme_selector() {
+        super::super::theme_selector::test_support::assert_single_window_theme::<MyApp>();
+    }
+
+    use super::super::layout::test_support::{assert_page, bounds};
+    use cosmic_text::{FontSystem, SwashCache};
+    use rutter::engine::widget_state::{ScrollState, WidgetState};
+    use rutter::layout::{RutterContext, build_taffy_tree, compute_layout};
+    use rutter::render::hit_test::{HitResult, hit_test};
+    use rutter::render::{RichTextRenderer, draw_widgets, text::TextBufferCache};
+    use rutter::{AppLogic, Widget};
+    use skia_safe::{Point, Rect as Bounds, surfaces};
+    use std::{cell::RefCell, collections::HashMap, rc::Rc};
+    use taffy::prelude::*;
+    use winit::dpi::PhysicalSize;
+
+    #[test]
+    fn form_tabs_and_validation_keep_their_layout_contract() {
+        let fonts = Rc::new(RefCell::new(FontSystem::new()));
+        for active_tab in 0..3 {
+            let mut state = super::AppState {
+                active_tab,
+                username_state: rutter::InputState::Error,
+                theme: super::super::theme_selector::ExampleTheme::Light,
+                ..Default::default()
+            };
+            assert_page(&super::MyApp::view(&mut state), &fonts, "form tab/error");
+        }
+    }
+
+    #[test]
+    fn focused_form_error_keeps_painted_annotations_and_body_hits_after_page_scroll() {
+        let fonts = Rc::new(RefCell::new(FontSystem::new()));
+        for selected in [
+            super::super::theme_selector::ExampleTheme::Dark,
+            super::super::theme_selector::ExampleTheme::Light,
+        ] {
+            for (width, height) in [(800, 700), (320, 700), (800, 260), (320, 260)] {
+                let mut state = super::AppState {
+                    username_state: rutter::InputState::Error,
+                    theme: selected,
+                    ..Default::default()
+                };
+                let view = super::MyApp::view(&mut state);
+                let mut tree = TaffyTree::new();
+                let root = build_taffy_tree(&mut tree, &view, fonts.clone(), &HashMap::new());
+                compute_layout(
+                    &mut tree,
+                    root,
+                    PhysicalSize::new(width, height),
+                    fonts.clone(),
+                    &RichTextRenderer::default(),
+                );
+                let Widget::Column { children, .. } = &view else {
+                    panic!("expected form page root")
+                };
+                let viewport_index = children
+                    .iter()
+                    .position(|child| matches!(child, Widget::ScrollView { .. }))
+                    .expect("expected form document viewport");
+                let viewport_node = tree.children(root).unwrap()[viewport_index];
+                let viewport = bounds(&tree, viewport_node, Point::default());
+                let document_node = tree.children(viewport_node).unwrap()[0];
+                let document = bounds(
+                    &tree,
+                    document_node,
+                    Point::new(viewport.left, viewport.top),
+                );
+                let field = find_input(&view, &tree, root, Point::default(), 1)
+                    .expect("login username field must remain in the full example view");
+                assert_eq!(field.height(), 80.0, "40px body plus label and error rows");
+                let mut scroll = ScrollState {
+                    offset_y: 0.0,
+                    content_height: document.height(),
+                    viewport_h: viewport.height(),
+                };
+                scroll.scroll_by((field.top - document.top - rutter::spacing::SM).max(0.0));
+                let field = Bounds::from_xywh(
+                    field.left,
+                    field.top - scroll.offset_y,
+                    field.width(),
+                    field.height(),
+                );
+                assert!(field.top >= viewport.top && field.bottom <= viewport.bottom);
+                let states = HashMap::from([(
+                    super::super::layout::PAGE_SCROLL_ID,
+                    WidgetState::Scroll(scroll),
+                )]);
+                let point = Point::new(field.center_x(), field.top + 40.0);
+                assert!(
+                    matches!(hit_test(&view, &tree, root, point, Point::default(), &states),
+                    Some(HitResult::InputFocus { id: 1, height: 40.0, local_y, .. })
+                        if (local_y - 20.0).abs() <= 1.0)
+                );
+
+                let theme = selected.resolve();
+                let mut surface =
+                    surfaces::raster_n32_premul((width as i32, height as i32)).unwrap();
+                surface.canvas().clear(theme.surface);
+                draw_widgets(
+                    surface.canvas(),
+                    &tree,
+                    root,
+                    &view,
+                    &mut fonts.borrow_mut(),
+                    &mut SwashCache::new(),
+                    Point::new(-100.0, -100.0),
+                    Some(1),
+                    &HashMap::new(),
+                    &states,
+                    &mut HashMap::new(),
+                    &mut TextBufferCache::default(),
+                    false,
+                    &theme,
+                    1.0,
+                );
+                let pixels = surface.peek_pixels().unwrap();
+                // Avoid the body border/focus stroke: only annotation ink can
+                // satisfy these inset row checks.
+                for (top, bottom) in [
+                    (field.top + 2.0, field.top + 18.0),
+                    (field.bottom - 18.0, field.bottom - 2.0),
+                ] {
+                    assert!(
+                        (top.ceil() as i32..bottom.floor() as i32)
+                            .any(|y| (field.left.ceil() as i32..field.right.floor() as i32)
+                                .any(|x| pixels.get_color((x, y)) != theme.surface)),
+                        "username label and Required error must both paint inside their rows"
+                    );
+                }
+            }
+        }
+    }
+
+    fn find_input<Message>(
+        widget: &Widget<'_, Message>,
+        tree: &TaffyTree<RutterContext>,
+        node: NodeId,
+        origin: Point,
+        wanted: u64,
+    ) -> Option<Bounds> {
+        let rect = bounds(tree, node, origin);
+        let origin = Point::new(rect.left, rect.top);
+        let nodes = tree.children(node).unwrap();
+        match widget {
+            Widget::TextInput { id, .. } if *id == wanted => Some(rect),
+            Widget::Column { children, .. } | Widget::Row { children, .. } => children
+                .iter()
+                .zip(nodes)
+                .find_map(|(child, node)| find_input(child, tree, node, origin, wanted)),
+            Widget::ScrollView { child, .. } | Widget::Container { child, .. } => {
+                find_input(child, tree, nodes[0], origin, wanted)
+            }
+            _ => None,
+        }
+    }
+}

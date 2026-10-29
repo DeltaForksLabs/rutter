@@ -709,6 +709,28 @@ impl CoreWindow for Window {
         self.handles.set_cursor_hittest(self.surface(), hittest)
     }
 
+    fn set_surface_input_region(
+        &self,
+        region: &winit_core::window::SurfaceInputRegion,
+    ) -> Result<(), RequestError> {
+        self.with_state(Err(RequestError::Ignored), |_| {
+            self.handles.set_surface_input_region(self.surface(), region)
+        })
+    }
+
+    fn set_layer_keyboard_interactivity(
+        &self,
+        interactivity: winit_core::window::LayerKeyboardInteractivity,
+    ) -> Result<(), RequestError> {
+        self.with_state(Err(RequestError::Ignored), |state| {
+            let layer = match &state.window {
+                WindowType::Layer { layer, .. } => Some(layer),
+                _ => None,
+            };
+            self.handles.set_layer_keyboard_interactivity(layer, interactivity)
+        })
+    }
+
     fn current_monitor(&self) -> Option<CoreMonitorHandle> {
         if !self.native_available() {
             return None;

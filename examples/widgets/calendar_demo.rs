@@ -247,5 +247,48 @@ pub fn run() {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/calendar_demo_unit_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+
+    struct FixedCalendarTodaySource {
+        today: CalendarDate,
+    }
+
+    impl CalendarTodaySource for FixedCalendarTodaySource {
+        fn today(&self) -> CalendarDate {
+            self.today
+        }
+    }
+
+    #[test]
+    fn initial_calendar_state_selects_today_in_both_calendars() {
+        let today = CalendarDate::new(2027, 3, 14).unwrap();
+        let source = FixedCalendarTodaySource { today };
+        let state = initial_calendar_demo_state(&source);
+
+        assert_eq!(state.calendar_month, today.calendar_month());
+        assert_eq!(state.calendar_date, Some(today));
+        assert_eq!(state.picker_month, today.calendar_month());
+        assert_eq!(state.picker_date, Some(today));
+        assert_eq!(
+            state.picker_accessibility_label,
+            "Data do evento: 2027-03-14"
+        );
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::CalendarDemo;
+
+    #[test]
+    fn page_reflows_and_retains_a_reachable_document() {
+        let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
+        super::super::layout::test_support::assert_application::<CalendarDemo>(&fonts);
+    }
+
+    #[test]
+    fn starts_dark_with_a_theme_selector() {
+        super::super::theme_selector::test_support::assert_single_window_theme::<CalendarDemo>();
+    }
+}

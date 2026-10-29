@@ -80,6 +80,7 @@ fn configured_runner<const RTL: bool>(
         scale: 1.0,
         popup: false,
         popup_state: None,
+        input_state: None,
     }));
     let mut runner = RutterRunner::with_engine(engine);
     runner.engine.active_scroll_id = Some(811);

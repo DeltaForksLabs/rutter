@@ -729,6 +729,27 @@ impl CoreWindow for Popup {
         self.handles.set_cursor_hittest(state.lock().unwrap().window.wl_surface(), hittest)
     }
 
+    fn set_surface_input_region(
+        &self,
+        region: &winit_core::window::SurfaceInputRegion,
+    ) -> Result<(), RequestError> {
+        let Some(state) = self.state() else {
+            return Err(RequestError::Ignored);
+        };
+        self.handles.set_surface_input_region(state.lock().unwrap().window.wl_surface(), region)
+    }
+
+    fn set_layer_keyboard_interactivity(
+        &self,
+        interactivity: winit_core::window::LayerKeyboardInteractivity,
+    ) -> Result<(), RequestError> {
+        let Some(state) = self.state() else {
+            return Err(RequestError::Ignored);
+        };
+        let _state = state.lock().unwrap();
+        self.handles.set_layer_keyboard_interactivity(None, interactivity)
+    }
+
     fn current_monitor(&self) -> Option<CoreMonitorHandle> {
         let state = self.state()?;
         let state = state.lock().unwrap();

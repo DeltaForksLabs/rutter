@@ -295,3 +295,34 @@ impl AppLogic for ModalToastDemo {
 pub fn run() {
     RutterRunner::<ModalToastDemo>::run();
 }
+
+#[cfg(test)]
+mod page_tests {
+    use super::ModalToastDemo;
+
+    #[test]
+    fn page_reflows_and_retains_a_reachable_document() {
+        let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
+        super::super::layout::test_support::assert_application::<ModalToastDemo>(&fonts);
+    }
+
+    #[test]
+    fn starts_dark_with_a_theme_selector() {
+        super::super::theme_selector::test_support::assert_single_window_theme::<ModalToastDemo>();
+    }
+
+    use super::super::layout::test_support::assert_overlay;
+    use rutter::AppLogic;
+
+    #[test]
+    fn open_modal_paints_above_and_blocks_the_scroll_document() {
+        use super::{ModalToastDemo, ModalToastDemoState, Msg};
+        let mut state = ModalToastDemoState {
+            modal_open: true,
+            ..Default::default()
+        };
+        assert_overlay(&ModalToastDemo::view(&mut state), |message| {
+            matches!(message, Msg::CloseModal | Msg::ConfirmModal)
+        });
+    }
+}

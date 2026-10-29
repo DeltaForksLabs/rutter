@@ -27,6 +27,7 @@ fn task63_thumb_drag_is_logical_at_each_scale_and_preserves_outer_offset() {
             scale,
             popup: false,
             popup_state: None,
+            input_state: None,
         }));
         runner.engine.update_scale(scale);
         publish(&mut runner);

@@ -152,3 +152,39 @@ impl AppLogic for TextInputDemo {
 pub fn run() {
     RutterRunner::<TextInputDemo>::run();
 }
+
+#[cfg(test)]
+mod page_tests {
+    use super::TextInputDemo;
+
+    #[test]
+    fn page_reflows_and_retains_a_reachable_document() {
+        let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
+        super::super::layout::test_support::assert_application::<TextInputDemo>(&fonts);
+    }
+
+    #[test]
+    fn starts_dark_with_a_theme_selector() {
+        super::super::theme_selector::test_support::assert_single_window_theme::<TextInputDemo>();
+    }
+
+    use super::super::layout::test_support::assert_page;
+    use cosmic_text::FontSystem;
+    use rutter::AppLogic;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn long_validation_preview_keeps_its_layout_contract() {
+        let fonts = Rc::new(RefCell::new(FontSystem::new()));
+        let mut state = super::TextInputDemoState {
+            text_normal: "A long localized name — nome completo — 名前 ".repeat(12),
+            theme: super::super::theme_selector::ExampleTheme::Light,
+            ..Default::default()
+        };
+        assert_page(
+            &super::TextInputDemo::view(&mut state),
+            &fonts,
+            "long input preview",
+        );
+    }
+}

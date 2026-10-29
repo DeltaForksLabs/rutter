@@ -8,6 +8,7 @@
 // ============================================================
 
 pub(crate) mod accessibility;
+pub mod animation;
 pub mod app;
 pub mod engine;
 pub mod i18n;
@@ -36,6 +37,9 @@ pub use calendar::{
 };
 pub use carousel::{CarouselConfig, CarouselConfigError};
 pub use dropdown_menu::{DropdownMenuEntry, DropdownMenuEntryKind};
+pub use dynamic_island::{
+    DynamicIsland, DynamicIslandError, DynamicIslandMode, DynamicIslandMotion, DynamicIslandSlide,
+};
 pub use engine::multi_runner::MultiWindowRunner;
 pub use engine::run_error::RutterRunError;
 pub use engine::runner::RutterRunner;
@@ -44,12 +48,13 @@ pub use input_limits::{InputKind, InputLimitError, InputLimits};
 pub use multi_window::{
     CloseBehavior, Layer, LayerAnchors, LayerExclusiveZone, LayerKeyboardInteractivity,
     LayerMargins, LayerOutput, LayerShellConfig, LayerShellConfigError,
-    MAX_MESSAGE_INGRESS_CAPACITY, MessageIngressConfig, MessageIngressConfigError,
-    MessageIngressError, MultiWindowAppLogic, MultiWindowMessageSender, MultiWindowRunError,
-    PanelConfig, PanelConfigError, PanelEdge, PanelFocus, PanelMargins, PanelOutput, PopupAnchor,
-    PopupConfig, PopupConfigError, PopupConstraints, PopupDirection, SurfaceCommand, SurfaceEvent,
-    SurfaceId, SurfaceMetrics, SurfaceRequest, WindowConfig, WindowConfigError, WindowLevel,
-    WindowPosition, WindowSize,
+    MAX_MESSAGE_INGRESS_CAPACITY, MAX_SURFACE_INPUT_RECTANGLES, MessageIngressConfig,
+    MessageIngressConfigError, MessageIngressError, MultiWindowAppLogic, MultiWindowMessageSender,
+    MultiWindowRunError, PanelConfig, PanelConfigError, PanelEdge, PanelFocus, PanelMargins,
+    PanelOutput, PopupAnchor, PopupConfig, PopupConfigError, PopupConstraints, PopupDirection,
+    SurfaceCommand, SurfaceEvent, SurfaceId, SurfaceInputRect, SurfaceInputRectangles,
+    SurfaceInputRegion, SurfaceInputRegionError, SurfaceMetrics, SurfaceRequest, WindowConfig,
+    WindowConfigError, WindowLevel, WindowPosition, WindowSize,
 };
 pub use pointer::{
     DragBadge, DragBadgeError, DragBadgeIcon, DragCancelReason, DragEvent, DragPayload,
@@ -93,8 +98,8 @@ pub use widgets::color_picker::{
     ColorPickerState, PickerColor,
 };
 pub use widgets::{
-    calendar, carousel, color_picker, combo_box, dropdown_menu, rich_text, search, table,
-    table_of_contents, time,
+    calendar, carousel, color_picker, combo_box, dropdown_menu, dynamic_island, rich_text, search,
+    table, table_of_contents, time,
 };
 
 // ── Re-exports de dependências públicas ──────────────────────
@@ -103,3 +108,5 @@ pub use chrono_tz;
 pub use cosmic_text;
 pub use skia_safe;
 pub use taffy;
+#[cfg(test)]
+extern crate self as rutter;

@@ -162,6 +162,7 @@ fn pending_menu(context: bool, scale: f64) -> OpenMenu {
         scale,
         popup: false,
         popup_state: None,
+        input_state: None,
     }));
     let mut runner = RutterRunner::with_engine(engine);
     runner.reconcile_native_menu_model().unwrap();
@@ -193,6 +194,7 @@ fn pending_menu(context: bool, scale: f64) -> OpenMenu {
                 scale,
                 popup: true,
                 popup_state: None,
+                input_state: None,
             }),
             surface: skia_safe::surfaces::raster_n32_premul((
                 size.width as i32,

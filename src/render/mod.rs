@@ -1880,7 +1880,9 @@ fn draw_widgets_impl<'w, Msg>(
                 image_cache.rich_text_renderer(),
             );
         }
-        Widget::RichText { .. } => {
+        Widget::RichText {
+            content: visual, ..
+        } => {
             if let Some(RutterContext::RichText(content)) = taffy.get_node_context(node) {
                 let direction = rich_text_node_direction(taffy, node);
                 draw_rich_text_content(
@@ -1890,6 +1892,14 @@ fn draw_widgets_impl<'w, Msg>(
                     theme.on_surface,
                     direction,
                     image_cache.rich_text_renderer(),
+                    {
+                        let (x, y) = visual.visual_offset();
+                        let (relative_x, relative_y) = visual.bounds_relative_visual_offset();
+                        (
+                            x + relative_x * layout.content_box_width(),
+                            y + relative_y * layout.content_box_height(),
+                        )
+                    },
                 );
             }
         }
@@ -4148,6 +4158,7 @@ fn draw_rich_text_content(
     fallback_color: SkiaColor,
     direction: RichTextDirection,
     renderer: &RichTextRenderer,
+    offset: (f32, f32),
 ) {
     let size = (layout.content_box_width(), layout.content_box_height());
     let origin = (
@@ -4157,6 +4168,7 @@ fn draw_rich_text_content(
     canvas.save();
     canvas.translate(origin);
     canvas.clip_rect(SkiaRect::from_xywh(0.0, 0.0, size.0, size.1), None, true);
+    canvas.translate(offset);
     renderer.draw(canvas, content, size, fallback_color, direction);
     canvas.restore();
 }

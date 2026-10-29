@@ -1,7 +1,7 @@
 // Copyright (c) DeltaForks Labs
 // Licensed under the MIT License OR Apache 2.0.
 
-use skia_safe::Point;
+use skia_safe::{Contains, Point};
 
 use super::RutterRunner;
 use crate::app::{AppLogic, LogicalPointerPosition};
@@ -57,6 +57,52 @@ impl<Msg> Clone for PointerRegionCapture<Msg> {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    pub(super) fn refresh_pointer_region_hover(&mut self, left: bool) -> Result<(), WidgetIdError> {
+        if self.pointer_region_hovered.is_empty()
+            && !self
+                .engine
+                .runtime_caches
+                .pointer_regions
+                .values()
+                .any(|region| region.on_hover.is_some())
+        {
+            return Ok(());
+        }
+        self.sync_pointer_region_layout()?;
+        let point = Point::new(self.engine.last_mouse_pos.x, self.engine.last_mouse_pos.y);
+        let blocked = left || self.pointer_region_overlay_blocks();
+        let hovered: std::collections::HashSet<_> = self
+            .engine
+            .runtime_caches
+            .viewport_geometry
+            .pointer_regions
+            .iter()
+            .filter_map(|(&id, bounds)| (!blocked && bounds.contains(point)).then_some(id))
+            .collect();
+        let messages: Vec<_> = self
+            .pointer_region_hovered
+            .symmetric_difference(&hovered)
+            .filter_map(|id| {
+                self.engine
+                    .runtime_caches
+                    .pointer_regions
+                    .get(id)?
+                    .on_hover
+                    .map(|callback| callback(hovered.contains(id)))
+            })
+            .collect();
+        self.pointer_region_hovered = hovered;
+        for message in messages {
+            A::update(
+                &mut self.engine.app_state,
+                message,
+                &mut self.engine.clipboard,
+            );
+            self.engine.layout_dirty = true;
+            self.redraw();
+        }
+        Ok(())
+    }
     pub(super) fn dispatch_pointer_region_press(&mut self, id: u64) {
         let Some(runtime) = self.engine.runtime_caches.pointer_regions.get(&id).cloned() else {
             return;
@@ -869,6 +915,7 @@ mod tests {
         runner.engine.runtime_caches.pointer_regions.insert(
             17,
             PointerRegionRuntime {
+                on_hover: None,
                 on_pointer: pointer_message,
                 capture_on_press: true,
                 drag_source: Some(source),
@@ -1024,6 +1071,7 @@ mod tests {
         runner.engine.runtime_caches.pointer_regions.insert(
             17,
             PointerRegionRuntime {
+                on_hover: None,
                 on_pointer: pointer_message,
                 capture_on_press: false,
                 drag_source: Some(source),

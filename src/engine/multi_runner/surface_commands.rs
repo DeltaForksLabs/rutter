@@ -30,6 +30,15 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
                 self.set_surface_visibility(surface, visible)?;
             }
             SurfaceCommand::RequestRedraw(surface) => self.request_surface_redraw(surface)?,
+            SurfaceCommand::SetInputRegion { surface, region } => {
+                self.set_surface_input_region(surface, region)?;
+            }
+            SurfaceCommand::SetLayerKeyboardInteractivity {
+                surface,
+                interactivity,
+            } => {
+                self.set_layer_keyboard_interactivity(surface, interactivity)?;
+            }
             SurfaceCommand::Exit => {
                 event_loop.exit();
                 return Ok(true);
@@ -92,6 +101,58 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
     ) -> Result<(), MultiWindowRunError> {
         self.config_for(surface)?;
         self.runner_for_mut(surface)?.request_surface_redraw();
+        Ok(())
+    }
+
+    pub(super) fn set_surface_input_region(
+        &mut self,
+        surface: SurfaceId,
+        region: crate::SurfaceInputRegion,
+    ) -> Result<(), MultiWindowRunError> {
+        self.config_for(surface)?;
+        let runner = self.runner_for_mut(surface)?;
+        if let Some(window) = runner.native_window() {
+            window
+                .set_surface_input_region(&region)
+                .map_err(|source| MultiWindowRunError::InputRegion { surface, source })?;
+            runner.request_surface_redraw();
+        }
+        let config = self
+            .surface_configs
+            .get_mut(&surface)
+            .expect("registered surface config must remain present");
+        config.set_input_region(region);
+        Ok(())
+    }
+
+    pub(super) fn set_layer_keyboard_interactivity(
+        &mut self,
+        surface: SurfaceId,
+        interactivity: crate::LayerKeyboardInteractivity,
+    ) -> Result<(), MultiWindowRunError> {
+        if self.config_for(surface)?.layer_shell().is_none() {
+            return Err(MultiWindowRunError::LayerKeyboardInteractivity {
+                surface,
+                source: winit::error::NotSupportedError::new(
+                    "runtime keyboard policy requires an explicit layer-shell configuration",
+                )
+                .into(),
+            });
+        }
+        let runner = self.runner_for_mut(surface)?;
+        if let Some(window) = runner.native_window() {
+            window
+                .set_layer_keyboard_interactivity(interactivity)
+                .map_err(|source| MultiWindowRunError::LayerKeyboardInteractivity {
+                    surface,
+                    source,
+                })?;
+            runner.request_surface_redraw();
+        }
+        self.surface_configs
+            .get_mut(&surface)
+            .expect("registered surface config must remain present")
+            .set_layer_keyboard_interactivity(interactivity);
         Ok(())
     }
 }

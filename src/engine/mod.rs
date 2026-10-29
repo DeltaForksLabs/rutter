@@ -37,6 +37,10 @@ use winit::{
 };
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+#[path = "../widgets/dynamic_island/focus_tests.rs"]
+mod dynamic_island_focus_tests;
+
 use self::cursor::CursorBlink;
 use self::dropdown_menu_runtime::{DropdownMenuItemRuntime, DropdownMenuRuntime};
 use self::gpu::{
@@ -747,6 +751,7 @@ struct CarouselRuntime<Msg> {
 
 pub(crate) struct PointerRegionRuntime<Msg> {
     pub(crate) on_pointer: fn(PointerEvent) -> Msg,
+    pub(crate) on_hover: Option<fn(bool) -> Msg>,
     pub(crate) capture_on_press: bool,
     pub(crate) drag_source: Option<DragSource<Msg>>,
     pub(crate) drop_target: Option<DropTarget<Msg>>,
@@ -757,6 +762,7 @@ impl<Msg> Clone for PointerRegionRuntime<Msg> {
     fn clone(&self) -> Self {
         Self {
             on_pointer: self.on_pointer,
+            on_hover: self.on_hover,
             capture_on_press: self.capture_on_press,
             drag_source: self.drag_source,
             drop_target: self.drop_target,
@@ -2024,31 +2030,48 @@ impl<A: AppLogic> RutterEngine<A> {
         attrs: winit::window::WindowAttributes,
         required_backend: Option<BackendType>,
     ) -> Result<(), GraphicsError> {
-        let (attrs, desired_visibility) = defer_window_visibility(attrs);
-        let (backend, window) = self.create_initialized_backend(el, attrs, required_backend)?;
-        self.commit_surface_backend(el, backend, window, desired_visibility);
-        Ok(())
+        self.handle_resumed_with_setup(el, attrs, required_backend, |_| Ok(()), |error| error)
     }
 
-    fn create_initialized_backend(
+    pub(crate) fn handle_resumed_with_setup<E>(
         &mut self,
         el: &dyn winit::event_loop::ActiveEventLoop,
         attrs: winit::window::WindowAttributes,
         required_backend: Option<BackendType>,
-    ) -> Result<InitializedSurface, GraphicsError> {
+        setup: impl FnOnce(&dyn Window) -> Result<(), E>,
+        graphics_error: impl Fn(GraphicsError) -> E,
+    ) -> Result<(), E> {
+        let (attrs, desired_visibility) = defer_window_visibility(attrs);
+        let backend =
+            create_surface_backend(el, attrs, required_backend).map_err(&graphics_error)?;
+        let (backend, window) = self.initialize_surface_backend(backend, setup, graphics_error)?;
+        self.commit_surface_backend(el, backend, window, desired_visibility);
+        Ok(())
+    }
+
+    fn initialize_surface_backend<E>(
+        &mut self,
+        mut backend: Box<dyn GraphicsBackend>,
+        setup: impl FnOnce(&dyn Window) -> Result<(), E>,
+        graphics_error: impl Fn(GraphicsError) -> E,
+    ) -> Result<InitializedSurface, E> {
         let theme = A::theme_for(&self.app_state);
-        let mut backend = create_surface_backend(el, attrs, required_backend)?;
+        let window = backend.window().clone();
+        // Native pending state must precede even the initial clear buffer. On
+        // Wayland that buffer maps the surface despite deferred visibility.
+        setup(window.as_ref())?;
         if cfg!(debug_assertions) {
             eprintln!("rutter: initialized {} backend", backend.backend_type());
         }
-        let window = backend.window().clone();
         self.scale_factor = window.scale_factor() as f32;
-        backend.resize(window.surface_size())?;
+        backend
+            .resize(window.surface_size())
+            .map_err(&graphics_error)?;
         {
-            let canvas = backend.begin_frame()?;
+            let canvas = backend.begin_frame().map_err(&graphics_error)?;
             prepare_top_level_canvas(canvas, self.surface_config, &theme, self.scale_factor);
         }
-        backend.end_frame()?;
+        backend.end_frame().map_err(graphics_error)?;
         Ok((backend, window))
     }
 
@@ -3200,6 +3223,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     widget.resolved_id(path).unwrap(),
                     PointerRegionRuntime {
                         on_pointer: config.on_pointer,
+                        on_hover: config.on_hover,
                         capture_on_press: config.capture_on_press,
                         drag_source: config.drag_source,
                         drop_target: config.drop_target,

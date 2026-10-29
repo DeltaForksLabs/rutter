@@ -32,8 +32,9 @@ pub use window_config::{
 };
 pub use winit::window::{
     Layer, LayerAnchors, LayerExclusiveZone, LayerKeyboardInteractivity, LayerMargins, LayerOutput,
-    LayerShellConfig, LayerShellConfigError, PanelConfig, PanelConfigError, PanelEdge, PanelFocus,
-    PanelMargins, PanelOutput,
+    LayerShellConfig, LayerShellConfigError, MAX_SURFACE_INPUT_RECTANGLES, PanelConfig,
+    PanelConfigError, PanelEdge, PanelFocus, PanelMargins, PanelOutput, SurfaceInputRect,
+    SurfaceInputRectangles, SurfaceInputRegion, SurfaceInputRegionError,
 };
 /// Stable application-owned identity for one logical surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -86,6 +87,21 @@ pub enum SurfaceCommand {
     /// Changes native visibility and preserves it across suspension and resume.
     /// Hiding a popup closes it; hiding its parent also closes the popup.
     SetVisible { surface: SurfaceId, visible: bool },
+    /// Updates native pointer/touch geometry and requests a frame for its commit.
+    /// Retained only after native success, or deferred while suspended. Does not
+    /// change alpha, keyboard interactivity, shell roles or popup grabs.
+    SetInputRegion {
+        surface: SurfaceId,
+        region: SurfaceInputRegion,
+    },
+    /// Queues keyboard policy on a live layer surface and requests its commit frame.
+    /// `OnDemand` requires layer-shell v4. Success is not a focus grant or denial;
+    /// observe `SurfaceEvent::FocusChanged`. Retains successful policy across resume
+    /// and defers while suspended. Unsupported roles/backends return an error.
+    SetLayerKeyboardInteractivity {
+        surface: SurfaceId,
+        interactivity: LayerKeyboardInteractivity,
+    },
     /// Requests an asynchronous redraw without invalidating layout.
     RequestRedraw(SurfaceId),
     /// Stops the complete multi-window application.
@@ -169,6 +185,29 @@ pub trait MultiWindowAppLogic {
         _event: SurfaceEvent,
     ) -> Vec<SurfaceCommand> {
         Vec::new()
+    }
+    /// Observes native mouse entry/movement (`Some`) and leave (`None`).
+    ///
+    /// Positions are surface-local logical pixels, scaled once by the host. Reports
+    /// include unpressed movement over child controls, independently of hit testing.
+    /// This hook neither captures nor consumes input and does not request focus.
+    /// Native menu windows are not reported as their owning application surface.
+    /// Return `None` (the default) only when application state is unchanged and
+    /// no commands are needed. The host then skips revision changes and model
+    /// publication, preserving other surfaces' cached layouts. Do not mutate
+    /// state and return `None`: that mutation would not be published.
+    ///
+    /// Return `Some(Vec::new())` to explicitly publish a state change, or
+    /// `Some(commands)` to publish and perform runtime actions. These responses
+    /// use the normal revision, command and wakeup lifecycle. Include
+    /// [`SurfaceCommand::RequestRedraw`] for visual changes; publication alone
+    /// does not request a frame.
+    fn surface_pointer_hovered(
+        _state: &mut Self::State,
+        _surface: SurfaceId,
+        _position: Option<LogicalPointerPosition>,
+    ) -> Option<Vec<SurfaceCommand>> {
+        None
     }
     /// Processes a source-aware message and returns requested runtime operations.
     fn update(
@@ -338,6 +377,16 @@ pub trait MultiWindowAppLogic {
 /// Describes controlled failures in the multi-window runtime.
 #[derive(Debug)]
 pub enum MultiWindowRunError {
+    /// Updating layer keyboard policy failed; the previous policy is retained.
+    LayerKeyboardInteractivity {
+        surface: SurfaceId,
+        source: winit::error::RequestError,
+    },
+    /// Applying native input geometry failed; the previous policy is retained.
+    InputRegion {
+        surface: SurfaceId,
+        source: winit::error::RequestError,
+    },
     /// A native popup request failed validation or live-parent resolution.
     Popup {
         surface: SurfaceId,
@@ -359,6 +408,14 @@ pub enum MultiWindowRunError {
 impl Display for MultiWindowRunError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LayerKeyboardInteractivity { surface, source } => write!(
+                formatter,
+                "setting layer keyboard interactivity for surface {surface:?} failed: {source}; expected a live supported layer surface"
+            ),
+            Self::InputRegion { surface, source } => write!(
+                formatter,
+                "setting native input region for surface {surface:?} failed: {source}; expected a live supported native surface"
+            ),
             Self::Popup {
                 surface,
                 parent,
@@ -400,6 +457,8 @@ impl Display for MultiWindowRunError {
 impl Error for MultiWindowRunError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::LayerKeyboardInteractivity { source, .. } => Some(source),
+            Self::InputRegion { source, .. } => Some(source),
             Self::EventLoop(error) => Some(error),
             Self::Surface(_, error) => Some(error),
             Self::MessageIngressConfig(error) => Some(error),

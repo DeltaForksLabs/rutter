@@ -19,6 +19,7 @@
 //   cargo run -- dialog
 //   cargo run -- drag_drop
 //   cargo run -- dropdown_menu
+//   cargo run -- dynamic_island
 //   cargo run -- form           # complete demo (default)
 //   cargo run -- image_viewer
 //   cargo run -- modal_toast
@@ -61,6 +62,7 @@ fn main() {
         "dialog" => widget_examples::dialog_demo::run(),
         "drag_drop" => widget_examples::drag_drop_demo::run(),
         "dropdown_menu" => widget_examples::dropdown_menu_demo::run(),
+        "dynamic_island" => widget_examples::dynamic_island_demo::run(),
         "form" => widget_examples::form_demo::run(),
         "image_viewer" => widget_examples::image_viewer_demo::run(),
         "modal_toast" => widget_examples::modal_toast_demo::run(),

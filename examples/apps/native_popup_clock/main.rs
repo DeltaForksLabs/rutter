@@ -238,7 +238,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/native_popup_clock_layout_unit_tests.rs"]
 mod layout_tests;
 
 #[cfg(test)]

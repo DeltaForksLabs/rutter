@@ -1,5 +1,251 @@
 # Development Log
 
+## [2026-10-29T12:08:57-03:00] - Prepare Dynamic Island Release Commit - 0.46.0
+
+**Context:** The user explicitly requested a project version update and commit, exempting this commit from rerunning tests.
+
+**Challenge:** Include the completed Dynamic Island, animation, native hosting and example-organization work while preserving the user's unrelated `.gitignore` change and synchronizing authoritative version metadata.
+
+**Decision:** Advance the pre-1.0 minor version from 0.45.1 to 0.46.0 for the new feature set and source-compatibility changes. Update the manifest and README release summary, regenerate the root package lock metadata through Cargo, and commit only the reviewed implementation/documentation/tests. Document new exhaustive-match variants, the pointer-region struct field and moved example paths. Keep previous DEVLOG entries historical.
+
+**Files Changed:** `Cargo.toml`, Cargo-generated `Cargo.lock`, `README.md` and this log, alongside the already validated Dynamic Island/native runtime, animation, RichText, example and regression files included in this release commit.
+
+**Validation:** Reviewed Git status, diffs and recent commit conventions. Tests are intentionally not rerun for this commit, as explicitly requested; the preceding validation passed 1,362 tests (38 ignored), 315 doctests, all-target/all-feature Clippy, formatting and whitespace checks before this version-only preparation. Unfiltered `cargo metadata --offline --format-version 1` regenerated the root lock version but could not finish because the uncached iOS-only `accesskit_ios v0.2.1` dependency is unavailable offline. `cargo metadata --locked --offline --filter-platform x86_64-unknown-linux-gnu --format-version 1` then succeeded, confirming version 0.46.0 with no dependency-resolution changes. Metadata and staged-diff review validate version/path consistency without claiming a new test run.
+
+**Compatibility:** This pre-1.0 minor release adds public enum variants and `PointerRegionConfig::on_hover`, requiring updates to downstream exhaustive matches/direct struct literals. Native input-region/runtime layer-policy opt-ins remain Wayland-specific and fail explicitly on unsupported backends. No dependency-resolution changes, generated source edits or data migrations are intended; only the root package version changes in the lockfile. `.gitignore` is excluded from staging. No push is requested.
+
+## [2026-10-29T11:55:21-03:00] - Organize Example Apps and Make Widget Demos Self-Contained - Unreleased
+
+**Context:** The user requires only `apps` and `widgets` at the examples root, a flat widget directory with implementation/tests together, and each app's files grouped in its own directory.
+
+**Challenge:** Preserve launcher composition, nested module visibility, test coverage, compile-time assets and existing Cargo example names while moving already modified/untracked sources without overwriting earlier work.
+
+**Decision:** Group native applications under `examples/apps/{dynamic_island,dynamic_island_probe,native_popup_clock}/main.rs` with app-owned companion modules/tests. Register explicit Cargo example paths so existing `cargo run --example ...` commands and native smoke-test binary paths remain valid. Inline widget-specific functionality and tests in each owning demo, including clock, article and raster/geometry modules; remove the consumed separate sources. Split combined page/theme suites into owner-local cases while retaining reusable assertions in the existing shared layout/theme modules. Keep the cross-example spacing inventory inline in `widgets/mod.rs`, alongside regression tests for the requested filesystem structure. No widget subdirectories or external test imports remain. Larger owner files are intentional to satisfy the user's self-contained-file requirement rather than the repository's approximate file-size guideline.
+
+**Files Changed:** `Cargo.toml`; `examples/apps/` entry points and companion modules/tests; widget demos, `layout.rs`, `theme_selector.rs` and `mod.rs`; consumed example-specific `tests/unit` sources; the runner's embedded demo fixture; `README.md` and this log. The fixture narrowly expects unused launcher-only theme test support because it embeds only the multi-window island demo.
+
+**Validation:** Resource-intensive commands ran sequentially. Initial Clippy found an unused helper in the embedded fixture and a single-element loop; both were corrected. The first broad test run stopped at a newly added structure assertion matching its own source string; changed the check to recognize actual path-attribute lines, then reran the focused structure tests and complete suite successfully.
+
+```sh
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --bin rutter widget_examples::tests:: -- --test-threads=1
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+cargo metadata --locked --offline --no-deps --format-version 1
+```
+
+Final full-suite result: **1,362 passed, 38 ignored** (929 library, 145 launcher, 256 integration, 32 example); **315 doctests**, Clippy, formatting and whitespace checks passed. Test-count growth mostly reflects splitting combined suites into separately named owner cases, not newly invented behavioral coverage. Cargo metadata confirms all three preserved target names resolve to their app directories. Existing geometry, raster, theme, focus, scrolling, overlay and child-hit checks passed after consolidation. Full-suite output: `/home/p_daniel/.local/share/opencode/tool-output/tool_1881d8b19001fhd7GuVVvjo1of`.
+
+**Limitations and compatibility:** Filesystem source paths and test filter/module names changed; external tooling referring directly to old paths must update. Runtime CLI names, visual composition and public APIs are unchanged by this reorganization. No native compositor smoke/manual visual, assistive-technology or non-Linux acceptance was rerun for this relocation; disposable Xvfb and software geometry/raster tests are not equivalent. No new dependencies, version, lockfile or generated-file changes. Earlier unrelated changes, including `.gitignore`, were preserved. Nothing staged or committed.
+
+## [2026-10-29T10:26:23-03:00] - Two-Axis Capsule Expansion and Dual-Mode Widget Showcase - Unreleased
+
+**Context:** Requests 64.8 and 64.9 require a small interactive pill that expands horizontally and vertically, plus a gallery example with a passive sliding clock above an interactive capsule. Recovered the existing implementation after conversation compaction, verified it and completed its documentation.
+
+**Challenge:** Animated layout, painted bounds, input and scrollable child controls must agree throughout expansion and reversal. The passive clock must rotate separate hours/date/weekday summaries without continuous idle polling, stale accessibility text or slide offsets escaping the text clip.
+
+**Decision:** Animate the native compact capsule from 240×76 to 404×252 logical pixels over 240ms, constrained to the actual host and retaining its horizontal center; share sampled geometry with native input. Add an ordinary-window launcher demo with the passive clock first and interactive playback second. Interpolate both interactive dimensions, keep details scrollable, and retain hover/header expansion, Pause/Resume and explicit collapse/Escape. Cycle local hours, date and weekday every three seconds using an outgoing upward slide followed by entry from below, 240ms per phase; refresh at minute boundaries with explicit deadlines and bounded late-wakeup handling. Expose the current complete clock snapshot to accessibility independently of outgoing visual text. Opt-in pointer-region hover observes visible scroll-adjusted bounds without replacing child control hits.
+
+**Files Changed:** `examples/dynamic_island.rs` and its motion regressions; `examples/widgets/dynamic_island_demo.rs` and `dynamic_island_demo/{clock,tests,raster_tests}.rs`; launcher registration in `src/main.rs` and `examples/widgets/mod.rs`; pointer-region configuration, runtime, hit testing and runner regression coverage; gallery layout/theme tests; `docs/DYNAMIC_ISLAND.md`, `README.md` and this log.
+
+**Validation:** Loaded widget-design and reviewed the recovered implementation, tests and relevant diffs. Ran the following sequentially:
+
+```sh
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+```
+
+The full suite passed **1,299 tests, 38 ignored** (927 library, 84 launcher, 256 integration, 32 example); **315 doctests**, Clippy, formatting and whitespace checks passed. Geometry/raster regressions cover 320/800px widths, short hosts, both themes and 1x/1.5x/2x scaling; interaction regressions cover keyboard/accessibility routes, passive tab exclusion, scroll-adjusted hover and child hits. Clock tests cover separate slide phases, midnight/minute updates, late wakeups and current accessible text. Full-suite output: `/home/p_daniel/.local/share/opencode/tool-output/tool_187ccd775001NhTwFZSXbZKmbX`.
+
+**Limitations and compatibility:** Validation used a private disposable Xvfb, not the inherited desktop. No new live FRAYM/Wayland animation capture, manual visual acceptance, screen-reader or non-Linux run was performed; compositor pacing remains unverified. Month/weekday names currently use English Chrono formatting, not locale-aware translation. The ordinary-window showcase is separate from the native layer-shell example and does not change its focus policy. The new public `PointerRegionConfig::on_hover` field defaults to `None` through `new`; downstream direct struct literals need the new field. No dependency, version, lockfile or generated-file changes for these requests. Existing unrelated changes, including `.gitignore`, were preserved; nothing staged or committed.
+
+## [2026-10-29T02:07:12-03:00] - Reduce Dynamic Island Frame Work and Preserve Overdue Wakeups - Unreleased
+
+**Context:** For request64.7 the user confirmed request64.6 works on FRAYM, but reported stutter during capsule expansion/retraction. This is user acceptance of the focus policy, not measured animation pacing.
+
+**Challenge:** Repeated paragraph construction and native input publication add per-frame cost. A next-frame deadline becoming overdue during rendering was discarded by the once-per-cycle callback guard, potentially leaving progress dependent on another native event.
+
+**Alternatives:** Enabling Skia's internal paragraph cache alone would not remove repeated paragraph layout or establish bounded owned retention. Caching measurement would risk changing its second-layout semantics. Broad publication/layout architecture changes or altering duration/vsync would increase scope without measured evidence.
+
+**Decision:** Preserve a newly overdue wake obligation for the next cycle while retaining one callback per cycle and suppressing deadlines already stale at callback time. Reuse example-local rounded input bands and deduplicate effective native input updates, retaining redraw for text-only frames and forced republication for metrics/native creation. Cache only laid-out RichText paint paragraphs by full owned specification, exact width, direction and fallback color. Use LRU bounds of 32 entries, 64 KiB accounted owned-spec bytes and 16 KiB per entry, with oversized bypass and renderer-clear invalidation. Native Skia heap size is unavailable, so the byte accounting is not an exact native-heap cap. Preserve measurement, focus policy, geometry, semantic transitions and animation durations.
+
+**Files Changed:** `src/engine/multi_runner/wakeup.rs`, `src/render/rich_text.rs`, `tests/unit/rich_text_renderer_unit_tests.rs`, `examples/dynamic_island.rs`, example tests and new `region_tests.rs`; `docs/DYNAMIC_ISLAND.md`, `README.md` and this log.
+
+**Validation:** Loaded widget-design, reviewed scheduler/cache/input diffs and ran deterministic regressions. Sequential focused tests passed **65** across wakeup scheduling, RichText renderer, example, RichText integration and native input runtime tests; focused Clippy/rustfmt and whitespace checks passed. An explicitly invoked ignored CPU/raster probe ran before and after using `CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --lib rich_paragraph_cpu_profile --locked --offline -- --ignored --nocapture`. For 32 batches of 120 measure/draw frames in the unoptimized test profile, paragraph builds fell **7,680 → 3,852** (49.8%), median batch time **137,333 → 98,458µs** (28.3%), p95 **142,915 → 107,069µs**, minimum **131,686 → 95,097µs**, maximum **173,218 → 109,259µs**. These are local workload measurements, not compositor/frame-pacing or release-profile results; no timing thresholds were added to normal tests.
+
+Final validation ran sequentially:
+
+```sh
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+```
+
+The broad suite passed **1,279 tests, 38 ignored** (915 library, 77 launcher, 256 integration, 31 example); **315 doctests** and all-target/all-feature Clippy passed, as did formatting and whitespace checks. The added ignored test is the profiling probe, executed separately above. Tests cover cache hits/metrics/pixel equivalence, width/style/direction/color misses, bounds/eviction/clear/oversized bypass, overdue replacement/cancellation/stale suppression, text-only redraw without native input submission, metrics/native recreation and close input clearing. Existing geometry, raster, focus, accessibility and interaction regressions also passed. Full-suite log: `/home/p_daniel/.local/share/opencode/tool-output/tool_18604676d001T9I7X9EgOH7Lkx`.
+
+**Limitations and compatibility:** No new live FRAYM/Wayland animation capture, GPU timing, manual visual, non-Linux or assistive-technology run was performed. The local probe does not prove the reported stutter is eliminated or establish its sole cause. Measurement/plain-text/single-line paths remain uncached, and real swap/frame-callback pacing remains to be measured. User confirmation supersedes prior unaccepted-focus status for their FRAYM environment only; the historical labwc OnDemand reacquisition assertion remains unchanged. No public API, dependency, version, lockfile or generated-file changes for this optimization. Existing changes including `.gitignore` preserved; nothing staged or committed.
+
+## [2026-10-29T01:22:51-03:00] - Request Keyboard Focus During Hover Expansion With Bounded Fallback - Unreleased
+
+**Context:** Request 64.6 reports that Escape only works after clicking the hover-expanded island. The user explicitly approved temporary Exclusive keyboard interactivity while expanded, restoring OnDemand when collapsed, with callback fallback to click focus when focus is not granted.
+
+**Challenge:** OnDemand permits a compositor to require a click and offers no portable hover activation. Layer-shell has no explicit focus-denial response; a successful setter queues policy but cannot prove keyboard acquisition. The new report is distinct from the earlier labwc failure to reacquire even after a click.
+
+**Alternatives:** Keeping OnDemand alone preserves click focus but cannot satisfy hover/Escape. Wayland `focus_window` is unsupported and activation tokens do not guarantee layer focus. Rather than silently changing policy, obtained user approval for the keyboard-capture side effect before implementation; this supersedes the earlier decision not to use Exclusive for this example.
+
+**Decision:** Add a fallible runtime native layer keyboard-interactivity setter and `SurfaceCommand::SetLayerKeyboardInteractivity`, validating live role/version/retirement before native queuing and redraw. Store policy only after success, or defer suspended requests to recreation. Unsupported backends/ordinary surfaces fail contextually, preserving prior configuration. The example requests Exclusive once per expansion, restores OnDemand on collapse, and schedules a one-shot 750ms grant deadline unless already focused. Native focus acquisition cancels the deadline; no grant invokes the explicit `IslandDemo::focus_by_click_fallback` callback, restoring OnDemand with details still open. Focus loss invokes the same callback without repeated grabbing. Collapse/close cancel pending deadlines; passive remains None. A timeout is inference, not proof of compositor refusal. No synthetic keys or global keyboard grabs.
+
+**Files Changed:** `examples/dynamic_island.rs`, new `focus.rs` and `focus_tests.rs`, example test wiring/assertions; multi-window command/error/configuration and runtime command handling, test surface fixtures and input-policy/native routing tests; local Winit core Window/layer-shell documentation, Wayland window/handles/popup implementation and retirement coverage; `docs/DYNAMIC_ISLAND.md`, `docs/WAYLAND_LAYER_SHELL.md`, `README.md`, fork metadata and this log.
+
+**Validation:** Loaded widget-design and reviewed focus state transitions, native queueing and runtime persistence. Focused example tests passed **25**, input-policy runtime tests **8**, Wayland keyboard queue validation **1**, and opt-in private-Xvfb native routing/unsupported-setter test **1**. Focused root/Wayland Clippy and affected-file rustfmt passed. Final commands ran sequentially:
+
+```sh
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline -p winit-wayland --lib -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+```
+
+The broad suite passed **1,270 tests, 37 ignored** (909 library, 77 launcher, 256 integration, 28 example); **315 doctests** and full root Clippy passed. Wayland library tests passed **14, 2 ignored**. Regressions cover hover/one-shot capture, Escape restoration, grant cancellation, timeout callback, focus-loss fallback without re-grab, later click-focus event, close cancellation, passive/surface isolation, native version/terminal validation and command success/defer/failure retention. Full-suite log: `/home/p_daniel/.local/share/opencode/tool-output/tool_185dc1674001ar8xJ3kUkLzs6P`.
+
+**Limitations and compatibility:** No new live Wayland/FRAYM focus run or manual visual review was performed; private-Xvfb and deterministic native-queue tests do not establish compositor focus acceptance. Owned-compositor retirement/output-removal tests remain ignored because no owned compositor session was run in this stage. The earlier native probe/assertion remains unchanged and tests its original OnDemand policy, not this capture policy. This intentionally transfers keyboard away from other applications when the compositor grants Exclusive; restoring OnDemand does not itself guarantee which surface the compositor focuses next. Callback fallback cannot guarantee click focus on every compositor. New command/error variants require downstream exhaustive-match updates; setter has a default unsupported implementation. No dependencies, version, lockfiles or generated files changed. Existing changes including `.gitignore` preserved; nothing staged or committed.
+
+## [2026-10-29T00:31:06-03:00] - Fix Wrapped Text Slides and Interrupted Summary Semantics - Unreleased
+
+**Context:** Correct the remaining reproducible Dynamic Island text defects without weakening native focus policy or discarding existing work.
+
+**Challenge:** The old fixed 44px translation did not clear wrapped RichText, reset-based progress jumped on interruption, and passive accessibility exposed the outgoing visual summary. Delayed wakeups also unnecessarily started a fresh entry after an already elapsed exit/entry interval.
+
+**Alternatives:** Measuring another application-side layout tree would duplicate layout work and risk measurement/painting divergence. Bounds-relative paint offsets use the actual renderer allocation without introducing another measurement path. Forcing Exclusive keyboard focus would hide the native focus issue by stealing focus and was rejected.
+
+**Decision:** Add an optional bounds-relative RichText translation, additive to existing logical-pixel translation, resolved against the content box at paint time with the original clip. Add an optional accessible-label override, defaulting to flattened spans; preserve both through owned conversion. The example animates explicit X/Y displacement and samples/retargets at event time rather than resetting progress. Passive updates retain the outgoing payload, coalesce incoming state and expose the current semantic summary. Exit completion starts entry at its actual phase boundary so late wakeups can finish both phases. Preserve interactive entry-only and immediate-close behavior, capsule geometry/input and None/OnDemand policies.
+
+**Files Changed:** `src/widgets/rich_text/{mod,owned}.rs`, `src/render/mod.rs`, `src/accessibility/mod.rs`, `tests/unit/rich_text_unit_tests.rs`; `examples/dynamic_island.rs`, its existing tests and new `text_tests.rs`; `docs/DYNAMIC_ISLAND.md` and this log.
+
+**Validation:** Loaded widget-design and reviewed implementation, accessibility, renderer and regression diffs. Focused tests passed: example **21**, RichText-filtered library **30**, Dynamic Island integration **3**, Dynamic Island-filtered library **12**. Focused Clippy, targeted rustfmt and whitespace checks passed. Final commands executed sequentially:
+
+```sh
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+```
+
+The broad suite passed **1,264 tests, 37 ignored** (907 library, 77 launcher, 256 integration, 24 example); **315 doctests** passed, as did Clippy, formatting and whitespace checks. Full-suite log: `/home/p_daniel/.local/share/opencode/tool-output/tool_185ac1345001uBjUWP2ZBw8cBh`. New raster coverage verifies fully hidden wrapped text taller than 44px at all eight endpoints in both themes, 320/800 widths and 1x/1.5x/2x scales. Regressions cover event-time interruption continuity, perpendicular directions, passive coalescing, current AccessKit labels/defaults, owned metadata and delayed completion with no stale frame wakeup.
+
+**Limitations and compatibility:** Read-only inspection found no obvious application error in the OnDemand mapping, native host configuration or Escape probe; this does not identify the internal native/compositor cause. Retain the existing failing native keyboard-reacquisition assertion and do not force Exclusive focus. No new Wayland smoke/manual visual, live screen-reader or non-Linux run was performed; automated Xvfb/software-raster tests do not provide equivalent acceptance. Offsets preserve normalized position, not exact pixel position through reflow/resize, and retargeting does not preserve velocity. Public APIs are additive and keep default painting/labels unchanged. No new dependencies, version bump, lockfile or generated-file changes; user `.gitignore` edits and all preceding work preserved. Nothing staged or committed.
+
+## [2026-10-28T23:50:47-03:00] - Expand Interactive Dynamic Island on Hover Without Slide-Out - Unreleased
+
+**Context:** Complete stage 64.5: interactive entry should expand without clicking, while only text slides in and the capsule retains expansion/contraction.
+
+**Challenge:** Native hover observation must preserve child input, surface isolation and cached layouts for applications that do not use the hook. Repeated motion and Escape must not restart expansion, and interactive close must not wait for an outgoing animation.
+
+**Decision:** Add the default optional `MultiWindowAppLogic::surface_pointer_hovered` observer with logical coordinates and explicit `Option<Vec<SurfaceCommand>>` publication semantics. `None` means no mutation or commands and preserves revisions/cache; `Some` publishes a change. Exclude native menus, retain child event delivery and avoid requesting focus. The example uses the same rounded bands as native input to latch membership, queues idempotent expansion on fresh entry, and clears the latch without collapsing on leave. Escape collapses without reexpanding until reentry. Header activation also expands idempotently. Interactive summaries replace immediately and use entry only; Close clears native input and closes immediately. Keep `--exit` accepted/validated but ignored for interactive mode; passive exit behavior remains unchanged.
+
+**Files Changed:** `src/multi_window/mod.rs`, `src/engine/multi_runner/surface_events.rs`, hover test modules and test wiring/cache inspection in `src/engine/{multi_runner.rs,runner.rs}`; `examples/dynamic_island.rs` and its hover/motion tests; `docs/DYNAMIC_ISLAND.md`, `README.md` and this log. Earlier uncommitted native input, widget and animation work is preserved.
+
+**Validation:** Loaded widget-design for final review. Focused host hover tests passed **6**, the private-Xvfb native mouse/leave/menu-isolation test passed **1**, and example hover regressions passed **3**. Review caught and corrected no-op hover publication invalidating layout caches; regressions cover that contract. The final broad suite passed **1,258 tests, 37 ignored** (905 library, 77 launcher, 256 integration, 20 example), followed sequentially by all-target/all-feature Clippy, **315 doctests**, formatting and whitespace checks:
+
+```sh
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+```
+
+The broad-suite log is `/home/p_daniel/.local/share/opencode/tool-output/tool_185858add0016ObN8IWSU6WmXG`. Existing deterministic geometry/raster tests cover both themes, 320/800 widths, short hosts, long/localized text, focus/disabled states and 1x/1.5x/2x scales; they are not manual or non-Linux acceptance. Documentation now describes current text-only/hover behavior instead of the superseded capsule-slide example.
+
+**Limitations and compatibility:** No new owned-Wayland-compositor or manual visual run was performed for hover/animation; the existing probe tests the earlier immediate click policy. Its labwc OnDemand keyboard-reacquisition failure remains unresolved, with the assertion retained and no Exclusive workaround. Updated FRAYM basic hosting is user-confirmed only, not acceptance of these changes. Passive wrapped vertical slides still use a fixed 44px distance, interrupted text transitions can jump, and passive exit accessibility can expose outgoing text. General animation primitives are host-driven values, not automatic transforms or opacity. Live assistive technology, non-Linux runtime and Quasar IPC remain unvalidated/unimplemented as applicable. The hover hook has a default implementation; existing input-region enum additions still require downstream exhaustive-match updates. No new dependencies, version bump, lockfile or generated-file changes. The user's `.gitignore` edits remain untouched; nothing staged or committed.
+
+## [2026-10-28T13:08:33-03:00] - Correct Dynamic Island Text Animation - Unreleased
+
+**Context:** The user clarified that directional slides should animate text inside a stationary capsule, while the capsule itself only expands and contracts; a reusable animation API was also requested.
+
+**Challenge:** Text painting must move and clip independently of the capsule, its button hit geometry and the complete accessible summary, including when content wraps or transitions are interrupted.
+
+**Decision:** Work in progress: add explicitly clocked reusable `rutter::animation` primitives and a clipped RichText visual offset, and adapt the example to animate its summary instead of translating the capsule. Preserve independent semantic labeling of the interactive header. The general API supplies sampled values, not automatic widget transforms, and callers remain responsible for layout, hits and accessibility.
+
+**Files Changed:** `src/animation.rs`, `src/lib.rs`, `src/widgets/rich_text/`, `src/render/mod.rs`, `src/widgets/dynamic_island/`, `examples/dynamic_island.rs` and its tests, this log and a warning in `docs/DYNAMIC_ISLAND.md`.
+
+**Validation:** Focused sequential tests passed: example **14**, general animation **4**, RichText integration **6**, island integration **3** and the translated semantic-label test **1**. Targeted example/tests Clippy, `cargo fmt --all -- --check` and tracked `git diff --check` passed. No full suite, native animated compositor probe, or manual visual review was run for this incomplete change.
+
+**Outstanding:** Vertical text slide distance is fixed at 44px and may not fully clear wrapped text. Interrupting an active summary transition can jump. During a passive exit the accessible label can still expose the outgoing text rather than the current summary. The current motion documentation below the warning describes the superseded capsule-slide implementation and must be rewritten upon completion. No dependencies, version, lockfiles or generated files changed. User `.gitignore` remains untouched; nothing staged or committed.
+
+## [2026-10-28T12:45:09-03:00] - Animate Dynamic Island Expansion and Directional Slides - Unreleased
+
+**Context:** The user confirmed that the original Dynamic Island works on an updated nested FRAYM using OpenGL, despite Mesa/Haswell warnings, and requested animated expansion plus eight directional entry/exit effects.
+
+**Challenge:** A fixed transparent native host requires the sampled animated layout and its native input region to agree throughout motion, resize and interruption. Hidden or disappearing controls must not retain actionable focus. Animation must stop scheduling frames when idle and remain controllable without movement.
+
+**Alternatives:** An engine-wide animation/transform system would affect unrelated widgets and require synchronized paint, hit testing and accessibility across the framework. Scaling a Skia canvas alone would desynchronize those paths from native input. A fixed-rate continuously ticking animation would waste work at rest.
+
+**Decision:** Add opt-in, explicitly clocked `DynamicIslandMotion` and eight `DynamicIslandSlide` variants, separate from immediate semantic expansion state. Smoothstep samples elapsed time, supports zero duration, late wakeups and interruption from current geometry, and reconciles resize while retaining usable dimensions. The example samples once per wake and shares the resulting rectangle for layout and native rounded input. Its 240ms expansion/collapse and 280ms entry/exit use 16ms deadlines only while active; `--no-animation` restores immediate behavior. Collapse removes details immediately; exit disables controls and native input before closing after motion. Slides cross fixed host edges, not physical monitor edges. `SlideInUp` comes from below and `SlideInDown` from above. No automatic reduced-motion preference or general-purpose widget animation API is claimed.
+
+**Files Changed:** `src/widgets/dynamic_island/motion.rs` and `motion/tests.rs`, module/crate exports and `focus_tests.rs`; `examples/dynamic_island.rs`, its existing tests and `motion_tests.rs`; `docs/DYNAMIC_ISLAND.md`, `docs/WAYLAND_LAYER_SHELL.md`, `README.md` and this log. Existing uncommitted Dynamic Island/input-region implementation remains intact.
+
+**Validation:** Loaded the widget-design skill and reviewed geometry, raster, hit testing, wakeups and existing native limitations. A focused independent review found a resize-induced minimum-padding mismatch and an expired-entry sampling inconsistency; both were fixed with regressions. Focused motion tests passed **6**, example tests **11**, and widget integration tests **3**. The final broad suite after those fixes passed **1,241 tests, 36 ignored** (894 library, 77 launcher, 256 integration, 14 example):
+
+```sh
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+git diff --check
+```
+
+The complete all-feature doctest run passed **315** before the final two internal geometry fixes; focused motion/example regressions and the broader suite were rerun after them. Deterministic tests cover all eight endpoint/midpoint directions, reversal, late samples, zero duration, idle wakeups, resize, short-host geometry, layout/input agreement, focus/disabled state and raster checks across both themes, 320/800 widths and 1x/1.5x/2x scales. The full-suite log is `/home/p_daniel/.local/share/opencode/tool-output/tool_1830fae0d001dXA0j9N2t7sPGR`. An intermediate focused invocation used unavailable `python`; it was successfully rerun with `python3`.
+
+**Limitations:** User confirmation applies to the earlier nonanimated example, not the newly implemented animation. The native driver tests immediate geometry rather than animation; animated compositor input, frame pacing and manual visual review remain unvalidated. The previous labwc OnDemand focus-reacquisition failure remains unresolved and is not evidence of failure in updated FRAYM. Non-Linux runtime and live assistive technology remain untested. No new dependencies, version bump, lockfile or generated-file changes; `.gitignore` remains the user's preexisting change. Nothing staged or committed.
+
+## [2026-10-28T02:39:36-03:00] - Add Fixed-Mode Dynamic Island and Explicit Surface Input Regions - Unreleased
+
+**Context:** Implement request 64.3 as a reusable passive or interactive capsule, with a transparent native host for future FRAYM/Quasar integration.
+
+**Challenge:** Transparent pixels do not imply click-through. Native layer geometry is immutable, while the painted capsule and its input shape change with expansion and actual surface metrics. Initial input policy must precede the first buffer commit, including resume, rather than briefly mapping a passive host with full rectangular input.
+
+**Alternatives:** A new custom leaf or `Widget` variant would duplicate existing controls, focus and accessibility. Resizing the layer role for expansion would conflict with its immutable geometry contract. Forcing exclusive keyboard focus to hide the observed OnDemand gap would steal focus from ordinary applications and was rejected.
+
+**Decision:** Compose existing widgets around application-owned `DynamicIsland` state, with private fixed mode and fallible expansion/view operations. Passive instances accept summary text, never expand and have no action/tab stop. Interactive details contain real controls and disappear from layout/hits/accessibility while collapsed. Use shared spacing tokens, wrapped natural text, bounded width and stable reconstruction IDs. Expansion is immediate; animation and Quasar IPC/content sources remain future work.
+
+Add validated Full/Empty/rectangle-union input policies (maximum 256 rectangles, checked signed logical coordinates) to the local Winit fork and Rutter multi-window configuration/commands. Wayland uses SCTK regions and intentional frame commits; unsupported platforms reject opt-in requests, while the Full default avoids unsupported calls. Persist successful updates and defer suspended updates until recreation. An engine setup hook applies initial policy before resize/render/presentation, dropping failed initialization resources before route registration. A rounded-band helper uses explicit live capsule bounds, with <=1 logical pixel optical approximation and bounded radius/work; it does not infer or publish layout automatically.
+
+The example keeps a fixed 420×300 transparent Overlay host and updates the capsule/input inside it, with compact 8px outer inset, 16px capsule padding and 12px group separation. Interactive overflow scrolls; the passive demo intentionally uses short summaries. None/OnDemand keyboard policy remains separate from pointer input and alpha. Alpha is not blur. No exclusive focus workaround or unrelated compositor change was made.
+
+**Files Changed:** `src/widgets/dynamic_island/`, crate/widget exports, `tests/dynamic_island_widget_tests.rs`; `examples/dynamic_island.rs` and its tests; `examples/dynamic_island_probe.rs`, `tests/native/dynamic_island_smoke.py`; multi-window configuration/commands/runtime and new `input_region_tests.rs`; engine setup/resume path and in-memory native/graphics fixtures (including required constructor updates in existing tests); `vendor/rutter-winit/winit-core/src/window/input_region.rs`, core Window trait and Wayland implementation/retirement tests; `docs/DYNAMIC_ISLAND.md`, README, layer-shell docs, fork metadata and this log.
+
+**Validation:** Loaded widget-design and reviewed the relevant implementation, rules, tests, configuration and final diff. A read-only review found the first-frame input ordering defect; it was fixed and covered before final validation. Focused input-policy tests passed **6**, and multi-runner tests passed **63, 8 ignored**. Final checks ran sequentially, with two Cargo jobs and locked/offline resolution:
+
+```sh
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+CARGO_BUILD_JOBS=2 cargo build --locked --offline --example dynamic_island_probe
+LD_LIBRARY_PATH="/tmp/opencode/graphics-tools/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" python3 tests/native/dynamic_island_smoke.py --labwc /tmp/opencode/graphics-tools/usr/bin/labwc --xvfb /tmp/opencode/graphics-tools/usr/bin/Xvfb --keep
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 CARGO_TARGET_DIR=target cargo test --manifest-path vendor/rutter-winit/Cargo.toml --locked --offline -p winit-core --lib -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 CARGO_TARGET_DIR=target cargo test --manifest-path vendor/rutter-winit/Cargo.toml --locked --offline -p winit-wayland --lib -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=target cargo clippy --manifest-path vendor/rutter-winit/Cargo.toml --locked --offline -p winit-core -p winit-wayland --all-targets -- -D warnings
+```
+
+The final all-target suite passed **1,230 tests, 36 ignored** (888 library, 77 launcher, 256 integration, 9 example); **315 doctests** passed. Root/fork Clippy, formatting and whitespace checks passed. Fork tests passed **18 core**, **13 Wayland with 2 ignored**. Geometry/raster coverage includes 320/800px, short viewport, both themes, LTR/RTL, long/localized summaries, nested validation annotations, focus/disabled behavior, child IDs and 1x/1.5x/2x. No island-specific popup is introduced. Earlier intermediate fixture visibility/redraw-expectation failures were corrected before the passing focused runs. A final direct vendor rustfmt check mistakenly selected edition 2021 and failed on existing 2024 syntax/formatting; rerunning on all six affected vendor Rust files with `--edition 2024 --config skip_children=true` passed without file changes.
+
+The final native smoke **failed overall**, retaining its keyboard assertion: passive click-through (including painted capsule), rounded interactive exclusion, header/action clicks, expand/collapse/reopen routing and actual GL alpha pixels all passed. Native pixel coverage is 1100×800 at 1x. Initial None/OnDemand delivery matched policy; after a click-through, later capsule clicks arrived and expanded it but no new native `wl_keyboard.enter` arrived, so Escape reached the underlying surface. This establishes a native/compositor focus gap, not its internal cause or a universal labwc defect. Evidence is retained at `/tmp/opencode/rutter-island-0u6083yu/` (earlier run `/tmp/opencode/rutter-island-p8k73xl9/`). No inherited desktop display/input was used. The full-suite log is `/home/p_daniel/.local/share/opencode/tool-output/tool_180fca92b001f2SsdeObjR2Zq4`.
+
+**Limitations and compatibility:** Current FRAYM smoke was not run because the available checkout had no `target/debug/fraym`; no external build or modification was performed. Its user-reported update must not inherit the historical layer-shell deadlock diagnosis without testing. Current FRAYM, non-Linux runtime, manual visual and live assistive-technology acceptance remain pending. New `SurfaceCommand::SetInputRegion` and `MultiWindowRunError::InputRegion` cases require downstream exhaustive matches to be updated; no new Widget variant or stored-data migration. No new dependencies, version bump, lockfile or generated-file changes. Preserve the user's preexisting `.gitignore` edits; nothing staged or committed.
+
 ## [2026-10-26T23:44:10-03:00] - Keep Native Menu Paint Ownership Across Pending Updates - Unreleased
 
 **Context:** Follow up on the user's remaining Wayland DropdownMenu ghost, reported only when submenus exceed the parent viewport, with the supplied 20.24-second screen recording.

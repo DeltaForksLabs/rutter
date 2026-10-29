@@ -27,11 +27,12 @@ a native window parent is rejected rather than creating a toplevel.
 
 Ordinary geometry, stacking, decoration and maximize hints do not replace layer
 settings. Logical panel size comes from `LayerShellConfig`, not physical
-`WindowConfig::with_inner_size`. Role settings are immutable for one native surface:
+`WindowConfig::with_inner_size`. Role identity and geometry are immutable for one native surface:
 close and explicitly reopen to change them. Untyped Winit size requests on layer
 surfaces return `None`; they cannot invalidate the validated anchor/size combination.
 Wayland visibility hints do not implement auto-hide. Closing a surface releases its
-reservation; automatic hide/show and editable island input regions are follow-ups.
+reservation; automatic hide/show remains a follow-up. Editable input regions are
+independent of the immutable role geometry; see [Dynamic Island](DYNAMIC_ISLAND.md).
 
 ## Geometry, work area and input
 
@@ -60,11 +61,23 @@ reservation; automatic hide/show and editable island input regions are follow-up
   `OnDemand` requests ordinary user-driven focus and requires protocol version 4;
   older versions fail without downgrade. `Exclusive` is explicit and can steal
   ordinary application keyboard focus.
+  The explicit runtime command `SurfaceCommand::SetLayerKeyboardInteractivity`
+  changes only keyboard policy through a fallible live-layer setter, queues it
+  before a redraw/commit, and retains successful policy across resume. `OnDemand`
+  still requires v4; unsupported roles/backends and retired surfaces fail explicitly.
+  Success is not a focus grant, and the protocol has no explicit denial event.
+  The Dynamic Island example now has user approval for temporary Exclusive while
+  expanded, with an application-owned 750ms focus deadline and click-focus fallback;
+  see [its focus policy](DYNAMIC_ISLAND.md#input-policy-is-independent).
 - Transparency changes opaque-region/presentation behavior, **not the input
-  region**. The native input region remains the full surface rectangle, including
-  rounded corners, transparent gaps and spaces between islands. Visual islands
-  can occupy one compact panel, but are not automatically click-through. Transparent
-  presentation needs an alpha-capable backend; RGB-only softbuffer cannot provide it.
+  region**. Input defaults to the full surface rectangle, including rounded corners
+  and transparent gaps. Opt in with `WindowConfig::with_input_region` and update
+  through `SurfaceCommand::SetInputRegion`; `Empty` passes pointer/touch input
+  through, while `Rectangles` specifies a validated union in surface-local logical
+  coordinates. The initial policy is applied before the first buffer presentation,
+  including after resume. This does not change keyboard policy, grabs or alpha.
+  Transparent presentation needs an alpha-capable backend; RGB-only softbuffer
+  cannot provide it. See [the island hosting contract](DYNAMIC_ISLAND.md).
 
 ## Output identity, negotiation and lifecycle
 
@@ -177,7 +190,7 @@ layer/popup renderers, rejects subsequent begin/present/resize, and destroys EGL
 resources after retirement. CPU/Vulkan retirement guards are compiled and linted;
 their live terminal teardown is not established by the OpenGL probe.
 
-**FRAYM gap:** the available `fraym_compositor/target/debug/fraym` starts nested and
+**Historical FRAYM gap (earlier build):** the then-available `fraym_compositor/target/debug/fraym` starts nested and
 advertises layer-shell v4, but ceases responding after the first get_layer_surface;
 the subsequent display sync receives no reply. Its inspected
 `src/handlers/layer_shell.rs::new_layer_surface` matches directly on
@@ -185,7 +198,14 @@ the subsequent display sync receives no reply. Its inspected
 success arm, where it accesses the same layer map again. This points to a
 compositor-side lock-lifetime deadlock, not a protocol error reported by FRAYM.
 That checkout was not modified. FRAYM acceptance remains pending a corrected
-compositor build. Labwc results do not establish FRAYM success.
+compositor build. Labwc results do not establish FRAYM success. The user has since
+reported a compositor update; the current checkout had no executable at that path
+during the Dynamic Island work and was not rebuilt or tested. The historical
+failure must not be attributed to that untested update.
+The user subsequently confirmed basic Dynamic Island hosting on the updated
+nested FRAYM with OpenGL; this is user-reported acceptance, not an agent-run
+native probe or proof of keyboard reacquisition/animation behavior. See
+[Dynamic Island validation](DYNAMIC_ISLAND.md#validation-and-remaining-native-gap).
 
 Physical hotplug/output recreation, live versions 1–3 negotiation, fractional-scale
 menu input, layer-parent nested dropdown chains, native Vulkan, non-Linux runtime

@@ -75,6 +75,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Scroll view, virtual list, virtual grid, and horizontally virtualized carousel for large item sets.
 - Semantic textual tables with sticky headers, controlled selection and sorting, two-axis scrolling, and automatic table of contents for documents.
 - Calendar, date picker, dropdown menu, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
+- Composed [Dynamic Island](docs/DYNAMIC_ISLAND.md) with fixed passive/interactive modes, two-axis hover expansion, temporary expanded keyboard capture with click-focus fallback, directional text slides (entry-only when interactive) and explicit Wayland surface input regions. Run `cargo run -- dynamic_island` for an ordinary-window showcase with a passive sliding clock above the interactive capsule. Basic native hosting and expanded focus are user-confirmed on FRAYM; optimized animation pacing remains pending.
 
 ### Overlays
 
@@ -105,7 +106,20 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.45.1.** This patch restores ScrollView document sizing,
+**Current version: 0.46.0.** This release adds the composed Dynamic Island widget,
+explicit-time animation primitives, clipped text slides, two-axis interactive
+expansion and a dual-mode clock/playback showcase. Native Wayland hosting supports
+explicit input regions and runtime layer keyboard policy. Example applications
+now own their directories under `examples/apps`, while widget demos keep their
+implementation and tests together in a flat `examples/widgets` directory.
+
+**Source compatibility:** Update exhaustive `SurfaceCommand` and
+`MultiWindowRunError` matches for the new variants. Direct `PointerRegionConfig`
+struct literals must supply `on_hover`; `PointerRegionConfig::new` defaults to
+`None`. Example source paths and test filters changed, but launcher and Cargo
+example names remain unchanged. No stored-data migration is required.
+
+Version 0.45.1 restored ScrollView document sizing,
 focus-scoped keyboard scrolling and nested scrollbar track jumps/dragging.
 Pixel input respects display scale, and the scroll demo reserves a gutter between
 its cards and scrollbar. See [ScrollView navigation](#scrollview-navigation).
@@ -278,7 +292,7 @@ cargo run -- table_of_contents
 
 Every widget example starts in Dark mode and exposes an accessible SVG sun/moon toggle in the upper-right corner. Applications can preserve the static `theme()` API or implement `theme_for(state)` when the active palette depends on application state; opaque windows are cleared with the resolved `theme.surface` color.
 
-The widget demos live in `examples/widgets` and are intended to exercise isolated widgets and interaction patterns. The `examples/apps` directory is reserved for future complete example applications built with Rutter.
+The widget demos live in `examples/widgets` and exercise isolated widgets and interaction patterns. This directory is flat: each demo keeps its implementation and tests in the same file, with shared layout/theme modules and image assets alongside it. Complete applications and native integration fixtures each have their own directory under `examples/apps`, with a `main.rs` entry point and any companion modules/tests beside it; their Cargo example target names remain unchanged.
 
 ### ContextMenu widget example
 
@@ -318,7 +332,7 @@ and container padding for edges, with closer spacing within a group than between
 independent sections. These are relationship-based references, not a requirement
 to round control dimensions, typography or optical corrections to the same scale.
 
-All 30 launcher demos and `examples/native_popup_clock.rs` use these tokens.
+All 32 launcher demos and `examples/apps/native_popup_clock/main.rs` use these tokens.
 Launcher pages share bounded fluid content, semantic titles, wrapping action
 groups, an explicit safe row for the theme action, and an intrinsic-height
 scrolling document. Modal/dialog overlays remain above the document for painting
@@ -1304,7 +1318,10 @@ src/
   theme.rs                Theme values and visual defaults
   widget/                 Core widget definitions, IDs, and tree validation
 examples/
-  apps/                   Future complete example applications
+  apps/                   Complete applications and native integration fixtures
+    dynamic_island/       Native island host, focus policy, and tests
+    dynamic_island_probe/ Native integration probe
+    native_popup_clock/   Native clock/calendar application and layout tests
   widgets/                Widget-focused demo modules used by the demo runner
 tests/                    Integration tests and future black-box test suites
 ```
@@ -1356,7 +1373,7 @@ You may choose either license when using, modifying, or distributing the project
 
 ### Table-of-contents example source
 
-The static English article in `examples/widgets/table_of_contents_article.rs` is
+The static English article in `examples/widgets/table_of_contents_demo.rs` is
 an original, shortened factual summary informed by Wikipedia contributors,
 [“Solar System”](https://en.wikipedia.org/wiki/Solar_System). It was reorganized
 and summarized for the scrolling demonstration; no Wikipedia prose or media is

@@ -37,6 +37,15 @@ pub(super) struct MemoryWindow {
     pub scale: f64,
     pub popup: bool,
     pub popup_state: Option<std::sync::Arc<PopupState>>,
+    pub input_state: Option<std::sync::Arc<InputRegionState>>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct InputRegionState {
+    pub policies: std::sync::Mutex<Vec<SurfaceInputRegion>>,
+    pub keyboard_policies: std::sync::Mutex<Vec<LayerKeyboardInteractivity>>,
+    pub redraws: std::sync::atomic::AtomicUsize,
+    pub retired: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug)]
@@ -90,8 +99,42 @@ impl Window for MemoryWindow {
     fn surface_size(&self) -> PhysicalSize<u32> {
         self.size
     }
-    fn request_redraw(&self) {}
+    fn request_redraw(&self) {
+        if let Some(state) = &self.input_state {
+            state
+                .redraws
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    fn set_surface_input_region(&self, region: &SurfaceInputRegion) -> Result<(), RequestError> {
+        let Some(state) = &self.input_state else {
+            return Err(
+                winit::error::NotSupportedError::new("in-memory input region unsupported").into(),
+            );
+        };
+        if state.retired.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(RequestError::Ignored);
+        }
+        state.policies.lock().unwrap().push(region.clone());
+        Ok(())
+    }
     fn pre_present_notify(&self) {}
+    fn set_layer_keyboard_interactivity(
+        &self,
+        policy: LayerKeyboardInteractivity,
+    ) -> Result<(), RequestError> {
+        let Some(state) = &self.input_state else {
+            return Err(winit::error::NotSupportedError::new(
+                "in-memory layer keyboard policy unsupported",
+            )
+            .into());
+        };
+        if state.retired.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(RequestError::Ignored);
+        }
+        state.keyboard_policies.lock().unwrap().push(policy);
+        Ok(())
+    }
     fn request_popup_layout(&self, _: WindowPositioner, _: Size) -> Option<PhysicalSize<u32>> {
         assert!(
             self.popup,

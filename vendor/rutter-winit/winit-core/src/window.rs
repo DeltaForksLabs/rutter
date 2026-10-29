@@ -2,6 +2,7 @@
 // See RUTTER_FORK.md in the fork root for provenance and validation.
 
 //! The [`Window`] trait and associated types.
+mod input_region;
 mod layer_shell;
 mod panel;
 mod positioner;
@@ -13,6 +14,7 @@ use cursor_icon::CursorIcon;
 use dpi::{
     LogicalPosition, LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size,
 };
+pub use input_region::*;
 pub use layer_shell::*;
 pub use panel::*;
 pub use positioner::{WindowAnchor, WindowConstraintAdjustment, WindowGravity};
@@ -1759,6 +1761,32 @@ pub trait Window: Any + Send + Sync + fmt::Debug {
     ///
     /// - **iOS / Android / Web / Orbital:** Always returns an [`RequestError::NotSupported`].
     fn set_cursor_hittest(&self, hittest: bool) -> Result<(), RequestError>;
+
+    /// Sets the native surface's logical pointer/touch input region, independently
+    /// of alpha, opaque regions, keyboard focus and popup grabs. Wayland queues
+    /// this state for the next surface commit and requests a redraw. Success means
+    /// the request was queued, not that the compositor has already applied it.
+    /// Other backends return `NotSupported` by default, including for `Full`.
+    fn set_surface_input_region(&self, _region: &SurfaceInputRegion) -> Result<(), RequestError> {
+        Err(crate::error::NotSupportedError::new(
+            "native surface input regions are unavailable on this backend",
+        )
+        .into())
+    }
+
+    /// Changes keyboard policy on a live layer surface and requests a redraw for
+    /// the next surface commit. `OnDemand` requires layer-shell v4. Success only
+    /// means queued: observe native focus events to determine whether focus arrived.
+    /// Ordinary windows and unsupported backends return `NotSupported`.
+    fn set_layer_keyboard_interactivity(
+        &self,
+        _interactivity: LayerKeyboardInteractivity,
+    ) -> Result<(), RequestError> {
+        Err(crate::error::NotSupportedError::new(
+            "runtime layer keyboard interactivity is unavailable on this backend",
+        )
+        .into())
+    }
 
     /// Returns the monitor on which the window currently resides.
     ///

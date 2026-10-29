@@ -7,6 +7,7 @@ use skia_safe::textlayout::{
     TextStyle,
 };
 use skia_safe::{Canvas, Color, FontMgr, FontStyle};
+use std::{cell::RefCell, collections::VecDeque};
 
 use crate::text_controls::{TextControlPolicy, normalize_text_controls};
 use crate::widgets::rich_text::{
@@ -14,6 +15,51 @@ use crate::widgets::rich_text::{
 };
 
 const UNCONSTRAINED_PARAGRAPH_WIDTH: f32 = 1_000_000.0;
+const MAX_PAINT_CACHE_ENTRIES: usize = 32;
+const MAX_PAINT_CACHE_BYTES: usize = 64 * 1024;
+const MAX_PAINT_ENTRY_BYTES: usize = 16 * 1024;
+
+struct CachedPaintParagraph {
+    content: OwnedRichTextSpec,
+    width: f32,
+    color: Color,
+    direction: RichTextDirection,
+    paragraph: Paragraph,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct PaintParagraphCache {
+    entries: VecDeque<CachedPaintParagraph>,
+    bytes: usize,
+}
+
+impl PaintParagraphCache {
+    fn insert(&mut self, entry: CachedPaintParagraph) {
+        while self.entries.len() >= MAX_PAINT_CACHE_ENTRIES
+            || self.bytes + entry.bytes > MAX_PAINT_CACHE_BYTES
+        {
+            let Some(oldest) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes -= oldest.bytes;
+        }
+        self.bytes += entry.bytes;
+        self.entries.push_back(entry);
+    }
+}
+
+fn paint_spec_bytes(content: &OwnedRichTextSpec) -> usize {
+    // Bound retained owned input bytes as well as entry count. Skia exposes no
+    // paragraph allocation size; native storage is limited indirectly by these
+    // input limits, not represented as an exact native-heap byte measurement.
+    std::mem::size_of::<CachedPaintParagraph>()
+        + content
+            .spans()
+            .iter()
+            .map(|span| std::mem::size_of_val(span) + span.text().len())
+            .sum::<usize>()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RichTextDirection {
@@ -46,6 +92,9 @@ struct ResolvedRichTextStyle {
 /// Retains the font resources used to measure and paint rich text consistently.
 pub struct RichTextRenderer {
     font_collection: FontCollection,
+    paint_cache: RefCell<PaintParagraphCache>,
+    #[cfg(test)]
+    paragraph_builds: std::cell::Cell<usize>,
 }
 
 impl Default for RichTextRenderer {
@@ -114,10 +163,16 @@ impl RichTextRenderer {
         font_collection.set_default_font_manager(FontMgr::new(), Some("sans-serif"));
         font_collection.paragraph_cache_mut().turn_on(false);
         font_collection.paragraph_cache_mut().reset();
-        Self { font_collection }
+        Self {
+            font_collection,
+            paint_cache: RefCell::default(),
+            #[cfg(test)]
+            paragraph_builds: std::cell::Cell::new(0),
+        }
     }
 
     pub(crate) fn clear(&mut self) {
+        *self.paint_cache.get_mut() = PaintParagraphCache::default();
         self.font_collection.paragraph_cache_mut().reset();
         self.font_collection.clear_caches();
     }
@@ -229,10 +284,37 @@ impl RichTextRenderer {
         if !valid_paint_bounds(bounds) || owned_spec_is_empty(content) {
             return;
         }
+        // Keep paint separate from measurement's second layout at rounded
+        // measured width. Height and visual offsets remain paint-time inputs.
+        let mut cache = self.paint_cache.borrow_mut();
+        if let Some(index) = cache.entries.iter().position(|entry| {
+            entry.width.to_bits() == bounds.0.to_bits()
+                && entry.color == fallback_color
+                && entry.direction == direction
+                && entry.content == *content
+        }) {
+            let entry = cache
+                .entries
+                .remove(index)
+                .expect("located cached paragraph");
+            paint_paragraph(&entry.paragraph, canvas, bounds.1);
+            cache.entries.push_back(entry);
+            return;
+        }
         let mut paragraph = self.build_paragraph(content, fallback_color, direction);
         paragraph.layout(bounds.0);
-        let vertical_offset = ((bounds.1 - paragraph.height()) / 2.0).max(0.0);
-        paragraph.paint(canvas, (0.0, vertical_offset));
+        paint_paragraph(&paragraph, canvas, bounds.1);
+        let bytes = paint_spec_bytes(content);
+        if bytes <= MAX_PAINT_ENTRY_BYTES {
+            cache.insert(CachedPaintParagraph {
+                content: content.clone(),
+                width: bounds.0,
+                color: fallback_color,
+                direction,
+                paragraph,
+                bytes,
+            });
+        }
     }
 
     fn build_paragraph(
@@ -241,6 +323,8 @@ impl RichTextRenderer {
         fallback_color: Color,
         direction: RichTextDirection,
     ) -> Paragraph {
+        #[cfg(test)]
+        self.paragraph_builds.set(self.paragraph_builds.get() + 1);
         let defaults = resolve_rich_text_style(content.default_style(), None, fallback_color);
         let paragraph_style = paragraph_style(defaults, direction);
         let mut builder = ParagraphBuilder::new(&paragraph_style, self.font_collection.clone());
@@ -255,6 +339,11 @@ impl RichTextRenderer {
         }
         builder.build()
     }
+}
+
+fn paint_paragraph(paragraph: &Paragraph, canvas: &Canvas, height: f32) {
+    let vertical_offset = ((height - paragraph.height()) / 2.0).max(0.0);
+    paragraph.paint(canvas, (0.0, vertical_offset));
 }
 
 fn append_rich_text_span(

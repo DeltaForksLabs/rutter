@@ -13,10 +13,16 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 mod app_adapter;
+#[cfg(test)]
+mod input_region_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod layer_shell_integration;
 #[cfg(all(test, target_os = "linux"))]
 mod native_menu_integration;
+#[cfg(all(test, target_os = "linux"))]
+mod pointer_hover_native_tests;
+#[cfg(test)]
+mod pointer_hover_tests;
 mod popup;
 #[cfg(test)]
 mod publication_tests;
@@ -102,11 +108,15 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
             runner.set_transient_keyboard_modifiers(parent.transient_keyboard_modifiers());
         }
         let required_backend = self.backend_preference.required_backend();
-        let (native, committed_backend) = runner
-            .resume_surface(event_loop, Some(attributes), required_backend)
-            .map_err(|error| surface_error(request.surface, error.into()))?;
-        Self::validate_committed_popup(&request, &runner)?;
         let surface = request.surface;
+        let (native, committed_backend) = runner.resume_surface_with_setup(
+            event_loop,
+            attributes,
+            required_backend,
+            |window| Self::apply_initial_input_region(surface, &request.window, window),
+            |error| surface_error(surface, error.into()),
+        )?;
+        Self::validate_committed_popup(&request, &runner)?;
         self.register_committed_surface(request, native, runner)?;
         self.backend_preference.retain_committed(committed_backend);
         self.notify_surface_created(surface);
@@ -170,16 +180,36 @@ impl<A: MultiWindowAppLogic + 'static> MultiWindowRunner<A> {
         surface: SurfaceId,
     ) -> Result<(), MultiWindowRunError> {
         let attributes = self.config_for(surface)?.window_attributes();
+        let config = self.config_for(surface)?.clone();
         let required_backend = self.backend_preference.required_backend();
         let runner = self.runner_for_mut(surface)?;
-        let (native, committed_backend) = runner
-            .resume_surface(event_loop, Some(attributes), required_backend)
-            .map_err(|error| surface_error(surface, error.into()))?;
+        let (native, committed_backend) = runner.resume_surface_with_setup(
+            event_loop,
+            attributes,
+            required_backend,
+            |window| Self::apply_initial_input_region(surface, &config, window),
+            |error| surface_error(surface, error.into()),
+        )?;
         self.routes
             .register_committed(surface, native)
             .map_err(|error| route_error(surface, error))?;
         self.backend_preference.retain_committed(committed_backend);
         Ok(())
+    }
+
+    fn apply_initial_input_region(
+        surface: SurfaceId,
+        config: &WindowConfig,
+        window: &dyn winit::window::Window,
+    ) -> Result<(), MultiWindowRunError> {
+        // Fresh native surfaces already have Full input. Avoid unsupported API
+        // calls for every ordinary window on backends without this opt-in API.
+        if config.input_region() == &crate::SurfaceInputRegion::Full {
+            return Ok(());
+        }
+        window
+            .set_surface_input_region(config.input_region())
+            .map_err(|source| MultiWindowRunError::InputRegion { surface, source })
     }
 
     fn start_pending_surfaces(

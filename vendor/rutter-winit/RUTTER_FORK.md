@@ -2,6 +2,35 @@
 
 This standalone workspace is a source fork of [winit v0.31.0-beta.3](https://github.com/rust-windowing/winit/releases/tag/v0.31.0-beta.3), from upstream commit `7d20408d33210c93bf036335b88ee083ca563a90`. Its published crate names and versions remain unchanged for compatibility; `rutter-winit` names the fork, not a new published crate. The upstream Apache-2.0 license and source files are preserved. No GitHub repository has been created for this fork.
 
+## Explicit surface input regions
+
+The fork adds validated `SurfaceInputRect`, `SurfaceInputRegion` and supporting
+error/rectangle-list types in `winit_core::window`, plus the fallible
+`Window::set_surface_input_region` method. Regions are `Full`, `Empty`, or a union
+of at most 256 rectangles in surface-local integer logical pixels. Origins may be
+negative; positive extents and signed endpoint arithmetic are checked.
+
+Wayland builds an SCTK region, sets pending wl_surface input state and requests a
+redraw so it is committed with a frame. Retired surfaces reject updates. This does
+not change opaque regions, keyboard focus, shell roles or grabs. Other backends
+retain the default unsupported method; Rutter skips the initial call for `Full`
+to preserve ordinary-window compatibility. Rutter applies opt-in initial policy
+before first buffer presentation and reapplies persisted policy on resume.
+See [Dynamic Island and input-region hosting](../../docs/DYNAMIC_ISLAND.md).
+No dependency or fork version change is involved.
+
+## Runtime layer keyboard interactivity
+
+The fork also exposes fallible `Window::set_layer_keyboard_interactivity`.
+Wayland accepts only live wlr-layer surfaces, validates `OnDemand` against v4,
+queues the double-buffered layer request, then schedules presentation via redraw.
+Retired frontends reject it; ordinary/xdg surfaces and other backends report
+unsupported. Success does not report focus acquisition or compositor denial.
+Rutter's explicit `SurfaceCommand::SetLayerKeyboardInteractivity` retains policy
+only after success (or while deferred during suspension) for native recreation.
+See the explicitly approved temporary Exclusive policy and bounded application
+fallback in [Dynamic Island](../../docs/DYNAMIC_ISLAND.md).
+
 ## Backend-neutral panel role
 
 The fork adds independent validated `PanelConfig` settings and `WindowType::Panel`.

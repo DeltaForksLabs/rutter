@@ -66,6 +66,8 @@ mod custom;
 mod dropdown_keyboard;
 mod dropdown_pointer;
 #[cfg(test)]
+mod dynamic_island_demo_tests;
+#[cfg(test)]
 mod input_navigation_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod native_integration;
@@ -552,6 +554,7 @@ pub struct RutterRunner<A: AppLogic> {
     virtual_multi_pointer_capture: Option<u64>,
     custom_pointer_capture: Option<custom::CustomPointerCapture>,
     pointer_region_capture: Option<pointer_region::PointerRegionCapture<A::Message>>,
+    pointer_region_hovered: std::collections::HashSet<u64>,
     pending_selected_text_drag: Option<pointer_region::PendingSelectedTextDrag<A::Message>>,
     counter_hold_repeat: Option<counter::CounterHoldRepeat>,
     mouse_down: bool,
@@ -565,6 +568,19 @@ pub struct RutterRunner<A: AppLogic> {
 }
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
+    #[cfg(test)]
+    pub(super) fn test_layout_cache_state(&self) -> (bool, u64) {
+        (self.engine.layout_dirty, self.engine.layout_revision)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_active_test_engine(engine: RutterEngine<A>) -> Self {
+        let native = engine.window.as_ref().expect("test native window").id();
+        let mut runner = Self::with_engine(engine);
+        runner.active_window_id = Some(native);
+        runner
+    }
+
     pub(crate) fn with_engine(engine: RutterEngine<A>) -> Self {
         Self {
             engine,
@@ -577,6 +593,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             virtual_multi_pointer_capture: None,
             custom_pointer_capture: None,
             pointer_region_capture: None,
+            pointer_region_hovered: std::collections::HashSet::new(),
             pending_selected_text_drag: None,
             counter_hold_repeat: None,
             mouse_down: false,
@@ -740,6 +757,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 ..
             } => {
                 self.update_cursor_position(position);
+                if let Err(error) = self.refresh_pointer_region_hover(false) {
+                    self.terminate_for_error(el, error.into());
+                    return;
+                }
 
                 if let Some(drag) = &self.scroll_drag {
                     let id = drag.id;
@@ -1525,6 +1546,10 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 kind: PointerKind::Mouse,
                 ..
             } => {
+                if let Err(error) = self.refresh_pointer_region_hover(true) {
+                    self.terminate_for_error(el, error.into());
+                    return;
+                }
                 self.mouse_down = false;
                 self.pending_selected_text_drag = None;
                 self.counter_hold_repeat = None;
@@ -1642,6 +1667,24 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
     pub(crate) fn native_window(&self) -> Option<&dyn winit::window::Window> {
         self.engine.window.as_deref()
+    }
+
+    pub(crate) fn resume_surface_with_setup<E>(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        attributes: WindowAttributes,
+        required_backend: Option<BackendType>,
+        setup: impl FnOnce(&dyn winit::window::Window) -> Result<(), E>,
+        graphics_error: impl Fn(GraphicsError) -> E,
+    ) -> Result<(WindowId, BackendType), E> {
+        self.engine.handle_resumed_with_setup(
+            event_loop,
+            attributes,
+            required_backend,
+            setup,
+            &graphics_error,
+        )?;
+        self.register_resumed_window().map_err(graphics_error)
     }
 
     fn register_resumed_window(&mut self) -> Result<(WindowId, BackendType), GraphicsError> {

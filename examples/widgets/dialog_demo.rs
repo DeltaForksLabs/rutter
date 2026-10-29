@@ -226,3 +226,41 @@ impl AppLogic for DialogDemo {
 pub fn run() {
     RutterRunner::<DialogDemo>::run();
 }
+
+#[cfg(test)]
+mod page_tests {
+    use super::DialogDemo;
+
+    #[test]
+    fn page_reflows_and_retains_a_reachable_document() {
+        let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
+        super::super::layout::test_support::assert_application::<DialogDemo>(&fonts);
+    }
+
+    #[test]
+    fn starts_dark_with_a_theme_selector() {
+        super::super::theme_selector::test_support::assert_single_window_theme::<DialogDemo>();
+    }
+
+    use super::super::layout::test_support::assert_overlay;
+    use rutter::AppLogic;
+
+    #[test]
+    fn open_dialogs_paint_above_and_block_the_scroll_document() {
+        use super::{DialogDemo, DialogDemoState, Msg};
+        for index in 0..3 {
+            let mut state = DialogDemoState {
+                confirm_open: index == 0,
+                delete_open: index == 1,
+                info_open: index == 2,
+                ..Default::default()
+            };
+            assert_overlay(&DialogDemo::view(&mut state), |message| {
+                matches!(
+                    message,
+                    Msg::CloseAll | Msg::ConfirmSave | Msg::ConfirmDelete
+                )
+            });
+        }
+    }
+}

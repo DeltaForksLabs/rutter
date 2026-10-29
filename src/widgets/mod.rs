@@ -9,6 +9,7 @@ pub mod color_picker;
 pub mod combo_box;
 pub(crate) mod counter;
 pub mod dropdown_menu;
+pub mod dynamic_island;
 pub mod rich_text;
 pub mod search;
 pub mod table;

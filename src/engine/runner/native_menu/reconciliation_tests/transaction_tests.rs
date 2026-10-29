@@ -23,6 +23,7 @@ pub(super) fn controlled_popup(
             scale: geometry.scale_factor,
             popup: true,
             popup_state: Some(state.clone()),
+            input_state: None,
         }),
         surface: skia_safe::surfaces::raster_n32_premul((
             geometry.surface_size.width as i32,
@@ -144,6 +145,7 @@ fn wayland63_8_timeout_dismisses_unusable_overlay_and_reopen_remains_observable(
         scale: 1.0,
         popup: false,
         popup_state: None,
+        input_state: None,
     }));
     let popup = runner.native_menu.as_mut().unwrap();
     popup.begin_pending();

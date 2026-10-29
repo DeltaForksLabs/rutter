@@ -238,3 +238,19 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod page_tests {
+    use super::TableDemo;
+
+    #[test]
+    fn page_reflows_and_retains_a_reachable_document() {
+        let fonts = std::rc::Rc::new(std::cell::RefCell::new(cosmic_text::FontSystem::new()));
+        super::super::layout::test_support::assert_application::<TableDemo>(&fonts);
+    }
+
+    #[test]
+    fn starts_dark_with_a_theme_selector() {
+        super::super::theme_selector::test_support::assert_single_window_theme::<TableDemo>();
+    }
+}

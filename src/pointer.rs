@@ -316,6 +316,8 @@ pub(crate) struct ActiveDragBadge {
 /// Configures typed pointer, capture, and drag/drop behavior for one region.
 pub struct PointerRegionConfig<Msg> {
     pub on_pointer: fn(PointerEvent) -> Msg,
+    /// Optional membership changes in the visible, scroll-adjusted region.
+    pub on_hover: Option<fn(bool) -> Msg>,
     pub capture_on_press: bool,
     pub drag_source: Option<DragSource<Msg>>,
     pub drop_target: Option<DropTarget<Msg>>,
@@ -333,6 +335,7 @@ impl<Msg> PointerRegionConfig<Msg> {
     pub const fn new(on_pointer: fn(PointerEvent) -> Msg) -> Self {
         Self {
             on_pointer,
+            on_hover: None,
             capture_on_press: false,
             drag_source: None,
             drop_target: None,
@@ -343,6 +346,13 @@ impl<Msg> PointerRegionConfig<Msg> {
     /// Captures move and release events after the region receives a primary press.
     pub const fn with_pointer_capture(mut self) -> Self {
         self.capture_on_press = true;
+        self
+    }
+
+    /// Observes mouse entry/leave without capturing presses or replacing child
+    /// controls. Clipped-out and disabled regions do not count as hovered.
+    pub const fn with_hover(mut self, on_hover: fn(bool) -> Msg) -> Self {
+        self.on_hover = Some(on_hover);
         self
     }
 

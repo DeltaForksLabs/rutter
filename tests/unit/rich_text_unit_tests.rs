@@ -3,6 +3,38 @@ use std::borrow::Cow;
 use super::*;
 
 #[test]
+fn paint_and_accessibility_metadata_defaults_and_survives_owned_conversion() {
+    let plain = RichText::from_spans([RichTextSpan::new("First"), RichTextSpan::new(" second")]);
+    assert_eq!(plain.accessibility_label(), "First second");
+    assert_eq!(plain.visual_offset(), (0.0, 0.0));
+    assert_eq!(plain.bounds_relative_visual_offset(), (0.0, 0.0));
+    assert_eq!(
+        plain.clone().into_owned().accessibility_label(),
+        "First second"
+    );
+
+    let label = String::from("Current summary");
+    let content = plain
+        .with_visual_offset(7.0, -3.0)
+        .with_bounds_relative_visual_offset(0.5, -1.0)
+        .with_accessibility_label(label.as_str())
+        .into_owned();
+    drop(label);
+    assert_eq!(content.accessibility_label(), "Current summary");
+    assert_eq!(content.plain_text(), "First second");
+    assert_eq!(content.visual_offset(), (7.0, -3.0));
+    assert_eq!(content.bounds_relative_visual_offset(), (0.5, -1.0));
+    let content = content.with_bounds_relative_visual_offset(f32::NAN, 1.0);
+    assert_eq!(content.bounds_relative_visual_offset(), (0.5, -1.0));
+    assert_eq!(
+        RichText::plain("old")
+            .with_accessibility_label("")
+            .accessibility_label(),
+        ""
+    );
+}
+
+#[test]
 fn size_accepts_boundaries_and_rejects_values_outside_them() {
     assert_eq!(
         RichTextSize::new(f32::MIN_POSITIVE).unwrap().get(),

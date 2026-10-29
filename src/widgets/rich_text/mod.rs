@@ -421,6 +421,9 @@ impl<'a> RichTextSpan<'a> {
 pub struct RichText<'a> {
     spans: Vec<RichTextSpan<'a>>,
     default_style: RichTextStyle,
+    visual_offset: (f32, f32),
+    bounds_relative_visual_offset: (f32, f32),
+    accessibility_label: Option<Cow<'a, str>>,
 }
 
 impl<'a> RichText<'a> {
@@ -439,6 +442,9 @@ impl<'a> RichText<'a> {
         Self {
             spans: spans.into_iter().collect(),
             default_style: RichTextStyle::default(),
+            visual_offset: (0.0, 0.0),
+            bounds_relative_visual_offset: (0.0, 0.0),
+            accessibility_label: None,
         }
     }
 
@@ -452,6 +458,53 @@ impl<'a> RichText<'a> {
     pub fn with_default_style(mut self, default_style: RichTextStyle) -> Self {
         self.default_style = default_style;
         self
+    }
+
+    /// Translates only the painted text in logical pixels, clipped to its original
+    /// content bounds. Layout, wrapping, hit testing and accessibility are unchanged.
+    /// Non-finite offsets are ignored.
+    #[must_use]
+    pub fn with_visual_offset(mut self, x: f32, y: f32) -> Self {
+        if x.is_finite() && y.is_finite() {
+            self.visual_offset = (x, y);
+        }
+        self
+    }
+
+    /// Returns the paint-only logical offset.
+    pub const fn visual_offset(&self) -> (f32, f32) {
+        self.visual_offset
+    }
+
+    /// Adds a paint-only translation in multiples of the laid-out content box.
+    /// A vertical offset of ±1 hides even wrapped text completely. This is added
+    /// to the logical-pixel offset; non-finite values are ignored.
+    #[must_use]
+    pub fn with_bounds_relative_visual_offset(mut self, x: f32, y: f32) -> Self {
+        if x.is_finite() && y.is_finite() {
+            self.bounds_relative_visual_offset = (x, y);
+        }
+        self
+    }
+
+    /// Returns the paint-only content-box-relative offset.
+    pub const fn bounds_relative_visual_offset(&self) -> (f32, f32) {
+        self.bounds_relative_visual_offset
+    }
+
+    /// Overrides the accessible text without changing visual spans or layout.
+    #[must_use]
+    pub fn with_accessibility_label(mut self, label: impl Into<Cow<'a, str>>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    /// Returns the override, or the concatenated visual spans by default.
+    pub fn accessibility_label(&self) -> Cow<'_, str> {
+        self.accessibility_label
+            .as_deref()
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| Cow::Owned(self.plain_text()))
     }
 
     /// Returns ordered spans. Example: `RichText::plain("Hi").spans()`.

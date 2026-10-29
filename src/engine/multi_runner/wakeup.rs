@@ -7,7 +7,7 @@ use crate::multi_window::{MultiWindowAppLogic, SurfaceCommand};
 
 #[derive(Debug, Default)]
 pub(super) struct ApplicationWakeupScheduler {
-    due_callback_ran: bool,
+    due_callback_at: Option<Instant>,
 }
 
 pub(super) struct ApplicationWakeupPoll {
@@ -17,7 +17,7 @@ pub(super) struct ApplicationWakeupPoll {
 
 impl ApplicationWakeupScheduler {
     pub(super) fn begin_event_cycle(&mut self) {
-        self.due_callback_ran = false;
+        self.due_callback_at = None;
     }
 
     pub(super) fn poll<A: MultiWindowAppLogic>(
@@ -31,18 +31,24 @@ impl ApplicationWakeupScheduler {
         if deadline > now {
             return ApplicationWakeupPoll::waiting_until(deadline);
         }
-        self.run_due_wakeup::<A>(state, now)
+        self.run_due_wakeup::<A>(state, now, deadline)
     }
 
     fn run_due_wakeup<A: MultiWindowAppLogic>(
         &mut self,
         state: &mut A::State,
         now: Instant,
+        deadline: Instant,
     ) -> ApplicationWakeupPoll {
-        if self.due_callback_ran {
-            return ApplicationWakeupPoll::disabled();
+        if let Some(callback_at) = self.due_callback_at {
+            // Preserve obligations that became overdue during rendering, but
+            // suppress unchanged replacements already stale at callback time.
+            return ApplicationWakeupPoll {
+                commands: None,
+                deadline: (deadline > callback_at).then_some(deadline),
+            };
         }
-        self.due_callback_ran = true;
+        self.due_callback_at = Some(now);
         let commands = A::wakeup(state, now);
         let deadline = A::next_wakeup(state, now).filter(|deadline| *deadline > now);
         ApplicationWakeupPoll::after_wakeup(commands, deadline)
@@ -236,6 +242,67 @@ mod tests {
         let poll = scheduler.poll::<TimerApp>(&mut state, now);
 
         assert_eq!(poll.deadline, Some(next));
+        assert_eq!(state.wakeup_count, 1);
+    }
+
+    #[test]
+    fn replacement_that_becomes_due_during_rendering_survives_until_next_cycle() {
+        let now = Instant::now();
+        let next_frame = now + Duration::from_millis(16);
+        let after_render = now + Duration::from_millis(25);
+        let mut scheduler = ApplicationWakeupScheduler::default();
+        let mut state = TimerState {
+            deadline: Some(now),
+            replacement_deadline: Some(next_frame),
+            ..Default::default()
+        };
+        assert_eq!(
+            scheduler.poll::<TimerApp>(&mut state, now).deadline,
+            Some(next_frame)
+        );
+        for _ in 0..3 {
+            let poll = scheduler.poll::<TimerApp>(&mut state, after_render);
+            assert_eq!(poll.deadline, Some(next_frame));
+            assert!(poll.commands.is_none());
+        }
+        assert_eq!(state.wakeup_count, 1);
+        scheduler.begin_event_cycle();
+        assert!(
+            scheduler
+                .poll::<TimerApp>(&mut state, after_render)
+                .commands
+                .is_some()
+        );
+        assert_eq!(state.wakeup_count, 2);
+        // The callback left the same, now stale deadline: no busy loop.
+        assert_eq!(
+            scheduler
+                .poll::<TimerApp>(&mut state, after_render)
+                .deadline,
+            None
+        );
+    }
+
+    #[test]
+    fn changed_obligation_after_callback_is_retained_but_cancellation_is_respected() {
+        let now = Instant::now();
+        let mut scheduler = ApplicationWakeupScheduler::default();
+        let mut state = TimerState {
+            deadline: Some(now),
+            ..Default::default()
+        };
+        scheduler.poll::<TimerApp>(&mut state, now);
+        let newly_due = now + Duration::from_millis(5);
+        state.deadline = Some(newly_due);
+        assert_eq!(
+            scheduler.poll::<TimerApp>(&mut state, newly_due).deadline,
+            Some(newly_due)
+        );
+        state.deadline = None;
+        assert_eq!(
+            scheduler.poll::<TimerApp>(&mut state, newly_due).deadline,
+            None
+        );
         assert_eq!(state.wakeup_count, 1);
     }
 

@@ -77,7 +77,9 @@ pub struct LayerMargins {
     pub left: i32,
 }
 
-/// Immutable role settings, selected before the first surface commit.
+/// Initial role settings, selected before the first surface commit. Keyboard
+/// interactivity can subsequently change through the fallible Window setter;
+/// role identity and geometry remain fixed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayerShellConfig {
     namespace: String,

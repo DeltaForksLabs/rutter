@@ -15,6 +15,7 @@ use crate::widgets::table_of_contents::layout_nodes;
 
 #[derive(Debug, Default)]
 pub(super) struct ViewportGeometry {
+    pub pointer_regions: HashMap<u64, Rect>,
     // Painting uses is_open. Keep logically open, clipped popovers separately so
     // they can reappear on scroll and still absorb outside clicks/Escape.
     pub hidden_popovers: HashSet<u64>,
@@ -55,6 +56,7 @@ pub(super) fn reconcile<Msg>(
         changed_scrolls: Vec::new(),
     };
     pass.geometry.hidden_focus.clear();
+    pass.geometry.pointer_regions.clear();
     pass.geometry.focused_input_rect = None;
     pass.geometry.focused_scroll = None;
     pass.visit(
@@ -261,9 +263,17 @@ impl GeometryPass<'_> {
                     .child(child, self.first(node)?, absolute, clip, visible, 0)
                     .or(target);
             }
-            Widget::PointerRegion { child, .. }
-            | Widget::Tooltip { child, .. }
-            | Widget::ContextMenu { child, .. } => {
+            Widget::PointerRegion { child, config, .. } => {
+                if visible && config.on_hover.is_some() {
+                    self.geometry
+                        .pointer_regions
+                        .insert(widget.resolved_id(&self.path)?, intersection(clip, frame));
+                }
+                target = self
+                    .child(child, self.first(node)?, absolute, clip, visible, 0)
+                    .or(target);
+            }
+            Widget::Tooltip { child, .. } | Widget::ContextMenu { child, .. } => {
                 target = self
                     .child(child, self.first(node)?, absolute, clip, visible, 0)
                     .or(target);

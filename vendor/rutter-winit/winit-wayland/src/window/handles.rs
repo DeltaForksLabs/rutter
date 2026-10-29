@@ -5,11 +5,15 @@ use sctk::compositor::{CompositorState, Region};
 use sctk::reexports::client::QueueHandle;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
 use sctk::reexports::protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
+use sctk::shell::wlr_layer::{KeyboardInteractivity, LayerSurface, SurfaceKind};
 use tracing::warn;
+use wayland_client::Proxy;
 use winit_core::error::RequestError;
 use winit_core::event::WindowEvent;
 use winit_core::monitor::MonitorHandle as CoreMonitorHandle;
-use winit_core::window::{UserAttentionType, WindowId};
+use winit_core::window::{
+    LayerKeyboardInteractivity, SurfaceInputRegion, UserAttentionType, WindowId,
+};
 
 use super::super::event_loop::sink::EventSink;
 use super::super::output::MonitorHandle;
@@ -44,6 +48,24 @@ pub struct Handles {
 }
 
 impl Handles {
+    pub(crate) fn set_layer_keyboard_interactivity(
+        &self,
+        layer: Option<&LayerSurface>,
+        policy: LayerKeyboardInteractivity,
+    ) -> Result<(), RequestError> {
+        let version = layer.and_then(|layer| match layer.kind() {
+            SurfaceKind::Wlr(role) => Some(role.version()),
+            _ => None,
+        });
+        queue_layer_keyboard_interactivity(
+            self.window_requests.is_terminal(),
+            version,
+            policy,
+            |policy| layer.expect("validated live layer role").set_keyboard_interactivity(policy),
+            || self.request_redraw(),
+        )
+    }
+
     pub(crate) fn request_redraw(&self) {
         if self.window_requests.is_terminal() {
             return;
@@ -129,6 +151,111 @@ impl Handles {
             region.add(0, 0, 0, 0);
             surface.set_input_region(Some(region.wl_region()));
             Ok(())
+        }
+    }
+
+    pub(crate) fn set_surface_input_region(
+        &self,
+        surface: &WlSurface,
+        policy: &SurfaceInputRegion,
+    ) -> Result<(), RequestError> {
+        if self.window_requests.is_terminal() {
+            return Err(RequestError::Ignored);
+        }
+        match policy {
+            SurfaceInputRegion::Full => surface.set_input_region(None),
+            SurfaceInputRegion::Empty | SurfaceInputRegion::Rectangles(_) => {
+                let region = Region::new(&*self.compositor).map_err(|err| os_error!(err))?;
+                if let SurfaceInputRegion::Rectangles(rectangles) = policy {
+                    for rect in rectangles.as_slice() {
+                        let (x, y, width, height) = rect.logical_rect();
+                        region.add(x, y, width, height);
+                    }
+                }
+                surface.set_input_region(Some(region.wl_region()));
+            },
+            _ => {
+                return Err(winit_core::error::NotSupportedError::new(
+                    "unknown surface input region policy",
+                )
+                .into());
+            },
+        }
+        // Input regions are double-buffered. Do not commit outside presentation:
+        // schedule a frame so the renderer intentionally commits pending state.
+        self.request_redraw();
+        Ok(())
+    }
+}
+
+// Keep validation ahead of every protocol request and schedule presentation only
+// after queuing the double-buffered layer state, as for input regions.
+fn queue_layer_keyboard_interactivity(
+    terminal: bool,
+    version: Option<u32>,
+    policy: LayerKeyboardInteractivity,
+    queue: impl FnOnce(KeyboardInteractivity),
+    redraw: impl FnOnce(),
+) -> Result<(), RequestError> {
+    use winit_core::error::NotSupportedError;
+    if terminal {
+        return Err(RequestError::Ignored);
+    }
+    let Some(version) = version.filter(|version| *version > 0) else {
+        return Err(NotSupportedError::new("expected a live wlr-layer-shell surface").into());
+    };
+    let policy = match policy {
+        LayerKeyboardInteractivity::None => KeyboardInteractivity::None,
+        LayerKeyboardInteractivity::Exclusive => KeyboardInteractivity::Exclusive,
+        LayerKeyboardInteractivity::OnDemand if version >= 4 => KeyboardInteractivity::OnDemand,
+        LayerKeyboardInteractivity::OnDemand => {
+            return Err(NotSupportedError::new(
+                "on-demand layer keyboard focus requires layer-shell version 4",
+            )
+            .into());
+        },
+        _ => return Err(NotSupportedError::new("unknown layer keyboard interactivity").into()),
+    };
+    queue(policy);
+    redraw();
+    Ok(())
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    #[test]
+    fn keyboard_policy_validation_precedes_native_queue_and_redraw() {
+        for (policy, version, terminal, succeeds) in [
+            (LayerKeyboardInteractivity::None, Some(1), false, true),
+            (LayerKeyboardInteractivity::Exclusive, Some(1), false, true),
+            (LayerKeyboardInteractivity::OnDemand, Some(4), false, true),
+            (LayerKeyboardInteractivity::OnDemand, Some(3), false, false),
+            (LayerKeyboardInteractivity::Exclusive, None, false, false),
+            (LayerKeyboardInteractivity::None, Some(0), false, false),
+            (LayerKeyboardInteractivity::Exclusive, Some(4), true, false),
+        ] {
+            let operations = RefCell::new(Vec::new());
+            let result = queue_layer_keyboard_interactivity(
+                terminal,
+                version,
+                policy,
+                |_| operations.borrow_mut().push("set_keyboard_interactivity"),
+                || operations.borrow_mut().push("redraw"),
+            );
+            assert_eq!(result.is_ok(), succeeds);
+            assert_eq!(
+                *operations.borrow(),
+                if succeeds { vec!["set_keyboard_interactivity", "redraw"] } else { vec![] }
+            );
+            if terminal {
+                assert!(matches!(result, Err(RequestError::Ignored)));
+            } else if !succeeds {
+                assert!(matches!(result, Err(RequestError::NotSupported(_))));
+            }
         }
     }
 }
