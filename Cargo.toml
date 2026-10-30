@@ -1,6 +1,6 @@
 [package]
 name    = "rutter"
-version = "0.46.0"
+version = "0.47.0"
 edition = "2024"
 # Let-chains used by the engine and hit-testing require Rust 1.88 (stabilized
 # there); declared so older toolchains fail with a clear message instead of a
@@ -41,6 +41,12 @@ raw-window-handle = "0.6.2"
 softbuffer  = "0.4.8"
 zeroize     = "1.8.2"
 
+[target.'cfg(unix)'.dependencies]
+serde = { version = "=1.0.228", features = ["derive"], optional = true }
+serde_json = { version = "=1.0.145", optional = true }
+# Effective UID is required to verify the caller-owned private socket directory.
+libc = { version = "0.2", optional = true }
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Native X11 integration exercises a real Rutter widget with XTEST input.
 x11rb = { version = "0.13.2", features = ["xtest"] }
@@ -60,8 +66,19 @@ path = "examples/apps/dynamic_island_probe/main.rs"
 name = "native_popup_clock"
 path = "examples/apps/native_popup_clock/main.rs"
 
+[[example]]
+name = "dynamic_island_host"
+path = "examples/apps/dynamic_island_host/main.rs"
+required-features = ["activity-ipc"]
+
+[[example]]
+name = "dynamic_island_client"
+path = "examples/apps/dynamic_island_client/main.rs"
+required-features = ["activity-ipc"]
+
 [features]
 default = []
+activity-ipc = ["dep:serde", "dep:serde_json", "dep:libc"]
 image-rs-decoder = ["dep:image"]
 
 [profile.dev-opt]

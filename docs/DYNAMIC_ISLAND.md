@@ -10,7 +10,10 @@
 `DynamicIsland` is a composed widget, exported at the crate root and through
 `rutter::dynamic_island`. It uses existing Container, Column, RichText and
 ButtonContent widgets, not a new `Widget` enum variant or custom leaf. Widget
-state, native hosting and future Quasar content/IPC remain separate concerns.
+state, native hosting and activity producers remain separate concerns. The
+renderer-independent [`rutter::activity` API](ACTIVITIES.md) supplies transfer and
+media snapshots, with optional same-UID Unix IPC; it does not change the widget's
+mode or expansion policy.
 
 ## Fixed mode, controlled expansion
 
@@ -41,8 +44,59 @@ actions and accessibility; no live screen-reader acceptance is claimed.
 
 The core expansion setters remain immediate semantic updates. Hosts can opt into
 the separate `DynamicIslandMotion` geometry controller; the native example does
-so by default. Quasar IPC/content sources and automatic publication of
+so by default. Quasar-specific content sources and automatic publication of
 layout-derived native input are not included.
+
+## Activity summaries and details
+
+`activity::view::summary(&Activity)` returns owned English plain text, including
+state and progress. Use it with `passive_view` for display-only presentation.
+`activity::view::details(&Activity, fn(ActivityId, ActivityAction) -> Message,
+&Theme)` builds natural-height wrapped details, transfer progress and supported
+action buttons; pass that widget to `interactive_view`. The application retains
+the summary string for the returned island view's lifetime. See the
+[complete integration snippet](ACTIVITIES.md#dynamic-island-integration).
+
+The optional `dynamic_island_host` example actually composes these helpers with
+an interactive island: a selector lists live activities, selection expands the
+chosen details, the header toggles expansion, and a theme button switches palettes.
+The reducer applies incoming requests to its authoritative registry and
+revalidates action messages before dispatching to the owning connection. It
+shows dispatch/update failures rather than optimistically changing progress or
+playback. The document scrolls in short windows; details own 12px sibling gaps,
+action rows wrap with 8px gaps on both axes, and the page owns its 24px inset.
+
+```sh
+# First create an effective-UID-owned, real mode-0700 directory (not a symlink):
+activity_dir=$(mktemp -d /tmp/rutter-activity.XXXXXX)
+chmod 700 "$activity_dir"
+cargo run --locked --offline --features activity-ipc --example dynamic_island_host -- "$activity_dir"
+```
+
+In another terminal run `dynamic_island_client` with the printed `activity.sock`
+path and `download`, `upload` or `media`. Both targets require
+`--features activity-ipc`. See [commands and protocol](ACTIVITIES.md#unix-host-and-client-examples)
+for unknown-total mode and cleanup. This host defaults to an **ordinary window**.
+Append `--overlay` after its private directory to opt into native Wayland
+layer-shell hosting. Producers simulate progress and playback without network
+transfers or audio. Cross-platform GUI and manual visual acceptance are not claimed.
+
+The activity overlay is top-centered, transparent and non-reserving, with a
+420×300 logical-pixel host. It starts collapsed with an actionable empty-host
+summary when no producer is connected. Compact (240×76) and expanded (404×284)
+capsule viewports are constrained to the actual host with an 8px inset. The same
+rectangle drives layout and rounded native input; transparent margins/corners
+pass clicks through. The whole natural document, including long summaries, scrolls
+inside the capsule so selection, errors, controls and Close host stay reachable.
+
+Expansion is immediate, not animated or hover-triggered. User expansion requests
+Exclusive keyboard policy once; a missing focus grant after 750ms or later focus
+loss restores OnDemand without collapsing or repeatedly requesting focus. Escape
+collapses the focused overlay and restores OnDemand. IPC updates never expand or
+request keyboard focus. This reuses public native APIs and the native demo's
+bounded policy design without coupling producer lifecycle to widget state. See
+[activity overlay details](ACTIVITIES.md#optional-native-overlay), including
+unsupported-backend errors and the owned-compositor smoke test.
 
 ## Widget gallery example
 

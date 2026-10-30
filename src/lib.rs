@@ -8,6 +8,7 @@
 // ============================================================
 
 pub(crate) mod accessibility;
+pub mod activity;
 pub mod animation;
 pub mod app;
 pub mod engine;

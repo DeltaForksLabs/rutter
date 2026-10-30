@@ -17,6 +17,7 @@ The project is focused on building a pragmatic foundation for desktop interfaces
 - [Custom Widgets](#custom-widgets)
 - [Pointer Regions and In-Surface Drag](#pointer-regions-and-in-surface-drag)
 - [Application Wakeups](#application-wakeups)
+- [Activities and Optional Unix IPC](#activities-and-optional-unix-ipc)
 - [Architecture](#architecture)
 - [Widgets](#widgets)
 - [Rendering Backends](#rendering-backends)
@@ -76,6 +77,7 @@ The framework is still evolving, but it already includes a broad set of widgets,
 - Semantic textual tables with sticky headers, controlled selection and sorting, two-axis scrolling, and automatic table of contents for documents.
 - Calendar, date picker, dropdown menu, accordion, tab bar, modal, dialog, toast, context menu, and generic popover.
 - Composed [Dynamic Island](docs/DYNAMIC_ISLAND.md) with fixed passive/interactive modes, two-axis hover expansion, temporary expanded keyboard capture with click-focus fallback, directional text slides (entry-only when interactive) and explicit Wayland surface input regions. Run `cargo run -- dynamic_island` for an ordinary-window showcase with a passive sliding clock above the interactive capsule. Basic native hosting and expanded focus are user-confirmed on FRAYM; optimized animation pacing remains pending.
+- Renderer-independent [activity snapshots](docs/ACTIVITIES.md) for transfers and media, with owned registration, selection, replacement and semantic action routing. Optional `activity-ipc` adds same-UID Unix-domain socket producers and a Dynamic Island host with ordinary-window and opt-in native Wayland overlay modes.
 
 ### Overlays
 
@@ -106,14 +108,26 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.46.0.** This release adds the composed Dynamic Island widget,
+**Current version: 0.47.0.** This release adds owned transfer/media activity
+snapshots, explicit lifecycle/selection and semantic action routing, reusable
+summary/details views, and optional same-UID Unix IPC. The activity host defaults
+to an ordinary window and offers an opt-in native Wayland overlay with rounded
+input, scrollable controls and bounded expansion focus. External producer examples
+simulate downloads, uploads and media; they perform no network transfers or audio
+playback. See [activities and optional Unix IPC](docs/ACTIVITIES.md).
+
+The new APIs are additive and IPC remains off by default. Native overlay mode
+requires Wayland/layer-shell v4 and alpha rendering; unsupported backends fail
+explicitly. No stored-data migration is required.
+
+Version 0.46.0 added the composed Dynamic Island widget,
 explicit-time animation primitives, clipped text slides, two-axis interactive
 expansion and a dual-mode clock/playback showcase. Native Wayland hosting supports
 explicit input regions and runtime layer keyboard policy. Example applications
 now own their directories under `examples/apps`, while widget demos keep their
 implementation and tests together in a flat `examples/widgets` directory.
 
-**Source compatibility:** Update exhaustive `SurfaceCommand` and
+**Version 0.46.0 source compatibility:** Update exhaustive `SurfaceCommand` and
 `MultiWindowRunError` matches for the new variants. Direct `PointerRegionConfig`
 struct literals must supply `on_hover`; `PointerRegionConfig::new` defaults to
 `None`. Example source paths and test filters changed, but launcher and Cargo
@@ -361,6 +375,59 @@ The design standard specifies geometry, raster and interaction checks at narrow,
 desktop and short sizes, both themes, localized text and representative scales.
 Automated checks do not establish manual visual, real assistive-technology or
 non-Linux acceptance; record actual coverage and remaining gaps separately.
+
+## Activities and Optional Unix IPC
+
+`rutter::activity::ActivityRegistry` is available without a Cargo feature. Register
+an owner, start validated `Transfer` or `Media` snapshots, replace their full
+content, and explicitly select which activity to present. `route_action` validates
+a semantic request against the current snapshot; the producer owns the resulting
+state change. Nothing downloads files or plays audio automatically.
+
+`activity::view::summary` supplies plain text for passive islands and selectors;
+`activity::view::details` supplies wrapped details and typed action buttons for
+`DynamicIsland::interactive_view`. See the [activity API and version-1 protocol
+guide](docs/ACTIVITIES.md) for complete Rust snippets, limits and host cleanup.
+
+On Unix, the opt-in host takes an **existing private directory** and the client
+takes its **socket path**. For example, in the host terminal:
+
+```sh
+activity_dir=$(mktemp -d /tmp/rutter-activity.XXXXXX)
+chmod 700 "$activity_dir"
+cargo run --locked --offline --features activity-ipc --example dynamic_island_host -- "$activity_dir"
+# After closing the host and stopping clients:
+rmdir "$activity_dir"
+```
+
+In another terminal, use the absolute socket path printed by the host:
+
+```sh
+cargo run --locked --offline --features activity-ipc --example dynamic_island_client -- /tmp/rutter-activity.XXXXXX/activity.sock download
+```
+
+Replace `XXXXXX` with the actual directory suffix. Client modes are `download`,
+`upload` and `media`; `--unknown-total` is accepted only after a transfer mode.
+These are simulated producers with no network transfer or audio playback. The
+host defaults to an ordinary window. For a transparent top-centered native
+overlay, append `--overlay` **after the private directory**:
+
+```sh
+cargo run --locked --offline --features activity-ipc --example dynamic_island_host -- "$activity_dir" --overlay
+```
+
+Overlay mode requires Wayland with layer-shell v4 or newer and an alpha-capable
+rendering backend; incompatible backends fail explicitly, without window fallback.
+It starts collapsed, accepts input only inside the rounded capsule, and provides
+activity selection, theme switching and Close host in scrollable expanded details.
+User expansion requests temporary exclusive keyboard focus, bounded by a 750ms
+grant deadline; Escape collapses it. Producers never trigger a focus request.
+See the [overlay policy and limitations](docs/ACTIVITIES.md#optional-native-overlay).
+
+The endpoint uses a mode-0700 effective-UID-owned directory and a mode-0600 socket,
+with same-UID trust and no TCP transport. `activity::ipc` exists only with both
+Unix and `activity-ipc`; enabling the feature on non-Unix does not expose that
+module, and the example entry points return a Unix-required error.
 
 ## Quick Start
 

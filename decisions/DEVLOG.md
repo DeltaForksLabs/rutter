@@ -1,5 +1,102 @@
 # Development Log
 
+## [2026-10-30T01:16:52-03:00] - Prepare Activity and Overlay Release Commit - 0.47.0
+
+**Context:** The user explicitly requested a version update and commit, with a one-time exemption from rerunning tests for this commit.
+
+**Challenge:** Commit the completed activity model, optional Unix IPC, reusable presentation, producer/host examples and optional native overlay without including the user's unrelated `.gitignore` changes or misrepresenting earlier validation as a new run.
+
+**Decision:** Advance 0.46.0 to 0.47.0 for additive public functionality, leaving default features and existing widget/native APIs intact. Update the authoritative manifest and README release status, preserve the previous release's compatibility notes as history, and regenerate root package metadata with Cargo rather than editing the generated lockfile manually. Keep same-UID IPC and Wayland/layer-shell v4/alpha-rendering requirements explicit. Commit only the reviewed implementation, documentation and regressions; do not create a tag or push.
+
+**Files Changed:** `Cargo.toml`, Cargo-generated `Cargo.lock`, `README.md` and this log for release preparation; the reviewed `src/activity*`, `src/lib.rs`, activity host/client example directories, `docs/{ACTIVITIES,DYNAMIC_ISLAND}.md` and `tests/native/activity_overlay_smoke.py` are included in the feature commit.
+
+**Validation:** Reviewed Git status, relevant diffs, recent commit style and authoritative version occurrences. `cargo metadata --offline --filter-platform x86_64-unknown-linux-gnu --format-version 1` succeeded and regenerated root version 0.47.0, preserving resolved dependency versions. Metadata output is retained at `/tmp/opencode/rutter-0.47.0-metadata.json`. Tests are intentionally not rerun for this commit, as explicitly requested. Earlier activity validation passed 1,404 tests (38 ignored); the subsequent example-local overlay validation passed 54 targeted tests, 320 doctests, all-target/all-feature Clippy, formatting, an ordinary-window smoke and 14 real owned-labwc/Xvfb native checks. These are historical results, not a fresh validation of version 0.47.0. Perform final whitespace/formatting, locked metadata and staged-diff inspection before committing.
+
+**Compatibility:** No new breaking change or stored-data migration is introduced by this release. Optional Unix `serde`, `serde_json` and `libc` are the feature's new direct dependencies; their package versions already existed transitively in the lockfile. The lockfile adds root dependency edges and the root version only; no generated source changes. `.gitignore` remains excluded. The test exemption applies only to this requested commit preparation, not future changes.
+
+**Release checks:** `cargo fmt --all -- --check`, `git diff --check`, `git diff --cached --check` and locked/offline Linux-filtered Cargo metadata all passed. Inspected the staged paths, statistics and implementation/release diffs; only `.gitignore` remains outside staging. No test, doctest, build or Clippy rerun was performed during commit preparation.
+
+## [2026-10-30T01:04:47-03:00] - Optional Native Overlay for the Activity Host - Unreleased
+
+**Context:** The user requested an optional native overlay while preserving the activity host's ordinary-window default.
+
+**Challenge:** Share the authoritative registry/IPC lifecycle across both presentations while keeping actual capsule bounds, transparent painting, rounded native input, scrollable producer controls and bounded keyboard focus consistent.
+
+**Alternatives:** Replacing the ordinary window would remove a useful compatible fallback. Copying/importing the large native demo would couple activity publication to its animation/hover model. OnDemand-only focus was implemented initially, but a real owned-labwc run delivered Escape to the underlying fixture after clicking the host; adopted the native demo's bounded user-expansion policy instead of accepting that failure or repeatedly grabbing focus.
+
+**Decision:** Add strict `dynamic_island_host <private-directory> [--overlay]` parsing and construct fallible static configuration before binding IPC. Preserve the default 800×700 ordinary window. Overlay uses a transparent, undecorated, nonresizable top-centered 420×300 Wayland layer-shell Overlay surface without work-area reservation, initially Empty input and OnDemand keyboard policy. Keep all native policy example-local, reusing public surface/input APIs without modifying engine/vendor/widget/transport code. The optional overlay starts collapsed, remains actionable when no activity exists, and offers selection/theme/errors/controls/Close in expanded details.
+
+Use actual logical metrics for compact/expanded capsule viewport caps of 240×76/404×284 within an 8px inset; these are control/viewport dimensions, not text-height or spacing guarantees. One rectangle drives absolute layout and rounded native input. The capsule owns 16px padding, related detail groups own 12px gaps, and the complete natural document (including long headers) scrolls inside the viewport. Preserve ordinary IDs and use a separate stable overlay scroll ID. Deduplicate region publication, republish after metrics/native creation, and cancel deferred work on close. User expansion requests Exclusive once with a 750ms grant deadline; grant cancels it, timeout/focus loss falls back to OnDemand with details still open, and collapse/Close restores OnDemand. Producer updates never expand, grab focus or restart the grant deadline. Close clears native input before surface closure; both modes retain explicit supervisor shutdown and registry cleanup, including startup failure.
+
+**Files Changed:** `examples/apps/dynamic_island_host/{main.rs,app.rs}` and example-owned `app/options.rs`, `app/overlay.rs`, geometry/raster/lifecycle tests and `app/overlay/focus.rs` with focus regressions; `tests/native/activity_overlay_smoke.py`; `README.md`, `docs/{ACTIVITIES,DYNAMIC_ISLAND}.md` and this log. The larger app file retains its cohesive host integration and preexisting owner-local tests; native CLI, geometry and focus policies are separate modules rather than growing the core view with platform logic.
+
+**Validation:** Loaded widget-design, reviewed host/native APIs, code/configuration and existing changes, and ran every resource-intensive task sequentially:
+
+```sh
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo build --locked --offline --features activity-ipc --example dynamic_island_host --example dynamic_island_client --example dynamic_island_probe
+LD_LIBRARY_PATH=/tmp/opencode/graphics-tools/usr/lib/x86_64-linux-gnu python3 -B tests/native/activity_overlay_smoke.py --labwc /tmp/opencode/graphics-tools/usr/bin/labwc --xvfb /tmp/opencode/graphics-tools/usr/bin/Xvfb --keep
+python3 /tmp/opencode/with_xvfb.py python3 /tmp/opencode/activity_smoke.py
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --example dynamic_island_host -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --example dynamic_island_client -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --lib activity:: -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --bin rutter widget_examples::tests:: -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+cargo fmt --all -- --check
+git diff --check
+```
+
+Final targeted Rust result: **54 passed** (14 host, 4 client, 33 activity model/IPC/view, 3 example-structure checks), plus **320 doctests**; all-target/all-feature Clippy, formatting and whitespace checks passed. Host tests cover strict CLI/config and unsupported protocol-version validation, actual layout/input agreement at 320/800px, short 120px hosts, both themes, long multilingual summaries/errors, compact/expanded state, 1x/1.5x/2x raster clipping and scroll-adjusted control hits, one-shot input publication/recreation, empty-host controls, surface-local Escape, deadline/grant/loss/fallback and producer updates that do not regrab focus. Real client/server reducer lifecycle/stale-action tests run in both presentations. Existing activity-view accessibility checks were retained; external example tests verify collapsed subtree removal and labels, not a newly exposed accessibility-tree API.
+
+The owned-compositor smoke passed **14 checks** on nested labwc/Xvfb at 1100×800, 1x, light theme and short transfer text: actual layer role/configure/alpha composition, exact baseline pixels outside the capsule, rounded margin/corner click-through and interior consumption, native region expansion/collapse, real Escape/focus restoration, native wheel access to Pause/Resume with action-ID roundtrips, visible owner cleanup after disconnect, Close-host normal exit/peer EOF/socket removal/native-role destruction, and fresh endpoint reuse. It also starts the overlay on its owned X11 display without Wayland and verifies explicit rejection and endpoint cleanup. Evidence and compositor captures are retained under `/tmp/opencode/rutter-activity-0pild_tr`. The separate ordinary-window executable smoke again passed completed download, unknown-total upload, media publication, WM_DELETE_WINDOW exit and socket cleanup.
+
+Early native attempts exposed the OnDemand focus issue and two harness assumptions. Fixed the host focus policy and kept Escape mandatory. Exact disconnect pixels originally compared unfocused baseline styling with widget-focused post-interaction styling; equivalent empty-host expand/collapse baselines now preserve the exact equality check (zero sampled pixel differences), rather than weakening cleanup acceptance. Shutdown may have one framed timeout error buffered before EOF after keepalives stop; the harness validates that bounded known terminal frame and still requires EOF, successful exit and socket removal. No production logging/test hooks were added.
+
+**Limitations and compatibility:** The overlay requires Wayland/layer-shell v4 and alpha rendering; X11 fails explicitly without fallback. Missing-protocol/older-compositor behavior uses the existing fallible native path and config tests, but no missing-protocol compositor was launched. No hover or motion animation, output-selection flag, new FRAYM run, manual visual acceptance, live screen reader or non-Linux compile/runtime validation. Native scale/theme coverage above is limited; software geometry/raster coverage is not compositor acceptance. The complete all-target test suite was not rerun for this example-local integration (it passed in the preceding activity task); targeted suites, all-target Clippy and real native/ordinary smokes were run instead, without claiming equivalent coverage. No configured Python formatter/linter was found; the stdlib driver was validated by real execution. No new dependencies, core public API changes, migration, version bump, lockfile or generated-source changes in this task. Existing uncommitted activity work and the user's `.gitignore` edit were preserved. Nothing staged or committed.
+
+**Final rerun:** The final native driver, including its corrected report limitation about missing-protocol compositors, again passed all 14 checks. Final evidence: `/tmp/opencode/rutter-activity-v3rstk7y`. Formatting/whitespace checks and final Git status inspection passed afterward; no staging or commits.
+
+## [2026-10-29T17:34:29-03:00] - Owned Activities and Optional Dynamic Island IPC - Unreleased
+
+**Context:** Request 64.11 needs transfer and media activities published in-process or by external producers, with semantic controls routed back to the producer.
+
+**Challenge:** Keep the visual widget independent of transport and producer execution while bounding resources, preserving ownership, and reconciling GUI acceptance, cancellation, disconnection and shutdown across cloneable UI state.
+
+**Alternatives:** Embedding sockets, worker lifetimes and producer callbacks in `DynamicIsland` would couple presentation to I/O and make state cloning unsafe. A separate registry with an optional transport keeps existing passive/interactive policies intact and supports in-process producers without enabling IPC.
+
+**Decision:** Add validated owned `Transfer`/`Media` snapshots, opaque process-wide non-reused IDs, explicit registration/replacement/removal/selection, deterministic selection fallback, hard quotas and latest-snapshot action validation. Keep producer execution external. Add opt-in Unix `activity-ipc` with version-1 length-prefixed JSON, bounded frames/connections/action queues, deadlines, private same-UID filesystem endpoints and connection-owned handles. GUI ingress is bounded and FIFO; acceptance tickets are idempotent and expired/disconnected requests cannot later create resources. Retry disconnect cleanup under saturation and require hosts to apply explicit shutdown cleanup to the authoritative registry. Accepted actions survive snapshot/kind replacements FIFO; removal/disconnect discards pending actions, without execution acknowledgement or durable delivery guarantees. Trim excess retained text capacity after validation. Keep the supervisor outside UI-state clones.
+
+Add reusable plain-text summary/details views and ordinary-window host/client apps. The host renders a real interactive capsule, activity-specific accessible selectors, wrapped controls, visible delivery errors and scrollable natural-height content. The header controls expansion; collapsed details disappear from hit testing and accessibility. The parent owns 24px page inset/section separation, details own 12px group gaps, and action rows own 8px gaps on both axes; control/progress dimensions are not spacing tokens. Producers simulate download/upload/media and consume typed actions; no network transfers or audio playback occur. The full activity guide is included in Rust module documentation so its Rust snippets are doctested.
+
+**Files Changed:** `src/activity.rs` and `src/activity/{model,registry,tests,view,ipc}.rs` with owned submodules/tests; `src/lib.rs`; `examples/apps/dynamic_island_host/` and `dynamic_island_client/`; `Cargo.toml` and `Cargo.lock`; `README.md`, `docs/{ACTIVITIES,DYNAMIC_ISLAND}.md` and this log.
+
+**Validation:** Loaded widget-design, inspected current code/configuration/diffs, performed sequential implementation/review tasks and targeted regression runs, then ran the following sequentially:
+
+```sh
+cargo fmt --all
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=2 python3 /tmp/opencode/with_xvfb.py env CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --no-default-features --lib activity:: -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --no-default-features --doc activity -- --test-threads=1
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0 cargo build --locked --offline --features activity-ipc --example dynamic_island_host --example dynamic_island_client
+python3 /tmp/opencode/with_xvfb.py python3 /tmp/opencode/activity_smoke.py
+cargo fmt --all -- --check
+git diff --check
+cargo metadata --locked --offline --no-deps --format-version 1
+```
+
+The full all-target/all-feature suite passed **1,404 tests, 38 ignored** (962 library, 145 launcher, 256 integration, 41 example). Output: `/home/p_daniel/.local/share/opencode/tool-output/tool_1894290c0001CeeEOUgCW2anyp`. Final doctests passed **320** (318 ordinary/compile-only plus two compile-fail), including the guide snippets; feature-disabled activity tests passed **17**, with **4** focused doctests. Final Clippy, formatting, whitespace and metadata checks passed. Initial Clippy rejected one nested conditional, which was corrected before the successful runs. The full suite preceded the final documentation-only changes; final doctests and Clippy were rerun afterward.
+
+Geometry/raster tests exercise 320/800px widths, short viewports, both themes, long/localized text, delivery errors, collapsed/expanded states, disabled wrappers, accessibility, scroll-adjusted action hits and 1x/1.5x/2x scaling. Real private-socket tests cover framing, malformed/oversized input, quotas, cross-connection ownership, accepted action FIFO across replacement, expiry, disconnected queued requests, saturated cleanup, endpoint identity and read/write deadlines. The host reducer integration exercises Pause/Resume/Cancel and Previous/Next through a real client/server connection and retained-registry shutdown.
+
+The temporary smoke harness ran built host/client executables on an isolated Xvfb with software graphics. Download and unknown-total upload completed and retired; media published until an owned-display `WM_DELETE_WINDOW` closed the host normally. The socket was removed and the media client reported disconnection as expected. The first smoke attempt connected on socket creation before GUI initialization and hit the acceptance deadline; waiting for the host window made the rerun pass. Startup ordering and retry are documented. The harness and display resources live outside the repository; no inherited desktop/input was used.
+
+**Limitations and compatibility:** IPC is Unix-only and trusts processes sharing the effective UID, not mutually distrusting applications; no TCP, peer-credential authentication, persistence or cross-platform transport. GUI producers must keep polling to avoid idle expiry. The new host is an ordinary window, not integration into the native layer-shell example, and uses immediate controlled expansion rather than hover/motion/focus-capture policy. No manual visual review, live screen reader, new FRAYM/native compositor acceptance or non-Linux compilation/runtime validation was performed; software raster/Xvfb tests do not establish those properties. An endpoint metadata failure immediately after bind can leave a failed-startup socket because no verified inode identity exists; this exceptional path was not fault-injected and manual inspection is documented rather than unlinking an unverifiable endpoint.
+
+New direct dependencies are Unix-only and optional: `serde` derives the private wire representation, `serde_json` encodes/decodes framed JSON, and `libc` supplies effective-UID checks, bounded Unix connect and nonblocking disconnect probes. All already existed transitively in the lockfile; only root dependency edges changed, with no package version resolution changes. Existing public widget/native APIs and default features are preserved; no migration, version bump or generated-source change. Version remains 0.46.0. The user's unrelated `.gitignore` edit was preserved; nothing staged or committed.
+
 ## [2026-10-29T12:08:57-03:00] - Prepare Dynamic Island Release Commit - 0.46.0
 
 **Context:** The user explicitly requested a project version update and commit, exempting this commit from rerunning tests.
