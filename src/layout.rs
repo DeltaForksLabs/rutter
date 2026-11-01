@@ -601,6 +601,9 @@ pub fn build_taffy_tree<'a, Msg>(
 
 /// Builds a Taffy tree and applies one global layout direction.
 ///
+/// The font-system argument is retained for compatibility; measurement uses
+/// the renderer supplied to [`compute_layout`], without borrowing this system.
+///
 /// # Example
 /// ```rust
 /// # use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -626,6 +629,16 @@ pub fn build_taffy_tree_with_direction<'a, Msg>(
     widget: &Widget<'a, Msg>,
     _fs: Rc<RefCell<FontSystem>>,
     _widget_states: &HashMap<u64, WidgetState>,
+    direction: LayoutDirection,
+) -> NodeId {
+    build_layout_tree(taffy, widget, direction)
+}
+
+// Virtual-item rendering must not allocate a dummy font system or reborrow the
+// engine's system, which is already mutably borrowed for the draw traversal.
+pub(crate) fn build_layout_tree<Msg>(
+    taffy: &mut TaffyTree<RutterContext>,
+    widget: &Widget<'_, Msg>,
     direction: LayoutDirection,
 ) -> NodeId {
     let blueprint = LayoutBlueprint::from_widget_with_direction(widget, direction);
@@ -800,6 +813,9 @@ fn clone_context(context: &RutterContext) -> Option<RutterContext> {
 
 /// Computes the current Taffy tree while reusing rich-text font resources.
 ///
+/// The font-system argument is retained for compatibility and is not borrowed.
+/// Text measurement uses `rich_text_renderer`, as does widget painting.
+///
 /// Example:
 ///
 /// ```rust
@@ -822,6 +838,15 @@ pub fn compute_layout(
     root: NodeId,
     size: PhysicalSize<u32>,
     _fs_rc: Rc<RefCell<FontSystem>>,
+    rich_text_renderer: &RichTextRenderer,
+) {
+    compute_layout_with_renderer(taffy, root, size, rich_text_renderer);
+}
+
+pub(crate) fn compute_layout_with_renderer(
+    taffy: &mut TaffyTree<RutterContext>,
+    root: NodeId,
+    size: PhysicalSize<u32>,
     rich_text_renderer: &RichTextRenderer,
 ) {
     let available = Size {

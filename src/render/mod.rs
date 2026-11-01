@@ -58,11 +58,17 @@ mod widget_spacing_tests;
 #[path = "../../tests/unit/widget_spacing_render_unit_tests.rs"]
 mod widget_spacing_review_tests;
 
+#[cfg(test)]
+mod font_resource_tests;
+
+#[cfg(test)]
+use crate::layout::{build_taffy_tree_with_direction, compute_layout};
+#[cfg(test)]
+use std::{cell::RefCell, rc::Rc};
+
 use std::{
-    cell::RefCell,
     collections::{BTreeSet, HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
-    rc::Rc,
     time::Instant,
 };
 
@@ -101,7 +107,7 @@ use crate::engine::widget_state::{
 use crate::i18n::LayoutDirection;
 use crate::input_state::{InputWidgetState, cursor_x_in_run};
 use crate::layout::{
-    RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_taffy_tree_with_direction, compute_layout,
+    RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_layout_tree, compute_layout_with_renderer,
 };
 use crate::render::hit_test::{dialog_card_rect, modal_card_rect, popover_rect};
 use crate::theme::Theme;
@@ -347,7 +353,6 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
         native_layout,
     );
     let mut path = Vec::new();
-    let layout_fs = image_cache.layout_font_system();
     draw_widgets_impl(
         canvas,
         taffy,
@@ -364,7 +369,6 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
         font_cache,
         text_cache,
         image_cache,
-        layout_fs.clone(),
         cursor_visible,
         theme,
         scale,
@@ -387,7 +391,6 @@ pub(crate) fn draw_widgets_with_cache_and_custom_state<'w, Msg>(
         font_cache,
         text_cache,
         image_cache,
-        layout_fs.clone(),
         cursor_visible,
         theme,
         scale,
@@ -540,7 +543,6 @@ fn draw_popover_overlays<'w, Msg>(
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
-    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -578,7 +580,6 @@ fn draw_popover_overlays<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -650,7 +651,6 @@ fn draw_popover_overlays<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -672,7 +672,6 @@ fn draw_popover_overlays<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -705,7 +704,6 @@ fn draw_popover_overlays<'w, Msg>(
                         font_cache,
                         text_cache,
                         image_cache,
-                        layout_fs.clone(),
                         cursor_visible,
                         theme,
                         scale,
@@ -743,7 +741,6 @@ fn draw_popover_overlays<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -783,7 +780,6 @@ fn draw_popover_overlays<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -823,7 +819,6 @@ fn draw_popover_overlays<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -859,7 +854,6 @@ fn draw_popover_overlays<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -1207,7 +1201,6 @@ fn draw_widgets_impl<'w, Msg>(
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
-    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -1233,7 +1226,6 @@ fn draw_widgets_impl<'w, Msg>(
             font_cache,
             text_cache,
             image_cache,
-            layout_fs,
             false,
             theme,
             scale,
@@ -1274,7 +1266,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -1314,7 +1305,6 @@ fn draw_widgets_impl<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -1344,7 +1334,6 @@ fn draw_widgets_impl<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -1378,7 +1367,6 @@ fn draw_widgets_impl<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -1421,7 +1409,6 @@ fn draw_widgets_impl<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -1448,7 +1435,6 @@ fn draw_widgets_impl<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -1480,7 +1466,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -1509,7 +1494,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -1579,7 +1563,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     &content_theme,
                     scale,
@@ -1999,7 +1982,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs.clone(),
                     cursor_visible,
                     theme,
                     scale,
@@ -2038,7 +2020,6 @@ fn draw_widgets_impl<'w, Msg>(
                 font_cache,
                 text_cache,
                 image_cache,
-                layout_fs.clone(),
                 cursor_visible,
                 theme,
                 scale,
@@ -2123,7 +2104,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs: layout_fs.clone(),
                     layout_direction: direction,
                     cursor_visible,
                     shows_interaction_effects,
@@ -2156,7 +2136,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs: layout_fs.clone(),
                     layout_direction: direction,
                     cursor_visible,
                     shows_interaction_effects,
@@ -2236,7 +2215,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
                     shows_interaction_effects,
@@ -2284,7 +2262,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
                     shows_interaction_effects,
@@ -2372,7 +2349,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
                     shows_interaction_effects,
@@ -2458,7 +2434,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
                     shows_interaction_effects,
@@ -2511,7 +2486,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
                     shows_interaction_effects,
@@ -2605,7 +2579,6 @@ fn draw_widgets_impl<'w, Msg>(
                     font_cache,
                     text_cache,
                     image_cache,
-                    layout_fs: layout_fs.clone(),
                     layout_direction: node_layout_direction(taffy, node),
                     cursor_visible,
                     shows_interaction_effects,
@@ -2639,7 +2612,6 @@ fn draw_table_of_contents_content<'w, Msg>(
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
-    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -2675,7 +2647,6 @@ fn draw_table_of_contents_content<'w, Msg>(
         font_cache,
         text_cache,
         image_cache,
-        layout_fs,
         cursor_visible,
         theme,
         scale,
@@ -2703,7 +2674,6 @@ fn draw_table_of_contents_document<'w, Msg>(
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
-    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -2736,7 +2706,6 @@ fn draw_table_of_contents_document<'w, Msg>(
         font_cache,
         text_cache,
         image_cache,
-        layout_fs,
         cursor_visible,
         theme,
         scale,
@@ -3506,7 +3475,6 @@ fn draw_modal<Msg>(
     font_cache: &mut HashMap<(String, u32), Font>,
     text_cache: &mut TextBufferCache,
     image_cache: &mut ImageRenderCache,
-    layout_fs: Rc<RefCell<FontSystem>>,
     cursor_visible: bool,
     theme: &Theme,
     scale: f32,
@@ -3571,7 +3539,6 @@ fn draw_modal<Msg>(
         font_cache,
         text_cache,
         image_cache,
-        layout_fs.clone(),
         cursor_visible,
         theme,
         scale,
@@ -3954,7 +3921,6 @@ struct VirtualItemDrawContext<'a> {
     font_cache: &'a mut HashMap<(String, u32), Font>,
     text_cache: &'a mut TextBufferCache,
     image_cache: &'a mut ImageRenderCache,
-    layout_fs: Rc<RefCell<FontSystem>>,
     layout_direction: LayoutDirection,
     cursor_visible: bool,
     shows_interaction_effects: bool,
@@ -4648,7 +4614,6 @@ fn draw_virtual_item_widget<'w, Msg>(
     path: &mut Vec<usize>,
 ) {
     let mut taffy = TaffyTree::new();
-    let fs_rc = ctx.layout_fs.clone();
     let isolated_input_states = HashMap::new();
     let isolated_widget_states = HashMap::new();
     let isolated_custom_widget_states = HashMap::new();
@@ -4668,18 +4633,11 @@ fn draw_virtual_item_widget<'w, Msg>(
     } else {
         &isolated_custom_widget_states
     };
-    let root = build_taffy_tree_with_direction(
-        &mut taffy,
-        item,
-        fs_rc.clone(),
-        widget_states,
-        ctx.layout_direction,
-    );
-    compute_layout(
+    let root = build_layout_tree(&mut taffy, item, ctx.layout_direction);
+    compute_layout_with_renderer(
         &mut taffy,
         root,
         physical_size(size),
-        fs_rc,
         ctx.image_cache.rich_text_renderer(),
     );
     canvas.save();
@@ -4701,7 +4659,6 @@ fn draw_virtual_item_widget<'w, Msg>(
         ctx.font_cache,
         ctx.text_cache,
         ctx.image_cache,
-        ctx.layout_fs.clone(),
         ctx.cursor_visible,
         theme,
         ctx.scale,

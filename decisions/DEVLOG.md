@@ -1,5 +1,72 @@
 # Development Log
 
+## [2026-11-01T19:41:46-03:00] - Release Font Initialization Fix - 0.47.1
+
+**Context:** The user requested a version update and commit for the font-cache correction, explicitly waiving test reruns only for this commit preparation.
+
+**Challenge:** Release the compatible constructor optimization without implying that native presentation latency or the separate minimized-Wayland issue is resolved, and preserve the user's unrelated `.gitignore` change.
+
+**Decision:** Bump 0.47.0 to 0.47.1 as a backward-compatible patch. Synchronize the manifest and README, regenerate the root lockfile version with Cargo metadata, and commit only the font/layout correction, regression tests, profiling probes and release documentation. Preserve the prior release notes and the implementation entry's measured results and limitations. The local issue remains open for native presentation-performance acceptance; the Git-ignored `issues/` directory is not added to the commit.
+
+**Files Changed:** `Cargo.toml`, `Cargo.lock`, `README.md`, `src/layout.rs`, `src/render/{mod,image_cache,font_resource_tests,image_cache_profile}.rs`, `tests/render_security_integration_tests.rs` and this log.
+
+**Validation:** Inspected Git status, implementation/release diffs, new test/profiling files and recent commit style. `cargo metadata --offline --filter-platform x86_64-unknown-linux-gnu --format-version 1` succeeded; verified root package `rutter` 0.47.1 and confirmed the lockfile changes only its root version. `cargo fmt --all -- --check` and `git diff --check` passed. Tests, doctests, native smoke, benchmarks, builds and Clippy are intentionally not repeated during this preparation. Historical implementation validation below passed 1,415 tests (40 ignored), 320 doctests, all-target/all-feature Clippy and 12 native popup scenarios, with comparable release constructor measurements; these are not new runs of version 0.47.1. Inspect staged whitespace and locked metadata before committing.
+
+**Commit checks:** Locked/offline Linux-filtered Cargo metadata and `git diff --cached --check` passed. Reviewed all ten explicitly staged paths and the staged release/profiling documentation. Only the pre-existing `.gitignore` modification remains unstaged.
+
+**Compatibility:** No public signature, native-role/focus/grab policy, configuration, feature default or stored-data migration changes. No new dependencies or generated source. The lockfile update is Cargo-generated version metadata only. This test exemption does not apply to future work. No tag or push is requested.
+
+## [2026-11-01T18:57:33-03:00] - Remove Redundant Surface Cache Font Initialization - Unreleased
+
+**Context:** Address the first of the two new local issues, `issues/RUTTER_POPUP_FONT_INITIALIZATION_PERFORMANCE.md`, independently of the minimized-Wayland event-loop issue.
+
+**Challenge:** Every surface cache constructed a second Cosmic Text font system solely to pass through recursive drawing into layout functions that ignored it. The real engine font system is already mutably borrowed during drawing; replacing the dummy with a nested borrow would be unsafe. Constructor savings must not be reported as native popup presentation latency.
+
+**Alternatives:** Reusing the shared engine font handle would preserve unnecessary traversal plumbing and invite nested-borrow failures. Lazy dummy initialization would only defer the same work for virtual content. Neither is necessary because the internal layout implementation does not use Cosmic Text.
+
+**Decision:** Extract crate-private font-independent tree construction and renderer-based measurement, keep the public layout signatures as compatibility wrappers, remove the cache's unused font system and all render-traversal forwarding. Preserve each cache's independent Skia rich-text renderer, frame-local combo exposure, image budgets and teardown. Keep the separate hit-testing font-construction opportunity outside this issue's scope. No widget composition, spacing, native roles, focus/grab policy, graphics backend or real text-input font system changes.
+
+**Files Changed:** `src/layout.rs`, `src/render/{mod,image_cache}.rs`, new `src/render/{font_resource_tests,image_cache_profile}.rs`, `tests/render_security_integration_tests.rs`, the local issue report and this log. The issue directory is Git-ignored; its local status update is not a tracked change.
+
+**Validation:** All resource-intensive commands ran sequentially. `CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib font_resource_tests -- --test-threads=1` passed both new regressions. Public wrappers and internal paths have equal geometry in LTR/RTL at 320/800px while the real font system is mutably borrowed. A 24-case raster sample covers lists/grids, plain/rich/fallback-script text and an input, 320/800px, 120/300px viewports, both themes/directions and 1/1.5/2x; cached, uncached, repeated, cleared and independent-cache teardown draws have identical pixels. Expanded the existing virtual-input-state isolation test to grids as well as lists. The initial exhaustive raster matrix exceeded 180 seconds and was replaced with representative combinations and a retained measurement renderer; the final test passed in about 26 seconds.
+
+- `python3 /tmp/opencode/with_xvfb.py env CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-targets --all-features -- --test-threads=2`: **1,415 passed, 40 ignored** on an owned Xvfb display. An earlier single-test-thread run hit the 600-second tool limit after the library passed; the complete retry above succeeded.
+- `CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 cargo clippy --locked --offline --all-targets --all-features -- -D warnings`: passed.
+- `CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --all-features --doc -- --test-threads=2`: **320 passed**, including two compile-fail cases.
+- `CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --offline --example native_popup_clock`: passed.
+- `LD_LIBRARY_PATH=/tmp/opencode/graphics-tools/usr/lib/x86_64-linux-gnu python3 tests/native/native_popup_smoke.py --labwc /tmp/opencode/graphics-tools/usr/bin/labwc --xvfb /tmp/opencode/graphics-tools/usr/bin/Xvfb --wlr-randr /tmp/opencode/graphics-tools/usr/bin/wlr-randr --edges top bottom left right --scales 1.0 1.25 2.0 --keep`: **12 scenarios passed**, three actual opens each, checking native roles/grabs, bounds, ticking and calendar pixels, input, Escape/outside/Close dismissal and reopens. Artifacts: `/tmp/opencode/rutter-popup-0e4gescl`. The first harness launch lacked the local shared-library path and failed before compositor startup; rerunning with the required path succeeded.
+- `cargo fmt --all -- --check` and `git diff --check`: passed; reviewed the implementation diff and Git status. The user's `.gitignore` modification remains untouched.
+
+**Constructor measurements:** Added ignored, non-gating probes using `Instant`/`black_box`, construction-only timing (drop excluded), three untimed warmups and 32 measured warm samples with min/median/p95/max. Before: audited `4fd65d6` implementation plus the profiling module only. After: this working-tree fix. Both use the same unoptimized Cargo test profile, `CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=0`, Linux x86_64, Intel i5-4590, rustc `1.97.0-nightly (20de910db 2026-05-02)`, the same installed fonts and no concurrent agent build/test. These are exploratory debug-profile measurements on a live machine, not release acceptance or timing assertions. Three fresh-process cache runs per revision, each containing 32 warm samples:
+
+| Cache construction | First sample (ms) | Warm min / median / p95 / max (ms) |
+| --- | ---: | --- |
+| Before run 1 | 1950.643 | 59.627 / 62.405 / 63.474 / 63.718 |
+| Before run 2 | 67.010 | 59.698 / 62.225 / 64.788 / 67.297 |
+| Before run 3 | 65.431 | 60.281 / 62.351 / 64.508 / 64.586 |
+| After run 1 | 16.243 | 8.130 / 9.188 / 10.042 / 10.664 |
+| After run 2 | 10.661 | 8.396 / 9.176 / 9.675 / 9.935 |
+| After run 3 | 9.708 | 8.447 / 9.204 / 9.980 / 11.710 |
+
+The first before sample is an outlier, not evidence of a guaranteed cold-start gain; fresh process does not mean cold OS/fontconfig caches. Separate component warm medians before/after remained approximately 53ms for `FontSystem`, 9ms for `RichTextRenderer`, and 0.0001ms for the empty image LRUs. A separate shared-font engine probe on owned Xvfb (one process per revision, 32 warm samples, shared font discovery excluded) measured first 65.047 → 12.045ms and warm min/median/p95/max 61.582/63.210/65.477/66.039 → 9.239/9.915/10.745/12.280ms. Engine construction includes clipboard setup but no native window, graphics initialization, layout, frame submission or compositor presentation.
+
+Reproduce the cache probe with `CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --offline --lib image_cache_constructor_profile -- --ignored --nocapture --test-threads=1`, and the engine probe with the same arguments/filter `shared_font_surface_constructor_profile` under an owned clipboard/display. For comparable optimized measurements use `CARGO_BUILD_JOBS=1 CARGO_PROFILE_RELEASE_DEBUG=0 cargo test --release --locked --offline --lib <filter> -- --ignored --nocapture --test-threads=1` on both revisions. No new benchmark dependency is required.
+
+**Release measurements (completed after increasing the build deadline):** The user clarified that the first Skia build normally takes 10–20 minutes on this machine and subsequent builds reuse its artifacts. The initial two 600-second deadlines were insufficient, not evidence of an unavailable environment. Retrying the release cache command with a 1,800-second tool deadline completed in 9m53s; subsequent identical runs finished build checking in under one second. The same probe was attached to the unchanged `4fd65d6` implementation in a disposable detached worktree at `/tmp/opencode/rutter-font-baseline`, using the main workspace's `CARGO_TARGET_DIR` to reuse Skia and dependency artifacts. Only the test-module inclusion was added there; no legacy constructor was simulated. That baseline build completed in 6m57s without recompiling Skia. The temporary inclusion was removed and the clean worktree removed afterward. The corrected implementation was sampled first, the audited baseline afterward; both used the same release flags/toolchain/fonts and 32 warm samples after three untimed warmups, three fresh cache processes per revision. OS/fontconfig caches were not flushed. Release distributions (ms):
+
+| Cache construction | First sample | Warm min / median / p95 / max |
+| --- | ---: | --- |
+| Before run 1 | 21.107 | 18.197 / 19.436 / 21.705 / 22.401 |
+| Before run 2 | 23.858 | 18.068 / 19.334 / 20.882 / 22.488 |
+| Before run 3 | 21.104 | 17.862 / 19.252 / 19.981 / 20.356 |
+| After run 1 | 16.629 | 7.543 / 8.415 / 9.683 / 10.663 |
+| After run 2 | 10.974 | 8.472 / 9.827 / 11.827 / 13.099 |
+| After run 3 | 10.223 | 7.460 / 8.325 / 9.249 / 9.795 |
+
+Separate release component warm medians across the runs were 10.99–11.80ms before / 11.00–11.29ms after for `FontSystem`, 8.26–8.51ms before / 8.25–8.97ms after for `RichTextRenderer`, and approximately 20ns for empty LRUs in either revision. One release shared-font engine process per revision on owned Xvfb measured first 20.571 → 9.159ms and warm min/median/p95/max 18.748/20.563/22.031/23.120 → 7.923/8.705/9.271/9.458ms. These support removal of constructor overhead in optimized builds, not a guaranteed cold-start or native presentation speedup. The retained probes remain ignored and non-gating.
+
+**Limitations / remaining acceptance:** Request-to-first-presented-content timing was not instrumented; the native smoke's submitted buffers and visible pixels do not provide compositor presentation-feedback latency. No new FRAYM, hardware-GPU, manual visual, screen-reader or non-Linux acceptance is claimed. Keep the local issue open as implementation complete / native presentation-performance acceptance pending rather than renaming it `[DONE]`. The minimized-Wayland issue remains untouched. No version, dependencies, lockfile or generated-source changes; no commit or staging was requested for this fix.
+
 ## [2026-10-30T01:16:52-03:00] - Prepare Activity and Overlay Release Commit - 0.47.0
 
 **Context:** The user explicitly requested a version update and commit, with a one-time exemption from rerunning tests for this commit.

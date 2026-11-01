@@ -38,7 +38,18 @@ fn virtual_text_area(_: usize) -> Option<Widget<'static, ()>> {
     })
 }
 
-fn virtual_list() -> Widget<'static, ()> {
+fn virtual_collection(grid: bool) -> Widget<'static, ()> {
+    if grid {
+        return Widget::VirtualGridContent {
+            id: 100,
+            columns: 1,
+            item_height: 52.0,
+            item_count: 1,
+            items: &virtual_text_area,
+            on_select: |_| (),
+            style: fixed_style(120.0, 60.0),
+        };
+    }
     Widget::VirtualListContent {
         id: 100,
         item_height: 52.0,
@@ -49,8 +60,8 @@ fn virtual_list() -> Widget<'static, ()> {
     }
 }
 
-fn render_virtual_list(include_colliding_secret: bool) -> Vec<Color> {
-    let widget = virtual_list();
+fn render_virtual_collection(include_colliding_secret: bool, grid: bool) -> Vec<Color> {
+    let widget = virtual_collection(grid);
     let widget_states = HashMap::<u64, WidgetState>::new();
     let layout_fonts = Rc::new(RefCell::new(FontSystem::new()));
     let mut taffy = rutter::taffy::TaffyTree::new();
@@ -126,8 +137,9 @@ fn surface_pixels(surface: &mut Surface) -> Vec<Color> {
 
 #[test]
 fn virtual_item_cannot_read_colliding_global_input_state() {
-    let without_secret = render_virtual_list(false);
-    let with_secret = render_virtual_list(true);
-
-    assert_eq!(with_secret, without_secret);
+    for grid in [false, true] {
+        let without_secret = render_virtual_collection(false, grid);
+        let with_secret = render_virtual_collection(true, grid);
+        assert_eq!(with_secret, without_secret);
+    }
 }

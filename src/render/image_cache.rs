@@ -2,13 +2,10 @@
 // Licensed under the MIT License OR Apache 2.0.
 
 use std::{
-    cell::RefCell,
     collections::{HashMap, VecDeque},
     hash::Hash,
-    rc::Rc,
 };
 
-use cosmic_text::FontSystem;
 use skia_safe::Image;
 
 use super::image::RutterDecodedImage;
@@ -31,7 +28,6 @@ pub struct ImageRenderCache {
     pub(super) exposed_combo_box: Option<u64>,
     raster_images: MemoryBoundedLru<u64, RutterDecodedImage>,
     svg_images: MemoryBoundedLru<SvgImageCacheKey, Image>,
-    layout_font_system: Rc<RefCell<FontSystem>>,
     rich_text_renderer: RichTextRenderer,
 }
 
@@ -41,7 +37,6 @@ impl Default for ImageRenderCache {
             exposed_combo_box: None,
             raster_images: MemoryBoundedLru::new(MAX_RASTER_CACHE_BYTES),
             svg_images: MemoryBoundedLru::new(MAX_SVG_CACHE_BYTES),
-            layout_font_system: Rc::new(RefCell::new(FontSystem::new())),
             rich_text_renderer: RichTextRenderer::new(),
         }
     }
@@ -78,10 +73,6 @@ impl ImageRenderCache {
     pub(crate) fn insert_svg_image(&mut self, key: SvgImageCacheKey, image: Image) {
         self.svg_images
             .insert(key, image.clone(), skia_image_bytes(&image));
-    }
-
-    pub(crate) fn layout_font_system(&self) -> Rc<RefCell<FontSystem>> {
-        self.layout_font_system.clone()
     }
 
     pub(crate) fn rich_text_renderer(&self) -> &RichTextRenderer {
@@ -186,6 +177,10 @@ fn dimensions_byte_cost(width: i32, height: i32) -> usize {
         .and_then(|pixels| pixels.checked_mul(4))
         .unwrap_or(usize::MAX)
 }
+
+#[cfg(test)]
+#[path = "image_cache_profile.rs"]
+mod profile;
 
 #[cfg(test)]
 mod tests {

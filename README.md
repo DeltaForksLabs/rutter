@@ -108,7 +108,13 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.47.0.** This release adds owned transfer/media activity
+**Current version: 0.47.1.** This patch removes redundant font-system
+initialization from each surface render cache and from the uncached drawing
+convenience path. Public layout signatures, independent renderer resources and
+native popup behavior remain unchanged. Constructor profiles show reduced setup
+overhead; request-to-first-presented-content latency remains unmeasured.
+
+Version 0.47.0 added owned transfer/media activity
 snapshots, explicit lifecycle/selection and semantic action routing, reusable
 summary/details views, and optional same-UID Unix IPC. The activity host defaults
 to an ordinary window and offers an opt-in native Wayland overlay with rounded
@@ -116,7 +122,7 @@ input, scrollable controls and bounded expansion focus. External producer exampl
 simulate downloads, uploads and media; they perform no network transfers or audio
 playback. See [activities and optional Unix IPC](docs/ACTIVITIES.md).
 
-The new APIs are additive and IPC remains off by default. Native overlay mode
+The activity APIs are additive and IPC remains off by default. Native overlay mode
 requires Wayland/layer-shell v4 and alpha rendering; unsupported backends fail
 explicitly. No stored-data migration is required.
 
