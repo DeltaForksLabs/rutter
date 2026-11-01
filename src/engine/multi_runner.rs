@@ -18,6 +18,8 @@ mod input_region_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod layer_shell_integration;
 #[cfg(all(test, target_os = "linux"))]
+mod minimized_integration;
+#[cfg(all(test, target_os = "linux"))]
 mod native_menu_integration;
 #[cfg(all(test, target_os = "linux"))]
 mod pointer_hover_native_tests;

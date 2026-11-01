@@ -4,10 +4,58 @@ use std::rc::Rc;
 use winit::dpi::PhysicalSize;
 
 use super::{
-    BackendType, ContextActivation, GlOperationFailure, GraphicsError,
+    BackendType, ContextActivation, GlOperationFailure, GraphicsError, configure_gl_frame_pacing,
     ensure_backend_context_current, ensure_backend_context_not_current, prefer_gl_surface_config,
     select_preferred_candidate, validate_gl_surface_transparency, validated_gl_surface_dimensions,
 };
+
+#[test]
+fn wayland_uses_nonblocking_swap_with_callback_pacing() {
+    let handle = raw_window_handle::WaylandWindowHandle::new(std::ptr::NonNull::dangling());
+    configure_gl_frame_pacing(
+        raw_window_handle::RawWindowHandle::Wayland(handle),
+        |interval| {
+            assert_eq!(interval, glutin::surface::SwapInterval::DontWait);
+            Ok(())
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn wayland_rejects_failure_to_disable_blocking_swap() {
+    let handle = raw_window_handle::WaylandWindowHandle::new(std::ptr::NonNull::dangling());
+    let failure =
+        configure_gl_frame_pacing(raw_window_handle::RawWindowHandle::Wayland(handle), |_| {
+            Err("swap control unavailable".into())
+        })
+        .unwrap_err();
+    assert_eq!(failure.backend, BackendType::OpenGl);
+    assert!(failure.reason.contains("Wayland EGL swap pacing"));
+    assert!(failure.reason.contains("swap control unavailable"));
+}
+
+#[test]
+fn x11_retains_best_effort_wait_interval() {
+    for fails in [false, true] {
+        let handle = raw_window_handle::XlibWindowHandle::new(0);
+        configure_gl_frame_pacing(
+            raw_window_handle::RawWindowHandle::Xlib(handle),
+            |interval| {
+                assert_eq!(
+                    interval,
+                    glutin::surface::SwapInterval::Wait(std::num::NonZeroU32::new(1).unwrap())
+                );
+                if fails {
+                    Err("legacy unsupported swap control".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap();
+    }
+}
 
 struct FakeContextActivation {
     current: Cell<bool>,

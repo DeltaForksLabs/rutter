@@ -17,7 +17,7 @@ use glutin::surface::{
     Surface as GlutinSurface, SurfaceAttributesBuilder, SwapInterval, WindowSurface,
 };
 use glutin_winit::DisplayBuilder;
-use raw_window_handle::HasWindowHandle;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use skia_safe::{
     Canvas, ColorType, Surface as SkiaSurface,
     gpu::{
@@ -38,6 +38,27 @@ type GlGetInteger = unsafe extern "system" fn(u32, *mut i32);
 
 #[derive(Debug)]
 struct EmptyGlConfigSet;
+
+fn configure_gl_frame_pacing(
+    window_handle: RawWindowHandle,
+    set_interval: impl FnOnce(SwapInterval) -> Result<(), String>,
+) -> Result<(), BackendFailure> {
+    if matches!(window_handle, RawWindowHandle::Wayland(_)) {
+        // glutin's SwapInterval documentation warns that Wait can block hidden
+        // Wayland surfaces until visible again. Pace through winit's per-surface
+        // frame callbacks instead, never through EGL on the shared UI thread.
+        return set_interval(SwapInterval::DontWait).map_err(|reason| {
+            BackendFailure::new(
+                BackendType::OpenGl,
+                format!("failed to disable blocking Wayland EGL swap pacing: {reason}"),
+            )
+        });
+    }
+    // Preserve the existing best-effort vsync policy on other window systems;
+    // unsupported swap control there has historically not rejected the backend.
+    let _ = set_interval(SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
+    Ok(())
+}
 
 pub struct GlBackend {
     skia_surface: SkiaSurface,
@@ -197,8 +218,11 @@ impl GlBackend {
             .make_current(&gl_surface)
             .map_err(|err| BackendFailure::new(BackendType::OpenGl, err.to_string()))?;
 
-        let _ = gl_surface
-            .set_swap_interval(&gl_context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
+        configure_gl_frame_pacing(raw_window_handle, |interval| {
+            gl_surface
+                .set_swap_interval(&gl_context, interval)
+                .map_err(|err| err.to_string())
+        })?;
 
         let interface = gpu::gl::Interface::new_load_with(|name| {
             if name == "eglGetCurrentDisplay" {
@@ -424,6 +448,9 @@ impl GraphicsBackend for GlBackend {
         self.skia_context
             .flush_and_submit_surface(&mut self.skia_surface, None);
         self.ensure_current("swap frame buffers", GlOperationFailure::Frame)?;
+        // Request the Wayland callback before the commit in swap_buffers. Winit
+        // defers this surface's next redraw without blocking visible siblings.
+        self.window.pre_present_notify();
         self.gl_surface
             .swap_buffers(&self.gl_context)
             .map_err(|err| GraphicsError::Frame {

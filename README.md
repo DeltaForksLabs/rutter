@@ -108,7 +108,17 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.47.1.** This patch removes redundant font-system
+**Current version: 0.47.2.** This patch fixes shared-runtime stalls when an
+OpenGL Wayland surface is minimized. Wayland OpenGL now uses interval-zero swaps
+and per-surface frame callbacks instead of blocking swap-interval pacing;
+initialization fails explicitly if interval zero cannot be configured. Other
+window systems retain their previous best-effort swap policy. A bounded native
+regression verifies sibling input/rendering and draft-preserving restoration in
+software EGL; Quasar and hardware-session acceptance remain pending. See the
+[native regression guide](tests/native/MINIMIZED_SURFACE.md). Public APIs and
+stored-data formats are unchanged.
+
+Version 0.47.1 removed redundant font-system
 initialization from each surface render cache and from the uncached drawing
 convenience path. Public layout signatures, independent renderer resources and
 native popup behavior remain unchanged. Constructor profiles show reduced setup
