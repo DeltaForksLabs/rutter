@@ -407,10 +407,10 @@ fn refresh_lifecycle(engine: &mut RutterEngine<LifecycleApp>) {
 }
 
 fn echo_lifecycle_edit(engine: &mut RutterEngine<LifecycleApp>) {
-    let callback = engine.runtime_caches.inputs[&1].on_change;
+    let callback = engine.runtime_caches.inputs[&1].on_change.clone();
     engine
         .app_state
-        .reduce(callback(engine.input_states[&1].text()));
+        .reduce(callback.call(engine.input_states[&1].text()));
     refresh_lifecycle(engine);
 }
 

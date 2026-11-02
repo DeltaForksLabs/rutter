@@ -1085,18 +1085,22 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         Widget::Heading { .. } => Role::Heading,
         Widget::Image { .. } => Role::Image,
         Widget::Button { .. } | Widget::ButtonContent { .. } => Role::Button,
-        Widget::TextInput { is_password, .. } if *is_password => Role::PasswordInput,
-        Widget::TextInput { .. } => Role::TextInput,
-        Widget::TextArea { .. } => Role::MultilineTextInput,
+        Widget::TextInput { is_password, .. } | Widget::TextInputWith { is_password, .. }
+            if *is_password =>
+        {
+            Role::PasswordInput
+        }
+        Widget::TextInput { .. } | Widget::TextInputWith { .. } => Role::TextInput,
+        Widget::TextArea { .. } | Widget::TextAreaWith { .. } => Role::MultilineTextInput,
         Widget::SearchBar { .. } => Role::SearchInput,
         Widget::ComboBox { .. } => Role::EditableComboBox,
         Widget::Checkbox { .. } => Role::CheckBox,
         Widget::Switch { .. } => Role::Switch,
         Widget::Radio { .. } => Role::RadioButton,
-        Widget::Slider { .. } => Role::Slider,
+        Widget::Slider { .. } | Widget::SliderWith { .. } => Role::Slider,
         Widget::Counter { .. } => Role::SpinButton,
         Widget::Clock { .. } => Role::TextRun,
-        Widget::Select { .. } => Role::ComboBox,
+        Widget::Select { .. } | Widget::SelectWith { .. } => Role::ComboBox,
         Widget::ProgressBar { .. } | Widget::Spinner { .. } => Role::ProgressIndicator,
         Widget::TabBar { .. } => Role::TabList,
         Widget::Toast { visible: true, .. } => Role::Status,
@@ -1189,8 +1193,9 @@ fn apply_actions<Msg>(node: &mut Node, widget: &Widget<Msg>) {
         | Widget::Checkbox { .. }
         | Widget::Switch { .. }
         | Widget::Radio { .. }
-        | Widget::Select { .. } => node.add_action(Action::Click),
-        Widget::Slider { .. } | Widget::Counter { .. } => {
+        | Widget::Select { .. }
+        | Widget::SelectWith { .. } => node.add_action(Action::Click),
+        Widget::Slider { .. } | Widget::SliderWith { .. } | Widget::Counter { .. } => {
             node.add_action(Action::Increment);
             node.add_action(Action::Decrement);
         }
@@ -1216,6 +1221,13 @@ fn apply_numeric_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
             max,
             step,
             ..
+        }
+        | Widget::SliderWith {
+            value,
+            min,
+            max,
+            step,
+            ..
         } => {
             node.set_numeric_value(*value as f64);
             node.set_min_numeric_value(*min as f64);
@@ -1230,6 +1242,18 @@ fn apply_numeric_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
                 node.set_numeric_value_step(parameters.step as f64);
             }
             CounterConfig::Float(parameters) => {
+                node.set_numeric_value(parameters.value);
+                node.set_min_numeric_value(parameters.min);
+                node.set_max_numeric_value(parameters.max);
+                node.set_numeric_value_step(parameters.step);
+            }
+            CounterConfig::IntegerWith(parameters) => {
+                node.set_numeric_value(parameters.value as f64);
+                node.set_min_numeric_value(parameters.min as f64);
+                node.set_max_numeric_value(parameters.max as f64);
+                node.set_numeric_value_step(parameters.step as f64);
+            }
+            CounterConfig::FloatWith(parameters) => {
                 node.set_numeric_value(parameters.value);
                 node.set_min_numeric_value(parameters.min);
                 node.set_max_numeric_value(parameters.max);
@@ -1266,6 +1290,12 @@ fn apply_input_props<Msg>(
     }
     | Widget::ComboBox {
         state, error_msg, ..
+    }
+    | Widget::TextInputWith {
+        state, error_msg, ..
+    }
+    | Widget::TextAreaWith {
+        state, error_msg, ..
     } = widget
     {
         let error = error_msg.as_deref().filter(|message| !message.is_empty());
@@ -1280,13 +1310,21 @@ fn apply_input_props<Msg>(
     }
     match widget {
         Widget::TextInput { placeholder, .. }
+        | Widget::TextInputWith { placeholder, .. }
         | Widget::TextArea { placeholder, .. }
+        | Widget::TextAreaWith { placeholder, .. }
         | Widget::SearchBar { placeholder, .. }
         | Widget::ComboBox { placeholder, .. } => {
             set_nonempty_placeholder(node, placeholder);
             set_input_value(node, widget, input_states, path);
         }
         Widget::Select {
+            selected_index,
+            options,
+            placeholder,
+            ..
+        }
+        | Widget::SelectWith {
             selected_index,
             options,
             placeholder,
@@ -1390,13 +1428,17 @@ fn set_widget_label<Msg>(
         Widget::Button { text, .. } => node.set_label(*text),
         Widget::ButtonContent { label, .. } => node.set_label(*label),
         Widget::TextInput { label, .. }
+        | Widget::TextInputWith { label, .. }
         | Widget::TextArea { label, .. }
+        | Widget::TextAreaWith { label, .. }
         | Widget::ComboBox { label, .. } => node.set_label(*label),
         Widget::SearchBar { .. } => node.set_label("Search"),
         Widget::Checkbox { label, .. } | Widget::Radio { label, .. } => node.set_label(*label),
         Widget::Slider { label, .. }
+        | Widget::SliderWith { label, .. }
         | Widget::Counter { label, .. }
-        | Widget::Select { label, .. } => node.set_label(*label),
+        | Widget::Select { label, .. }
+        | Widget::SelectWith { label, .. } => node.set_label(*label),
         Widget::Clock {
             label,
             time_zone,
@@ -1471,6 +1513,9 @@ fn set_input_value<Msg>(
     if matches!(
         widget,
         Widget::TextInput {
+            is_password: true,
+            ..
+        } | Widget::TextInputWith {
             is_password: true,
             ..
         }

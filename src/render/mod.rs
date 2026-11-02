@@ -59,6 +59,8 @@ mod widget_spacing_tests;
 mod widget_spacing_review_tests;
 
 #[cfg(test)]
+mod captured_native_tests;
+#[cfg(test)]
 mod font_resource_tests;
 
 #[cfg(test)]
@@ -1578,6 +1580,14 @@ fn draw_widgets_impl<'w, Msg>(
             error_msg,
             is_password,
             ..
+        }
+        | Widget::TextInputWith {
+            label,
+            placeholder,
+            state,
+            error_msg,
+            is_password,
+            ..
         } => draw_text_input(TextInputRenderInput {
             canvas,
             paragraph_renderer: image_cache.rich_text_renderer(),
@@ -1634,6 +1644,13 @@ fn draw_widgets_impl<'w, Msg>(
             image_cache.exposed_combo_box == resolved_id,
         ),
         Widget::TextArea {
+            label,
+            placeholder,
+            state,
+            error_msg,
+            ..
+        }
+        | Widget::TextAreaWith {
             label,
             placeholder,
             state,
@@ -1716,6 +1733,9 @@ fn draw_widgets_impl<'w, Msg>(
         ),
         Widget::Slider {
             value, min, max, ..
+        }
+        | Widget::SliderWith {
+            value, min, max, ..
         } => {
             let resolved_id = resolved_id.unwrap();
             let dragging = shows_interaction_effects
@@ -1742,6 +1762,23 @@ fn draw_widgets_impl<'w, Msg>(
                     parameters.min <= parameters.max && parameters.value < parameters.max,
                 ),
                 CounterConfig::Float(parameters) => {
+                    let valid = crate::widget::validate_counter(
+                        parameters.value,
+                        parameters.min,
+                        parameters.max,
+                        parameters.step,
+                    )
+                    .is_ok();
+                    (
+                        valid && parameters.value > parameters.min,
+                        valid && parameters.value < parameters.max,
+                    )
+                }
+                CounterConfig::IntegerWith(parameters) => (
+                    parameters.min <= parameters.max && parameters.value > parameters.min,
+                    parameters.min <= parameters.max && parameters.value < parameters.max,
+                ),
+                CounterConfig::FloatWith(parameters) => {
                     let valid = crate::widget::validate_counter(
                         parameters.value,
                         parameters.min,
@@ -1887,6 +1924,13 @@ fn draw_widgets_impl<'w, Msg>(
             }
         }
         Widget::Select {
+            options,
+            selected_index,
+            label,
+            placeholder,
+            ..
+        }
+        | Widget::SelectWith {
             options,
             selected_index,
             label,

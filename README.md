@@ -108,7 +108,29 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.47.2.** This patch fixes shared-runtime stalls when an
+**Current version: 0.48.0.** This release adds owned, per-instance callbacks to
+native Counter, Select, TextInput, TextArea and Slider controls through
+`counter_with`, `try_counter_with`, `select_with`, `try_select_with`,
+`text_input_with`, `controlled_text_input_with`, `text_area_with`, `slider_with`
+and `try_slider_with`. Captured callbacks share ownership through
+`ChangeCallback` and use the existing native interaction, rendering and
+accessibility paths. Existing function-pointer constructors and fields remain
+supported.
+
+**Version 0.48.0 source compatibility:** Exhaustive `Widget` matches must handle
+`SelectWith`, `TextInputWith`, `TextAreaWith` and `SliderWith`; exhaustive
+`CounterConfig` matches must handle `IntegerWith` and
+`FloatWith`. `CounterConfig` no longer automatically satisfies `UnwindSafe` or
+`RefUnwindSafe` bounds. Captures must be owned and `Send + Sync + 'static`.
+Use the capture-preserving `render::hit_test::{find_select_callback_with,
+find_input_callbacks_with, find_input_props_with, find_slider_callback_with}`
+lookups when needed; the original function-pointer-only lookups return `None`
+for captured variants.
+Callbacks retain identity/generation snapshots, not automatic freshness or
+authorization: applications must validate context at their update boundary.
+No new dependencies or stored-data migrations are required.
+
+Version 0.47.2 fixed shared-runtime stalls when an
 OpenGL Wayland surface is minimized. Wayland OpenGL now uses interval-zero swaps
 and per-surface frame callbacks instead of blocking swap-interval pacing;
 initialization fails explicitly if interval zero cannot be configured. Other
@@ -974,6 +996,28 @@ Floating-point mode uses standard IEEE-754 arithmetic and `f64::to_string()` for
 There is only one public `Widget::Counter`, one `RutterContext::Counter`, and one Counter ID family. Published numeric-mode changes can keep the same ID; an active pointer hold is cancelled instead of being transferred to the other numeric mode. Migration for direct enum construction or field patterns: numeric fields and the typed callback now live in `config: CounterConfig::Integer(parameters)` or `CounterConfig::Float(parameters)`, where `parameters` is `CounterParameters<N, Msg>`. Prefer the shared constructors. `layout::CounterContext.value` now holds `CounterValue` (use `value.into()` for direct context construction). No additional widget/context variant or float-specific constructor is needed.
 
 `Select` chooses one value. `DropdownMenu` instead exposes commands and optional checkbox/radio state; it does not represent a selected form value.
+
+For per-instance identity or generation context, use `Widget::counter_with` /
+`try_counter_with` (integer or float), `Widget::select_with` /
+`try_select_with`, `Widget::text_input_with` / `controlled_text_input_with`,
+`Widget::text_area_with`, or `Widget::slider_with` / `try_slider_with`.
+Their closures accept the same changed value as the legacy
+function pointers, but can own non-`Copy`, non-`Clone` captures satisfying
+`Send + Sync + 'static`. Runtime-cache cloning shares the callback instead of
+copying its capture. Native dispatch invokes it on the UI thread. Counter holds
+re-read the current published callback after a view rebuild; disable, removal or
+numeric-mode changes retire the active hold. Retained callback clones and
+already-produced messages keep their original context, so validate source
+identity, draft epoch and lifecycle generation in application updates. Text edits,
+clipboard/history operations and IME commits use the current published input
+callback. Slider drags refresh callbacks and live geometry after view changes,
+including keyed virtual items, and retire on disable, removal, focus loss,
+pointer exit or surface teardown. Controlled input echo preserves native editing
+state; password suppression, field annotations and accessibility semantics are
+shared with the legacy controls. Avoid
+ownership cycles in captured services. `ChangeCallback::call` can also be invoked
+directly; it does not enforce thread affinity. Legacy constructors and literals
+continue to use allocation-free function-pointer callback storage.
 
 ### Text editing keyboard navigation
 

@@ -14,6 +14,8 @@ mod number;
 use number::CounterNumber;
 
 #[cfg(test)]
+mod captured_tests;
+#[cfg(test)]
 mod float_tests;
 
 const COUNTER_HOLD_INITIAL_DELAY: Duration = Duration::from_millis(400);
@@ -63,14 +65,28 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             CounterConfig::Integer(counter) => self.start_counter_repeat(
                 id,
                 entry.generation,
-                counter,
+                counter.into(),
                 increment,
                 CounterHoldRepeat::Integer,
             ),
             CounterConfig::Float(counter) => self.start_counter_repeat(
                 id,
                 entry.generation,
-                counter,
+                counter.into(),
+                increment,
+                CounterHoldRepeat::Float,
+            ),
+            CounterConfig::IntegerWith(counter) => self.start_counter_repeat(
+                id,
+                entry.generation,
+                counter.into(),
+                increment,
+                CounterHoldRepeat::Integer,
+            ),
+            CounterConfig::FloatWith(counter) => self.start_counter_repeat(
+                id,
+                entry.generation,
+                counter.into(),
                 increment,
                 CounterHoldRepeat::Float,
             ),
@@ -120,12 +136,24 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
         // A published numeric-mode change must not retarget an active hold.
         match (repeat, entry.config) {
-            (CounterHoldRepeat::Integer(repeat), CounterConfig::Integer(counter)) => {
-                self.apply_counter_hold_advance(repeat, counter, CounterHoldRepeat::Integer, now)
-            }
-            (CounterHoldRepeat::Float(repeat), CounterConfig::Float(counter)) => {
-                self.apply_counter_hold_advance(repeat, counter, CounterHoldRepeat::Float, now)
-            }
+            (CounterHoldRepeat::Integer(repeat), CounterConfig::Integer(counter)) => self
+                .apply_counter_hold_advance(
+                    repeat,
+                    counter.into(),
+                    CounterHoldRepeat::Integer,
+                    now,
+                ),
+            (CounterHoldRepeat::Float(repeat), CounterConfig::Float(counter)) => self
+                .apply_counter_hold_advance(repeat, counter.into(), CounterHoldRepeat::Float, now),
+            (CounterHoldRepeat::Integer(repeat), CounterConfig::IntegerWith(counter)) => self
+                .apply_counter_hold_advance(
+                    repeat,
+                    counter.into(),
+                    CounterHoldRepeat::Integer,
+                    now,
+                ),
+            (CounterHoldRepeat::Float(repeat), CounterConfig::FloatWith(counter)) => self
+                .apply_counter_hold_advance(repeat, counter.into(), CounterHoldRepeat::Float, now),
             _ => None,
         }
     }
@@ -170,8 +198,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .get(&id)
             .map(|entry| entry.config.clone())
         {
-            Some(CounterConfig::Integer(counter)) => self.adjust_counter_key(counter, key),
-            Some(CounterConfig::Float(counter)) => self.adjust_counter_key(counter, key),
+            Some(CounterConfig::Integer(counter)) => self.adjust_counter_key(counter.into(), key),
+            Some(CounterConfig::Float(counter)) => self.adjust_counter_key(counter.into(), key),
+            Some(CounterConfig::IntegerWith(counter)) => {
+                self.adjust_counter_key(counter.into(), key)
+            }
+            Some(CounterConfig::FloatWith(counter)) => self.adjust_counter_key(counter.into(), key),
             None => false,
         }
     }
@@ -190,10 +222,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         true
     }
 
-    fn apply_counter_value<T>(&mut self, on_change: fn(T) -> A::Message, value: T) {
+    fn apply_counter_value<T>(
+        &mut self,
+        on_change: crate::ChangeCallback<T, A::Message>,
+        value: T,
+    ) {
         A::update(
             &mut self.engine.app_state,
-            on_change(value),
+            on_change.call(value),
             &mut self.engine.clipboard,
         );
         self.engine.layout_dirty = true;

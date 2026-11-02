@@ -146,21 +146,24 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::ButtonContent { .. } => Kind::ButtonContent,
         Widget::TextInput {
             is_password: true, ..
+        }
+        | Widget::TextInputWith {
+            is_password: true, ..
         } => Kind::PasswordInput,
-        Widget::TextInput { .. } => Kind::TextInput,
-        Widget::TextArea { .. } => Kind::TextArea,
+        Widget::TextInput { .. } | Widget::TextInputWith { .. } => Kind::TextInput,
+        Widget::TextArea { .. } | Widget::TextAreaWith { .. } => Kind::TextArea,
         Widget::SearchBar { .. } => Kind::SearchBar,
         Widget::ComboBox { .. } => Kind::ComboBox,
         Widget::Checkbox { .. } => Kind::Checkbox,
         Widget::Switch { .. } => Kind::Switch,
         Widget::Radio { .. } => Kind::Radio,
-        Widget::Slider { .. } => Kind::Slider,
+        Widget::Slider { .. } | Widget::SliderWith { .. } => Kind::Slider,
         Widget::Counter { config, .. } => match config {
-            CounterConfig::Integer(_) => Kind::Counter,
-            CounterConfig::Float(_) => Kind::CounterFloatMode,
+            CounterConfig::Integer(_) | CounterConfig::IntegerWith(_) => Kind::Counter,
+            CounterConfig::Float(_) | CounterConfig::FloatWith(_) => Kind::CounterFloatMode,
         },
         Widget::Clock { .. } => Kind::Clock,
-        Widget::Select { .. } => Kind::Select,
+        Widget::Select { .. } | Widget::SelectWith { .. } => Kind::Select,
         Widget::ProgressBar { .. } => Kind::ProgressBar,
         Widget::Spinner { .. } => Kind::Spinner,
         Widget::ScrollView { .. } => Kind::ScrollView,

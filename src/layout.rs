@@ -383,11 +383,18 @@ impl LayoutBlueprint {
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
-            Widget::Select { style, .. } => Self::field(widget, path, style, 40.0),
+            Widget::Select { style, .. } | Widget::SelectWith { style, .. } => {
+                Self::field(widget, path, style, 40.0)
+            }
             Widget::TextInput { style, .. }
+            | Widget::TextInputWith { style, .. }
             | Widget::TextArea { style, .. }
+            | Widget::TextAreaWith { style, .. }
             | Widget::ComboBox { style, .. } => {
-                let body_height = if matches!(widget, Widget::TextArea { .. }) {
+                let body_height = if matches!(
+                    widget,
+                    Widget::TextArea { .. } | Widget::TextAreaWith { .. }
+                ) {
                     120.0
                 } else {
                     40.0
@@ -461,6 +468,7 @@ impl LayoutBlueprint {
             | Widget::DropdownMenu { style, .. }
             | Widget::SearchBar { style, .. }
             | Widget::Slider { style, .. }
+            | Widget::SliderWith { style, .. }
             | Widget::CarouselView { style, .. }
             | Widget::InteractiveCarouselView { style, .. }
             | Widget::Table { style, .. }

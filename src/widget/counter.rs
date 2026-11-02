@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use super::ChangeCallback;
+
 mod sealed {
     pub trait Sealed {}
     impl Sealed for i64 {}
@@ -20,6 +22,8 @@ pub trait CounterInput: sealed::Sealed + Copy + fmt::Debug + fmt::Display + Part
     fn positive(self) -> bool;
     #[doc(hidden)]
     fn configure<Msg>(parameters: CounterParameters<Self, Msg>) -> CounterConfig<Msg>;
+    #[doc(hidden)]
+    fn configure_with<Msg>(parameters: CapturedCounterParameters<Self, Msg>) -> CounterConfig<Msg>;
 }
 
 impl CounterInput for i64 {
@@ -32,6 +36,9 @@ impl CounterInput for i64 {
     fn configure<Msg>(parameters: CounterParameters<Self, Msg>) -> CounterConfig<Msg> {
         CounterConfig::Integer(parameters)
     }
+    fn configure_with<Msg>(parameters: CapturedCounterParameters<Self, Msg>) -> CounterConfig<Msg> {
+        CounterConfig::IntegerWith(parameters)
+    }
 }
 
 impl CounterInput for f64 {
@@ -43,6 +50,9 @@ impl CounterInput for f64 {
     }
     fn configure<Msg>(parameters: CounterParameters<Self, Msg>) -> CounterConfig<Msg> {
         CounterConfig::Float(parameters)
+    }
+    fn configure_with<Msg>(parameters: CapturedCounterParameters<Self, Msg>) -> CounterConfig<Msg> {
+        CounterConfig::FloatWith(parameters)
     }
 }
 
@@ -61,15 +71,33 @@ pub struct CounterParameters<N, Msg> {
     pub on_change: fn(N) -> Msg,
 }
 
+/// Typed parameters for [`super::Widget::counter_with`], with an owned callback.
+#[derive(Debug, Clone)]
+pub struct CapturedCounterParameters<N, Msg> {
+    /// Current application-controlled value.
+    pub value: N,
+    /// Inclusive lower bound.
+    pub min: N,
+    /// Inclusive upper bound.
+    pub max: N,
+    /// Positive relative adjustment, not a grid anchored at the minimum.
+    pub step: N,
+    /// Produces an application message with this view's captured context.
+    pub on_change: ChangeCallback<N, Msg>,
+}
+
 /// Numeric configuration of a Counter, not separate widget kinds or ID families.
 ///
-/// Prefer [`super::Widget::counter`] or [`super::Widget::try_counter`] to constructing
-/// this enum directly. Keeping each mode's parameters together prevents mixed
-/// integer/float bounds or a callback with the wrong numeric type.
+/// Prefer the [`super::Widget::counter`] / [`super::Widget::counter_with`]
+/// constructors (or their validated `try_` forms) to constructing this enum
+/// directly. Keeping each mode's parameters together prevents mixed integer/float
+/// bounds or a callback with the wrong numeric type.
 #[derive(Debug, Clone)]
 pub enum CounterConfig<Msg> {
     Integer(CounterParameters<i64, Msg>),
     Float(CounterParameters<f64, Msg>),
+    IntegerWith(CapturedCounterParameters<i64, Msg>),
+    FloatWith(CapturedCounterParameters<f64, Msg>),
 }
 
 impl<Msg> CounterConfig<Msg> {
@@ -78,7 +106,13 @@ impl<Msg> CounterConfig<Msg> {
         match self {
             Self::Integer(parameters) => CounterValue::Integer(parameters.value),
             Self::Float(parameters) => CounterValue::Float(parameters.value),
+            Self::IntegerWith(parameters) => CounterValue::Integer(parameters.value),
+            Self::FloatWith(parameters) => CounterValue::Float(parameters.value),
         }
+    }
+
+    pub(crate) fn is_float(&self) -> bool {
+        matches!(self, Self::Float(_) | Self::FloatWith(_))
     }
 }
 

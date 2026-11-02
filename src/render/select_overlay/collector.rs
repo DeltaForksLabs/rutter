@@ -176,6 +176,11 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
                 options,
                 selected_index,
                 ..
+            }
+            | Widget::SelectWith {
+                options,
+                selected_index,
+                ..
             } => self.capture_select(widget, options, *selected_index, absolute, size),
             Widget::SearchBar {
                 suggestions: Some(suggestions),

@@ -172,12 +172,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return Ok(true);
         }
         if self.engine.focused_input_id() != Some(pending.id)
-            || !self
+            || self
                 .engine
                 .runtime_caches
                 .inputs
                 .get(&pending.id)
-                .is_some_and(|input| !input.is_password)
+                .is_none_or(|input| input.is_password)
             || self
                 .engine
                 .input_states
@@ -702,7 +702,7 @@ mod tests {
             19,
             InputRuntime {
                 model_value: None,
-                on_change: Message::Selected,
+                on_change: crate::ChangeCallback::from_function(Message::Selected),
                 on_submit: None,
                 is_password: false,
                 is_multiline: false,

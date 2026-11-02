@@ -120,6 +120,10 @@ pub enum HitResult<Msg> {
 pub type InputChangeCallback<Msg> = fn(String) -> Msg;
 pub type InputCallbacks<Msg> = (InputChangeCallback<Msg>, Option<Msg>);
 pub type InputProperties<Msg> = (InputChangeCallback<Msg>, Option<Msg>, bool, bool);
+/// Capture-preserving change and submit callbacks for a native input.
+pub type InputCallbacksWith<Msg> = (crate::ChangeCallback<String, Msg>, Option<Msg>);
+/// Capture-preserving callbacks followed by password and multiline flags.
+pub type InputPropertiesWith<Msg> = (crate::ChangeCallback<String, Msg>, Option<Msg>, bool, bool);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollbarDragHit {
@@ -597,7 +601,9 @@ fn hit_test_impl<Msg: Clone>(
             })
         }
         Widget::TextInput { .. }
+        | Widget::TextInputWith { .. }
         | Widget::TextArea { .. }
+        | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
         | Widget::ComboBox { .. } => {
             let body = crate::layout::field::FieldInsets::for_widget(widget)
@@ -634,7 +640,7 @@ fn hit_test_impl<Msg: Clone>(
             focus_id: widget.keyboard_focus_id(path),
             msg: on_select(),
         }),
-        Widget::Slider { min, max, step, .. } => {
+        Widget::Slider { min, max, step, .. } | Widget::SliderWith { min, max, step, .. } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let pad = 16.0_f32;
             let track_x = abs_pos.x + pad;
@@ -664,7 +670,7 @@ fn hit_test_impl<Msg: Clone>(
                 CounterSegment::Value => Some(HitResult::CounterFocus(id)),
             }
         }
-        Widget::Select { .. } => {
+        Widget::Select { .. } | Widget::SelectWith { .. } => {
             let body = crate::layout::field::FieldInsets::for_widget(widget)
                 .body((layout.size.width, layout.size.height));
             body.contains(Point::new(mouse.x - abs_pos.x, mouse.y - abs_pos.y))
@@ -1264,11 +1270,11 @@ fn hit_interactive_virtual_item<Msg: Clone>(
     hit_test_impl(item, &item_taffy, root, mouse, origin, widget_states, path)
 }
 
-fn virtual_item_physical_size(size: (f32, f32)) -> PhysicalSize<u32> {
+pub(crate) fn virtual_item_physical_size(size: (f32, f32)) -> PhysicalSize<u32> {
     PhysicalSize::new(size.0.max(1.0).ceil() as u32, size.1.max(1.0).ceil() as u32)
 }
 
-fn interactive_carousel_card_rect(
+pub(crate) fn interactive_carousel_card_rect(
     frame: crate::widgets::carousel::geometry::CarouselItemFrame,
     viewport_height: f32,
 ) -> SkiaRect {
@@ -1579,7 +1585,9 @@ fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &
     match widget {
         Widget::Disabled { child } => collect_input_ids_impl(child, ids, path),
         Widget::TextInput { .. }
+        | Widget::TextInputWith { .. }
         | Widget::TextArea { .. }
+        | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
         | Widget::ComboBox { .. } => {
             ids.push(widget.resolved_id(path).unwrap());
@@ -1642,8 +1650,12 @@ fn collect_stateful_ids_impl<Msg>(
 ) {
     match widget {
         Widget::Disabled { child } => collect_stateful_ids_impl(child, out, path),
-        Widget::Slider { .. } => out.push((widget.resolved_id(path).unwrap(), "slider")),
-        Widget::Select { .. } => out.push((widget.resolved_id(path).unwrap(), "select")),
+        Widget::Slider { .. } | Widget::SliderWith { .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "slider"))
+        }
+        Widget::Select { .. } | Widget::SelectWith { .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "select"))
+        }
         Widget::SearchBar {
             suggestions: Some(_),
             ..
@@ -1743,6 +1755,8 @@ fn collect_stateful_ids_impl<Msg>(
     }
 }
 
+/// Finds legacy function-pointer input callbacks. Captured variants return
+/// `None`; use [`find_input_callbacks_with`] to preserve captures.
 pub fn find_input_callbacks<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
@@ -1750,50 +1764,213 @@ pub fn find_input_callbacks<Msg: Clone>(
     find_input_props(widget, target_id).map(|(cb, submit, _, _)| (cb, submit))
 }
 
+/// Finds legacy input properties. Captured variants return `None`.
 pub fn find_input_props<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
 ) -> Option<InputProperties<Msg>> {
     let mut path = Vec::new();
-    find_input_props_impl(widget, target_id, &mut path)
-}
-
-fn find_input_props_impl<Msg: Clone>(
-    widget: &Widget<Msg>,
-    target_id: u64,
-    path: &mut Vec<usize>,
-) -> Option<InputProperties<Msg>> {
-    match widget {
-        Widget::Disabled { .. } => None,
+    find_input_props_impl(widget, target_id, &mut path, |widget| match widget {
         Widget::TextInput {
             on_change,
             on_submit,
             is_password,
             ..
-        } if widget.resolved_id(path) == Some(target_id) => {
-            Some((*on_change, on_submit.clone(), *is_password, false))
-        }
+        } => Some((*on_change, on_submit.clone(), *is_password, false)),
         Widget::TextArea {
             on_change,
             on_submit,
             ..
-        } if widget.resolved_id(path) == Some(target_id) => {
-            Some((*on_change, on_submit.clone(), false, true))
-        }
+        } => Some((*on_change, on_submit.clone(), false, true)),
         Widget::SearchBar {
             on_change,
             on_submit,
             ..
-        } if widget.resolved_id(path) == Some(target_id) => {
-            Some((*on_change, on_submit.clone(), false, false))
-        }
-        Widget::ComboBox { on_change, .. } if widget.resolved_id(path) == Some(target_id) => {
-            Some((*on_change, None, false, false))
+        } => Some((*on_change, on_submit.clone(), false, false)),
+        Widget::ComboBox { on_change, .. } => Some((*on_change, None, false, false)),
+        _ => None,
+    })
+}
+
+/// Finds either native input callback form, preserving the owned capture.
+pub fn find_input_callbacks_with<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+) -> Option<InputCallbacksWith<Msg>> {
+    find_input_props_with(widget, target_id).map(|(change, submit, _, _)| (change, submit))
+}
+
+/// Finds current input callbacks and password/multiline flags. Disabled branches
+/// and closed popover content do not expose callbacks.
+pub fn find_input_props_with<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+) -> Option<InputPropertiesWith<Msg>> {
+    find_input_props_impl(widget, target_id, &mut Vec::new(), |widget| match widget {
+        Widget::TextInputWith {
+            on_change,
+            on_submit,
+            is_password,
+            ..
+        } => Some((on_change.clone(), on_submit.clone(), *is_password, false)),
+        Widget::TextAreaWith {
+            on_change,
+            on_submit,
+            ..
+        } => Some((on_change.clone(), on_submit.clone(), false, true)),
+        Widget::TextInput {
+            on_change,
+            on_submit,
+            is_password,
+            ..
+        } => Some((
+            crate::ChangeCallback::from_function(*on_change),
+            on_submit.clone(),
+            *is_password,
+            false,
+        )),
+        Widget::TextArea {
+            on_change,
+            on_submit,
+            ..
+        } => Some((
+            crate::ChangeCallback::from_function(*on_change),
+            on_submit.clone(),
+            false,
+            true,
+        )),
+        Widget::SearchBar {
+            on_change,
+            on_submit,
+            ..
+        } => Some((
+            crate::ChangeCallback::from_function(*on_change),
+            on_submit.clone(),
+            false,
+            false,
+        )),
+        Widget::ComboBox { on_change, .. } => Some((
+            crate::ChangeCallback::from_function(*on_change),
+            None,
+            false,
+            false,
+        )),
+        _ => None,
+    })
+}
+
+fn find_input_props_impl<Msg: Clone, Properties>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+    extract: fn(&Widget<Msg>) -> Option<Properties>,
+) -> Option<Properties> {
+    match widget {
+        Widget::Disabled { .. } => None,
+        Widget::TextInput { .. }
+        | Widget::TextInputWith { .. }
+        | Widget::TextArea { .. }
+        | Widget::TextAreaWith { .. }
+        | Widget::SearchBar { .. }
+        | Widget::ComboBox { .. }
+            if widget.resolved_id(path) == Some(target_id) =>
+        {
+            extract(widget)
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for (index, child) in children.iter().enumerate() {
                 path.push(index);
-                let result = find_input_props_impl(child, target_id, path);
+                let result = find_input_props_impl(child, target_id, path, extract);
+                path.pop();
+                if let Some(r) = result {
+                    return Some(r);
+                }
+            }
+            None
+        }
+        Widget::Container { child, .. }
+        | Widget::ButtonContent { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::Tooltip { child, .. }
+        | Widget::ContextMenu { child, .. }
+        | Widget::ScrollView { child, .. }
+        | Widget::TableOfContents { child, .. }
+        | Widget::Accordion { child, .. }
+        | Widget::Modal { child, .. }
+        | Widget::Dialog { child, .. } => {
+            path.push(0);
+            let result = find_input_props_impl(child, target_id, path, extract);
+            path.pop();
+            result
+        }
+        Widget::Popover {
+            anchor,
+            content,
+            open,
+            ..
+        } => {
+            path.push(0);
+            let result = find_input_props_impl(anchor, target_id, path, extract);
+            path.pop();
+            if result.is_some() {
+                return result;
+            }
+            if *open {
+                path.push(1);
+                let result = find_input_props_impl(content, target_id, path, extract);
+                path.pop();
+                result
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Finds a legacy function-pointer Select callback.
+///
+/// For captured callbacks, use [`find_select_callback_with`]. This legacy API
+/// cannot represent captures and returns `None` for [`Widget::SelectWith`].
+pub fn find_select_callback<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+) -> Option<fn(usize) -> Msg> {
+    let mut path = Vec::new();
+    find_select_callback_impl(widget, target_id, &mut path, |widget| match widget {
+        Widget::Select { on_change, .. } => Some(*on_change),
+        _ => None,
+    })
+}
+
+/// Finds either native Select callback form, preserving its owned capture.
+pub fn find_select_callback_with<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+) -> Option<crate::ChangeCallback<usize, Msg>> {
+    find_select_callback_impl(widget, target_id, &mut Vec::new(), |widget| match widget {
+        Widget::Select { on_change, .. } => Some(crate::ChangeCallback::from_function(*on_change)),
+        Widget::SelectWith { on_change, .. } => Some(on_change.clone()),
+        _ => None,
+    })
+}
+
+fn find_select_callback_impl<Msg: Clone, Callback>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+    path: &mut Vec<usize>,
+    extract: fn(&Widget<Msg>) -> Option<Callback>,
+) -> Option<Callback> {
+    match widget {
+        Widget::Select { .. } | Widget::SelectWith { .. }
+            if widget.resolved_id(path) == Some(target_id) =>
+        {
+            extract(widget)
+        }
+        Widget::Column { children, .. } | Widget::Row { children, .. } => {
+            for (index, child) in children.iter().enumerate() {
+                path.push(index);
+                let result = find_select_callback_impl(child, target_id, path, extract);
                 path.pop();
                 if let Some(r) = result {
                     return Some(r);
@@ -1811,7 +1988,7 @@ fn find_input_props_impl<Msg: Clone>(
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
             path.push(0);
-            let result = find_input_props_impl(child, target_id, path);
+            let result = find_select_callback_impl(child, target_id, path, extract);
             path.pop();
             result
         }
@@ -1822,14 +1999,14 @@ fn find_input_props_impl<Msg: Clone>(
             ..
         } => {
             path.push(0);
-            let result = find_input_props_impl(anchor, target_id, path);
+            let result = find_select_callback_impl(anchor, target_id, path, extract);
             path.pop();
             if result.is_some() {
                 return result;
             }
             if *open {
                 path.push(1);
-                let result = find_input_props_impl(content, target_id, path);
+                let result = find_select_callback_impl(content, target_id, path, extract);
                 path.pop();
                 result
             } else {
@@ -1840,93 +2017,48 @@ fn find_input_props_impl<Msg: Clone>(
     }
 }
 
-pub fn find_select_callback<Msg: Clone>(
-    widget: &Widget<Msg>,
-    target_id: u64,
-) -> Option<fn(usize) -> Msg> {
-    let mut path = Vec::new();
-    find_select_callback_impl(widget, target_id, &mut path)
-}
-
-fn find_select_callback_impl<Msg: Clone>(
-    widget: &Widget<Msg>,
-    target_id: u64,
-    path: &mut Vec<usize>,
-) -> Option<fn(usize) -> Msg> {
-    match widget {
-        Widget::Select { on_change, .. } if widget.resolved_id(path) == Some(target_id) => {
-            Some(*on_change)
-        }
-        Widget::Column { children, .. } | Widget::Row { children, .. } => {
-            for (index, child) in children.iter().enumerate() {
-                path.push(index);
-                let result = find_select_callback_impl(child, target_id, path);
-                path.pop();
-                if let Some(r) = result {
-                    return Some(r);
-                }
-            }
-            None
-        }
-        Widget::Container { child, .. }
-        | Widget::Tooltip { child, .. }
-        | Widget::ContextMenu { child, .. }
-        | Widget::ScrollView { child, .. }
-        | Widget::TableOfContents { child, .. }
-        | Widget::Accordion { child, .. }
-        | Widget::Modal { child, .. }
-        | Widget::Dialog { child, .. } => {
-            path.push(0);
-            let result = find_select_callback_impl(child, target_id, path);
-            path.pop();
-            result
-        }
-        Widget::Popover {
-            anchor,
-            content,
-            open,
-            ..
-        } => {
-            path.push(0);
-            let result = find_select_callback_impl(anchor, target_id, path);
-            path.pop();
-            if result.is_some() {
-                return result;
-            }
-            if *open {
-                path.push(1);
-                let result = find_select_callback_impl(content, target_id, path);
-                path.pop();
-                result
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
+/// Finds a legacy function-pointer Slider callback. Captured variants return
+/// `None`; use [`find_slider_callback_with`] for either callback form.
 pub fn find_slider_callback<Msg: Clone>(
     widget: &Widget<Msg>,
     target_id: u64,
 ) -> Option<fn(f32) -> Msg> {
     let mut path = Vec::new();
-    find_slider_callback_impl(widget, target_id, &mut path)
+    find_slider_callback_impl(widget, target_id, &mut path, |widget| match widget {
+        Widget::Slider { on_change, .. } => Some(*on_change),
+        _ => None,
+    })
 }
 
-fn find_slider_callback_impl<Msg: Clone>(
+/// Finds either native Slider callback form, preserving its owned capture.
+pub fn find_slider_callback_with<Msg: Clone>(
+    widget: &Widget<Msg>,
+    target_id: u64,
+) -> Option<crate::ChangeCallback<f32, Msg>> {
+    find_slider_callback_impl(widget, target_id, &mut Vec::new(), |widget| match widget {
+        Widget::Slider { on_change, .. } => Some(crate::ChangeCallback::from_function(*on_change)),
+        Widget::SliderWith { on_change, .. } => Some(on_change.clone()),
+        _ => None,
+    })
+}
+
+fn find_slider_callback_impl<Msg: Clone, Callback>(
     widget: &Widget<Msg>,
     target_id: u64,
     path: &mut Vec<usize>,
-) -> Option<fn(f32) -> Msg> {
+    extract: fn(&Widget<Msg>) -> Option<Callback>,
+) -> Option<Callback> {
     match widget {
-        Widget::Slider { on_change, .. } if widget.resolved_id(path) == Some(target_id) => {
-            Some(*on_change)
+        Widget::Disabled { .. } => None,
+        Widget::Slider { .. } | Widget::SliderWith { .. }
+            if widget.resolved_id(path) == Some(target_id) =>
+        {
+            extract(widget)
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for (index, child) in children.iter().enumerate() {
                 path.push(index);
-                let result = find_slider_callback_impl(child, target_id, path);
+                let result = find_slider_callback_impl(child, target_id, path, extract);
                 path.pop();
                 if let Some(r) = result {
                     return Some(r);
@@ -1935,6 +2067,8 @@ fn find_slider_callback_impl<Msg: Clone>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -1943,7 +2077,7 @@ fn find_slider_callback_impl<Msg: Clone>(
         | Widget::Modal { child, .. }
         | Widget::Dialog { child, .. } => {
             path.push(0);
-            let result = find_slider_callback_impl(child, target_id, path);
+            let result = find_slider_callback_impl(child, target_id, path, extract);
             path.pop();
             result
         }
@@ -1954,14 +2088,14 @@ fn find_slider_callback_impl<Msg: Clone>(
             ..
         } => {
             path.push(0);
-            let result = find_slider_callback_impl(anchor, target_id, path);
+            let result = find_slider_callback_impl(anchor, target_id, path, extract);
             path.pop();
             if result.is_some() {
                 return result;
             }
             if *open {
                 path.push(1);
-                let result = find_slider_callback_impl(content, target_id, path);
+                let result = find_slider_callback_impl(content, target_id, path, extract);
                 path.pop();
                 result
             } else {
@@ -2136,7 +2270,9 @@ fn find_input_geometry_impl<Msg>(
 ) -> Option<InputGeometry> {
     match widget {
         Widget::TextInput { .. }
+        | Widget::TextInputWith { .. }
         | Widget::TextArea { .. }
+        | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
         | Widget::ComboBox { .. }
             if widget.resolved_id(path) == Some(target_id) =>

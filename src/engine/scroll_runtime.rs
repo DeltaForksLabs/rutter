@@ -7,15 +7,29 @@ use std::collections::{HashMap, HashSet};
 use skia_safe::{Point, Rect};
 use taffy::prelude::{NodeId, TaffyTree};
 
-use super::widget_state::WidgetState;
-use crate::layout::RutterContext;
-use crate::render::hit_test::{dialog_card_rect, modal_card_rect, popover_rect};
-use crate::widget::Widget;
+use super::widget_state::{
+    WidgetState, normalize_virtual_grid_columns, virtual_grid_cell_left, virtual_grid_cell_width,
+};
+use crate::i18n::LayoutDirection;
+use crate::layout::{
+    RutterContext, SCROLLBAR_W, VIRTUAL_GRID_GAP, build_layout_tree, compute_layout_with_renderer,
+};
+use crate::render::RichTextRenderer;
+use crate::render::hit_test::{
+    dialog_card_rect, interactive_carousel_card_rect, modal_card_rect, popover_rect,
+    virtual_item_physical_size,
+};
+use crate::widget::{
+    KeyedVirtualItems, Widget, pop_interactive_virtual_item_path,
+    push_interactive_virtual_item_path,
+};
+use crate::widgets::carousel::geometry::carousel_item_frames;
 use crate::widgets::table_of_contents::layout_nodes;
 
 #[derive(Debug, Default)]
 pub(super) struct ViewportGeometry {
     pub pointer_regions: HashMap<u64, Rect>,
+    pub sliders: HashMap<u64, Rect>,
     // Painting uses is_open. Keep logically open, clipped popovers separately so
     // they can reappear on scroll and still absorb outside clicks/Escape.
     pub hidden_popovers: HashSet<u64>,
@@ -27,14 +41,14 @@ pub(super) struct ViewportGeometry {
 
 pub(super) fn reconcile<Msg>(
     widget: &Widget<'_, Msg>,
-    layout: (&TaffyTree<RutterContext>, NodeId),
+    layout: (&TaffyTree<RutterContext>, NodeId, &RichTextRenderer),
     states: &mut HashMap<u64, WidgetState>,
     geometry: &mut ViewportGeometry,
     viewport: (f32, f32),
     focus: Option<u64>,
     reveal: bool,
 ) -> Vec<u64> {
-    let (taffy, root) = layout;
+    let (taffy, root, renderer) = layout;
     // Collapsed/hidden layout branches may have no child nodes at all. Start
     // suppressed, then restore only popovers reached through visible geometry.
     for (&id, state) in states.iter_mut() {
@@ -47,6 +61,7 @@ pub(super) fn reconcile<Msg>(
     }
     let mut pass = GeometryPass {
         taffy,
+        renderer,
         states,
         geometry,
         viewport,
@@ -57,6 +72,7 @@ pub(super) fn reconcile<Msg>(
     };
     pass.geometry.hidden_focus.clear();
     pass.geometry.pointer_regions.clear();
+    pass.geometry.sliders.clear();
     pass.geometry.focused_input_rect = None;
     pass.geometry.focused_scroll = None;
     pass.visit(
@@ -72,7 +88,7 @@ pub(super) fn reconcile<Msg>(
     if !changed.is_empty() {
         reconcile(
             widget,
-            (taffy, root),
+            (taffy, root, renderer),
             states,
             geometry,
             viewport,
@@ -85,6 +101,7 @@ pub(super) fn reconcile<Msg>(
 
 struct GeometryPass<'a> {
     taffy: &'a TaffyTree<RutterContext>,
+    renderer: &'a RichTextRenderer,
     states: &'a mut HashMap<u64, WidgetState>,
     geometry: &'a mut ViewportGeometry,
     viewport: (f32, f32),
@@ -111,7 +128,7 @@ impl GeometryPass<'_> {
             layout.size.width,
             layout.size.height,
         );
-        let mut target = self.capture_focus(widget, frame, visible);
+        let mut target = self.capture_focus(widget, frame, clip, visible);
         match widget {
             Widget::Disabled { child } => {
                 self.visit(child, node, parent, clip, false);
@@ -123,6 +140,13 @@ impl GeometryPass<'_> {
                         .child(child, node, absolute, clip, visible, index)
                         .or(target);
                 }
+            }
+            Widget::InteractiveVirtualListContent { .. }
+            | Widget::InteractiveVirtualGridContent { .. }
+            | Widget::InteractiveCarouselView { .. } => {
+                target = self
+                    .virtual_collection(widget, node, frame, clip, visible)
+                    .or(target);
             }
             Widget::ScrollView { child, .. } => {
                 let id = widget.resolved_id(&self.path)?;
@@ -295,13 +319,165 @@ impl GeometryPass<'_> {
         target
     }
 
+    fn virtual_collection<Msg>(
+        &mut self,
+        widget: &Widget<'_, Msg>,
+        node: NodeId,
+        frame: Rect,
+        clip: Rect,
+        visible: bool,
+    ) -> Option<Rect> {
+        let id = widget.resolved_id(&self.path)?;
+        let direction = match self.taffy.style(node).ok()?.direction {
+            taffy::Direction::Ltr => LayoutDirection::Ltr,
+            taffy::Direction::Rtl => LayoutDirection::Rtl,
+        };
+        let (items, frames): (_, Vec<_>) = match widget {
+            Widget::InteractiveVirtualListContent {
+                items, item_height, ..
+            } => {
+                let state = self.states.get(&id)?.as_vlist()?;
+                let (first, last) = state.visible_range(*item_height, items.len());
+                let frames = (first..last)
+                    .map(|index| {
+                        (
+                            index,
+                            Rect::from_xywh(
+                                frame.left,
+                                frame.top + index as f32 * item_height - state.scroll_y,
+                                (frame.width() - SCROLLBAR_W - 4.0).max(0.0),
+                                *item_height,
+                            ),
+                        )
+                    })
+                    .collect();
+                (items, frames)
+            }
+            Widget::InteractiveVirtualGridContent {
+                items,
+                item_height,
+                columns,
+                ..
+            } => {
+                let state = self.states.get(&id)?.as_vgrid()?;
+                let (first, last) = state.visible_row_range(*item_height, items.len(), *columns);
+                let columns = normalize_virtual_grid_columns(*columns);
+                let frames = (first * columns..(last * columns).min(items.len()))
+                    .map(|index| {
+                        (
+                            index,
+                            Rect::from_xywh(
+                                frame.left
+                                    + virtual_grid_cell_left(
+                                        index % columns,
+                                        frame.width(),
+                                        columns,
+                                    ),
+                                frame.top + (index / columns) as f32 * item_height - state.scroll_y
+                                    + VIRTUAL_GRID_GAP * 0.5,
+                                virtual_grid_cell_width(frame.width(), columns),
+                                (*item_height - VIRTUAL_GRID_GAP).max(12.0),
+                            ),
+                        )
+                    })
+                    .collect();
+                (items, frames)
+            }
+            Widget::InteractiveCarouselView { items, config, .. } => {
+                let state = self.states.get(&id)?.as_carousel()?;
+                let frames = carousel_item_frames(
+                    config,
+                    state.position,
+                    frame.width(),
+                    items.len(),
+                    direction,
+                )
+                .into_iter()
+                .map(|item| {
+                    (
+                        item.index,
+                        interactive_carousel_card_rect(item, frame.height())
+                            .with_offset((frame.left, frame.top)),
+                    )
+                })
+                .collect();
+                (items, frames)
+            }
+            _ => return None,
+        };
+        let clip = intersection(clip, frame);
+        let mut target = None;
+        for (index, frame) in frames {
+            target = self
+                .virtual_item(items, index, frame, clip, visible, direction)
+                .or(target);
+        }
+        target
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn virtual_item<Msg>(
+        &mut self,
+        items: &KeyedVirtualItems<'_, Msg>,
+        index: usize,
+        frame: Rect,
+        clip: Rect,
+        visible: bool,
+        direction: LayoutDirection,
+    ) -> Option<Rect> {
+        let key = items.key_at(index)?;
+        let item = items.build_item(index)?;
+        // Virtual children have no nodes in the retained tree. Rebuild the same
+        // item-local layout used by painting, then apply its live viewport origin
+        // and keyed identity scope; press-time track geometry is never reused.
+        let mut taffy = TaffyTree::new();
+        let root = build_layout_tree(&mut taffy, &item, direction);
+        compute_layout_with_renderer(
+            &mut taffy,
+            root,
+            virtual_item_physical_size((frame.width(), frame.height())),
+            self.renderer,
+        );
+        push_interactive_virtual_item_path(&mut self.path, key);
+        let mut pass = GeometryPass {
+            taffy: &taffy,
+            renderer: self.renderer,
+            states: self.states,
+            geometry: self.geometry,
+            viewport: self.viewport,
+            focus: self.focus,
+            reveal: self.reveal,
+            path: self.path.clone(),
+            changed_scrolls: Vec::new(),
+        };
+        let clip = intersection(clip, frame);
+        let target = pass.visit(
+            &item,
+            root,
+            Point::new(frame.left, frame.top),
+            clip,
+            visible && !clip.is_empty(),
+        );
+        self.changed_scrolls.extend(pass.changed_scrolls);
+        pop_interactive_virtual_item_path(&mut self.path);
+        target.map(|target| intersection(target, clip))
+    }
+
     fn capture_focus<Msg>(
         &mut self,
         widget: &Widget<'_, Msg>,
         frame: Rect,
+        clip: Rect,
         visible: bool,
     ) -> Option<Rect> {
         let id = widget.keyboard_focus_id(&self.path)?;
+        if visible
+            && matches!(widget, Widget::Slider { .. } | Widget::SliderWith { .. })
+            && !intersection(frame, clip).is_empty()
+        {
+            // Clipping gates capture, but must not shorten the value-mapping track.
+            self.geometry.sliders.insert(id, frame);
+        }
         if !visible {
             self.geometry.hidden_focus.insert(id);
             return None;
@@ -312,7 +488,9 @@ impl GeometryPass<'_> {
         if matches!(
             widget,
             Widget::TextInput { .. }
+                | Widget::TextInputWith { .. }
                 | Widget::TextArea { .. }
+                | Widget::TextAreaWith { .. }
                 | Widget::SearchBar { .. }
                 | Widget::ComboBox { .. }
         ) {

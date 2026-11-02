@@ -362,12 +362,16 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::Switch { .. }
         | Widget::Radio { .. }
         | Widget::TextInput { .. }
+        | Widget::TextInputWith { .. }
         | Widget::TextArea { .. }
+        | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
         | Widget::ComboBox { .. }
         | Widget::Slider { .. }
+        | Widget::SliderWith { .. }
         | Widget::Counter { .. }
         | Widget::Select { .. }
+        | Widget::SelectWith { .. }
         | Widget::DropdownMenu { .. }
         | Widget::CarouselView { .. }
         | Widget::InteractiveCarouselView { .. }
@@ -499,7 +503,7 @@ impl std::fmt::Debug for CachedInputModel {
 #[derive(Debug, Clone)]
 struct InputRuntime<Msg: Clone> {
     model_value: Option<CachedInputModel>,
-    on_change: fn(String) -> Msg,
+    on_change: crate::ChangeCallback<String, Msg>,
     on_submit: Option<Msg>,
     is_password: bool,
     is_multiline: bool,
@@ -598,14 +602,46 @@ impl InputBufferMetadata<'_> {
 
 #[derive(Debug, Clone)]
 struct SliderRuntime<Msg> {
-    on_change: fn(f32) -> Msg,
+    on_change: crate::ChangeCallback<f32, Msg>,
+    generation: u64,
     value: f32,
     min: f32,
     max: f32,
     step: f32,
 }
 
-type CounterRuntime<Msg, T = i64> = crate::widget::CounterParameters<T, Msg>;
+#[derive(Debug, Clone)]
+struct CounterRuntime<Msg, T = i64> {
+    value: T,
+    min: T,
+    max: T,
+    step: T,
+    on_change: crate::ChangeCallback<T, Msg>,
+}
+
+impl<T, Msg> From<crate::CounterParameters<T, Msg>> for CounterRuntime<Msg, T> {
+    fn from(parameters: crate::CounterParameters<T, Msg>) -> Self {
+        Self {
+            value: parameters.value,
+            min: parameters.min,
+            max: parameters.max,
+            step: parameters.step,
+            on_change: crate::ChangeCallback::from_function(parameters.on_change),
+        }
+    }
+}
+
+impl<T, Msg> From<crate::CapturedCounterParameters<T, Msg>> for CounterRuntime<Msg, T> {
+    fn from(parameters: crate::CapturedCounterParameters<T, Msg>) -> Self {
+        Self {
+            value: parameters.value,
+            min: parameters.min,
+            max: parameters.max,
+            step: parameters.step,
+            on_change: parameters.on_change,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct CounterRuntimeEntry<Msg> {
@@ -621,7 +657,7 @@ struct ToggleRuntime<Msg> {
 
 #[derive(Debug, Clone)]
 struct SelectRuntime<Msg> {
-    on_change: fn(usize) -> Msg,
+    on_change: crate::ChangeCallback<usize, Msg>,
     selected_index: usize,
     option_count: usize,
 }
@@ -866,14 +902,18 @@ impl<Msg: Clone> Default for WidgetRuntimeCaches<Msg> {
 }
 
 impl<Msg: Clone> WidgetRuntimeCaches<Msg> {
-    fn reconcile_counter_generations(&mut self, previous: &Self, generation: u64) {
+    fn reconcile_control_generations(&mut self, previous: &Self, generation: u64) {
+        for (id, slider) in &mut self.sliders {
+            slider.generation = previous
+                .sliders
+                .get(id)
+                .map_or(generation, |old| old.generation);
+        }
         for (id, counter) in &mut self.counters {
             counter.generation = previous
                 .counters
                 .get(id)
-                .filter(|old| {
-                    std::mem::discriminant(&old.config) == std::mem::discriminant(&counter.config)
-                })
+                .filter(|old| old.config.is_float() == counter.config.is_float())
                 .map_or(generation, |old| old.generation);
         }
     }
@@ -1896,6 +1936,7 @@ pub struct RutterEngine<A: AppLogic> {
     pending_focus_reveal: bool,
     pub active_scroll_id: Option<u64>,
     pub drag_slider_id: Option<u64>,
+    drag_slider_generation: Option<u64>,
     pub clipboard: Clipboard,
     pub modifiers: Modifiers,
     pub cursor_blink: CursorBlink,
@@ -2001,6 +2042,7 @@ impl<A: AppLogic> RutterEngine<A> {
             pending_focus_reveal: false,
             active_scroll_id: None,
             drag_slider_id: None,
+            drag_slider_generation: None,
             clipboard: Clipboard::new()?,
             modifiers: Modifiers::default(),
             cursor_blink: CursorBlink::new(),
@@ -2097,6 +2139,7 @@ impl<A: AppLogic> RutterEngine<A> {
     }
 
     pub(crate) fn release_surface(&mut self) {
+        self.cancel_slider_drag();
         self.accessibility_adapter = None;
         self.accessibility_actions.retire_generation();
         self.graphics_backend = None;
@@ -2249,7 +2292,7 @@ impl<A: AppLogic> RutterEngine<A> {
             .drag_slider_id
             .is_some_and(|id| !live_widget_ids.contains(&id))
         {
-            self.drag_slider_id = None;
+            self.cancel_slider_drag();
         }
 
         self.apply_widget_runtime_state(&toast_updates);
@@ -2547,6 +2590,18 @@ impl<A: AppLogic> RutterEngine<A> {
             .unwrap_or_else(|error| panic!("widget ID validation failed: {error}"));
     }
 
+    fn cancel_slider_drag(&mut self) {
+        self.drag_slider_generation = None;
+        if let Some(id) = self.drag_slider_id.take()
+            && let Some(slider) = self
+                .widget_states
+                .get_mut(&id)
+                .and_then(WidgetState::as_slider_mut)
+        {
+            slider.dragging = false;
+        }
+    }
+
     pub(crate) fn try_ensure_layout_for_input(
         &mut self,
         size: PhysicalSize<u32>,
@@ -2603,7 +2658,7 @@ impl<A: AppLogic> RutterEngine<A> {
         )?;
         let revealed_scrolls = scroll_runtime::reconcile(
             &widget_tree,
-            (&self.taffy, root),
+            (&self.taffy, root, self.image_cache.rich_text_renderer()),
             &mut self.widget_states,
             &mut self.runtime_cache_scratch.viewport_geometry,
             (logical.width as f32, logical.height as f32),
@@ -2616,12 +2671,6 @@ impl<A: AppLogic> RutterEngine<A> {
                 .contains_key(id)
         });
         close_inactive_selects(&self.runtime_cache_scratch, &mut self.widget_states);
-        if self
-            .drag_slider_id
-            .is_some_and(|id| !self.runtime_cache_scratch.sliders.contains_key(&id))
-        {
-            self.drag_slider_id = None;
-        }
         let overlay_focus_scope =
             collect_focus_order(&widget_tree, &mut self.runtime_cache_scratch.focus_order);
         append_interactive_virtual_focus_order(
@@ -2712,9 +2761,10 @@ impl<A: AppLogic> RutterEngine<A> {
                     .map(move |matched| resolve_search_suggestion_id(overlay.id, matched.index))
             })
             .collect();
-        // Preserve a hold only across uninterrupted publications of the same
-        // numeric mode. A round-trip mode change must not revive an old hold.
-        self.runtime_cache_scratch.reconcile_counter_generations(
+        // Preserve captures only across uninterrupted native lifetimes. Callback
+        // form changes keep that lifetime; disable/removal and Counter numeric
+        // mode changes cannot revive an old pointer hold.
+        self.runtime_cache_scratch.reconcile_control_generations(
             &self.runtime_caches,
             self.layout_revision.wrapping_add(1),
         );
@@ -2723,6 +2773,12 @@ impl<A: AppLogic> RutterEngine<A> {
         // another publication (in particular, password values).
         self.runtime_cache_scratch.clear();
         drop(widget_tree);
+        if self
+            .drag_slider_id
+            .is_some_and(|id| !self.runtime_caches.sliders.contains_key(&id))
+        {
+            self.cancel_slider_drag();
+        }
         for id in revealed_scrolls {
             self.cancel_smooth_scroll(id);
         }
@@ -2751,7 +2807,11 @@ impl<A: AppLogic> RutterEngine<A> {
         validate_runtime_reconstruction(self.widget_id_snapshot.as_ref(), &widget)?;
         let changed = scroll_runtime::reconcile(
             &widget,
-            (&self.taffy, self.last_root_node),
+            (
+                &self.taffy,
+                self.last_root_node,
+                self.image_cache.rich_text_renderer(),
+            ),
             &mut self.widget_states,
             &mut self.runtime_caches.viewport_geometry,
             (
@@ -2862,7 +2922,9 @@ impl<A: AppLogic> RutterEngine<A> {
         let input_body_layout = if matches!(
             widget,
             Widget::TextInput { .. }
+                | Widget::TextInputWith { .. }
                 | Widget::TextArea { .. }
+                | Widget::TextAreaWith { .. }
                 | Widget::SearchBar { .. }
                 | Widget::ComboBox { .. }
         ) {
@@ -2877,17 +2939,22 @@ impl<A: AppLogic> RutterEngine<A> {
             None
         };
         let layout = input_body_layout.as_ref().or(layout);
-        match widget {
-            Widget::TextInput {
-                model_value,
-                on_change,
-                ..
+        let input_change = match widget {
+            Widget::TextInput { on_change, .. }
+            | Widget::TextArea { on_change, .. }
+            | Widget::SearchBar { on_change, .. }
+            | Widget::ComboBox { on_change, .. } => {
+                Some(crate::ChangeCallback::from_function(*on_change))
             }
-            | Widget::ComboBox {
-                model_value,
-                on_change,
-                ..
-            } => {
+            Widget::TextInputWith { on_change, .. } | Widget::TextAreaWith { on_change, .. } => {
+                Some(on_change.clone())
+            }
+            _ => None,
+        };
+        match widget {
+            Widget::TextInput { model_value, .. }
+            | Widget::TextInputWith { model_value, .. }
+            | Widget::ComboBox { model_value, .. } => {
                 let visible_w = if matches!(widget, Widget::ComboBox { .. }) {
                     crate::combo_box::text_width(
                         layout
@@ -2900,6 +2967,11 @@ impl<A: AppLogic> RutterEngine<A> {
                 };
                 let (on_submit, is_password) = match widget {
                     Widget::TextInput {
+                        on_submit,
+                        is_password,
+                        ..
+                    }
+                    | Widget::TextInputWith {
                         on_submit,
                         is_password,
                         ..
@@ -2931,7 +3003,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     resolved_id,
                     InputRuntime {
                         model_value: model_value.map(CachedInputModel::new),
-                        on_change: *on_change,
+                        on_change: input_change.unwrap(),
                         on_submit,
                         is_password,
                         is_multiline: false,
@@ -2970,18 +3042,14 @@ impl<A: AppLogic> RutterEngine<A> {
                     "buttons",
                 )?;
             }
-            Widget::TextArea {
-                on_change,
-                on_submit,
-                ..
-            } => {
+            Widget::TextArea { on_submit, .. } | Widget::TextAreaWith { on_submit, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 runtime_caches.input_order.push(resolved_id);
                 insert_runtime_entry(
                     &mut runtime_caches.inputs,
                     resolved_id,
                     InputRuntime {
-                        on_change: *on_change,
+                        on_change: input_change.unwrap(),
                         on_submit: on_submit.clone(),
                         is_password: false,
                         is_multiline: true,
@@ -2996,7 +3064,6 @@ impl<A: AppLogic> RutterEngine<A> {
                 )?;
             }
             Widget::SearchBar {
-                on_change,
                 on_submit,
                 suggestions,
                 ..
@@ -3007,7 +3074,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     &mut runtime_caches.inputs,
                     resolved_id,
                     InputRuntime {
-                        on_change: *on_change,
+                        on_change: input_change.unwrap(),
                         on_submit: on_submit.clone(),
                         is_password: false,
                         is_multiline: false,
@@ -3078,7 +3145,13 @@ impl<A: AppLogic> RutterEngine<A> {
             }
             Widget::Slider {
                 value,
-                on_change,
+                min,
+                max,
+                step,
+                ..
+            }
+            | Widget::SliderWith {
+                value,
                 min,
                 max,
                 step,
@@ -3089,7 +3162,14 @@ impl<A: AppLogic> RutterEngine<A> {
                     &mut runtime_caches.sliders,
                     resolved_id,
                     SliderRuntime {
-                        on_change: *on_change,
+                        on_change: match widget {
+                            Widget::Slider { on_change, .. } => {
+                                crate::ChangeCallback::from_function(*on_change)
+                            }
+                            Widget::SliderWith { on_change, .. } => on_change.clone(),
+                            _ => unreachable!(),
+                        },
+                        generation: 0,
                         value: *value,
                         min: *min,
                         max: *max,
@@ -3120,7 +3200,24 @@ impl<A: AppLogic> RutterEngine<A> {
                     &mut runtime_caches.selects,
                     widget.resolved_id(path).unwrap(),
                     SelectRuntime {
-                        on_change: *on_change,
+                        on_change: crate::ChangeCallback::from_function(*on_change),
+                        selected_index: *selected_index,
+                        option_count: options.len(),
+                    },
+                    "selects",
+                )?;
+            }
+            Widget::SelectWith {
+                options,
+                selected_index,
+                on_change,
+                ..
+            } => {
+                insert_runtime_entry(
+                    &mut runtime_caches.selects,
+                    widget.resolved_id(path).unwrap(),
+                    SelectRuntime {
+                        on_change: on_change.clone(),
                         selected_index: *selected_index,
                         option_count: options.len(),
                     },
@@ -4632,7 +4729,7 @@ mod tests {
             taffy.layout(input_node).ok(),
             DummyApp::theme().spacing,
         );
-        assert_eq!((input.on_change)("abc".into()), Msg::Str("abc".into()));
+        assert_eq!(input.on_change.call("abc".into()), Msg::Str("abc".into()));
         assert_eq!(input.on_submit, Some(Msg::Submit));
         assert!(input.is_password);
         assert_eq!(input.leading_text_inset, 0.0);
@@ -4643,7 +4740,7 @@ mod tests {
         assert_eq!(slider.min, 0.0);
         assert_eq!(slider.max, 100.0);
         assert_eq!(slider.step, 5.0);
-        assert_eq!((slider.on_change)(55.0), Msg::Float(55.0));
+        assert_eq!(slider.on_change.call(55.0), Msg::Float(55.0));
 
         let CounterConfig::Integer(counter) = &runtime_caches.counters.get(&10).unwrap().config
         else {
@@ -4674,7 +4771,7 @@ mod tests {
         let select = runtime_caches.selects.get(&3).unwrap();
         assert_eq!(select.selected_index, 0);
         assert_eq!(select.option_count, 2);
-        assert_eq!((select.on_change)(1), Msg::Usize(1));
+        assert_eq!(select.on_change.call(1), Msg::Usize(1));
 
         let tab = runtime_caches.tabs.get(&4).unwrap();
         assert_eq!(tab.tab_count, 2);
@@ -4952,7 +5049,7 @@ mod tests {
         assert_eq!(runtime_caches.input_order, vec![10]);
         let input = runtime_caches.inputs.get(&10).unwrap();
         assert_eq!(
-            (input.on_change)("hidden".into()),
+            input.on_change.call("hidden".into()),
             Msg::Str("hidden".into())
         );
         assert_eq!(input.on_submit, Some(Msg::Submit));

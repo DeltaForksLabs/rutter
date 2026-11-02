@@ -5,6 +5,7 @@
 // Rutter Framework — widget/mod.rs
 // ============================================================
 
+mod change_callback;
 mod counter;
 pub mod custom;
 pub(crate) mod id;
@@ -28,9 +29,10 @@ use crate::widgets::table_of_contents::{
     HeadingLevel, TableOfContentsAccordion, TableOfContentsOptions,
 };
 use crate::widgets::time::{ClockConfig, TimeZone};
+pub use change_callback::ChangeCallback;
 pub use counter::{
-    CounterConfig, CounterConfigError, CounterInput, CounterParameters, CounterValue,
-    validate_counter,
+    CapturedCounterParameters, CounterConfig, CounterConfigError, CounterInput, CounterParameters,
+    CounterValue, validate_counter,
 };
 pub use custom::{
     CUSTOM_WIDGET_API_VERSION, CustomAccessibility, CustomAccessibilityAction,
@@ -694,9 +696,33 @@ pub enum Widget<'a, Msg> {
         error_msg: Option<String>,
         is_password: bool,
     },
+    /// Native single-line input with an owned change callback.
+    TextInputWith {
+        model_value: Option<&'a str>,
+        on_change: ChangeCallback<String, Msg>,
+        on_submit: Option<Msg>,
+        style: Style,
+        id: u64,
+        label: &'a str,
+        placeholder: &'a str,
+        state: InputState,
+        error_msg: Option<String>,
+        is_password: bool,
+    },
     TextArea {
         id: u64,
         on_change: fn(String) -> Msg,
+        on_submit: Option<Msg>,
+        style: Style,
+        label: &'a str,
+        state: InputState,
+        placeholder: &'a str,
+        error_msg: Option<String>,
+    },
+    /// Native multiline input with an owned change callback.
+    TextAreaWith {
+        id: u64,
+        on_change: ChangeCallback<String, Msg>,
         on_submit: Option<Msg>,
         style: Style,
         label: &'a str,
@@ -757,6 +783,17 @@ pub enum Widget<'a, Msg> {
         style: Style,
         label: &'a str,
     },
+    /// Native slider with an owned change callback.
+    SliderWith {
+        id: u64,
+        value: f32,
+        min: f32,
+        max: f32,
+        step: f32,
+        on_change: ChangeCallback<f32, Msg>,
+        style: Style,
+        label: &'a str,
+    },
     Counter {
         id: u64,
         config: CounterConfig<Msg>,
@@ -775,6 +812,16 @@ pub enum Widget<'a, Msg> {
         options: &'a [&'a str],
         selected_index: usize,
         on_change: fn(usize) -> Msg,
+        style: Style,
+        label: &'a str,
+        placeholder: &'a str,
+    },
+    /// Native Select with an owned callback; use [`Widget::select_with`].
+    SelectWith {
+        id: u64,
+        options: &'a [&'a str],
+        selected_index: usize,
+        on_change: ChangeCallback<usize, Msg>,
         style: Style,
         label: &'a str,
         placeholder: &'a str,
@@ -1202,6 +1249,83 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates an uncontrolled native input with an owned callback.
+    /// Captures follow the snapshot semantics of [`Self::counter_with`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_input_with(
+        on_change: impl Fn(String) -> Msg + Send + Sync + 'static,
+        on_submit: Option<Msg>,
+        style: Style,
+        label: &'a str,
+        placeholder: &'a str,
+        state: InputState,
+        error_msg: Option<String>,
+        is_password: bool,
+    ) -> Self {
+        Self::TextInputWith {
+            model_value: None,
+            on_change: ChangeCallback::new(on_change),
+            on_submit,
+            style,
+            id: AUTO_ID,
+            label,
+            placeholder,
+            state,
+            error_msg,
+            is_password,
+        }
+    }
+
+    /// Creates a captured-callback input with the model synchronization behavior
+    /// of [`Self::controlled_text_input`], without emitting changes for model echoes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn controlled_text_input_with(
+        value: &'a str,
+        on_change: impl Fn(String) -> Msg + Send + Sync + 'static,
+        on_submit: Option<Msg>,
+        style: Style,
+        label: &'a str,
+        placeholder: &'a str,
+        state: InputState,
+        error_msg: Option<String>,
+        is_password: bool,
+    ) -> Self {
+        Self::TextInputWith {
+            model_value: Some(value),
+            on_change: ChangeCallback::new(on_change),
+            on_submit,
+            style,
+            id: AUTO_ID,
+            label,
+            placeholder,
+            state,
+            error_msg,
+            is_password,
+        }
+    }
+
+    /// Creates a native multiline input with an owned callback.
+    pub fn text_area_with(
+        on_change: impl Fn(String) -> Msg + Send + Sync + 'static,
+        on_submit: Option<Msg>,
+        style: Style,
+        label: &'a str,
+        state: InputState,
+        placeholder: &'a str,
+        error_msg: Option<String>,
+    ) -> Self {
+        Self::TextAreaWith {
+            id: AUTO_ID,
+            on_change: ChangeCallback::new(on_change),
+            on_submit,
+            style,
+            label,
+            state,
+            placeholder,
+            error_msg,
+        }
+    }
+
     pub fn search_bar(
         on_change: fn(String) -> Msg,
         on_submit: Option<Msg>,
@@ -1313,6 +1437,44 @@ impl<'a, Msg> Widget<'a, Msg> {
         Ok(Self::slider(value, min, max, step, on_change, style, label))
     }
 
+    /// Creates a native slider with an owned callback, as in [`Self::slider`].
+    pub fn slider_with(
+        value: f32,
+        min: f32,
+        max: f32,
+        step: f32,
+        on_change: impl Fn(f32) -> Msg + Send + Sync + 'static,
+        style: Style,
+        label: &'a str,
+    ) -> Self {
+        Self::SliderWith {
+            id: AUTO_ID,
+            value,
+            min,
+            max,
+            step,
+            on_change: ChangeCallback::new(on_change),
+            style,
+            label,
+        }
+    }
+
+    /// Validates and creates an owned-callback slider, as in [`Self::try_slider`].
+    pub fn try_slider_with(
+        value: f32,
+        min: f32,
+        max: f32,
+        step: f32,
+        on_change: impl Fn(f32) -> Msg + Send + Sync + 'static,
+        style: Style,
+        label: &'a str,
+    ) -> Result<Self, WidgetConfigError> {
+        validate_slider(value, min, max, step)?;
+        Ok(Self::slider_with(
+            value, min, max, step, on_change, style, label,
+        ))
+    }
+
     /// Creates a controlled integer or floating-point Counter rendered as `- value +`.
     ///
     /// The value, bounds, step and callback share one numeric type (`i64` or `f64`).
@@ -1398,6 +1560,62 @@ impl<'a, Msg> Widget<'a, Msg> {
         ))
     }
 
+    /// Creates a native Counter with an owned, per-instance callback.
+    ///
+    /// Numeric behavior is identical to [`Self::counter`]. Move an immutable
+    /// context snapshot into the closure to retain source identity and epoch in
+    /// each message. Runtime metadata uses the current view's callback, including
+    /// during hold repeat after a view rebuild; queued messages keep their capture.
+    /// Captures must be owned and `Send + Sync`; the callback runs on the UI thread.
+    ///
+    /// ```rust
+    /// use rutter::Widget;
+    /// let context = (String::from("panel"), String::from("instance"), 7_u64);
+    /// let counter = Widget::try_counter_with(
+    ///     1_i64, 0, 9, 1,
+    ///     move |value| (context.clone(), value),
+    ///     taffy::Style::default(), "Quantity",
+    /// ).unwrap();
+    /// ```
+    pub fn counter_with<N: CounterInput>(
+        value: N,
+        min: N,
+        max: N,
+        step: N,
+        on_change: impl Fn(N) -> Msg + Send + Sync + 'static,
+        style: Style,
+        label: &'a str,
+    ) -> Self {
+        Self::Counter {
+            id: AUTO_ID,
+            config: N::configure_with(CapturedCounterParameters {
+                value,
+                min,
+                max,
+                step,
+                on_change: ChangeCallback::new(on_change),
+            }),
+            style,
+            label,
+        }
+    }
+
+    /// Validates and creates a captured-callback Counter, as in [`Self::try_counter`].
+    pub fn try_counter_with<N: CounterInput>(
+        value: N,
+        min: N,
+        max: N,
+        step: N,
+        on_change: impl Fn(N) -> Msg + Send + Sync + 'static,
+        style: Style,
+        label: &'a str,
+    ) -> Result<Self, CounterConfigError<N>> {
+        validate_counter(value, min, max, step)?;
+        Ok(Self::counter_with(
+            value, min, max, step, on_change, style, label,
+        ))
+    }
+
     pub fn select(
         options: &'a [&'a str],
         selected_index: usize,
@@ -1429,6 +1647,62 @@ impl<'a, Msg> Widget<'a, Msg> {
             return Err(WidgetConfigError::SelectedIndexOutOfBounds);
         }
         Ok(Self::select(
+            options,
+            selected_index,
+            on_change,
+            style,
+            label,
+            placeholder,
+        ))
+    }
+
+    /// Creates a native Select with an owned, per-instance callback.
+    ///
+    /// The closure has the same capture and rebuild semantics as
+    /// [`Self::counter_with`]. Selection, keyboard and accessibility behavior
+    /// follow the same native path as [`Self::select`].
+    ///
+    /// ```rust
+    /// use rutter::Widget;
+    /// let context = (String::from("panel"), String::from("instance"), 7_u64);
+    /// let select = Widget::try_select_with(
+    ///     &["Compact", "Expanded"], 0,
+    ///     move |index| (context.clone(), index),
+    ///     taffy::Style::default(), "Mode", "Choose a mode",
+    /// ).unwrap();
+    /// ```
+    pub fn select_with(
+        options: &'a [&'a str],
+        selected_index: usize,
+        on_change: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+        label: &'a str,
+        placeholder: &'a str,
+    ) -> Self {
+        Self::SelectWith {
+            id: AUTO_ID,
+            options,
+            selected_index,
+            on_change: ChangeCallback::new(on_change),
+            style,
+            label,
+            placeholder,
+        }
+    }
+
+    /// Validates and creates a captured-callback Select, as in [`Self::try_select`].
+    pub fn try_select_with(
+        options: &'a [&'a str],
+        selected_index: usize,
+        on_change: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+        label: &'a str,
+        placeholder: &'a str,
+    ) -> Result<Self, WidgetConfigError> {
+        if options.is_empty() || selected_index >= options.len() {
+            return Err(WidgetConfigError::SelectedIndexOutOfBounds);
+        }
+        Ok(Self::select_with(
             options,
             selected_index,
             on_change,
@@ -2183,13 +2457,17 @@ impl<'a, Msg> Widget<'a, Msg> {
     fn assign_raw_id(&mut self, id: u64) -> bool {
         match self {
             Self::TextInput { id: slot, .. }
+            | Self::TextInputWith { id: slot, .. }
             | Self::TextArea { id: slot, .. }
+            | Self::TextAreaWith { id: slot, .. }
             | Self::SearchBar { id: slot, .. }
             | Self::ComboBox { id: slot, .. }
             | Self::Slider { id: slot, .. }
+            | Self::SliderWith { id: slot, .. }
             | Self::Counter { id: slot, .. }
             | Self::Clock { id: slot, .. }
             | Self::Select { id: slot, .. }
+            | Self::SelectWith { id: slot, .. }
             | Self::ProgressBar { id: slot, .. }
             | Self::Spinner { id: slot, .. }
             | Self::ScrollView { id: slot, .. }
@@ -2268,15 +2546,28 @@ impl<'a, Msg> Widget<'a, Msg> {
                 id,
                 is_password: true,
                 ..
+            }
+            | Self::TextInputWith {
+                id,
+                is_password: true,
+                ..
             } => (Some(*id), WidgetIdTag::TextInput, "PasswordTextInput"),
-            Self::TextInput { id, .. } => (Some(*id), WidgetIdTag::TextInput, "TextInput"),
-            Self::TextArea { id, .. } => (Some(*id), WidgetIdTag::TextArea, "TextArea"),
+            Self::TextInput { id, .. } | Self::TextInputWith { id, .. } => {
+                (Some(*id), WidgetIdTag::TextInput, "TextInput")
+            }
+            Self::TextArea { id, .. } | Self::TextAreaWith { id, .. } => {
+                (Some(*id), WidgetIdTag::TextArea, "TextArea")
+            }
             Self::SearchBar { id, .. } => (Some(*id), WidgetIdTag::SearchBar, "SearchBar"),
             Self::ComboBox { id, .. } => (Some(*id), WidgetIdTag::ComboBox, "ComboBox"),
-            Self::Slider { id, .. } => (Some(*id), WidgetIdTag::Slider, "Slider"),
+            Self::Slider { id, .. } | Self::SliderWith { id, .. } => {
+                (Some(*id), WidgetIdTag::Slider, "Slider")
+            }
             Self::Counter { id, .. } => (Some(*id), WidgetIdTag::Counter, "Counter"),
             Self::Clock { id, .. } => (Some(*id), WidgetIdTag::Clock, "Clock"),
-            Self::Select { id, .. } => (Some(*id), WidgetIdTag::Select, "Select"),
+            Self::Select { id, .. } | Self::SelectWith { id, .. } => {
+                (Some(*id), WidgetIdTag::Select, "Select")
+            }
             Self::ProgressBar { id, .. } => (Some(*id), WidgetIdTag::ProgressBar, "ProgressBar"),
             Self::Spinner { id, .. } => (Some(*id), WidgetIdTag::Spinner, "Spinner"),
             Self::ScrollView { id, .. } => (Some(*id), WidgetIdTag::ScrollView, "ScrollView"),
@@ -2334,12 +2625,16 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::Switch { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Switch, path)),
             Self::Radio { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Radio, path)),
             Self::TextInput { .. }
+            | Self::TextInputWith { .. }
             | Self::TextArea { .. }
+            | Self::TextAreaWith { .. }
             | Self::SearchBar { .. }
             | Self::ComboBox { .. }
             | Self::Slider { .. }
+            | Self::SliderWith { .. }
             | Self::Counter { .. }
             | Self::Select { .. }
+            | Self::SelectWith { .. }
             | Self::DropdownMenu { .. }
             | Self::Accordion { .. }
             | Self::TabBar { .. }

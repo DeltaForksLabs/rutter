@@ -59,6 +59,8 @@ use crate::widget::{CustomPoint, CustomPointerEvent, CustomSize};
 
 mod accessibility_actions;
 #[cfg(test)]
+mod captured_native_tests;
+#[cfg(test)]
 #[path = "../../tests/unit/carousel_runner_unit_tests.rs"]
 mod carousel_regressions;
 mod counter;
@@ -736,6 +738,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
         match event {
             WindowEvent::CloseRequested => {
                 self.native_menu = None;
+                self.engine.cancel_slider_drag();
                 self.cancel_pointer_region_capture(crate::DragCancelReason::SurfaceClosed);
                 el.exit();
             }
@@ -750,7 +753,13 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 self.redraw();
             }
             WindowEvent::ModifiersChanged(m) => self.engine.modifiers = m,
-            WindowEvent::Ime(Ime::Commit(text)) => self.insert_text_commit(&text),
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if let Err(error) = self.refresh_layout_before_keyboard_input() {
+                    self.terminate_for_error(el, error);
+                    return;
+                }
+                self.insert_text_commit(&text);
+            }
             WindowEvent::PointerMoved {
                 position,
                 source: PointerSource::Mouse,
@@ -789,7 +798,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 }
 
                 if let Some(sid) = self.engine.drag_slider_id {
-                    self.update_slider_drag(sid, self.cursor_pos.x);
+                    if let Err(error) = self.update_slider_drag(sid, self.engine.last_mouse_pos.x) {
+                        self.terminate_for_error(el, error);
+                    }
                     return;
                 }
 
@@ -1280,6 +1291,12 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                             if button == winit::event::MouseButton::Left {
                                 self.focus_widget(Some(id));
                                 self.engine.drag_slider_id = Some(id);
+                                self.engine.drag_slider_generation = self
+                                    .engine
+                                    .runtime_caches
+                                    .sliders
+                                    .get(&id)
+                                    .map(|s| s.generation);
                                 if let Some(ws) = self.engine.widget_states.get_mut(&id)
                                     && let Some(s) = ws.as_slider_mut()
                                 {
@@ -1294,9 +1311,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                     .runtime_caches
                                     .sliders
                                     .get(&id)
-                                    .map(|s| s.on_change);
+                                    .map(|s| s.on_change.clone());
                                 if let Some(cb) = cb {
-                                    let msg = cb(val);
+                                    let msg = cb.call(val);
                                     A::update(
                                         &mut self.engine.app_state,
                                         msg,
@@ -1343,7 +1360,7 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                 }
                                 let select = self.engine.runtime_caches.selects.get(&id).cloned();
                                 if let Some(select) = select {
-                                    let msg = (select.on_change)(index);
+                                    let msg = select.on_change.call(index);
                                     A::update(
                                         &mut self.engine.app_state,
                                         msg,
@@ -1534,11 +1551,8 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 {
                     self.redraw();
                 }
-                if let Some(sid) = self.engine.drag_slider_id.take()
-                    && let Some(ws) = self.engine.widget_states.get_mut(&sid)
-                    && let Some(s) = ws.as_slider_mut()
-                {
-                    s.dragging = false;
+                if self.engine.drag_slider_id.is_some() {
+                    self.engine.cancel_slider_drag();
                     self.redraw();
                 }
             }
@@ -1553,7 +1567,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 self.mouse_down = false;
                 self.pending_selected_text_drag = None;
                 self.counter_hold_repeat = None;
-                let had_capture = self.pointer_region_capture.is_some();
+                let had_slider_capture = self.engine.drag_slider_id.is_some();
+                self.engine.cancel_slider_drag();
+                let had_capture = self.pointer_region_capture.is_some() || had_slider_capture;
                 self.cancel_pointer_region_capture(crate::DragCancelReason::CursorLeftSurface);
                 if had_capture {
                     self.redraw();
@@ -1564,7 +1580,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                 self.mouse_down = false;
                 self.pending_selected_text_drag = None;
                 self.counter_hold_repeat = None;
-                let had_capture = self.pointer_region_capture.is_some();
+                let had_slider_capture = self.engine.drag_slider_id.is_some();
+                self.engine.cancel_slider_drag();
+                let had_capture = self.pointer_region_capture.is_some() || had_slider_capture;
                 self.cancel_pointer_region_capture(crate::DragCancelReason::FocusLost);
                 if had_capture {
                     self.redraw();
@@ -1716,6 +1734,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.end_virtual_multi_pointer_capture();
         self.counter_hold_repeat = None;
         self.mouse_down = false;
+        self.engine.cancel_slider_drag();
         self.focused_input_rect = None;
         self.clock_redraw_at = None;
         self.engine.release_surface();
@@ -1916,7 +1935,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.refresh_search_suggestions_after_edit(fid);
         A::update(
             &mut self.engine.app_state,
-            on_change(full),
+            on_change.call(full),
             &mut self.engine.clipboard,
         );
         self.engine.layout_dirty = true;
@@ -1973,6 +1992,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if self.engine.focused_widget_id == focus_id {
             return;
         }
+        self.engine.cancel_slider_drag();
         if let Some(previous) = self.engine.focused_widget_id
             && self
                 .engine
@@ -2165,7 +2185,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
         A::update(
             &mut self.engine.app_state,
-            (select.on_change)(next),
+            select.on_change.call(next),
             &mut self.engine.clipboard,
         );
         self.engine.layout_dirty = true;
@@ -2269,18 +2289,33 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
     }
 
-    fn update_slider_drag(&mut self, sid: u64, cursor_x: f32) {
+    fn update_slider_drag(&mut self, sid: u64, cursor_x: f32) -> Result<(), RutterRunError> {
+        self.refresh_layout_before_keyboard_input()?;
         let Some(slider) = self.engine.runtime_caches.sliders.get(&sid).cloned() else {
-            return;
+            self.engine.cancel_slider_drag();
+            return Ok(());
         };
-        let (abs_x, track_w) = {
-            let ws = self.engine.widget_states.get(&sid);
-            let s = ws.and_then(|w| w.as_slider());
-            (
-                s.map(|s| s.track_abs_x).unwrap_or(0.0),
-                s.map(|s| s.track_width).unwrap_or(1.0),
-            )
+        if self.engine.drag_slider_id != Some(sid)
+            || self.engine.drag_slider_generation != Some(slider.generation)
+            || self.engine.focused_widget_id != Some(sid)
+        {
+            self.engine.cancel_slider_drag();
+            return Ok(());
+        }
+        let Some(frame) = self
+            .engine
+            .runtime_caches
+            .viewport_geometry
+            .sliders
+            .get(&sid)
+        else {
+            self.engine.cancel_slider_drag();
+            return Ok(());
         };
+        let (abs_x, track_w) = (frame.left + 16.0, frame.width() - 32.0);
+        if track_w <= 0.0 {
+            return Ok(());
+        }
         let norm = ((cursor_x - abs_x) / track_w).clamp(0.0, 1.0);
         let val = snap_to_step(
             slider.min + norm * (slider.max - slider.min),
@@ -2288,10 +2323,11 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             slider.max,
             slider.step,
         );
-        let msg = (slider.on_change)(val);
+        let msg = slider.on_change.call(val);
         A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
         self.engine.layout_dirty = true;
         self.redraw();
+        Ok(())
     }
 
     fn begin_scroll_drag(&mut self, hit: crate::render::hit_test::ScrollbarDragHit) {
@@ -2529,7 +2565,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 let snapped = snap_to_step(next_value, slider.min, slider.max, slider.step);
                 A::update(
                     &mut self.engine.app_state,
-                    (slider.on_change)(snapped),
+                    slider.on_change.call(snapped),
                     &mut self.engine.clipboard,
                 );
                 self.engine.layout_dirty = true;
@@ -2586,7 +2622,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                     }
                     A::update(
                         &mut self.engine.app_state,
-                        (select.on_change)(next_index),
+                        select.on_change.call(next_index),
                         &mut self.engine.clipboard,
                     );
                     self.engine.layout_dirty = true;
@@ -3193,7 +3229,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
 
         if let Some(full) = deleted_selection {
             self.refresh_search_suggestions_after_edit(fid);
-            let msg = on_change(full);
+            let msg = on_change.call(full);
             A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
             self.engine.cursor_blink.reset();
             self.engine.schedule_snapshot();
@@ -3214,7 +3250,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.engine.cursor_blink.reset();
             self.engine.schedule_snapshot();
             self.refresh_search_suggestions_after_edit(fid);
-            let msg = on_change(full);
+            let msg = on_change.call(full);
             A::update(&mut self.engine.app_state, msg, &mut self.engine.clipboard);
             self.engine.layout_dirty = true;
             self.redraw();
@@ -3311,7 +3347,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.refresh_search_suggestions_after_edit(fid);
         A::update(
             &mut self.engine.app_state,
-            (input.on_change)(full),
+            input.on_change.call(full),
             &mut self.engine.clipboard,
         );
         self.engine.cursor_blink.reset();
@@ -3364,7 +3400,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.refresh_search_suggestions_after_edit(fid);
         A::update(
             &mut self.engine.app_state,
-            (input.on_change)(full),
+            input.on_change.call(full),
             &mut self.engine.clipboard,
         );
         self.engine.cursor_blink.reset();
@@ -3386,7 +3422,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         self.refresh_search_suggestions_after_edit(fid);
         A::update(
             &mut self.engine.app_state,
-            (input.on_change)(full),
+            input.on_change.call(full),
             &mut self.engine.clipboard,
         );
         self.engine.cursor_blink.reset();

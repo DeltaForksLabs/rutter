@@ -84,15 +84,15 @@ pub use time::{
 };
 pub use widget::id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
 pub use widget::{
-    AUTO_ID, ButtonVariant, CUSTOM_WIDGET_API_VERSION, ContextMenuEntry, CounterConfig,
-    CounterConfigError, CounterInput, CounterParameters, CounterValue, CustomAccessibility,
-    CustomAccessibilityAction, CustomAccessibilityActions, CustomAccessibilityNode,
-    CustomAccessibilityRole, CustomAccessibilityState, CustomEventOutcome, CustomInteraction,
-    CustomLayout, CustomPaintContext, CustomPoint, CustomPointerEvent, CustomSize,
-    CustomWidgetState, CustomWidgetStateError, CustomWidgetV1, DialogPosition, InputState,
-    KeyedVirtualItems, KeyedVirtualItemsError, MAX_CUSTOM_WIDGET_STATE_BYTES, VirtualItemKey,
-    VirtualItemKeyError, VirtualSelection, Widget, WidgetConfigError, validate_counter,
-    validate_slider, validate_virtual_grid, validate_virtual_list,
+    AUTO_ID, ButtonVariant, CUSTOM_WIDGET_API_VERSION, CapturedCounterParameters, ChangeCallback,
+    ContextMenuEntry, CounterConfig, CounterConfigError, CounterInput, CounterParameters,
+    CounterValue, CustomAccessibility, CustomAccessibilityAction, CustomAccessibilityActions,
+    CustomAccessibilityNode, CustomAccessibilityRole, CustomAccessibilityState, CustomEventOutcome,
+    CustomInteraction, CustomLayout, CustomPaintContext, CustomPoint, CustomPointerEvent,
+    CustomSize, CustomWidgetState, CustomWidgetStateError, CustomWidgetV1, DialogPosition,
+    InputState, KeyedVirtualItems, KeyedVirtualItemsError, MAX_CUSTOM_WIDGET_STATE_BYTES,
+    VirtualItemKey, VirtualItemKeyError, VirtualSelection, Widget, WidgetConfigError,
+    validate_counter, validate_slider, validate_virtual_grid, validate_virtual_list,
 };
 pub use widgets::color_picker::{
     ColorError, ColorFormat, ColorPickerCallbacks, ColorPickerEvent, ColorPickerIds,
