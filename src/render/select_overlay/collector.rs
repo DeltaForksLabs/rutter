@@ -15,6 +15,7 @@ use crate::widgets::dropdown_menu::{DropdownMenuEntry, DropdownMenuState};
 use crate::widgets::table_of_contents::layout_nodes;
 
 mod search;
+mod virtual_items;
 
 pub(crate) use search::{SearchOverlay, collect_open_search_overlays};
 
@@ -183,12 +184,21 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
                 ..
             } => self.capture_select(widget, options, *selected_index, absolute, size),
             Widget::SearchBar {
-                suggestions: Some(suggestions),
+                suggestions: Some(_),
                 ..
             }
-            | Widget::ComboBox { suggestions, .. } => {
-                self.capture_search(widget, suggestions, absolute, size, node)
+            | Widget::SearchBarWith {
+                suggestions: Some(_),
+                ..
             }
+            | Widget::ComboBox { .. }
+            | Widget::ComboBoxWith { .. } => self.capture_search(
+                widget,
+                &widget.search_suggestions().unwrap(),
+                absolute,
+                size,
+                node,
+            ),
             Widget::DropdownMenu { entries, .. } => {
                 self.capture_dropdown(widget, entries, absolute, size)
             }
@@ -201,6 +211,16 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             }
             Widget::Column { children, .. } | Widget::Row { children, .. } => {
                 self.visit_children(children, node, absolute)
+            }
+            Widget::InteractiveVirtualListContent { .. }
+            | Widget::InteractiveVirtualListContentWith { .. }
+            | Widget::InteractiveVirtualGridContentWith { .. }
+            | Widget::InteractiveCarouselViewWith { .. }
+            | Widget::InteractiveVirtualGridContent { .. }
+            | Widget::InteractiveCarouselView { .. }
+                if self.search_context.is_some() =>
+            {
+                self.visit_virtual_searches(widget, node, absolute, size)
             }
             Widget::ScrollView { child, .. } => {
                 self.visit_scroll(widget, child, node, absolute, size)
@@ -220,6 +240,7 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             } => self.visit_popover(widget, anchor, content, node, absolute),
             Widget::Container { child, .. }
             | Widget::PointerRegion { child, .. }
+            | Widget::PointerRegionWith { child, .. }
             | Widget::Tooltip { child, .. }
             | Widget::ButtonContent { child, .. } => self.visit_first(child, node, absolute, 0),
             _ => {}

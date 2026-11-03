@@ -6,6 +6,7 @@ use std::fmt;
 
 use super::interaction::{TableSelection, TableSorting};
 use super::{TableColumnKey, TableRowKey};
+use super::{TableSelectionWith, TableSortingWith};
 
 const DEFAULT_CELL_HEIGHT: f32 = 44.0;
 
@@ -274,12 +275,14 @@ impl Default for TableMetrics {
 pub struct TableOptions<'a, Msg> {
     selection: TableSelection<'a, Msg>,
     sorting: Option<TableSorting<Msg>>,
+    selection_with: Option<TableSelectionWith<'a, Msg>>,
+    sorting_with: Option<TableSortingWith<Msg>>,
     empty_label: Cow<'a, str>,
     metrics: TableMetrics,
 }
 
 impl<'a, Msg> TableOptions<'a, Msg> {
-    /// Replaces the controlled row-selection policy.
+    /// Replaces the controlled row-selection policy, dropping any captured policy.
     /// ```rust
     /// use rutter::table::{TableOptions, TableSelection};
     /// let options = TableOptions::<()>::default().with_selection(TableSelection::none());
@@ -288,10 +291,11 @@ impl<'a, Msg> TableOptions<'a, Msg> {
     #[must_use]
     pub fn with_selection(mut self, selection: TableSelection<'a, Msg>) -> Self {
         self.selection = selection;
+        self.selection_with = None;
         self
     }
 
-    /// Enables controlled sorting with its current value and callback.
+    /// Enables controlled sorting, dropping any captured sorting policy.
     /// ```rust
     /// use rutter::table::{TableOptions, TableSorting};
     /// let options = TableOptions::default().with_sorting(TableSorting::new(None, std::convert::identity));
@@ -300,7 +304,55 @@ impl<'a, Msg> TableOptions<'a, Msg> {
     #[must_use]
     pub fn with_sorting(mut self, sorting: TableSorting<Msg>) -> Self {
         self.sorting = Some(sorting);
+        self.sorting_with = None;
         self
+    }
+
+    /// Replaces either selection policy with an owned callback policy.
+    /// The legacy `selection()` accessor returns `TableSelection::None` after this call;
+    /// use `effective_selection()` to inspect either callback family.
+    #[must_use]
+    pub fn selection_with(mut self, selection: impl Into<TableSelectionWith<'a, Msg>>) -> Self {
+        self.selection = TableSelection::None;
+        self.selection_with = Some(selection.into());
+        self
+    }
+
+    /// Replaces either sorting policy with an owned callback policy.
+    /// The legacy `sorting()` accessor returns `None` after this call;
+    /// use `effective_sorting()` to inspect either callback family.
+    #[must_use]
+    pub fn sorting_with(mut self, sorting: impl Into<TableSortingWith<Msg>>) -> Self {
+        self.sorting = None;
+        self.sorting_with = Some(sorting.into());
+        self
+    }
+
+    /// Returns the active policy, sharing owned callback context when captured.
+    pub fn effective_selection(&self) -> TableSelectionWith<'a, Msg> {
+        if let Some(selection) = &self.selection_with {
+            return selection.clone();
+        }
+        match &self.selection {
+            TableSelection::None => TableSelectionWith::None,
+            TableSelection::Single {
+                selected,
+                on_selection,
+            } => TableSelection::single(*selected, *on_selection).into(),
+            TableSelection::Multiple {
+                selected,
+                on_selection,
+            } => TableSelection::multiple(selected, *on_selection).into(),
+        }
+    }
+
+    /// Returns the active sorting policy, sharing its callback context.
+    pub fn effective_sorting(&self) -> Option<TableSortingWith<Msg>> {
+        self.sorting_with.clone().or_else(|| {
+            self.sorting.as_ref().map(|sorting| {
+                TableSorting::new(sorting.current(), sorting.on_sort_callback()).into()
+            })
+        })
     }
 
     /// Replaces the text shown when no rows are displayed.
@@ -327,7 +379,8 @@ impl<'a, Msg> TableOptions<'a, Msg> {
         self
     }
 
-    /// Returns the controlled selection policy.
+    /// Returns the legacy selection policy, or `TableSelection::None` when captured.
+    /// Use [`Self::effective_selection`] to inspect either callback family.
     /// ```rust
     /// use rutter::table::{TableOptions, TableSelection};
     /// assert!(matches!(TableOptions::<()>::default().selection(), TableSelection::None));
@@ -336,7 +389,8 @@ impl<'a, Msg> TableOptions<'a, Msg> {
         &self.selection
     }
 
-    /// Returns controlled sorting when the table accepts sort activation.
+    /// Returns legacy sorting, or `None` when a captured sorting policy is active.
+    /// Use [`Self::effective_sorting`] to inspect either callback family.
     /// ```rust
     /// use rutter::table::TableOptions;
     /// assert!(TableOptions::<()>::default().sorting().is_none());
@@ -369,6 +423,8 @@ impl<'a, Msg> Default for TableOptions<'a, Msg> {
         Self {
             selection: TableSelection::None,
             sorting: None,
+            selection_with: None,
+            sorting_with: None,
             empty_label: Cow::Borrowed("No rows"),
             metrics: TableMetrics::default(),
         }

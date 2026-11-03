@@ -11,9 +11,8 @@ use crate::widget::{
 };
 use crate::widgets::table::geometry::{TableRect, TableViewport};
 use crate::widgets::table::{
-    TableCellTarget, TableLayoutDirection, TableModel, TableOptions, TableSelection,
-    TableSortDirection, allocate_column_widths, calculate_viewport, logical_cell_rect,
-    minimum_content_width,
+    TableCellTarget, TableLayoutDirection, TableModel, TableOptions, TableSortDirection,
+    allocate_column_widths, calculate_viewport, logical_cell_rect, minimum_content_width,
 };
 
 pub(super) fn collect<Msg>(
@@ -149,8 +148,13 @@ fn push_header_cell<Msg>(
     node.set_column_index(index);
     apply_header_sort(&mut node, column, options);
     node.add_action(Action::ScrollIntoView);
-    let sortable = options.sorting().is_some() && column.is_sortable();
-    if sortable || !matches!(options.selection(), TableSelection::None) {
+    let sortable = options.effective_sorting().is_some() && column.is_sortable();
+    if sortable
+        || !matches!(
+            options.effective_selection(),
+            crate::TableSelectionWith::None
+        )
+    {
         node.add_action(Action::Focus);
     }
     if sortable {
@@ -165,7 +169,10 @@ fn apply_header_sort<Msg>(
     column: &crate::widgets::table::TableColumn<'_>,
     options: &TableOptions<'_, Msg>,
 ) {
-    let Some(sort) = options.sorting().and_then(|sorting| sorting.current()) else {
+    let Some(sort) = options
+        .effective_sorting()
+        .and_then(|sorting| sorting.current())
+    else {
         return;
     };
     if sort.column() != column.key() {
@@ -258,9 +265,12 @@ fn push_body_cell<Msg>(
     node.set_label(cell.accessibility_label().unwrap_or(cell.text()));
     node.set_row_index(row_index + 1);
     node.set_column_index(column_index);
-    node.set_selected(row_is_selected(options.selection(), row.key()));
+    node.set_selected(row_is_selected(&options.effective_selection(), row.key()));
     node.add_action(Action::ScrollIntoView);
-    if !matches!(options.selection(), TableSelection::None) {
+    if !matches!(
+        options.effective_selection(),
+        crate::TableSelectionWith::None
+    ) {
         node.add_action(Action::Focus);
         node.add_action(Action::Click);
     }
@@ -289,9 +299,12 @@ fn push_row_node<Msg>(
     let mut node = Node::new(Role::Row);
     node.set_bounds(geometry.rect(rect));
     node.set_row_index(row_index + 1);
-    node.set_selected(row_is_selected(options.selection(), row.key()));
+    node.set_selected(row_is_selected(&options.effective_selection(), row.key()));
     node.set_children(children);
-    if !matches!(options.selection(), TableSelection::None) {
+    if !matches!(
+        options.effective_selection(),
+        crate::TableSelectionWith::None
+    ) {
         node.add_action(Action::Focus);
         node.add_action(Action::Click);
         node.add_action(Action::ScrollIntoView);
@@ -344,7 +357,10 @@ fn push_table_root<Msg>(
     geometry: TableAccessibilityGeometry,
     children: Vec<NodeId>,
 ) {
-    let selectable = !matches!(options.selection(), TableSelection::None);
+    let selectable = !matches!(
+        options.effective_selection(),
+        crate::TableSelectionWith::None
+    );
     let mut node = Node::new(if selectable { Role::Grid } else { Role::Table });
     node.set_bounds(frame.rect);
     node.set_label(model.accessibility_label());
@@ -368,7 +384,10 @@ fn apply_root_interaction<Msg>(
     model: &TableModel<'_>,
     options: &TableOptions<'_, Msg>,
 ) {
-    if matches!(options.selection(), TableSelection::Multiple { .. }) {
+    if matches!(
+        options.effective_selection(),
+        crate::TableSelectionWith::Multiple { .. }
+    ) {
         node.set_multiselectable();
     }
     if !table_is_interactive(model, options) {
@@ -394,18 +413,21 @@ fn target_id(table_id: u64, target: TableCellTarget) -> u64 {
 }
 
 fn table_is_interactive<Msg>(model: &TableModel<'_>, options: &TableOptions<'_, Msg>) -> bool {
-    !matches!(options.selection(), TableSelection::None)
-        || options.sorting().is_some() && model.columns().iter().any(|column| column.is_sortable())
+    !matches!(
+        options.effective_selection(),
+        crate::TableSelectionWith::None
+    ) || options.effective_sorting().is_some()
+        && model.columns().iter().any(|column| column.is_sortable())
 }
 
 fn row_is_selected<Msg>(
-    selection: &TableSelection<'_, Msg>,
+    selection: &crate::TableSelectionWith<'_, Msg>,
     key: crate::widgets::table::TableRowKey,
 ) -> bool {
     match selection {
-        TableSelection::None => false,
-        TableSelection::Single { selected, .. } => *selected == Some(key),
-        TableSelection::Multiple { selected, .. } => selected.contains(&key),
+        crate::TableSelectionWith::None => false,
+        crate::TableSelectionWith::Single { selected, .. } => *selected == Some(key),
+        crate::TableSelectionWith::Multiple { selected, .. } => selected.contains(&key),
     }
 }
 
@@ -413,7 +435,10 @@ fn cell_role<Msg>(options: &TableOptions<'_, Msg>, row_header: bool) -> Role {
     if row_header {
         return Role::RowHeader;
     }
-    if matches!(options.selection(), TableSelection::None) {
+    if matches!(
+        options.effective_selection(),
+        crate::TableSelectionWith::None
+    ) {
         Role::Cell
     } else {
         Role::GridCell

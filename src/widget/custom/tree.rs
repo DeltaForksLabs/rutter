@@ -22,6 +22,7 @@ pub(crate) fn collect_custom_widget_ids<Message>(widget: &Widget<'_, Message>, i
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. }
@@ -56,6 +57,7 @@ pub(crate) fn collect_custom_widget_ids_at_path<Message>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. }
@@ -114,6 +116,7 @@ fn find_custom_widget_at_path<'tree, 'widget, Message>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. }

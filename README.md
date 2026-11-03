@@ -108,7 +108,76 @@ The framework is still evolving, but it already includes a broad set of widgets,
 
 Rutter is under active development. APIs may change while the framework settles.
 
-**Current version: 0.48.0.** This release adds owned, per-instance callbacks to
+**Current version: 0.49.0.** Captured callbacks now also cover native Checkbox, Switch, Radio,
+TabBar, SearchBar and ComboBox. Use `checkbox_with`, `switch_with`, `radio_with`,
+`tab_bar_with`, `search_bar_with`, `search_bar_with_suggestions_with` and
+`combo_box_with`. `SearchSuggestionsWith` and `combo_box::ComboBoxWith` own
+selection callbacks independently of draft-edit callbacks; legacy configurations
+can be converted without changing their original APIs or traits. Exhaustive
+`Widget` matches must additionally handle `CheckboxWith`, `SwitchWith`,
+`RadioWith`, `TabBarWith`, `SearchBarWith` and `ComboBoxWith`.
+
+The same work exposes individual accessible tabs, refreshes runtime metadata
+between queued accessibility actions, preserves input state under PointerRegion,
+and collects SearchBar/ComboBox popups from visible keyed virtual items into the
+window viewport. Clipped or blocked suggestion popups cannot commit hidden
+selections.
+
+Captured selection also covers virtual lists, grids and carousels, including
+controlled multiple selection through `VirtualSelectionWith` and keyed
+interactive content. Their additive `*_with` constructors preserve legacy
+selection APIs; exhaustive `Widget` matches must handle the eight additional
+collection variants listed below. Active carousels support navigation
+without a focused widget, using the same current callback as focused navigation.
+Tables accept `TableSelectionWith` and `TableSortingWith` through
+`TableOptions::selection_with` and `sorting_with`, without new widget variants.
+Legacy selection/sorting policies retain their Copy and const contracts.
+Captured callbacks also cover the final composed controls: `calendar_with`,
+`calendar_with_config_with`, `date_picker_with`, `date_picker_with_config_with`,
+`time_picker_with` with `TimePickerConfigWith`, and `color_picker_with` with
+`ColorPickerCallbacksWith`. `activity::view::details_with` accepts a captured
+two-argument action callback. These APIs reuse existing composition and add no
+`Widget` variants. Legacy constructors, `CalendarConfig`'s Copy/const shape,
+`ColorPickerCallbacks::new`'s const contract, timezone validation, and all eleven
+color-picker IDs remain supported.
+
+Pointer and drag callbacks now have additive `DragSourceWith`, `DropTargetWith`,
+`SelectedTextDragWith` and `PointerRegionConfigWith` configurations, plus
+`Widget::pointer_region_with`. Both application traits expose
+`selected_text_drag_with`; a captured declaration takes precedence over the
+legacy hook. Legacy function-pointer fields, public literals and const
+constructors remain supported, including Copy drag sources and targets.
+Exhaustive `Widget` matches must additionally handle `PointerRegionWith`.
+
+Each gesture fixes its source ID and payload. Continuation callbacks refresh
+from the latest published view, including between phases that update the view;
+removing or disabling a source, revoking its drag declaration, or replacing its
+payload cancels the gesture. Replacing only its callback refreshes the context.
+Drop targets are
+revalidated before dispatch. Retired callbacks may receive terminal cancellation
+or exit, but cannot receive a new drop. Selected-text drags retain the arm-time
+string while refreshing callbacks; password/sensitive inputs cannot continue
+the drag. Retained callback clones still own their original capture, so validate
+application identity/generation in update.
+
+Calendar/date-picker and activity-details callbacks eagerly build button messages
+while composing the view (including closed date pickers); activation emits those
+snapshot messages. Time/color controls retain callbacks and invoke the current
+view's context during interaction. All captures are owned `Send + Sync + 'static`
+and need not be Clone; applications must validate identity/generation in update.
+`ColorPickerCallbacksWith::new` accepts independent closures for SV, hue, alpha,
+format and HEX, plus `[ChangeCallback<String, Msg>; 5]` for heterogeneous channel
+captures. Its optional `with_copy_button` remains an ordinary message action.
+
+**Version 0.49.0 source compatibility:** Exhaustive `Widget` matches need the
+15 additional variants listed above and in the collection notes below.
+`TableOptions` no longer automatically satisfies `UnwindSafe` or `RefUnwindSafe`,
+including legacy-only configurations, because it can own captured callbacks.
+Existing function-pointer APIs, literals, Copy selection/drag policies and const
+constructors remain supported. No new dependencies or stored-data migration are
+required.
+
+**Version 0.48.0** added owned, per-instance callbacks to
 native Counter, Select, TextInput, TextArea and Slider controls through
 `counter_with`, `try_counter_with`, `select_with`, `try_select_with`,
 `text_input_with`, `controlled_text_input_with`, `text_area_with`, `slider_with`
@@ -669,6 +738,23 @@ let target = Widget::pointer_region(
 
 `PointerEvent` carries a logical surface-local position, modifier snapshot, and `Pressed`, `Moved`, `Released`, or `Cancelled` phase. Use `.with_pointer_capture()` to receive movement and release after the initial press even when the pointer leaves the region; declaring a drag source also captures automatically. Matching drop targets receive `Entered`, `Moved`, `Exited`, and `Dropped` drag events; source events include the matching target ID when available. Capture is cancelled on cursor exit, focus loss, a blocking overlay, source removal, or surface closure. Drag matching uses only the application-owned `DragPayloadKind` and opaque `u64` value: no OS clipboard, native drag, files, URLs, cross-surface transfer, or untrusted native handles are involved. A release without an eligible target reports `Dropped` with no target ID to the source only.
 
+Target routing republishes and re-hits live geometry after update-producing phases,
+including target `Exited`/`Entered`, source/target `Moved`, and pointer `Released`.
+Each reconciliation permits at most 16 transition notifications plus a balancing
+`Exited`; an oscillating target is then omitted for that reconciliation. Source
+`Dropped` is terminal and its `target_id` identifies the eligible candidate before
+that callback's update, not an atomic commit promise. If the update retires either
+owner or moves the target away, the target does not receive `Dropped` and the
+source does not receive another terminal event.
+
+Hover membership and callbacks also refresh after every hover update, so a parent
+can bring a child under a stationary pointer and the child enters in the same
+refresh. To bound callback-driven oscillation, each refresh allows at most two
+notifications per region and 64 overall. Deferred differences reconcile on the
+next pointer movement, even at the same position. Both pointer-region families
+preserve descendant wheel scrolling, context-menu targeting and popover hits;
+their primary-hit behavior is still governed by the region configuration.
+
 Pointer regions are transparent to AccessKit and do not acquire keyboard focus or accessibility actions by themselves. Supply a separate accessible keyboard path for every operation users can perform through the region. Open modal, dialog, context-menu, popover, select, dropdown, and search overlays block underlying region hits and cancel captures; pointer regions inside those overlays are not active while the overlay is open.
 
 The optional `.with_drag_badge(...)` belongs to the source region's `PointerRegionConfig`; existing regions show no badge. `DragBadge::new(background, foreground)` draws a dot in transit and a plus over a matching target. Use `.with_icon(DragBadgeIcon::Move)` or `.with_icon(DragBadgeIcon::Copy)` for built-in shapes, `.with_text("Card")?` for a label, or `.with_image(&encoded_png)?` for an embedded raster image. Text is limited to 64 UTF-8 bytes, rejects controls, and is shown in a bounded pill (up to 120 logical pixels wide); longer labels are truncated with an ellipsis without splitting graphemes, including when the viewport is narrow. Encoded images are limited to 128 KiB and 128×128 pixels, then reduced to a retained 20×20 raster copy; invalid inputs return `DragBadgeError` with the original image error as its cause. Prepare decoded images outside `view` to avoid repeated decoding. Icon, text, and image badges retain a small plus indicator over matching targets. All badges are clipped, stay within the surface near edges, never participate in hit testing or AccessKit, and do not replace the native cursor.
@@ -930,6 +1016,30 @@ let table = Widget::table_with_options(model, options, Style::default());
 
 Migration note for `0.33.0`: `Widget` now includes the `Table` variant. Because `Widget` is an exhaustive public enum, direct matches must add a `Table` arm.
 
+Captured table callbacks use `TableSelectionWith::{none, single, multiple}` and
+`TableSortingWith::new(current, on_sort)`, installed with
+`TableOptions::selection_with(impl Into<TableSelectionWith<'a, Msg>>)` and
+`sorting_with(impl Into<TableSortingWith<Msg>>)`. These policies share owned
+`Send + Sync + 'static` captures through `ChangeCallback`; captures and messages
+need not implement `Clone`. The selection policy also exposes `selected_rows`,
+`message_for_plain_click`, `message_for_toggle` and `message_for_range`; sorting
+exposes `current`, `next_sort` and `message_for_activation`. Selection follows the
+supplied display-row order and stable keys; sorting remains application controlled.
+
+The last builder call for each policy wins: `with_selection`/`with_sorting` drop
+captured callbacks, and `selection_with`/`sorting_with` clear legacy policies.
+Read either family through `effective_selection()`/`effective_sorting()`; the
+original `selection()`/`sorting()` accessors report only the legacy policy
+(`TableSelection::None`/`None` while captured). Legacy `TableSelection` and
+`TableSorting` retain their public shapes, `Copy` and const constructors. This
+table extension adds no `Widget` variants. Retained callback clones keep their
+old context; application updates should validate captured identity/generation.
+Because `TableOptions` can now own callback trait objects, it no longer
+automatically satisfies `UnwindSafe` or `RefUnwindSafe`, even when configured
+with legacy policies. Code crossing an unwind boundary must account for that
+source-compatibility change rather than assuming captured application state is
+unwind-safe.
+
 `Widget::heading(level, content, style)` adds a semantic document heading. Wrap a document in `Widget::table_of_contents(title, child, style)` to generate a single-column inline navigation list from its visible headings. Heading indentation follows the discovered outline rather than absolute `H1`–`H6` values, so a document that starts at `H3` does not begin nested; deeper descendants share one readable visual child indent. Selecting a navigation link, pressing Enter or Space on its keyboard focus target, or activating its accessibility link scrolls the document smoothly to the matching heading.
 
 Use `TableOfContentsOptions` with `Widget::table_of_contents_with_options` for multiple vertical columns or an optional controlled accordion. `with_accordion` starts expanded by default; `with_accordion_state` accepts the current controlled state. Navigation never receives a scrollbar. An absolute style height reserves the document viewport below the intrinsic navigation; percentage and flex sizing establish the table's minimum allocation while preserving a usable document viewport. If the resulting table exceeds its surface, place it in a scrollable parent.
@@ -1018,6 +1128,51 @@ shared with the legacy controls. Avoid
 ownership cycles in captured services. `ChangeCallback::call` can also be invoked
 directly; it does not enforce thread affinity. Legacy constructors and literals
 continue to use allocation-free function-pointer callback storage.
+
+The 0.49.0 extension applies the same ownership rules to
+`Widget::checkbox_with(checked, on_change, label, style)`,
+`switch_with(checked, on_change, style)`,
+`radio_with(selected, on_select, label, style)` and
+`tab_bar_with(tabs, active, on_change, style)`. Radio closures take no argument;
+the other callbacks receive the new boolean or source tab index. Existing
+function-pointer literals and `tab_bar` remain supported with the same native
+identity, focus and layout.
+
+For searchable controls, `Widget::search_bar_with` captures draft changes;
+`search_bar_with_suggestions_with` additionally accepts a
+`SearchSuggestionsWith` (or an existing `SearchSuggestions` through `Into`).
+`SearchSuggestionsWith::new(items, matcher, max_results, on_select)` takes
+`Option<ChangeCallback<usize, Msg>>`; `None` retains informational rows.
+`combo_box::ComboBoxWith::new(items, on_select)` accepts an owned selection
+closure and the same presentation builders as the legacy config. Pass it, or a
+legacy `ComboBox` config, to `Widget::combo_box_with(id, query, on_change,
+options, style)`. Selection callbacks receive the original source index, not the
+ranked row. Items and query remain borrowed; only captured context must be owned.
+The existing `SearchSuggestions` keeps its `Copy` and const-construction contracts;
+the new captured configuration is cloneable, not `Copy`. Buttons, dismissal
+actions and other APIs already taking a `Msg` can carry per-instance context
+directly and do not need callback variants for that purpose.
+
+Captured selection is also available through `Widget::virtual_list_with`,
+`virtual_list_content_with`, `virtual_grid_with` and `virtual_grid_content_with`.
+Their `*_with_selection_with` counterparts accept `VirtualSelectionWith` for
+single or controlled multiple selection. Use `VirtualSelectionWith::single`
+or `::multiple` to own the callback; the selected-index slice remains borrowed.
+The original `VirtualSelection` remains `Copy` and const-constructible and can
+be converted into the captured policy. Keyed interactive content uses
+`interactive_virtual_list_content_with`, `interactive_virtual_grid_content_with`
+and `interactive_carousel_view_with`; noninteractive carousel content uses
+`carousel_view_with`. Selection callbacks receive source indices, and multiple
+selection callbacks receive the proposed index vector. Published rebuilds refresh
+pointer, keyboard and active drag callbacks; retained callback clones still
+represent their original context.
+
+**Version 0.49.0 collection source compatibility:** Exhaustive `Widget` matches must
+handle `VirtualListWith`, `VirtualListContentWith`, `VirtualGridWith`,
+`VirtualGridContentWith`, `InteractiveVirtualListContentWith`,
+`InteractiveVirtualGridContentWith`, `CarouselViewWith` and
+`InteractiveCarouselViewWith`. Legacy constructor signatures, enum literal fields
+and `CarouselConfig` remain unchanged.
 
 ### Text editing keyboard navigation
 

@@ -302,7 +302,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         };
         A::update(
             &mut self.engine.app_state,
-            (runtime.on_change)(selection),
+            runtime.on_change.call(selection),
             &mut self.engine.clipboard,
         );
     }
@@ -372,13 +372,13 @@ mod tests {
     #[test]
     fn multi_selection_wheel_scrolls_list_and_grid_states() {
         let list_runtime = VirtualMultiSelectionRuntime {
-            on_change: |_| (),
+            on_change: crate::ChangeCallback::new(|_| ()),
             item_count: 20,
             item_height: 20.0,
             layout: VirtualMultiSelectionLayout::List,
         };
         let grid_runtime = VirtualMultiSelectionRuntime {
-            on_change: |_| (),
+            on_change: crate::ChangeCallback::new(|_| ()),
             item_count: 20,
             item_height: 20.0,
             layout: VirtualMultiSelectionLayout::Grid { columns: 2 },

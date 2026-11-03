@@ -3,7 +3,7 @@
 
 use super::{PickerColor, paint};
 use crate::{
-    CustomAccessibility, CustomAccessibilityAction, CustomAccessibilityActions,
+    ChangeCallback, CustomAccessibility, CustomAccessibilityAction, CustomAccessibilityActions,
     CustomAccessibilityNode, CustomAccessibilityRole, CustomAccessibilityState, CustomEventOutcome,
     CustomInteraction, CustomPaintContext, CustomPointerEvent, CustomWidgetState, CustomWidgetV1,
     ShortcutEvent, ShortcutKey, ShortcutNamedKey,
@@ -14,15 +14,15 @@ pub(super) enum ColorControl<Msg> {
         hue: f32,
         saturation: f32,
         value: f32,
-        on_change: fn((f32, f32)) -> Msg,
+        on_change: ChangeCallback<(f32, f32), Msg>,
     },
     Hue {
         hue: f32,
-        on_change: fn(f32) -> Msg,
+        on_change: ChangeCallback<f32, Msg>,
     },
     Alpha {
         color: PickerColor,
-        on_change: fn(f32) -> Msg,
+        on_change: ChangeCallback<f32, Msg>,
     },
     Preview {
         color: PickerColor,
@@ -35,25 +35,28 @@ impl<Msg> ColorControl<Msg> {
             Self::Plane {
                 saturation,
                 value,
-                on_change,
+                ref on_change,
                 ..
             } => {
                 let s = endpoint.unwrap_or(saturation + horizontal).clamp(0.0, 1.0);
                 let v = (value + vertical).clamp(0.0, 1.0);
-                ((s, v) != (saturation, value)).then(|| on_change((s, v)))
+                ((s, v) != (saturation, value)).then(|| on_change.call((s, v)))
             }
-            Self::Hue { hue, on_change } => {
+            Self::Hue { hue, ref on_change } => {
                 let next = endpoint
                     .map_or(hue + (horizontal + vertical) * 360.0, |v| v * 360.0)
                     .clamp(0.0, 360.0);
-                (next != hue).then(|| on_change(next))
+                (next != hue).then(|| on_change.call(next))
             }
-            Self::Alpha { color, on_change } => {
+            Self::Alpha {
+                color,
+                ref on_change,
+            } => {
                 let alpha = color.rgba()[3];
                 let next = endpoint
                     .unwrap_or(alpha + horizontal + vertical)
                     .clamp(0.0, 1.0);
-                (next != alpha).then(|| on_change(next))
+                (next != alpha).then(|| on_change.call(next))
             }
             Self::Preview { .. } => None,
         }
@@ -64,11 +67,16 @@ impl<Msg> ColorControl<Msg> {
             Self::Plane {
                 saturation,
                 value,
-                on_change,
+                ref on_change,
                 ..
-            } => ((x, 1.0 - y) != (saturation, value)).then(|| on_change((x, 1.0 - y))),
-            Self::Hue { hue, on_change } => (x * 360.0 != hue).then(|| on_change(x * 360.0)),
-            Self::Alpha { color, on_change } => (x != color.rgba()[3]).then(|| on_change(x)),
+            } => ((x, 1.0 - y) != (saturation, value)).then(|| on_change.call((x, 1.0 - y))),
+            Self::Hue { hue, ref on_change } => {
+                (x * 360.0 != hue).then(|| on_change.call(x * 360.0))
+            }
+            Self::Alpha {
+                color,
+                ref on_change,
+            } => (x != color.rgba()[3]).then(|| on_change.call(x)),
             Self::Preview { .. } => None,
         }
     }

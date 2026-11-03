@@ -5,6 +5,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::RutterRunner;
 use crate::app::AppLogic;
+use crate::widget::id::WidgetIdError;
 
 impl<A: AppLogic + 'static> RutterRunner<A> {
     pub(crate) fn process_accessibility_actions(&mut self) {
@@ -28,20 +29,33 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             self.fatal_error.get_or_insert_with(|| error.into());
             return;
         }
-        if self.handle_accessibility_actions(requests) {
-            self.redraw();
+        match self.handle_accessibility_actions(requests, size) {
+            Ok(true) => self.redraw(),
+            Ok(false) => {}
+            Err(error) => {
+                self.fatal_error.get_or_insert_with(|| error.into());
+            }
         }
     }
 
-    fn handle_accessibility_actions(&mut self, requests: Vec<accesskit::ActionRequest>) -> bool {
+    fn handle_accessibility_actions(
+        &mut self,
+        requests: Vec<accesskit::ActionRequest>,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> Result<bool, WidgetIdError> {
         let mut changed = false;
         for request in requests {
             if request.target_tree != accesskit::TreeId::ROOT {
                 continue;
             }
+            // An earlier request can replace callbacks or disable/remove its
+            // target. Resolve every subsequent action against that publication.
+            if self.engine.layout_dirty {
+                self.engine.try_ensure_layout_for_input(size)?;
+            }
             changed |= self.handle_accessibility_action(request.action, request.target_node.0);
         }
-        changed
+        Ok(changed)
     }
 
     fn handle_accessibility_action(&mut self, action: accesskit::Action, target: u64) -> bool {

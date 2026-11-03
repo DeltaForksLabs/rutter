@@ -198,6 +198,9 @@ pub(crate) fn interactive_item_disabled<Msg>(
     ) -> Option<bool> {
         match widget {
             Widget::InteractiveVirtualListContent { items, .. }
+            | Widget::InteractiveVirtualListContentWith { items, .. }
+            | Widget::InteractiveVirtualGridContentWith { items, .. }
+            | Widget::InteractiveCarouselViewWith { items, .. }
             | Widget::InteractiveVirtualGridContent { items, .. }
             | Widget::InteractiveCarouselView { items, .. }
                 if widget.resolved_id(path) == Some(id) =>
@@ -224,6 +227,7 @@ pub(crate) fn interactive_item_disabled<Msg>(
             | Widget::TableOfContents { child, .. }
             | Widget::Tooltip { child, .. }
             | Widget::PointerRegion { child, .. }
+            | Widget::PointerRegionWith { child, .. }
             | Widget::ButtonContent { child, .. }
             | Widget::Accordion { child, .. }
             | Widget::Modal { child, .. }

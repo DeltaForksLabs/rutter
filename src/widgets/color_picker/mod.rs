@@ -22,7 +22,7 @@ mod widgets;
 
 pub use color::{ColorError, PickerColor};
 pub use state::{ColorFormat, ColorPickerEvent, ColorPickerState};
-pub use widgets::{ColorPickerCallbacks, ColorPickerIds};
+pub use widgets::{ColorPickerCallbacks, ColorPickerCallbacksWith, ColorPickerIds};
 
 #[cfg(test)]
 mod widget_tests;

@@ -46,6 +46,9 @@ impl FieldInsets {
             | Widget::ComboBox {
                 label, error_msg, ..
             }
+            | Widget::ComboBoxWith {
+                label, error_msg, ..
+            }
             | Widget::TextInputWith {
                 label, error_msg, ..
             }

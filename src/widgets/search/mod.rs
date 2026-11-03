@@ -13,7 +13,7 @@ mod matcher;
 pub use matcher::{SearchMatch, SearchMatcher, SearchScoreFn, filter_ranked};
 
 mod widgets;
-pub use widgets::{SearchConfigError, SearchSuggestions};
+pub use widgets::{SearchConfigError, SearchSuggestions, SearchSuggestionsWith};
 
 #[cfg(test)]
 mod widget_tests;

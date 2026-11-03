@@ -278,6 +278,7 @@ fn find_nested_heading_offset<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. } => {
@@ -382,6 +383,7 @@ fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<Table
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. } => collect_entries_impl(child, entries),
@@ -417,10 +419,15 @@ fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<Table
         | Widget::TextArea { .. }
         | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
+        | Widget::SearchBarWith { .. }
         | Widget::ComboBox { .. }
+        | Widget::ComboBoxWith { .. }
         | Widget::Checkbox { .. }
+        | Widget::CheckboxWith { .. }
         | Widget::Switch { .. }
+        | Widget::SwitchWith { .. }
         | Widget::Radio { .. }
+        | Widget::RadioWith { .. }
         | Widget::Slider { .. }
         | Widget::SliderWith { .. }
         | Widget::Counter { .. }
@@ -433,9 +440,18 @@ fn collect_nested_entries<Msg>(widget: &Widget<'_, Msg>, entries: &mut Vec<Table
         | Widget::Divider { .. }
         | Widget::Spacer { .. }
         | Widget::TabBar { .. }
+        | Widget::TabBarWith { .. }
         | Widget::Toast { .. }
         | Widget::DropdownMenu { .. }
         | Widget::CarouselView { .. }
+        | Widget::CarouselViewWith { .. }
+        | Widget::InteractiveCarouselViewWith { .. }
+        | Widget::VirtualListWith { .. }
+        | Widget::VirtualListContentWith { .. }
+        | Widget::InteractiveVirtualListContentWith { .. }
+        | Widget::VirtualGridWith { .. }
+        | Widget::VirtualGridContentWith { .. }
+        | Widget::InteractiveVirtualGridContentWith { .. }
         | Widget::InteractiveCarouselView { .. }
         | Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }

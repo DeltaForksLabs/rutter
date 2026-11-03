@@ -62,7 +62,7 @@ use crate::input_limits::{InputKind, InputLimitError, InputLimits};
 use crate::layout::{
     RutterContext, SyncedLayoutTree, compute_layout, sync_taffy_tree_with_direction,
 };
-use crate::pointer::{ActiveDragBadge, DragBadge, DragSource, DropTarget, PointerEvent};
+use crate::pointer::{ActiveDragBadge, DragBadge, PointerEvent};
 use crate::render::hit_test::{
     collect_input_ids, collect_input_ids_at_path, collect_stateful_ids,
     collect_stateful_ids_at_path,
@@ -78,7 +78,7 @@ use crate::widget::custom::{
 };
 use crate::widget::id::{WidgetIdError, WidgetIdSnapshot, validate_widget_id_snapshot};
 use crate::widget::{
-    CounterConfig, DialogAction, KeyedVirtualItems, VirtualSelection, Widget,
+    ChangeCallback, CounterConfig, DialogAction, KeyedVirtualItems, VirtualSelectionWith, Widget,
     pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
     resolve_search_suggestion_id, resolve_table_cell_id, resolve_table_header_id,
     resolve_table_row_id,
@@ -86,7 +86,7 @@ use crate::widget::{
 use crate::widgets::carousel::geometry::carousel_item_frames;
 use crate::widgets::carousel::{CarouselConfig, CarouselState};
 use crate::widgets::search::{
-    SEARCH_BAR_LEADING_TEXT_INSET, SearchMatch, SearchMatcher, SearchSuggestions, filter_ranked,
+    SEARCH_BAR_LEADING_TEXT_INSET, SearchMatch, SearchMatcher, filter_ranked,
 };
 use crate::widgets::table::{
     TableModel, TableOptions, TableState, allocate_column_widths, calculate_viewport,
@@ -156,6 +156,7 @@ fn contains_live_clock_child<Msg>(widget: &Widget<Msg>) -> bool {
         Widget::Disabled { child } => contains_live_clock(child),
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
@@ -219,6 +220,7 @@ fn collect_toast_runtime_updates_impl<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -278,6 +280,7 @@ fn collect_overlay_focus_scope<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -359,14 +362,19 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         Widget::Button { .. }
         | Widget::ButtonContent { .. }
         | Widget::Checkbox { .. }
+        | Widget::CheckboxWith { .. }
         | Widget::Switch { .. }
+        | Widget::SwitchWith { .. }
         | Widget::Radio { .. }
+        | Widget::RadioWith { .. }
         | Widget::TextInput { .. }
         | Widget::TextInputWith { .. }
         | Widget::TextArea { .. }
         | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
+        | Widget::SearchBarWith { .. }
         | Widget::ComboBox { .. }
+        | Widget::ComboBoxWith { .. }
         | Widget::Slider { .. }
         | Widget::SliderWith { .. }
         | Widget::Counter { .. }
@@ -374,6 +382,14 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         | Widget::SelectWith { .. }
         | Widget::DropdownMenu { .. }
         | Widget::CarouselView { .. }
+        | Widget::CarouselViewWith { .. }
+        | Widget::InteractiveCarouselViewWith { .. }
+        | Widget::VirtualListWith { .. }
+        | Widget::VirtualListContentWith { .. }
+        | Widget::InteractiveVirtualListContentWith { .. }
+        | Widget::VirtualGridWith { .. }
+        | Widget::VirtualGridContentWith { .. }
+        | Widget::InteractiveVirtualGridContentWith { .. }
         | Widget::InteractiveCarouselView { .. }
         | Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
@@ -393,7 +409,7 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         Widget::Custom { widget: custom, .. } if custom.interaction().supports_keyboard() => {
             out.push(widget.keyboard_focus_id(path).unwrap())
         }
-        Widget::TabBar { tabs, .. } => {
+        Widget::TabBar { tabs, .. } | Widget::TabBarWith { tabs, .. } => {
             for index in 0..tabs.len() {
                 if let Some(focus_id) = widget.tab_focus_id(path, index) {
                     out.push(focus_id);
@@ -425,6 +441,7 @@ fn collect_focus_order_impl<Msg>(widget: &Widget<Msg>, out: &mut Vec<u64>, path:
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. } => {
@@ -651,7 +668,7 @@ struct CounterRuntimeEntry<Msg> {
 
 #[derive(Debug, Clone)]
 struct ToggleRuntime<Msg> {
-    on_change: fn(bool) -> Msg,
+    on_change: crate::ChangeCallback<bool, Msg>,
     checked: bool,
 }
 
@@ -675,7 +692,7 @@ struct SearchRuntime<Msg> {
     // Captured from live overlay collection, independently of its current rows.
     // Controlled model reconciliation can replace the ranked source afterward.
     popup_exposed: bool,
-    on_select: Option<fn(usize) -> Msg>,
+    on_select: Option<crate::ChangeCallback<usize, Msg>>,
     max_results: usize,
     items: Vec<String>,
     matcher: SearchMatcher,
@@ -683,11 +700,11 @@ struct SearchRuntime<Msg> {
 }
 
 impl<Msg> SearchRuntime<Msg> {
-    fn new(suggestions: &SearchSuggestions<'_, Msg>, query: &str) -> Self {
+    fn new(suggestions: &crate::SearchSuggestionsWith<'_, Msg>, query: &str) -> Self {
         let mut runtime = Self {
             combo_box: false,
             popup_exposed: false,
-            on_select: suggestions.on_select,
+            on_select: suggestions.on_select.clone(),
             max_results: suggestions.max_results,
             items: suggestions
                 .items
@@ -738,7 +755,7 @@ fn normalize_search_hover(
 
 #[derive(Debug, Clone)]
 struct TabRuntime<Msg> {
-    on_change: fn(usize) -> Msg,
+    on_change: crate::ChangeCallback<usize, Msg>,
     tab_count: usize,
     focus_ids: Vec<u64>,
 }
@@ -757,14 +774,14 @@ struct TableOfContentsEntryRuntime {
 
 #[derive(Debug, Clone)]
 struct VListRuntime<Msg> {
-    on_select: fn(usize) -> Msg,
+    on_select: ChangeCallback<usize, Msg>,
     item_height: f32,
     item_count: usize,
 }
 
 #[derive(Debug, Clone)]
 struct VGridRuntime<Msg> {
-    on_select: fn(usize) -> Msg,
+    on_select: ChangeCallback<usize, Msg>,
     columns: usize,
     item_height: f32,
     item_count: usize,
@@ -772,7 +789,7 @@ struct VGridRuntime<Msg> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct VirtualMultiSelectionRuntime<Msg> {
-    pub(crate) on_change: fn(Vec<usize>) -> Msg,
+    pub(crate) on_change: ChangeCallback<Vec<usize>, Msg>,
     pub(crate) item_count: usize,
     pub(crate) item_height: f32,
     pub(crate) layout: VirtualMultiSelectionLayout,
@@ -780,28 +797,28 @@ pub(crate) struct VirtualMultiSelectionRuntime<Msg> {
 
 #[derive(Debug, Clone)]
 struct CarouselRuntime<Msg> {
-    on_select: fn(usize) -> Msg,
+    on_select: ChangeCallback<usize, Msg>,
     item_count: usize,
     config: CarouselConfig,
 }
 
 pub(crate) struct PointerRegionRuntime<Msg> {
-    pub(crate) on_pointer: fn(PointerEvent) -> Msg,
-    pub(crate) on_hover: Option<fn(bool) -> Msg>,
+    pub(crate) on_pointer: ChangeCallback<PointerEvent, Msg>,
+    pub(crate) on_hover: Option<ChangeCallback<bool, Msg>>,
     pub(crate) capture_on_press: bool,
-    pub(crate) drag_source: Option<DragSource<Msg>>,
-    pub(crate) drop_target: Option<DropTarget<Msg>>,
+    pub(crate) drag_source: Option<crate::DragSourceWith<Msg>>,
+    pub(crate) drop_target: Option<crate::DropTargetWith<Msg>>,
     pub(crate) drag_badge: Option<DragBadge>,
 }
 
 impl<Msg> Clone for PointerRegionRuntime<Msg> {
     fn clone(&self) -> Self {
         Self {
-            on_pointer: self.on_pointer,
-            on_hover: self.on_hover,
+            on_pointer: self.on_pointer.clone(),
+            on_hover: self.on_hover.clone(),
             capture_on_press: self.capture_on_press,
-            drag_source: self.drag_source,
-            drop_target: self.drop_target,
+            drag_source: self.drag_source.clone(),
+            drop_target: self.drop_target.clone(),
             drag_badge: self.drag_badge.clone(),
         }
     }
@@ -823,7 +840,7 @@ struct WidgetRuntimeCaches<Msg: Clone> {
     buttons: HashMap<u64, Msg>,
     checkboxes: HashMap<u64, ToggleRuntime<Msg>>,
     switches: HashMap<u64, ToggleRuntime<Msg>>,
-    radios: HashMap<u64, fn() -> Msg>,
+    radios: HashMap<u64, crate::ChangeCallback<(), Msg>>,
     accordions: HashMap<u64, Msg>,
     sliders: HashMap<u64, SliderRuntime<Msg>>,
     counters: HashMap<u64, CounterRuntimeEntry<Msg>>,
@@ -1267,6 +1284,9 @@ fn collect_interactive_virtual_liveness<Msg>(
     match widget {
         Widget::InteractiveVirtualListContent {
             item_height, items, ..
+        }
+        | Widget::InteractiveVirtualListContentWith {
+            item_height, items, ..
         } => collect_visible_interactive_items(
             items,
             interactive_list_visible_indices(
@@ -1286,6 +1306,12 @@ fn collect_interactive_virtual_liveness<Msg>(
             item_height,
             items,
             ..
+        }
+        | Widget::InteractiveVirtualGridContentWith {
+            columns,
+            item_height,
+            items,
+            ..
         } => collect_visible_interactive_items(
             items,
             interactive_grid_visible_indices(
@@ -1301,21 +1327,24 @@ fn collect_interactive_virtual_liveness<Msg>(
             custom_ids,
             path,
         ),
-        Widget::InteractiveCarouselView { items, config, .. } => collect_visible_interactive_items(
-            items,
-            interactive_carousel_visible_indices(
+        Widget::InteractiveCarouselView { items, config, .. }
+        | Widget::InteractiveCarouselViewWith { items, config, .. } => {
+            collect_visible_interactive_items(
+                items,
+                interactive_carousel_visible_indices(
+                    states,
+                    widget.resolved_id(path).unwrap(),
+                    config,
+                    items.len(),
+                    crate::i18n::LayoutDirection::Ltr,
+                ),
                 states,
-                widget.resolved_id(path).unwrap(),
-                config,
-                items.len(),
-                crate::i18n::LayoutDirection::Ltr,
-            ),
-            states,
-            stateful,
-            input_ids,
-            custom_ids,
-            path,
-        ),
+                stateful,
+                input_ids,
+                custom_ids,
+                path,
+            )
+        }
         _ => collect_interactive_virtual_children(
             widget, states, stateful, input_ids, custom_ids, path,
         ),
@@ -1368,6 +1397,7 @@ fn collect_interactive_virtual_children<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. }
@@ -1425,6 +1455,9 @@ fn interactive_collection_focuses<Msg>(
     match widget {
         Widget::InteractiveVirtualListContent {
             item_height, items, ..
+        }
+        | Widget::InteractiveVirtualListContentWith {
+            item_height, items, ..
         } => Some(interactive_list_focuses(
             widget,
             items,
@@ -1437,6 +1470,12 @@ fn interactive_collection_focuses<Msg>(
             item_height,
             items,
             ..
+        }
+        | Widget::InteractiveVirtualGridContentWith {
+            columns,
+            item_height,
+            items,
+            ..
         } => Some(interactive_grid_focuses(
             widget,
             items,
@@ -1445,7 +1484,8 @@ fn interactive_collection_focuses<Msg>(
             states,
             path,
         )),
-        Widget::InteractiveCarouselView { items, config, .. } => Some(
+        Widget::InteractiveCarouselView { items, config, .. }
+        | Widget::InteractiveCarouselViewWith { items, config, .. } => Some(
             interactive_carousel_focuses(widget, items, config, states, path),
         ),
         _ => None,
@@ -1557,6 +1597,7 @@ fn append_interactive_child_focuses<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. }
@@ -2926,7 +2967,9 @@ impl<A: AppLogic> RutterEngine<A> {
                 | Widget::TextArea { .. }
                 | Widget::TextAreaWith { .. }
                 | Widget::SearchBar { .. }
+                | Widget::SearchBarWith { .. }
                 | Widget::ComboBox { .. }
+                | Widget::ComboBoxWith { .. }
         ) {
             layout.copied().map(|mut layout| {
                 let body = crate::layout::field::FieldInsets::for_widget(widget)
@@ -2946,16 +2989,21 @@ impl<A: AppLogic> RutterEngine<A> {
             | Widget::ComboBox { on_change, .. } => {
                 Some(crate::ChangeCallback::from_function(*on_change))
             }
-            Widget::TextInputWith { on_change, .. } | Widget::TextAreaWith { on_change, .. } => {
-                Some(on_change.clone())
-            }
+            Widget::TextInputWith { on_change, .. }
+            | Widget::TextAreaWith { on_change, .. }
+            | Widget::SearchBarWith { on_change, .. }
+            | Widget::ComboBoxWith { on_change, .. } => Some(on_change.clone()),
             _ => None,
         };
         match widget {
             Widget::TextInput { model_value, .. }
             | Widget::TextInputWith { model_value, .. }
-            | Widget::ComboBox { model_value, .. } => {
-                let visible_w = if matches!(widget, Widget::ComboBox { .. }) {
+            | Widget::ComboBox { model_value, .. }
+            | Widget::ComboBoxWith { model_value, .. } => {
+                let visible_w = if matches!(
+                    widget,
+                    Widget::ComboBox { .. } | Widget::ComboBoxWith { .. }
+                ) {
                     crate::combo_box::text_width(
                         layout
                             .map(|layout| (layout.size.width, layout.size.height))
@@ -3015,13 +3063,13 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                     "inputs",
                 )?;
-                if let Widget::ComboBox { suggestions, .. } = widget {
+                if let Some(suggestions) = widget.search_suggestions() {
                     let query = sources
                         .input_states
                         .get(&resolved_id)
                         .map(crate::input_state::InputWidgetState::text)
                         .unwrap_or_default();
-                    let mut runtime = SearchRuntime::new(suggestions, &query);
+                    let mut runtime = SearchRuntime::new(&suggestions, &query);
                     runtime.combo_box = true;
                     runtime.refresh_results(&query);
                     normalize_search_hover(widget_states, resolved_id, runtime.results.len());
@@ -3063,11 +3111,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     "inputs",
                 )?;
             }
-            Widget::SearchBar {
-                on_submit,
-                suggestions,
-                ..
-            } => {
+            Widget::SearchBar { on_submit, .. } | Widget::SearchBarWith { on_submit, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 runtime_caches.input_order.push(resolved_id);
                 insert_runtime_entry(
@@ -3091,7 +3135,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     },
                     "inputs",
                 )?;
-                if let Some(suggestions) = suggestions {
+                if let Some(suggestions) = widget.search_suggestions() {
                     // The live query text lives in the input state; this cache
                     // must follow the overlay collector's deterministic rank.
                     let query = sources
@@ -3099,7 +3143,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         .get(&resolved_id)
                         .map(crate::input_state::InputWidgetState::text)
                         .unwrap_or_default();
-                    let runtime = SearchRuntime::new(suggestions, &query);
+                    let runtime = SearchRuntime::new(&suggestions, &query);
                     normalize_search_hover(widget_states, resolved_id, runtime.results.len());
                     insert_runtime_entry(
                         &mut runtime_caches.searches,
@@ -3109,37 +3153,51 @@ impl<A: AppLogic> RutterEngine<A> {
                     )?;
                 }
             }
-            Widget::Checkbox {
-                checked, on_change, ..
-            } => {
+            Widget::Checkbox { checked, .. } | Widget::CheckboxWith { checked, .. } => {
                 insert_runtime_entry(
                     &mut runtime_caches.checkboxes,
                     widget.keyboard_focus_id(path).unwrap(),
                     ToggleRuntime {
-                        on_change: *on_change,
+                        on_change: match widget {
+                            Widget::Checkbox { on_change, .. } => {
+                                crate::ChangeCallback::from_function(*on_change)
+                            }
+                            Widget::CheckboxWith { on_change, .. } => on_change.clone(),
+                            _ => unreachable!(),
+                        },
                         checked: *checked,
                     },
                     "checkboxes",
                 )?;
             }
-            Widget::Switch {
-                checked, on_change, ..
-            } => {
+            Widget::Switch { checked, .. } | Widget::SwitchWith { checked, .. } => {
                 insert_runtime_entry(
                     &mut runtime_caches.switches,
                     widget.keyboard_focus_id(path).unwrap(),
                     ToggleRuntime {
-                        on_change: *on_change,
+                        on_change: match widget {
+                            Widget::Switch { on_change, .. } => {
+                                crate::ChangeCallback::from_function(*on_change)
+                            }
+                            Widget::SwitchWith { on_change, .. } => on_change.clone(),
+                            _ => unreachable!(),
+                        },
                         checked: *checked,
                     },
                     "switches",
                 )?;
             }
-            Widget::Radio { on_select, .. } => {
+            Widget::Radio { .. } | Widget::RadioWith { .. } => {
                 insert_runtime_entry(
                     &mut runtime_caches.radios,
                     widget.keyboard_focus_id(path).unwrap(),
-                    *on_select,
+                    match widget {
+                        Widget::Radio { on_select, .. } => {
+                            crate::ChangeCallback::from_zero_argument(*on_select)
+                        }
+                        Widget::RadioWith { on_select, .. } => on_select.clone(),
+                        _ => unreachable!(),
+                    },
                     "radios",
                 )?;
             }
@@ -3251,9 +3309,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     "accordions",
                 )?;
             }
-            Widget::TabBar {
-                tabs, on_change, ..
-            } => {
+            Widget::TabBar { tabs, .. } | Widget::TabBarWith { tabs, .. } => {
                 let resolved_id = widget.resolved_id(path).unwrap();
                 let focus_ids = (0..tabs.len())
                     .filter_map(|index| widget.tab_focus_id(path, index))
@@ -3273,7 +3329,13 @@ impl<A: AppLogic> RutterEngine<A> {
                     &mut runtime_caches.tabs,
                     resolved_id,
                     TabRuntime {
-                        on_change: *on_change,
+                        on_change: match widget {
+                            Widget::TabBar { on_change, .. } => {
+                                crate::ChangeCallback::from_function(*on_change)
+                            }
+                            Widget::TabBarWith { on_change, .. } => on_change.clone(),
+                            _ => unreachable!(),
+                        },
                         tab_count: tabs.len(),
                         focus_ids,
                     },
@@ -3319,11 +3381,26 @@ impl<A: AppLogic> RutterEngine<A> {
                     &mut runtime_caches.pointer_regions,
                     widget.resolved_id(path).unwrap(),
                     PointerRegionRuntime {
-                        on_pointer: config.on_pointer,
-                        on_hover: config.on_hover,
+                        on_pointer: ChangeCallback::from_function(config.on_pointer),
+                        on_hover: config.on_hover.map(ChangeCallback::from_function),
                         capture_on_press: config.capture_on_press,
-                        drag_source: config.drag_source,
-                        drop_target: config.drop_target,
+                        drag_source: config.drag_source.map(Into::into),
+                        drop_target: config.drop_target.map(Into::into),
+                        drag_badge: config.drag_badge.clone(),
+                    },
+                    "pointer regions",
+                )?;
+            }
+            Widget::PointerRegionWith { config, .. } => {
+                insert_runtime_entry(
+                    &mut runtime_caches.pointer_regions,
+                    widget.resolved_id(path).unwrap(),
+                    PointerRegionRuntime {
+                        on_pointer: config.on_pointer.clone(),
+                        on_hover: config.on_hover.clone(),
+                        capture_on_press: config.capture_on_press,
+                        drag_source: config.drag_source.clone(),
+                        drop_target: config.drop_target.clone(),
                         drag_badge: config.drag_badge.clone(),
                     },
                     "pointer regions",
@@ -3352,10 +3429,10 @@ impl<A: AppLogic> RutterEngine<A> {
                 )?;
             }
             Widget::InteractiveVirtualListContent {
-                item_height,
-                items,
-                on_select,
-                ..
+                item_height, items, ..
+            }
+            | Widget::InteractiveVirtualListContentWith {
+                item_height, items, ..
             } => {
                 sync_virtual_list_runtime(
                     runtime_caches,
@@ -3364,7 +3441,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     layout,
                     path,
                     VListRuntime {
-                        on_select: *on_select,
+                        on_select: widget.virtual_on_select(),
                         item_height: *item_height,
                         item_count: items.len(),
                     },
@@ -3389,7 +3466,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     layout,
                     path,
                     VListRuntime {
-                        on_select: *on_select,
+                        on_select: ChangeCallback::from_function(*on_select),
                         item_height: *item_height,
                         item_count: *item_count,
                     },
@@ -3398,28 +3475,36 @@ impl<A: AppLogic> RutterEngine<A> {
             Widget::VirtualListWithSelection {
                 item_height,
                 item_count,
-                selection,
                 ..
             }
             | Widget::VirtualListContentWithSelection {
                 item_height,
                 item_count,
-                selection,
                 ..
-            } => match selection {
-                VirtualSelection::Single(on_select) => sync_virtual_list_runtime(
+            }
+            | Widget::VirtualListWith {
+                item_height,
+                item_count,
+                ..
+            }
+            | Widget::VirtualListContentWith {
+                item_height,
+                item_count,
+                ..
+            } => match widget.virtual_selection().unwrap() {
+                VirtualSelectionWith::Single(on_select) => sync_virtual_list_runtime(
                     runtime_caches,
                     widget_states,
                     widget,
                     layout,
                     path,
                     VListRuntime {
-                        on_select: *on_select,
+                        on_select,
                         item_height: *item_height,
                         item_count: *item_count,
                     },
                 )?,
-                VirtualSelection::Multiple {
+                VirtualSelectionWith::Multiple {
                     selected,
                     on_change,
                 } => {
@@ -3432,7 +3517,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         layout,
                         selected,
                         VirtualMultiSelectionRuntime {
-                            on_change: *on_change,
+                            on_change,
                             item_count: *item_count,
                             item_height: *item_height,
                             layout: VirtualMultiSelectionLayout::List,
@@ -3440,12 +3525,8 @@ impl<A: AppLogic> RutterEngine<A> {
                     )?
                 }
             },
-            Widget::InteractiveCarouselView {
-                items,
-                on_select,
-                config,
-                ..
-            } => {
+            Widget::InteractiveCarouselView { items, config, .. }
+            | Widget::InteractiveCarouselViewWith { items, config, .. } => {
                 sync_carousel_runtime(
                     runtime_caches,
                     widget_states,
@@ -3453,17 +3534,17 @@ impl<A: AppLogic> RutterEngine<A> {
                     layout,
                     path,
                     CarouselRuntime {
-                        on_select: *on_select,
+                        on_select: widget.virtual_on_select(),
                         item_count: items.len(),
                         config: config.clone(),
                     },
                 )?;
             }
             Widget::CarouselView {
-                item_count,
-                on_select,
-                config,
-                ..
+                item_count, config, ..
+            }
+            | Widget::CarouselViewWith {
+                item_count, config, ..
             } => {
                 sync_carousel_runtime(
                     runtime_caches,
@@ -3472,7 +3553,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     layout,
                     path,
                     CarouselRuntime {
-                        on_select: *on_select,
+                        on_select: widget.virtual_on_select(),
                         item_count: *item_count,
                         config: config.clone(),
                     },
@@ -3482,7 +3563,12 @@ impl<A: AppLogic> RutterEngine<A> {
                 columns,
                 item_height,
                 items,
-                on_select,
+                ..
+            }
+            | Widget::InteractiveVirtualGridContentWith {
+                columns,
+                item_height,
+                items,
                 ..
             } => {
                 sync_virtual_grid_runtime(
@@ -3492,7 +3578,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     layout,
                     path,
                     VGridRuntime {
-                        on_select: *on_select,
+                        on_select: widget.virtual_on_select(),
                         columns: *columns,
                         item_height: *item_height,
                         item_count: items.len(),
@@ -3520,7 +3606,7 @@ impl<A: AppLogic> RutterEngine<A> {
                     layout,
                     path,
                     VGridRuntime {
-                        on_select: *on_select,
+                        on_select: ChangeCallback::from_function(*on_select),
                         columns: *columns,
                         item_height: *item_height,
                         item_count: *item_count,
@@ -3531,30 +3617,40 @@ impl<A: AppLogic> RutterEngine<A> {
                 columns,
                 item_height,
                 item_count,
-                selection,
                 ..
             }
             | Widget::VirtualGridContentWithSelection {
                 columns,
                 item_height,
                 item_count,
-                selection,
                 ..
-            } => match selection {
-                VirtualSelection::Single(on_select) => sync_virtual_grid_runtime(
+            }
+            | Widget::VirtualGridWith {
+                columns,
+                item_height,
+                item_count,
+                ..
+            }
+            | Widget::VirtualGridContentWith {
+                columns,
+                item_height,
+                item_count,
+                ..
+            } => match widget.virtual_selection().unwrap() {
+                VirtualSelectionWith::Single(on_select) => sync_virtual_grid_runtime(
                     runtime_caches,
                     widget_states,
                     widget,
                     layout,
                     path,
                     VGridRuntime {
-                        on_select: *on_select,
+                        on_select,
                         columns: *columns,
                         item_height: *item_height,
                         item_count: *item_count,
                     },
                 )?,
-                VirtualSelection::Multiple {
+                VirtualSelectionWith::Multiple {
                     selected,
                     on_change,
                 } => {
@@ -3567,7 +3663,7 @@ impl<A: AppLogic> RutterEngine<A> {
                         layout,
                         selected,
                         VirtualMultiSelectionRuntime {
-                            on_change: *on_change,
+                            on_change,
                             item_count: *item_count,
                             item_height: *item_height,
                             layout: VirtualMultiSelectionLayout::Grid { columns: *columns },
@@ -3621,6 +3717,9 @@ impl<A: AppLogic> RutterEngine<A> {
             }
             Widget::InteractiveVirtualListContent {
                 items, item_height, ..
+            }
+            | Widget::InteractiveVirtualListContentWith {
+                items, item_height, ..
             } => {
                 let id = widget.resolved_id(path).unwrap();
                 let indices =
@@ -3636,6 +3735,12 @@ impl<A: AppLogic> RutterEngine<A> {
                 )?;
             }
             Widget::InteractiveVirtualGridContent {
+                items,
+                item_height,
+                columns,
+                ..
+            }
+            | Widget::InteractiveVirtualGridContentWith {
                 items,
                 item_height,
                 columns,
@@ -3659,7 +3764,8 @@ impl<A: AppLogic> RutterEngine<A> {
                     path,
                 )?;
             }
-            Widget::InteractiveCarouselView { items, config, .. } => {
+            Widget::InteractiveCarouselView { items, config, .. }
+            | Widget::InteractiveCarouselViewWith { items, config, .. } => {
                 let id = widget.resolved_id(path).unwrap();
                 let direction = traversal
                     .node
@@ -3788,6 +3894,7 @@ impl<A: AppLogic> RutterEngine<A> {
             | Widget::Accordion { child, .. }
             | Widget::Dialog { child, .. }
             | Widget::PointerRegion { child, .. }
+            | Widget::PointerRegionWith { child, .. }
             | Widget::ScrollView { child, .. }
             | Widget::Tooltip { child, .. }
             | Widget::ContextMenu { child, .. }
@@ -4235,8 +4342,9 @@ mod tests {
     fn search_runtime_refreshes_ranked_results_after_text_changes() {
         let items = ["Matrix", "O Senhor dos Anéis", "Star Wars"];
         let suggestions =
-            SearchSuggestions::new(&items, SearchMatcher::Fuzzy, 5, Some(Msg::Usize)).unwrap();
-        let mut runtime = SearchRuntime::new(&suggestions, "matrix");
+            crate::SearchSuggestions::new(&items, SearchMatcher::Fuzzy, 5, Some(Msg::Usize))
+                .unwrap();
+        let mut runtime = SearchRuntime::new(&suggestions.into(), "matrix");
 
         assert_eq!(runtime.results[0].index, 0);
         runtime.refresh_results("senhor");
@@ -4776,12 +4884,12 @@ mod tests {
         let tab = runtime_caches.tabs.get(&4).unwrap();
         assert_eq!(tab.tab_count, 2);
         assert_eq!(tab.focus_ids.len(), 2);
-        assert_eq!((tab.on_change)(1), Msg::Usize(1));
+        assert_eq!(tab.on_change.call(1), Msg::Usize(1));
 
         let vlist = runtime_caches.vlists.get(&5).unwrap();
         assert_eq!(vlist.item_height, 30.0);
         assert_eq!(vlist.item_count, 50);
-        assert_eq!((vlist.on_select)(7), Msg::Usize(7));
+        assert_eq!(vlist.on_select.call(7), Msg::Usize(7));
         assert_eq!(
             widget_states
                 .get(&5)
@@ -4794,7 +4902,7 @@ mod tests {
         assert_eq!(vgrid.columns, 4);
         assert_eq!(vgrid.item_height, 64.0);
         assert_eq!(vgrid.item_count, 60);
-        assert_eq!((vgrid.on_select)(9), Msg::Usize(9));
+        assert_eq!(vgrid.on_select.call(9), Msg::Usize(9));
         assert_eq!(
             widget_states
                 .get(&7)
@@ -4805,7 +4913,7 @@ mod tests {
 
         let carousel = runtime_caches.carousels.get(&9).unwrap();
         assert_eq!(carousel.item_count, 100);
-        assert_eq!((carousel.on_select)(11), Msg::Usize(11));
+        assert_eq!(carousel.on_select.call(11), Msg::Usize(11));
         assert_eq!(
             widget_states
                 .get(&9)
@@ -4937,7 +5045,7 @@ mod tests {
                     30.0,
                     50,
                     &|_| None,
-                    VirtualSelection::multiple(&list_selection, Msg::Indices),
+                    crate::VirtualSelection::multiple(&list_selection, Msg::Indices),
                     base_style(240.0, 180.0),
                 )
                 .with_id(31),
@@ -4946,7 +5054,7 @@ mod tests {
                     64.0,
                     60,
                     &|_| None,
-                    VirtualSelection::multiple(&grid_selection, Msg::Indices),
+                    crate::VirtualSelection::multiple(&grid_selection, Msg::Indices),
                     base_style(240.0, 192.0),
                 )
                 .with_id(32),
@@ -4979,11 +5087,12 @@ mod tests {
         );
 
         assert_eq!(
-            (runtime_caches
+            runtime_caches
                 .virtual_multi_selections
                 .get(&31)
                 .unwrap()
-                .on_change)(vec![1, 3]),
+                .on_change
+                .call(vec![1, 3]),
             Msg::Indices(vec![1, 3])
         );
         assert_eq!(

@@ -142,6 +142,9 @@ impl GeometryPass<'_> {
                 }
             }
             Widget::InteractiveVirtualListContent { .. }
+            | Widget::InteractiveVirtualListContentWith { .. }
+            | Widget::InteractiveVirtualGridContentWith { .. }
+            | Widget::InteractiveCarouselViewWith { .. }
             | Widget::InteractiveVirtualGridContent { .. }
             | Widget::InteractiveCarouselView { .. } => {
                 target = self
@@ -287,8 +290,8 @@ impl GeometryPass<'_> {
                     .child(child, self.first(node)?, absolute, clip, visible, 0)
                     .or(target);
             }
-            Widget::PointerRegion { child, config, .. } => {
-                if visible && config.on_hover.is_some() {
+            Widget::PointerRegion { child, .. } | Widget::PointerRegionWith { child, .. } => {
+                if visible && widget.pointer_region_has_hover() {
                     self.geometry
                         .pointer_regions
                         .insert(widget.resolved_id(&self.path)?, intersection(clip, frame));
@@ -302,7 +305,7 @@ impl GeometryPass<'_> {
                     .child(child, self.first(node)?, absolute, clip, visible, 0)
                     .or(target);
             }
-            Widget::TabBar { tabs, .. } => {
+            Widget::TabBar { tabs, .. } | Widget::TabBarWith { tabs, .. } => {
                 for index in 0..tabs.len() {
                     if let Some(id) = widget.tab_focus_id(&self.path, index) {
                         if !visible {
@@ -335,6 +338,9 @@ impl GeometryPass<'_> {
         let (items, frames): (_, Vec<_>) = match widget {
             Widget::InteractiveVirtualListContent {
                 items, item_height, ..
+            }
+            | Widget::InteractiveVirtualListContentWith {
+                items, item_height, ..
             } => {
                 let state = self.states.get(&id)?.as_vlist()?;
                 let (first, last) = state.visible_range(*item_height, items.len());
@@ -354,6 +360,12 @@ impl GeometryPass<'_> {
                 (items, frames)
             }
             Widget::InteractiveVirtualGridContent {
+                items,
+                item_height,
+                columns,
+                ..
+            }
+            | Widget::InteractiveVirtualGridContentWith {
                 items,
                 item_height,
                 columns,
@@ -383,7 +395,8 @@ impl GeometryPass<'_> {
                     .collect();
                 (items, frames)
             }
-            Widget::InteractiveCarouselView { items, config, .. } => {
+            Widget::InteractiveCarouselView { items, config, .. }
+            | Widget::InteractiveCarouselViewWith { items, config, .. } => {
                 let state = self.states.get(&id)?.as_carousel()?;
                 let frames = carousel_item_frames(
                     config,
@@ -492,7 +505,9 @@ impl GeometryPass<'_> {
                 | Widget::TextArea { .. }
                 | Widget::TextAreaWith { .. }
                 | Widget::SearchBar { .. }
+                | Widget::SearchBarWith { .. }
                 | Widget::ComboBox { .. }
+                | Widget::ComboBoxWith { .. }
         ) {
             let body = crate::layout::field::FieldInsets::for_widget(widget)
                 .body((frame.width(), frame.height()));

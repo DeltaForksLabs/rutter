@@ -11,7 +11,7 @@ use crate::engine::widget_state::{SearchState, WidgetState};
 use crate::input_state::InputWidgetState;
 use crate::layout::RutterContext;
 use crate::widget::Widget;
-use crate::widgets::search::{SearchMatch, SearchSuggestions, filter_ranked};
+use crate::widgets::search::{SearchMatch, SearchSuggestionsWith, filter_ranked};
 
 /// Open suggestions popup of a focused search bar with attached items.
 ///
@@ -74,7 +74,7 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
     pub(super) fn capture_search(
         &mut self,
         widget: &'widget Widget<'entry, Msg>,
-        suggestions: &SearchSuggestions<'entry, Msg>,
+        suggestions: &SearchSuggestionsWith<'entry, Msg>,
         absolute: Point,
         size: (f32, f32),
         node: NodeId,
@@ -93,7 +93,12 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
             return;
         };
         let query = input.text();
-        if query.trim().is_empty() && !matches!(widget, Widget::ComboBox { .. }) {
+        if query.trim().is_empty()
+            && !matches!(
+                widget,
+                Widget::ComboBox { .. } | Widget::ComboBoxWith { .. }
+            )
+        {
             return;
         }
         self.push_search(
@@ -118,7 +123,7 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
     fn push_search(
         &mut self,
         widget: &Widget<'entry, Msg>,
-        suggestions: &SearchSuggestions<'entry, Msg>,
+        suggestions: &SearchSuggestionsWith<'entry, Msg>,
         state: &SearchState,
         query: &str,
         absolute: Point,
@@ -137,11 +142,18 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
         }
         self.searches.push(SearchOverlay {
             direction,
-            visible_rows: matches!(widget, Widget::ComboBox { .. })
-                .then_some(suggestions.max_results),
-            combo_box: matches!(widget, Widget::ComboBox { .. }),
+            visible_rows: matches!(
+                widget,
+                Widget::ComboBox { .. } | Widget::ComboBoxWith { .. }
+            )
+            .then_some(suggestions.max_results),
+            combo_box: matches!(
+                widget,
+                Widget::ComboBox { .. } | Widget::ComboBoxWith { .. }
+            ),
             committed_index: match widget {
-                Widget::ComboBox { selected_index, .. } => *selected_index,
+                Widget::ComboBox { selected_index, .. }
+                | Widget::ComboBoxWith { selected_index, .. } => *selected_index,
                 _ => None,
             },
             id: widget.resolved_id(&self.path).unwrap(),
@@ -151,7 +163,10 @@ impl<'tree, 'widget, 'entry: 'widget, Msg> SelectOverlayCollector<'tree, 'widget
                 suggestions.items,
                 query,
                 suggestions.matcher,
-                if matches!(widget, Widget::ComboBox { .. }) {
+                if matches!(
+                    widget,
+                    Widget::ComboBox { .. } | Widget::ComboBoxWith { .. }
+                ) {
                     usize::MAX
                 } else {
                     suggestions.max_results

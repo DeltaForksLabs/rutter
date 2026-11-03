@@ -182,6 +182,7 @@ pub(super) fn has_visible_blocking_overlay<Msg>(widget: &Widget<'_, Msg>) -> boo
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }

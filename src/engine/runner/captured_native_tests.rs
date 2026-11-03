@@ -14,6 +14,15 @@ const VIEWPORT: PhysicalSize<u32> = PhysicalSize::new(320, 640);
 #[path = "captured_virtual_slider_tests.rs"]
 mod virtual_sliders;
 
+#[path = "captured_choice_tests.rs"]
+mod choices;
+
+#[path = "captured_collection_tests.rs"]
+mod collections;
+
+#[path = "captured_table_tests.rs"]
+mod tables;
+
 #[derive(Clone, Debug, PartialEq)]
 struct Context {
     instance: String,

@@ -118,3 +118,57 @@ impl<'a, Msg> SearchSuggestions<'a, Msg> {
         self.matcher
     }
 }
+
+/// Suggestion configuration with an optional owned selection callback.
+/// Source indices, ranking and informational rows follow [`SearchSuggestions`].
+#[derive(Debug, Clone)]
+pub struct SearchSuggestionsWith<'a, Msg> {
+    pub(crate) items: &'a [&'a str],
+    pub(crate) matcher: SearchMatcher,
+    pub(crate) max_results: usize,
+    pub(crate) labels: SearchLabels<'a>,
+    pub(crate) on_select: Option<crate::ChangeCallback<usize, Msg>>,
+}
+
+impl<'a, Msg> SearchSuggestionsWith<'a, Msg> {
+    /// Validates the row limit. `None` leaves suggestions informational.
+    pub fn new(
+        items: &'a [&'a str],
+        matcher: SearchMatcher,
+        max_results: usize,
+        on_select: Option<crate::ChangeCallback<usize, Msg>>,
+    ) -> Result<Self, SearchConfigError> {
+        let legacy = SearchSuggestions::new(items, matcher, max_results, None)?;
+        let mut suggestions = Self::from(legacy);
+        suggestions.on_select = on_select;
+        Ok(suggestions)
+    }
+
+    /// Overrides popup feedback strings.
+    pub fn with_labels(mut self, labels: SearchLabels<'a>) -> Self {
+        self.labels = labels;
+        self
+    }
+
+    /// Maximum number of visible rows.
+    pub fn max_results(&self) -> usize {
+        self.max_results
+    }
+
+    /// Matching strategy used to rank the source.
+    pub fn matcher(&self) -> SearchMatcher {
+        self.matcher
+    }
+}
+
+impl<'a, Msg> From<SearchSuggestions<'a, Msg>> for SearchSuggestionsWith<'a, Msg> {
+    fn from(value: SearchSuggestions<'a, Msg>) -> Self {
+        Self {
+            items: value.items,
+            matcher: value.matcher,
+            max_results: value.max_results,
+            labels: value.labels,
+            on_select: value.on_select.map(crate::ChangeCallback::from_function),
+        }
+    }
+}

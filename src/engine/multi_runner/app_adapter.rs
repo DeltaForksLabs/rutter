@@ -110,6 +110,13 @@ impl<A: MultiWindowAppLogic> AppLogic for SurfaceAppAdapter<A> {
         A::selected_text_drag(&state.model, state.surface, id)
     }
 
+    fn selected_text_drag_with(
+        state: &Self::State,
+        id: u64,
+    ) -> Option<crate::SelectedTextDragWith<Self::Message>> {
+        A::selected_text_drag_with(&state.model, state.surface, id)
+    }
+
     fn text_shape_cache_limits() -> TextShapeCacheLimits {
         A::text_shape_cache_limits()
     }
@@ -170,6 +177,27 @@ mod tests {
             vec![SurfaceCommand::RequestRedraw(surface)]
         }
 
+        fn selected_text_drag_with(
+            _state: &Self::State,
+            surface: SurfaceId,
+            id: u64,
+        ) -> Option<crate::SelectedTextDragWith<Self::Message>> {
+            (id == 19 && matches!(surface.get(), 8 | 9)).then(|| {
+                crate::SelectedTextDragWith::new(
+                    crate::DragSourceWith::new(
+                        DragPayload::new(DragPayloadKind::new(2), surface.get()),
+                        move |_| {
+                            let _surface = surface;
+                        },
+                    ),
+                    move |_| {
+                        let _surface = surface;
+                    },
+                    DragBadge::new(skia_safe::Color::RED, skia_safe::Color::WHITE),
+                )
+            })
+        }
+
         fn selected_text_drag(
             _state: &Self::State,
             surface: SurfaceId,
@@ -201,6 +229,18 @@ mod tests {
         assert!(SurfaceAppAdapter::<PointerApp>::selected_text_drag(&state, 20).is_none());
         state.surface = SurfaceId::new(9);
         assert!(SurfaceAppAdapter::<PointerApp>::selected_text_drag(&state, 19).is_none());
+    }
+
+    #[test]
+    fn captured_selected_text_drag_is_forwarded_for_both_surface_models() {
+        for surface in [SurfaceId::new(8), SurfaceId::new(9)] {
+            let state = SurfaceAppState::<PointerApp>::new(surface, PointerState::default(), 0);
+            let config =
+                SurfaceAppAdapter::<PointerApp>::selected_text_drag_with(&state, 19).unwrap();
+            assert_eq!(config.source.payload.value(), surface.get());
+            config.on_selected.call("River".into());
+            assert!(SurfaceAppAdapter::<PointerApp>::selected_text_drag_with(&state, 20).is_none());
+        }
     }
 
     #[derive(Clone, Debug, Default, PartialEq)]

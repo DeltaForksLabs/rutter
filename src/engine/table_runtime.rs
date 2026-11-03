@@ -2,7 +2,7 @@
 // Licensed under the MIT License OR Apache 2.0.
 
 use crate::widgets::table::{
-    TableCellTarget, TableColumnKey, TableModel, TableOptions, TableRowKey, TableSelection,
+    TableCellTarget, TableColumnKey, TableModel, TableOptions, TableRowKey, TableSelectionWith,
     TableSort, TableState,
 };
 
@@ -35,18 +35,18 @@ enum TableSelectionRuntime<Msg> {
     None,
     Single {
         selected: Option<TableRowKey>,
-        on_selection: fn(Option<TableRowKey>) -> Msg,
+        on_selection: crate::ChangeCallback<Option<TableRowKey>, Msg>,
     },
     Multiple {
         selected: Vec<TableRowKey>,
-        on_selection: fn(Vec<TableRowKey>) -> Msg,
+        on_selection: crate::ChangeCallback<Vec<TableRowKey>, Msg>,
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct TableSortingRuntime<Msg> {
     current: Option<TableSort>,
-    on_sort: fn(TableSort) -> Msg,
+    on_sort: crate::ChangeCallback<TableSort, Msg>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,11 +80,13 @@ impl<Msg> TableRuntime<Msg> {
                 .filter(|column| column.is_sortable())
                 .map(|column| column.key())
                 .collect(),
-            selection: selection_runtime(options.selection(), model),
-            sorting: options.sorting().map(|sorting| TableSortingRuntime {
-                current: sorting.current(),
-                on_sort: sorting.on_sort_callback(),
-            }),
+            selection: selection_runtime(&options.effective_selection(), model),
+            sorting: options
+                .effective_sorting()
+                .map(|sorting| TableSortingRuntime {
+                    current: sorting.current(),
+                    on_sort: sorting.on_sort,
+                }),
         }
     }
 
@@ -141,7 +143,7 @@ impl<Msg> TableRuntime<Msg> {
             },
             _ => crate::widgets::table::TableSortDirection::Ascending,
         };
-        Some((sorting.on_sort)(TableSort::new(column, direction)))
+        Some(sorting.on_sort.call(TableSort::new(column, direction)))
     }
 
     fn selection_message(
@@ -164,14 +166,12 @@ impl<Msg> TableRuntime<Msg> {
                 } else {
                     Some(row)
                 };
-                Some(on_selection(next))
+                Some(on_selection.call(next))
             }
             TableSelectionRuntime::Multiple {
                 selected,
                 on_selection,
-            } => Some(on_selection(
-                self.multiple_selection(selected, row, anchor, modifiers),
-            )),
+            } => Some(on_selection.call(self.multiple_selection(selected, row, anchor, modifiers))),
         }
     }
 
@@ -289,19 +289,19 @@ impl<Msg> TableRuntime<Msg> {
 }
 
 fn selection_runtime<Msg>(
-    selection: &TableSelection<'_, Msg>,
+    selection: &TableSelectionWith<'_, Msg>,
     model: &TableModel<'_>,
 ) -> TableSelectionRuntime<Msg> {
     match selection {
-        TableSelection::None => TableSelectionRuntime::None,
-        TableSelection::Single {
+        TableSelectionWith::None => TableSelectionRuntime::None,
+        TableSelectionWith::Single {
             selected,
             on_selection,
         } => TableSelectionRuntime::Single {
             selected: selected.filter(|key| model.rows().iter().any(|row| row.key() == *key)),
-            on_selection: *on_selection,
+            on_selection: on_selection.clone(),
         },
-        TableSelection::Multiple {
+        TableSelectionWith::Multiple {
             selected,
             on_selection,
         } => TableSelectionRuntime::Multiple {
@@ -311,7 +311,7 @@ fn selection_runtime<Msg>(
                 .map(|row| row.key())
                 .filter(|key| selected.contains(key))
                 .collect(),
-            on_selection: *on_selection,
+            on_selection: on_selection.clone(),
         },
     }
 }

@@ -78,6 +78,36 @@ pub fn details<'a, Msg>(
     on_action: fn(ActivityId, ActivityAction) -> Msg,
     theme: &Theme,
 ) -> Widget<'a, Msg> {
+    details_composed(activity, &on_action, theme)
+}
+
+/// Details with an owned, captured two-argument action callback.
+///
+/// Like [`details`], eagerly builds messages for the snapshot's supported actions.
+/// Captures need not be Clone. Rebuild to refresh context; reducers must still
+/// validate the activity ID and action against the latest registry snapshot.
+///
+/// ```
+/// # use rutter::{Theme, activity::{Activity, ActivityAction, ActivityId, view}};
+/// fn panel(activity: &Activity) {
+///     let panel = String::from("downloads");
+///     let widget = view::details_with(activity,
+///         move |id, action| (panel.clone(), id, action), &Theme::light());
+/// }
+/// ```
+pub fn details_with<'a, Msg>(
+    activity: &Activity,
+    on_action: impl Fn(ActivityId, ActivityAction) -> Msg + Send + Sync + 'static,
+    theme: &Theme,
+) -> Widget<'a, Msg> {
+    details_composed(activity, &on_action, theme)
+}
+
+fn details_composed<'a, Msg>(
+    activity: &Activity,
+    on_action: &dyn Fn(ActivityId, ActivityAction) -> Msg,
+    theme: &Theme,
+) -> Widget<'a, Msg> {
     let (title, supporting) = match activity.content() {
         ActivityContent::Transfer(t) => (t.title(), t.supporting()),
         ActivityContent::Media(m) => (m.title(), m.artist()),

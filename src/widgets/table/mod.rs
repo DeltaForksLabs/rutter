@@ -3,6 +3,7 @@
 
 //! Validated domain models, interaction configuration, and retained state for tables.
 
+mod captured;
 mod config;
 pub(crate) mod geometry;
 mod interaction;
@@ -10,6 +11,7 @@ mod keys;
 mod model;
 mod state;
 
+pub use captured::{TableSelectionWith, TableSortingWith};
 pub use config::{TableColumnWidth, TableConfigError, TableMetrics, TableOptions};
 pub use interaction::{TableSelection, TableSort, TableSortDirection, TableSorting};
 pub use keys::{TableColumnKey, TableRowKey};

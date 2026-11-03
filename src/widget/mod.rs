@@ -21,10 +21,8 @@ use crate::PointerRegionConfig;
 use crate::widgets::carousel::CarouselConfig;
 use crate::widgets::dropdown_menu::{DropdownMenuEntry, entry_at_path, flatten_entry_paths};
 use crate::widgets::rich_text::RichText;
-use crate::widgets::search::SearchSuggestions;
-use crate::widgets::table::{
-    TableColumnKey, TableModel, TableOptions, TableRowKey, TableSelection,
-};
+use crate::widgets::search::{SearchSuggestions, SearchSuggestionsWith};
+use crate::widgets::table::{TableColumnKey, TableModel, TableOptions, TableRowKey};
 use crate::widgets::table_of_contents::{
     HeadingLevel, TableOfContentsAccordion, TableOfContentsOptions,
 };
@@ -155,6 +153,85 @@ impl<'a, Msg> VirtualSelection<'a, Msg> {
         Self::Multiple {
             selected,
             on_change,
+        }
+    }
+}
+
+/// Captured selection policy for virtual lists and grids.
+///
+/// Multiple selection follows [`VirtualSelection`]'s controlled, sorted-index
+/// contract. Clones share owned callback captures; retained clones keep their
+/// original context, as described by [`ChangeCallback`].
+///
+/// ```
+/// use rutter::{VirtualSelectionWith, Widget};
+/// use taffy::prelude::Style;
+///
+/// enum Message { Selection(String, Vec<usize>) }
+/// let document = String::from("inbox");
+/// let selected = [1, 4];
+/// let rows = |index| Some(format!("Row {index}"));
+/// let policy = VirtualSelectionWith::multiple(&selected, move |indices| {
+///     Message::Selection(document.clone(), indices)
+/// });
+/// let _ = Widget::virtual_list_with_selection_with(
+///     32.0, 10, &rows, policy, Style::default(),
+/// );
+/// ```
+pub enum VirtualSelectionWith<'a, Msg> {
+    Single(ChangeCallback<usize, Msg>),
+    Multiple {
+        selected: &'a [usize],
+        on_change: ChangeCallback<Vec<usize>, Msg>,
+    },
+}
+
+impl<Msg> Clone for VirtualSelectionWith<'_, Msg> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Single(callback) => Self::Single(callback.clone()),
+            Self::Multiple {
+                selected,
+                on_change,
+            } => Self::Multiple {
+                selected,
+                on_change: on_change.clone(),
+            },
+        }
+    }
+}
+
+impl<'a, Msg> VirtualSelectionWith<'a, Msg> {
+    /// Creates a single-selection policy with an owned capture.
+    pub fn single(on_select: impl Fn(usize) -> Msg + Send + Sync + 'static) -> Self {
+        Self::Single(ChangeCallback::new(on_select))
+    }
+
+    /// Creates a controlled multiselection policy with an owned capture.
+    pub fn multiple(
+        selected: &'a [usize],
+        on_change: impl Fn(Vec<usize>) -> Msg + Send + Sync + 'static,
+    ) -> Self {
+        Self::Multiple {
+            selected,
+            on_change: ChangeCallback::new(on_change),
+        }
+    }
+}
+
+impl<'a, Msg> From<VirtualSelection<'a, Msg>> for VirtualSelectionWith<'a, Msg> {
+    fn from(selection: VirtualSelection<'a, Msg>) -> Self {
+        match selection {
+            VirtualSelection::Single(callback) => {
+                Self::Single(ChangeCallback::from_function(callback))
+            }
+            VirtualSelection::Multiple {
+                selected,
+                on_change,
+            } => Self::Multiple {
+                selected,
+                on_change: ChangeCallback::from_function(on_change),
+            },
         }
     }
 }
@@ -634,6 +711,13 @@ pub enum Widget<'a, Msg> {
         config: PointerRegionConfig<Msg>,
         style: Style,
     },
+    /// Captured callbacks with the same native pointer-region identity and layout.
+    PointerRegionWith {
+        id: WidgetId,
+        child: Box<Widget<'a, Msg>>,
+        config: crate::PointerRegionConfigWith<Msg>,
+        style: Style,
+    },
     /// Keeps a control visible and accessible without allowing interaction.
     /// The wrapper is layout- and ID-transparent, so toggling it preserves IDs.
     Disabled {
@@ -756,9 +840,40 @@ pub enum Widget<'a, Msg> {
         /// behavior. Constructed via [`Widget::search_bar_with_suggestions`].
         suggestions: Option<SearchSuggestions<'a, Msg>>,
     },
+    /// Native search editor with owned draft and optional selection callbacks.
+    SearchBarWith {
+        id: u64,
+        on_change: ChangeCallback<String, Msg>,
+        on_submit: Option<Msg>,
+        on_search: Option<Msg>,
+        on_clear: Option<Msg>,
+        placeholder: &'a str,
+        style: Style,
+        suggestions: Option<SearchSuggestionsWith<'a, Msg>>,
+    },
+    /// Native controlled editable picker with owned callbacks.
+    ComboBoxWith {
+        id: u64,
+        model_value: Option<&'a str>,
+        on_change: ChangeCallback<String, Msg>,
+        suggestions: SearchSuggestionsWith<'a, Msg>,
+        selected_index: Option<usize>,
+        label: &'a str,
+        placeholder: &'a str,
+        state: InputState,
+        error_msg: Option<String>,
+        style: Style,
+    },
     Checkbox {
         checked: bool,
         on_change: fn(bool) -> Msg,
+        label: &'a str,
+        style: Style,
+    },
+    /// Native checkbox with an owned callback; use [`Widget::checkbox_with`].
+    CheckboxWith {
+        checked: bool,
+        on_change: ChangeCallback<bool, Msg>,
         label: &'a str,
         style: Style,
     },
@@ -767,9 +882,22 @@ pub enum Widget<'a, Msg> {
         on_change: fn(bool) -> Msg,
         style: Style,
     },
+    /// Native switch with an owned callback; use [`Widget::switch_with`].
+    SwitchWith {
+        checked: bool,
+        on_change: ChangeCallback<bool, Msg>,
+        style: Style,
+    },
     Radio {
         selected: bool,
         on_select: fn() -> Msg,
+        label: &'a str,
+        style: Style,
+    },
+    /// Native radio with an owned callback; use [`Widget::radio_with`].
+    RadioWith {
+        selected: bool,
+        on_select: ChangeCallback<(), Msg>,
         label: &'a str,
         style: Style,
     },
@@ -880,6 +1008,14 @@ pub enum Widget<'a, Msg> {
         on_change: fn(usize) -> Msg,
         style: Style,
     },
+    /// Native tab bar with an owned callback; use [`Widget::tab_bar_with`].
+    TabBarWith {
+        id: u64,
+        tabs: &'a [&'a str],
+        active: usize,
+        on_change: ChangeCallback<usize, Msg>,
+        style: Style,
+    },
     Modal {
         id: u64,
         visible: bool,
@@ -930,6 +1066,70 @@ pub enum Widget<'a, Msg> {
         on_dismiss: Option<Msg>,
         style: Style,
         popup_style: Style,
+    },
+    CarouselViewWith {
+        id: u64,
+        item_count: usize,
+        items: Box<dyn Fn(usize) -> Option<Widget<'a, Msg>> + 'a>,
+        on_select: ChangeCallback<usize, Msg>,
+        config: CarouselConfig,
+        style: Style,
+    },
+    InteractiveCarouselViewWith {
+        id: u64,
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: ChangeCallback<usize, Msg>,
+        config: CarouselConfig,
+        style: Style,
+    },
+    InteractiveVirtualListContentWith {
+        id: u64,
+        item_height: f32,
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: ChangeCallback<usize, Msg>,
+        style: Style,
+    },
+    InteractiveVirtualGridContentWith {
+        id: u64,
+        columns: usize,
+        item_height: f32,
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: ChangeCallback<usize, Msg>,
+        style: Style,
+    },
+    VirtualListWith {
+        id: u64,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        selection: VirtualSelectionWith<'a, Msg>,
+        style: Style,
+    },
+    VirtualListContentWith {
+        id: u64,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        selection: VirtualSelectionWith<'a, Msg>,
+        style: Style,
+    },
+    VirtualGridWith {
+        id: u64,
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        selection: VirtualSelectionWith<'a, Msg>,
+        style: Style,
+    },
+    VirtualGridContentWith {
+        id: u64,
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        selection: VirtualSelectionWith<'a, Msg>,
+        style: Style,
     },
     CarouselView {
         id: u64,
@@ -1032,6 +1232,50 @@ pub enum Widget<'a, Msg> {
 }
 
 impl<'a, Msg> Widget<'a, Msg> {
+    pub(crate) fn virtual_selection(&self) -> Option<VirtualSelectionWith<'a, Msg>> {
+        match self {
+            Self::VirtualListWith { selection, .. }
+            | Self::VirtualListContentWith { selection, .. }
+            | Self::VirtualGridWith { selection, .. }
+            | Self::VirtualGridContentWith { selection, .. } => Some(selection.clone()),
+            Self::VirtualListWithSelection { selection, .. }
+            | Self::VirtualListContentWithSelection { selection, .. }
+            | Self::VirtualGridWithSelection { selection, .. }
+            | Self::VirtualGridContentWithSelection { selection, .. } => Some(match selection {
+                VirtualSelection::Single(callback) => {
+                    VirtualSelectionWith::Single(ChangeCallback::from_function(*callback))
+                }
+                VirtualSelection::Multiple {
+                    selected,
+                    on_change,
+                } => VirtualSelectionWith::Multiple {
+                    selected,
+                    on_change: ChangeCallback::from_function(*on_change),
+                },
+            }),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn virtual_on_select(&self) -> ChangeCallback<usize, Msg> {
+        match self {
+            Self::CarouselViewWith { on_select, .. }
+            | Self::InteractiveCarouselViewWith { on_select, .. }
+            | Self::InteractiveVirtualListContentWith { on_select, .. }
+            | Self::InteractiveVirtualGridContentWith { on_select, .. } => on_select.clone(),
+            Self::CarouselView { on_select, .. }
+            | Self::InteractiveCarouselView { on_select, .. }
+            | Self::InteractiveVirtualListContent { on_select, .. }
+            | Self::InteractiveVirtualGridContent { on_select, .. }
+            | Self::VirtualList { on_select, .. }
+            | Self::VirtualListContent { on_select, .. }
+            | Self::VirtualGrid { on_select, .. }
+            | Self::VirtualGridContent { on_select, .. } => {
+                ChangeCallback::from_function(*on_select)
+            }
+            _ => unreachable!("selection callback requested for a different widget family"),
+        }
+    }
     /// Declares whether this widget and its descendants can be interacted with.
     ///
     /// Controls are enabled by default. A disabled control cannot receive
@@ -1104,6 +1348,45 @@ impl<'a, Msg> Widget<'a, Msg> {
         style: Style,
     ) -> Self {
         Self::PointerRegion {
+            id,
+            child: Box::new(child),
+            config,
+            style,
+        }
+    }
+
+    pub(crate) fn pointer_region_passes_to_child(&self) -> bool {
+        match self {
+            Self::PointerRegion { config, .. } => {
+                config.on_hover.is_some()
+                    && !config.capture_on_press
+                    && config.drag_source.is_none()
+            }
+            Self::PointerRegionWith { config, .. } => {
+                config.on_hover.is_some()
+                    && !config.capture_on_press
+                    && config.drag_source.is_none()
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn pointer_region_has_hover(&self) -> bool {
+        match self {
+            Self::PointerRegion { config, .. } => config.on_hover.is_some(),
+            Self::PointerRegionWith { config, .. } => config.on_hover.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Creates a pointer boundary whose callbacks may own context.
+    pub fn pointer_region_with(
+        id: WidgetId,
+        child: Widget<'a, Msg>,
+        config: crate::PointerRegionConfigWith<Msg>,
+        style: Style,
+    ) -> Self {
+        Self::PointerRegionWith {
             id,
             child: Box::new(child),
             config,
@@ -1400,6 +1683,50 @@ impl<'a, Msg> Widget<'a, Msg> {
             placeholder,
             style,
             suggestions: Some(suggestions),
+        }
+    }
+
+    /// Creates a native search field with an owned draft callback.
+    pub fn search_bar_with(
+        on_change: impl Fn(String) -> Msg + Send + Sync + 'static,
+        on_submit: Option<Msg>,
+        on_search: Option<Msg>,
+        on_clear: Option<Msg>,
+        placeholder: &'a str,
+        style: Style,
+    ) -> Self {
+        Self::SearchBarWith {
+            id: AUTO_ID,
+            on_change: ChangeCallback::new(on_change),
+            on_submit,
+            on_search,
+            on_clear,
+            placeholder,
+            style,
+            suggestions: None,
+        }
+    }
+
+    /// Adds owned or explicitly adapted legacy suggestions to an owned search field.
+    /// A legacy draft function can be passed directly to capture selection independently.
+    pub fn search_bar_with_suggestions_with(
+        on_change: impl Fn(String) -> Msg + Send + Sync + 'static,
+        on_submit: Option<Msg>,
+        on_search: Option<Msg>,
+        on_clear: Option<Msg>,
+        placeholder: &'a str,
+        suggestions: impl Into<SearchSuggestionsWith<'a, Msg>>,
+        style: Style,
+    ) -> Self {
+        Self::SearchBarWith {
+            id: AUTO_ID,
+            on_change: ChangeCallback::new(on_change),
+            on_submit,
+            on_search,
+            on_clear,
+            placeholder,
+            style,
+            suggestions: Some(suggestions.into()),
         }
     }
 
@@ -1860,6 +2187,65 @@ impl<'a, Msg> Widget<'a, Msg> {
             expanded,
             on_toggle,
             child: Box::new(child),
+            style,
+        }
+    }
+
+    /// Creates a checkbox with owned, shared callback context and native automatic identity.
+    pub fn checkbox_with(
+        checked: bool,
+        on_change: impl Fn(bool) -> Msg + Send + Sync + 'static,
+        label: &'a str,
+        style: Style,
+    ) -> Self {
+        Self::CheckboxWith {
+            checked,
+            on_change: ChangeCallback::new(on_change),
+            label,
+            style,
+        }
+    }
+
+    /// Creates a switch with owned, shared callback context and native automatic identity.
+    pub fn switch_with(
+        checked: bool,
+        on_change: impl Fn(bool) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::SwitchWith {
+            checked,
+            on_change: ChangeCallback::new(on_change),
+            style,
+        }
+    }
+
+    /// Creates a radio with owned context. Selecting calls the zero-argument closure.
+    pub fn radio_with(
+        selected: bool,
+        on_select: impl Fn() -> Msg + Send + Sync + 'static,
+        label: &'a str,
+        style: Style,
+    ) -> Self {
+        Self::RadioWith {
+            selected,
+            on_select: ChangeCallback::new(move |()| on_select()),
+            label,
+            style,
+        }
+    }
+
+    /// Creates a tab bar with owned, shared callback context and native tab focus IDs.
+    pub fn tab_bar_with(
+        tabs: &'a [&'a str],
+        active: usize,
+        on_change: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::TabBarWith {
+            id: AUTO_ID,
+            tabs,
+            active,
+            on_change: ChangeCallback::new(on_change),
             style,
         }
     }
@@ -2449,6 +2835,222 @@ impl<'a, Msg> Widget<'a, Msg> {
         }
     }
 
+    /// Creates a visual carousel with an owned selection callback.
+    pub fn carousel_view_with(
+        item_count: usize,
+        items: impl Fn(usize) -> Option<Widget<'a, Msg>> + 'a,
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        config: CarouselConfig,
+        style: Style,
+    ) -> Self {
+        Self::CarouselViewWith {
+            id: AUTO_ID,
+            item_count,
+            items: Box::new(items),
+            on_select: ChangeCallback::new(on_select),
+            config,
+            style,
+        }
+    }
+
+    /// Creates a keyed interactive carousel with an owned selection callback.
+    pub fn interactive_carousel_view_with(
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        config: CarouselConfig,
+        style: Style,
+    ) -> Self {
+        Self::InteractiveCarouselViewWith {
+            id: AUTO_ID,
+            items,
+            on_select: ChangeCallback::new(on_select),
+            config,
+            style,
+        }
+    }
+
+    /// Creates a keyed interactive list with an owned selection callback.
+    pub fn interactive_virtual_list_content_with(
+        item_height: f32,
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::InteractiveVirtualListContentWith {
+            id: AUTO_ID,
+            item_height,
+            items,
+            on_select: ChangeCallback::new(on_select),
+            style,
+        }
+    }
+
+    /// Creates a keyed interactive grid with an owned selection callback.
+    pub fn interactive_virtual_grid_content_with(
+        columns: usize,
+        item_height: f32,
+        items: KeyedVirtualItems<'a, Msg>,
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::InteractiveVirtualGridContentWith {
+            id: AUTO_ID,
+            columns,
+            item_height,
+            items,
+            on_select: ChangeCallback::new(on_select),
+            style,
+        }
+    }
+
+    /// Creates a string list with an owned single-selection callback.
+    pub fn virtual_list_with(
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::virtual_list_with_selection_with(
+            item_height,
+            item_count,
+            items,
+            VirtualSelectionWith::single(on_select),
+            style,
+        )
+    }
+
+    /// Creates a string list with captured single or controlled multiple selection.
+    pub fn virtual_list_with_selection_with(
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        selection: VirtualSelectionWith<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::VirtualListWith {
+            id: AUTO_ID,
+            item_height,
+            item_count,
+            items,
+            selection,
+            style,
+        }
+    }
+
+    /// Creates a visual-content list with an owned single-selection callback.
+    pub fn virtual_list_content_with(
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::virtual_list_content_with_selection_with(
+            item_height,
+            item_count,
+            items,
+            VirtualSelectionWith::single(on_select),
+            style,
+        )
+    }
+
+    /// Creates a visual-content list with captured single or multiple selection.
+    pub fn virtual_list_content_with_selection_with(
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        selection: VirtualSelectionWith<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::VirtualListContentWith {
+            id: AUTO_ID,
+            item_height,
+            item_count,
+            items,
+            selection,
+            style,
+        }
+    }
+
+    /// Creates a string grid with an owned single-selection callback.
+    pub fn virtual_grid_with(
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::virtual_grid_with_selection_with(
+            columns,
+            item_height,
+            item_count,
+            items,
+            VirtualSelectionWith::single(on_select),
+            style,
+        )
+    }
+
+    /// Creates a string grid with captured single or controlled multiple selection.
+    pub fn virtual_grid_with_selection_with(
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<String>,
+        selection: VirtualSelectionWith<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::VirtualGridWith {
+            id: AUTO_ID,
+            columns,
+            item_height,
+            item_count,
+            items,
+            selection,
+            style,
+        }
+    }
+
+    /// Creates a visual-content grid with an owned single-selection callback.
+    pub fn virtual_grid_content_with(
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::virtual_grid_content_with_selection_with(
+            columns,
+            item_height,
+            item_count,
+            items,
+            VirtualSelectionWith::single(on_select),
+            style,
+        )
+    }
+
+    /// Creates a visual-content grid with captured single or multiple selection.
+    pub fn virtual_grid_content_with_selection_with(
+        columns: usize,
+        item_height: f32,
+        item_count: usize,
+        items: &'a dyn Fn(usize) -> Option<Widget<'a, Msg>>,
+        selection: VirtualSelectionWith<'a, Msg>,
+        style: Style,
+    ) -> Self {
+        Self::VirtualGridContentWith {
+            id: AUTO_ID,
+            columns,
+            item_height,
+            item_count,
+            items,
+            selection,
+            style,
+        }
+    }
+
     pub fn with_id(mut self, id: u64) -> Self {
         self.assign_raw_id(id);
         self
@@ -2461,7 +3063,9 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::TextArea { id: slot, .. }
             | Self::TextAreaWith { id: slot, .. }
             | Self::SearchBar { id: slot, .. }
+            | Self::SearchBarWith { id: slot, .. }
             | Self::ComboBox { id: slot, .. }
+            | Self::ComboBoxWith { id: slot, .. }
             | Self::Slider { id: slot, .. }
             | Self::SliderWith { id: slot, .. }
             | Self::Counter { id: slot, .. }
@@ -2475,12 +3079,21 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::Table { id: slot, .. }
             | Self::Accordion { id: slot, .. }
             | Self::TabBar { id: slot, .. }
+            | Self::TabBarWith { id: slot, .. }
             | Self::Modal { id: slot, .. }
             | Self::Dialog { id: slot, .. }
             | Self::Toast { id: slot, .. }
             | Self::ContextMenu { id: slot, .. }
             | Self::DropdownMenu { id: slot, .. }
             | Self::Popover { id: slot, .. }
+            | Self::CarouselViewWith { id: slot, .. }
+            | Self::InteractiveCarouselViewWith { id: slot, .. }
+            | Self::InteractiveVirtualListContentWith { id: slot, .. }
+            | Self::InteractiveVirtualGridContentWith { id: slot, .. }
+            | Self::VirtualListWith { id: slot, .. }
+            | Self::VirtualListContentWith { id: slot, .. }
+            | Self::VirtualGridWith { id: slot, .. }
+            | Self::VirtualGridContentWith { id: slot, .. }
             | Self::CarouselView { id: slot, .. }
             | Self::InteractiveCarouselView { id: slot, .. }
             | Self::VirtualList { id: slot, .. }
@@ -2539,9 +3152,11 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::Button { .. } | Self::ButtonContent { .. } => {
                 (None, WidgetIdTag::Button, "Button")
             }
-            Self::Checkbox { .. } => (None, WidgetIdTag::Checkbox, "Checkbox"),
-            Self::Switch { .. } => (None, WidgetIdTag::Switch, "Switch"),
-            Self::Radio { .. } => (None, WidgetIdTag::Radio, "Radio"),
+            Self::Checkbox { .. } | Self::CheckboxWith { .. } => {
+                (None, WidgetIdTag::Checkbox, "Checkbox")
+            }
+            Self::Switch { .. } | Self::SwitchWith { .. } => (None, WidgetIdTag::Switch, "Switch"),
+            Self::Radio { .. } | Self::RadioWith { .. } => (None, WidgetIdTag::Radio, "Radio"),
             Self::TextInput {
                 id,
                 is_password: true,
@@ -2558,8 +3173,12 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::TextArea { id, .. } | Self::TextAreaWith { id, .. } => {
                 (Some(*id), WidgetIdTag::TextArea, "TextArea")
             }
-            Self::SearchBar { id, .. } => (Some(*id), WidgetIdTag::SearchBar, "SearchBar"),
-            Self::ComboBox { id, .. } => (Some(*id), WidgetIdTag::ComboBox, "ComboBox"),
+            Self::SearchBar { id, .. } | Self::SearchBarWith { id, .. } => {
+                (Some(*id), WidgetIdTag::SearchBar, "SearchBar")
+            }
+            Self::ComboBox { id, .. } | Self::ComboBoxWith { id, .. } => {
+                (Some(*id), WidgetIdTag::ComboBox, "ComboBox")
+            }
             Self::Slider { id, .. } | Self::SliderWith { id, .. } => {
                 (Some(*id), WidgetIdTag::Slider, "Slider")
             }
@@ -2576,20 +3195,28 @@ impl<'a, Msg> Widget<'a, Msg> {
             }
             Self::Table { id, .. } => (Some(*id), WidgetIdTag::Table, "Table"),
             Self::Accordion { id, .. } => (Some(*id), WidgetIdTag::Accordion, "Accordion"),
-            Self::TabBar { id, .. } => (Some(*id), WidgetIdTag::TabBar, "TabBar"),
+            Self::TabBar { id, .. } | Self::TabBarWith { id, .. } => {
+                (Some(*id), WidgetIdTag::TabBar, "TabBar")
+            }
             Self::Modal { id, .. } => (Some(*id), WidgetIdTag::Modal, "Modal"),
             Self::Dialog { id, .. } => (Some(*id), WidgetIdTag::Dialog, "Dialog"),
             Self::Toast { id, .. } => (Some(*id), WidgetIdTag::Toast, "Toast"),
             Self::ContextMenu { id, .. } => (Some(*id), WidgetIdTag::ContextMenu, "ContextMenu"),
             Self::DropdownMenu { id, .. } => (Some(*id), WidgetIdTag::DropdownMenu, "DropdownMenu"),
             Self::Popover { id, .. } => (Some(*id), WidgetIdTag::Popover, "Popover"),
-            Self::CarouselView { id, .. } => (Some(*id), WidgetIdTag::CarouselView, "CarouselView"),
-            Self::InteractiveCarouselView { id, .. } => (
+            Self::CarouselView { id, .. } | Self::CarouselViewWith { id, .. } => {
+                (Some(*id), WidgetIdTag::CarouselView, "CarouselView")
+            }
+            Self::InteractiveCarouselView { id, .. }
+            | Self::InteractiveCarouselViewWith { id, .. } => (
                 Some(*id),
                 WidgetIdTag::CarouselView,
                 "InteractiveCarouselView",
             ),
             Self::VirtualList { id, .. }
+            | Self::VirtualListWith { id, .. }
+            | Self::VirtualListContentWith { id, .. }
+            | Self::InteractiveVirtualListContentWith { id, .. }
             | Self::VirtualListContent { id, .. }
             | Self::InteractiveVirtualListContent { id, .. }
             | Self::VirtualListWithSelection { id, .. }
@@ -2597,6 +3224,9 @@ impl<'a, Msg> Widget<'a, Msg> {
                 (Some(*id), WidgetIdTag::VirtualList, "VirtualList")
             }
             Self::VirtualGrid { id, .. }
+            | Self::VirtualGridWith { id, .. }
+            | Self::VirtualGridContentWith { id, .. }
+            | Self::InteractiveVirtualGridContentWith { id, .. }
             | Self::VirtualGridContent { id, .. }
             | Self::InteractiveVirtualGridContent { id, .. }
             | Self::VirtualGridWithSelection { id, .. }
@@ -2604,7 +3234,7 @@ impl<'a, Msg> Widget<'a, Msg> {
                 (Some(*id), WidgetIdTag::VirtualGrid, "VirtualGrid")
             }
             Self::Custom { id, .. } => (Some(id.get()), WidgetIdTag::Custom, "Custom"),
-            Self::PointerRegion { id, .. } => {
+            Self::PointerRegion { id, .. } | Self::PointerRegionWith { id, .. } => {
                 (Some(id.get()), WidgetIdTag::PointerRegion, "PointerRegion")
             }
             _ => return None,
@@ -2621,15 +3251,23 @@ impl<'a, Msg> Widget<'a, Msg> {
             Self::Button { .. } | Self::ButtonContent { .. } => {
                 Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Button, path))
             }
-            Self::Checkbox { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Checkbox, path)),
-            Self::Switch { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Switch, path)),
-            Self::Radio { .. } => Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Radio, path)),
+            Self::Checkbox { .. } | Self::CheckboxWith { .. } => {
+                Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Checkbox, path))
+            }
+            Self::Switch { .. } | Self::SwitchWith { .. } => {
+                Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Switch, path))
+            }
+            Self::Radio { .. } | Self::RadioWith { .. } => {
+                Some(resolve_widget_id(AUTO_ID, WidgetIdTag::Radio, path))
+            }
             Self::TextInput { .. }
             | Self::TextInputWith { .. }
             | Self::TextArea { .. }
             | Self::TextAreaWith { .. }
             | Self::SearchBar { .. }
+            | Self::SearchBarWith { .. }
             | Self::ComboBox { .. }
+            | Self::ComboBoxWith { .. }
             | Self::Slider { .. }
             | Self::SliderWith { .. }
             | Self::Counter { .. }
@@ -2638,7 +3276,16 @@ impl<'a, Msg> Widget<'a, Msg> {
             | Self::DropdownMenu { .. }
             | Self::Accordion { .. }
             | Self::TabBar { .. }
+            | Self::TabBarWith { .. }
             | Self::CarouselView { .. }
+            | Self::CarouselViewWith { .. }
+            | Self::InteractiveCarouselViewWith { .. }
+            | Self::VirtualListWith { .. }
+            | Self::VirtualListContentWith { .. }
+            | Self::InteractiveVirtualListContentWith { .. }
+            | Self::VirtualGridWith { .. }
+            | Self::VirtualGridContentWith { .. }
+            | Self::InteractiveVirtualGridContentWith { .. }
             | Self::InteractiveCarouselView { .. }
             | Self::VirtualList { .. }
             | Self::VirtualListContent { .. }
@@ -2660,7 +3307,7 @@ impl<'a, Msg> Widget<'a, Msg> {
 
     pub(crate) fn tab_focus_id(&self, path: &[usize], index: usize) -> Option<u64> {
         match self {
-            Self::TabBar { .. } => Some(resolve_subwidget_id(
+            Self::TabBar { .. } | Self::TabBarWith { .. } => Some(resolve_subwidget_id(
                 self.resolved_id(path)?,
                 WidgetIdTag::Tab,
                 index,
@@ -2712,40 +3359,52 @@ impl<'a, Msg> Widget<'a, Msg> {
         let Self::Table { model, options, .. } = self else {
             return false;
         };
-        let selectable = !matches!(options.selection(), TableSelection::None);
-        let sortable = options.sorting().is_some()
+        let selectable = !matches!(
+            options.effective_selection(),
+            crate::TableSelectionWith::None
+        );
+        let sortable = options.effective_sorting().is_some()
             && model.columns().iter().any(|column| column.is_sortable());
         selectable || sortable
     }
 
     pub(crate) fn search_popup_id(&self, path: &[usize]) -> Option<u64> {
-        if matches!(self, Self::ComboBox { .. }) {
-            return Some(resolve_search_popup_id(self.resolved_id(path)?));
-        }
-        let Self::SearchBar {
-            suggestions: Some(_),
-            ..
-        } = self
-        else {
-            return None;
-        };
+        self.search_suggestions()?;
         Some(resolve_search_popup_id(self.resolved_id(path)?))
     }
 
     pub(crate) fn search_suggestion_id(&self, path: &[usize], index: usize) -> Option<u64> {
-        if let Self::ComboBox { suggestions, .. } = self {
-            return (index < suggestions.items.len())
-                .then(|| resolve_search_suggestion_id(self.resolved_id(path).unwrap(), index));
-        }
-        let Self::SearchBar {
-            suggestions: Some(suggestions),
-            ..
-        } = self
-        else {
-            return None;
-        };
+        let suggestions = self.search_suggestions()?;
         let search_id = self.resolved_id(path)?;
         (index < suggestions.items.len()).then(|| resolve_search_suggestion_id(search_id, index))
+    }
+
+    pub(crate) fn search_suggestions(&self) -> Option<SearchSuggestionsWith<'a, Msg>> {
+        match self {
+            Self::SearchBar {
+                suggestions: Some(s),
+                ..
+            }
+            | Self::ComboBox { suggestions: s, .. } => Some(SearchSuggestionsWith {
+                items: s.items,
+                matcher: s.matcher,
+                max_results: s.max_results,
+                labels: s.labels,
+                on_select: s.on_select.map(ChangeCallback::from_function),
+            }),
+            Self::SearchBarWith {
+                suggestions: Some(s),
+                ..
+            }
+            | Self::ComboBoxWith { suggestions: s, .. } => Some(SearchSuggestionsWith {
+                items: s.items,
+                matcher: s.matcher,
+                max_results: s.max_results,
+                labels: s.labels,
+                on_select: s.on_select.clone(),
+            }),
+            _ => None,
+        }
     }
 
     pub(crate) fn dropdown_menu_popup_id(&self, widget_path: &[usize]) -> Option<u64> {

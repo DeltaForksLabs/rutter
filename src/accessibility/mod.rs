@@ -32,7 +32,7 @@ use crate::render::select_overlay::collector::{
 use crate::widget::id::resolve_accessibility_path_id;
 use crate::widget::{
     CounterConfig, CustomAccessibility, CustomAccessibilityActions, CustomAccessibilityRole,
-    CustomAccessibilityState, DialogAction, InputState, KeyedVirtualItems, VirtualSelection,
+    CustomAccessibilityState, DialogAction, InputState, KeyedVirtualItems, VirtualSelectionWith,
     Widget, pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
     resolve_table_of_contents_accordion_id, resolve_table_of_contents_navigation_id,
     resolve_table_of_contents_viewport_id,
@@ -44,6 +44,7 @@ use crate::widgets::time::{ClockFormat, TimeZone, current_clock_text};
 mod action_queue;
 mod dropdown_menu;
 mod search;
+mod tab_bar;
 mod table;
 
 pub(crate) use action_queue::AccessibilityActionInbox;
@@ -249,6 +250,7 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
             }
             Widget::Container { child, .. }
             | Widget::PointerRegion { child, .. }
+            | Widget::PointerRegionWith { child, .. }
             | Widget::Tooltip { child, .. } => {
                 self.collect_single_child(child, node, frame.origin, path)
             }
@@ -283,11 +285,28 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
                 suggestions: Some(_),
                 ..
             }
-            | Widget::ComboBox { .. } => self.collect_search_bar(widget, frame, path),
+            | Widget::SearchBarWith {
+                suggestions: Some(_),
+                ..
+            }
+            | Widget::ComboBox { .. }
+            | Widget::ComboBoxWith { .. } => self.collect_search_bar(widget, frame, path),
+            Widget::TabBar { tabs, active, .. } | Widget::TabBarWith { tabs, active, .. } => {
+                tab_bar::collect(self, widget, tabs, *active, frame, path)
+            }
             Widget::InteractiveVirtualListContent {
+                item_height, items, ..
+            }
+            | Widget::InteractiveVirtualListContentWith {
                 item_height, items, ..
             } => self.collect_interactive_virtual_list(widget, *item_height, items, frame, path),
             Widget::InteractiveVirtualGridContent {
+                columns,
+                item_height,
+                items,
+                ..
+            }
+            | Widget::InteractiveVirtualGridContentWith {
                 columns,
                 item_height,
                 items,
@@ -300,7 +319,8 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
                 frame,
                 path,
             ),
-            Widget::InteractiveCarouselView { items, config, .. } => {
+            Widget::InteractiveCarouselView { items, config, .. }
+            | Widget::InteractiveCarouselViewWith { items, config, .. } => {
                 self.collect_interactive_carousel(widget, items, config, frame, path)
             }
             Widget::Custom { .. } => self.collect_custom_leaf(widget, frame, path),
@@ -796,9 +816,13 @@ impl<'layout, 'input> AccessibilityBuilder<'layout, 'input> {
             self.inputs,
             HashMap::new(),
             HashSet::new(),
-            HashMap::new(),
+            // Popup geometry and ownership were collected in window coordinates
+            // across the full tree. Reuse it under the keyed path; collecting an
+            // item-local popup would constrain it to the card and duplicate IDs.
+            std::mem::take(&mut self.search_popups),
         );
         let children = item_builder.collect(&item, Some(root), origin, path);
+        self.search_popups = std::mem::take(&mut item_builder.search_popups);
         self.nodes.append(&mut item_builder.nodes);
         pop_interactive_virtual_item_path(path);
         children
@@ -1092,27 +1116,36 @@ fn leaf_role<Msg>(widget: &Widget<Msg>) -> Option<Role> {
         }
         Widget::TextInput { .. } | Widget::TextInputWith { .. } => Role::TextInput,
         Widget::TextArea { .. } | Widget::TextAreaWith { .. } => Role::MultilineTextInput,
-        Widget::SearchBar { .. } => Role::SearchInput,
-        Widget::ComboBox { .. } => Role::EditableComboBox,
-        Widget::Checkbox { .. } => Role::CheckBox,
-        Widget::Switch { .. } => Role::Switch,
-        Widget::Radio { .. } => Role::RadioButton,
+        Widget::SearchBar { .. } | Widget::SearchBarWith { .. } => Role::SearchInput,
+        Widget::ComboBox { .. } | Widget::ComboBoxWith { .. } => Role::EditableComboBox,
+        Widget::Checkbox { .. } | Widget::CheckboxWith { .. } => Role::CheckBox,
+        Widget::Switch { .. } | Widget::SwitchWith { .. } => Role::Switch,
+        Widget::Radio { .. } | Widget::RadioWith { .. } => Role::RadioButton,
         Widget::Slider { .. } | Widget::SliderWith { .. } => Role::Slider,
         Widget::Counter { .. } => Role::SpinButton,
         Widget::Clock { .. } => Role::TextRun,
         Widget::Select { .. } | Widget::SelectWith { .. } => Role::ComboBox,
         Widget::ProgressBar { .. } | Widget::Spinner { .. } => Role::ProgressIndicator,
-        Widget::TabBar { .. } => Role::TabList,
+        Widget::TabBar { .. } | Widget::TabBarWith { .. } => Role::TabList,
         Widget::Toast { visible: true, .. } => Role::Status,
-        Widget::CarouselView { .. } | Widget::InteractiveCarouselView { .. } => Role::ListBox,
+        Widget::CarouselView { .. }
+        | Widget::InteractiveCarouselView { .. }
+        | Widget::CarouselViewWith { .. }
+        | Widget::InteractiveCarouselViewWith { .. } => Role::ListBox,
         Widget::VirtualList { .. }
         | Widget::VirtualListContent { .. }
         | Widget::InteractiveVirtualListContent { .. }
+        | Widget::InteractiveVirtualListContentWith { .. }
+        | Widget::VirtualListWith { .. }
+        | Widget::VirtualListContentWith { .. }
         | Widget::VirtualListWithSelection { .. }
         | Widget::VirtualListContentWithSelection { .. } => Role::ListBox,
         Widget::VirtualGrid { .. }
         | Widget::VirtualGridContent { .. }
         | Widget::InteractiveVirtualGridContent { .. }
+        | Widget::InteractiveVirtualGridContentWith { .. }
+        | Widget::VirtualGridWith { .. }
+        | Widget::VirtualGridContentWith { .. }
         | Widget::VirtualGridWithSelection { .. }
         | Widget::VirtualGridContentWithSelection { .. } => Role::Grid,
         _ => return None,
@@ -1191,8 +1224,11 @@ fn apply_actions<Msg>(node: &mut Node, widget: &Widget<Msg>) {
         Widget::Button { .. }
         | Widget::ButtonContent { .. }
         | Widget::Checkbox { .. }
+        | Widget::CheckboxWith { .. }
         | Widget::Switch { .. }
+        | Widget::SwitchWith { .. }
         | Widget::Radio { .. }
+        | Widget::RadioWith { .. }
         | Widget::Select { .. }
         | Widget::SelectWith { .. } => node.add_action(Action::Click),
         Widget::Slider { .. } | Widget::SliderWith { .. } | Widget::Counter { .. } => {
@@ -1205,10 +1241,15 @@ fn apply_actions<Msg>(node: &mut Node, widget: &Widget<Msg>) {
 
 fn apply_toggle_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
     match widget {
-        Widget::Checkbox { checked, .. } | Widget::Switch { checked, .. } => {
+        Widget::Checkbox { checked, .. }
+        | Widget::Switch { checked, .. }
+        | Widget::CheckboxWith { checked, .. }
+        | Widget::SwitchWith { checked, .. } => {
             node.set_toggled(Toggled::from(*checked));
         }
-        Widget::Radio { selected, .. } => node.set_selected(*selected),
+        Widget::Radio { selected, .. } | Widget::RadioWith { selected, .. } => {
+            node.set_selected(*selected)
+        }
         _ => {}
     }
 }
@@ -1291,6 +1332,9 @@ fn apply_input_props<Msg>(
     | Widget::ComboBox {
         state, error_msg, ..
     }
+    | Widget::ComboBoxWith {
+        state, error_msg, ..
+    }
     | Widget::TextInputWith {
         state, error_msg, ..
     }
@@ -1314,7 +1358,9 @@ fn apply_input_props<Msg>(
         | Widget::TextArea { placeholder, .. }
         | Widget::TextAreaWith { placeholder, .. }
         | Widget::SearchBar { placeholder, .. }
-        | Widget::ComboBox { placeholder, .. } => {
+        | Widget::SearchBarWith { placeholder, .. }
+        | Widget::ComboBox { placeholder, .. }
+        | Widget::ComboBoxWith { placeholder, .. } => {
             set_nonempty_placeholder(node, placeholder);
             set_input_value(node, widget, input_states, path);
         }
@@ -1338,30 +1384,28 @@ fn apply_input_props<Msg>(
 
 fn apply_collection_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
     match widget {
-        Widget::CarouselView { item_count, .. } => {
+        Widget::CarouselView { item_count, .. } | Widget::CarouselViewWith { item_count, .. } => {
             node.set_size_of_set(*item_count);
             node.set_orientation(AccessOrientation::Horizontal);
         }
-        Widget::InteractiveCarouselView { items, .. } => {
+        Widget::InteractiveCarouselView { items, .. }
+        | Widget::InteractiveCarouselViewWith { items, .. } => {
             node.set_size_of_set(items.len());
             node.set_orientation(AccessOrientation::Horizontal);
         }
         Widget::VirtualList { item_count, .. } | Widget::VirtualListContent { item_count, .. } => {
             node.set_size_of_set(*item_count)
         }
-        Widget::InteractiveVirtualListContent { items, .. } => node.set_size_of_set(items.len()),
-        Widget::VirtualListWithSelection {
-            item_count,
-            selection,
-            ..
+        Widget::InteractiveVirtualListContent { items, .. }
+        | Widget::InteractiveVirtualListContentWith { items, .. } => {
+            node.set_size_of_set(items.len())
         }
-        | Widget::VirtualListContentWithSelection {
-            item_count,
-            selection,
-            ..
-        } => {
+        Widget::VirtualListWithSelection { item_count, .. }
+        | Widget::VirtualListContentWithSelection { item_count, .. }
+        | Widget::VirtualListWith { item_count, .. }
+        | Widget::VirtualListContentWith { item_count, .. } => {
             node.set_size_of_set(*item_count);
-            set_multiselectable_if_needed(node, selection);
+            set_multiselectable_if_needed(node, widget);
         }
         Widget::VirtualGrid {
             item_count,
@@ -1376,25 +1420,34 @@ fn apply_collection_props<Msg>(node: &mut Node, widget: &Widget<Msg>) {
             node.set_row_count(item_count.div_ceil((*columns).max(1)));
             node.set_column_count((*columns).max(1));
         }
-        Widget::InteractiveVirtualGridContent { items, columns, .. } => {
+        Widget::InteractiveVirtualGridContent { items, columns, .. }
+        | Widget::InteractiveVirtualGridContentWith { items, columns, .. } => {
             node.set_row_count(items.len().div_ceil((*columns).max(1)));
             node.set_column_count((*columns).max(1));
         }
         Widget::VirtualGridWithSelection {
             item_count,
             columns,
-            selection,
             ..
         }
         | Widget::VirtualGridContentWithSelection {
             item_count,
             columns,
-            selection,
+            ..
+        }
+        | Widget::VirtualGridWith {
+            item_count,
+            columns,
+            ..
+        }
+        | Widget::VirtualGridContentWith {
+            item_count,
+            columns,
             ..
         } => {
             node.set_row_count(item_count.div_ceil((*columns).max(1)));
             node.set_column_count((*columns).max(1));
-            set_multiselectable_if_needed(node, selection);
+            set_multiselectable_if_needed(node, widget);
         }
         _ => {}
     }
@@ -1431,9 +1484,13 @@ fn set_widget_label<Msg>(
         | Widget::TextInputWith { label, .. }
         | Widget::TextArea { label, .. }
         | Widget::TextAreaWith { label, .. }
-        | Widget::ComboBox { label, .. } => node.set_label(*label),
-        Widget::SearchBar { .. } => node.set_label("Search"),
-        Widget::Checkbox { label, .. } | Widget::Radio { label, .. } => node.set_label(*label),
+        | Widget::ComboBox { label, .. }
+        | Widget::ComboBoxWith { label, .. } => node.set_label(*label),
+        Widget::SearchBar { .. } | Widget::SearchBarWith { .. } => node.set_label("Search"),
+        Widget::Checkbox { label, .. }
+        | Widget::Radio { label, .. }
+        | Widget::CheckboxWith { label, .. }
+        | Widget::RadioWith { label, .. } => node.set_label(*label),
         Widget::Slider { label, .. }
         | Widget::SliderWith { label, .. }
         | Widget::Counter { label, .. }
@@ -1448,26 +1505,43 @@ fn set_widget_label<Msg>(
         Widget::ProgressBar { .. } => node.set_label("Progress"),
         Widget::Spinner { .. } => node.set_label("Loading"),
         Widget::Toast { message, .. } => node.set_label(*message),
-        Widget::CarouselView { config, .. } => node.set_label(config.accessibility_label.clone()),
-        Widget::InteractiveCarouselView { config, .. } => {
+        Widget::CarouselView { config, .. } | Widget::CarouselViewWith { config, .. } => {
+            node.set_label(config.accessibility_label.clone())
+        }
+        Widget::InteractiveCarouselView { config, .. }
+        | Widget::InteractiveCarouselViewWith { config, .. } => {
             node.set_label(config.accessibility_label.clone())
         }
         Widget::VirtualList { .. } | Widget::VirtualListContent { .. } => {
             node.set_label("Virtual list")
         }
-        Widget::InteractiveVirtualListContent { .. } => node.set_label("Interactive virtual list"),
-        Widget::VirtualListWithSelection { selection, .. }
-        | Widget::VirtualListContentWithSelection { selection, .. } => node.set_label(
-            virtual_selection_label(selection, "Virtual list", "Virtual multiselect list"),
-        ),
+        Widget::InteractiveVirtualListContent { .. }
+        | Widget::InteractiveVirtualListContentWith { .. } => {
+            node.set_label("Interactive virtual list")
+        }
+        Widget::VirtualListWithSelection { .. }
+        | Widget::VirtualListContentWithSelection { .. }
+        | Widget::VirtualListWith { .. }
+        | Widget::VirtualListContentWith { .. } => node.set_label(virtual_selection_label(
+            widget,
+            "Virtual list",
+            "Virtual multiselect list",
+        )),
         Widget::VirtualGrid { .. } | Widget::VirtualGridContent { .. } => {
             node.set_label("Virtual grid")
         }
-        Widget::InteractiveVirtualGridContent { .. } => node.set_label("Interactive virtual grid"),
-        Widget::VirtualGridWithSelection { selection, .. }
-        | Widget::VirtualGridContentWithSelection { selection, .. } => node.set_label(
-            virtual_selection_label(selection, "Virtual grid", "Virtual multiselect grid"),
-        ),
+        Widget::InteractiveVirtualGridContent { .. }
+        | Widget::InteractiveVirtualGridContentWith { .. } => {
+            node.set_label("Interactive virtual grid")
+        }
+        Widget::VirtualGridWithSelection { .. }
+        | Widget::VirtualGridContentWithSelection { .. }
+        | Widget::VirtualGridWith { .. }
+        | Widget::VirtualGridContentWith { .. } => node.set_label(virtual_selection_label(
+            widget,
+            "Virtual grid",
+            "Virtual multiselect grid",
+        )),
         _ => set_input_value(node, widget, input_states, path),
     }
 }
@@ -1481,18 +1555,24 @@ fn set_clock_label(node: &mut Node, label: &str, time_zone: TimeZone, format: Cl
     node.set_label(format!("{label}: {clock_text}"));
 }
 
-fn set_multiselectable_if_needed<Msg>(node: &mut Node, selection: &VirtualSelection<'_, Msg>) {
-    if matches!(selection, VirtualSelection::Multiple { .. }) {
+fn set_multiselectable_if_needed<Msg>(node: &mut Node, widget: &Widget<'_, Msg>) {
+    if matches!(
+        widget.virtual_selection(),
+        Some(VirtualSelectionWith::Multiple { .. })
+    ) {
         node.set_multiselectable();
     }
 }
 
 fn virtual_selection_label<Msg>(
-    selection: &VirtualSelection<'_, Msg>,
+    widget: &Widget<'_, Msg>,
     single_label: &'static str,
     multiple_label: &'static str,
 ) -> &'static str {
-    if matches!(selection, VirtualSelection::Multiple { .. }) {
+    if matches!(
+        widget.virtual_selection(),
+        Some(VirtualSelectionWith::Multiple { .. })
+    ) {
         return multiple_label;
     }
     single_label

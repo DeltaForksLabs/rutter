@@ -5,7 +5,7 @@ use taffy::prelude::*;
 
 use super::controls::ColorControl;
 use super::{ColorFormat, ColorPickerState, PickerColor};
-use crate::{ButtonVariant, InputState, Widget, WidgetId, WidgetIdError, spacing};
+use crate::{ButtonVariant, ChangeCallback, InputState, Widget, WidgetId, WidgetIdError, spacing};
 
 // Original overlapping-page outline, embedded rather than fetched at runtime.
 // Neutral slate keeps the icon visible on both light and dark surfaces.
@@ -73,7 +73,6 @@ impl ColorPickerIds {
 
 /// Typed callbacks for a controlled color picker.
 ///
-/// Like TimePicker, each existing text/select control uses a function pointer.
 /// Translate callbacks to [`super::ColorPickerEvent`] in application update and
 /// call [`ColorPickerState::update`]. The channel callback index follows the
 /// current representation, including percentage alpha as its last channel.
@@ -135,6 +134,126 @@ impl<Msg> ColorPickerCallbacks<Msg> {
     }
 }
 
+/// Owned callbacks for a controlled color picker, with independent typed captures.
+/// Captures must be `Send + Sync + 'static`, but need not be Clone. Callbacks run
+/// on interaction and retain their view snapshot; rebuild to refresh context and
+/// validate messages at the application's update boundary.
+///
+/// ```
+/// use rutter::{ChangeCallback, ColorPickerCallbacksWith};
+/// let owner = String::from("foreground");
+/// let callbacks = ColorPickerCallbacksWith::new(
+///     move |sv| format!("{owner}: {sv:?}"), |h| format!("{h}"),
+///     |a| format!("{a}"), |f| format!("{f}"), |hex| hex,
+///     std::array::from_fn(|channel| ChangeCallback::new(move |text| format!("{channel}: {text}"))),
+/// ).with_copy_button(String::from("copy"));
+/// ```
+pub struct ColorPickerCallbacksWith<Msg> {
+    saturation_value: ChangeCallback<(f32, f32), Msg>,
+    hue: ChangeCallback<f32, Msg>,
+    alpha: ChangeCallback<f32, Msg>,
+    format: ChangeCallback<usize, Msg>,
+    hex: ChangeCallback<String, Msg>,
+    channels: [ChangeCallback<String, Msg>; 5],
+    copy: Option<Msg>,
+}
+
+impl<Msg> ColorPickerCallbacksWith<Msg> {
+    /// Creates callbacks for SV, hue, alpha, format, HEX and five channel drafts.
+    pub fn new(
+        saturation_value: impl Fn((f32, f32)) -> Msg + Send + Sync + 'static,
+        hue: impl Fn(f32) -> Msg + Send + Sync + 'static,
+        alpha: impl Fn(f32) -> Msg + Send + Sync + 'static,
+        format: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        hex: impl Fn(String) -> Msg + Send + Sync + 'static,
+        channels: [ChangeCallback<String, Msg>; 5],
+    ) -> Self {
+        Self {
+            saturation_value: ChangeCallback::new(saturation_value),
+            hue: ChangeCallback::new(hue),
+            alpha: ChangeCallback::new(alpha),
+            format: ChangeCallback::new(format),
+            hex: ChangeCallback::new(hex),
+            channels,
+            copy: None,
+        }
+    }
+
+    /// Adds the same message-based copy action as [`ColorPickerCallbacks::with_copy_button`].
+    pub fn with_copy_button(mut self, on_copy: Msg) -> Self {
+        self.copy = Some(on_copy);
+        self
+    }
+}
+
+// Preserve legacy native leaf variants while sharing all composition and painting.
+enum EditorCallback<T, Msg> {
+    Function(fn(T) -> Msg),
+    Captured(ChangeCallback<T, Msg>),
+}
+
+struct PickerCallbacks<Msg> {
+    saturation_value: ChangeCallback<(f32, f32), Msg>,
+    hue: ChangeCallback<f32, Msg>,
+    alpha: ChangeCallback<f32, Msg>,
+    format: EditorCallback<usize, Msg>,
+    hex: EditorCallback<String, Msg>,
+    channels: [EditorCallback<String, Msg>; 5],
+    copy: Option<Msg>,
+}
+
+impl<Msg> From<ColorPickerCallbacks<Msg>> for PickerCallbacks<Msg> {
+    fn from(callbacks: ColorPickerCallbacks<Msg>) -> Self {
+        Self {
+            saturation_value: ChangeCallback::from_function(callbacks.saturation_value),
+            hue: ChangeCallback::from_function(callbacks.hue),
+            alpha: ChangeCallback::from_function(callbacks.alpha),
+            format: EditorCallback::Function(callbacks.format),
+            hex: EditorCallback::Function(callbacks.hex),
+            channels: callbacks.channels.map(EditorCallback::Function),
+            copy: callbacks.copy,
+        }
+    }
+}
+
+impl<Msg> From<ColorPickerCallbacksWith<Msg>> for PickerCallbacks<Msg> {
+    fn from(callbacks: ColorPickerCallbacksWith<Msg>) -> Self {
+        Self {
+            saturation_value: callbacks.saturation_value,
+            hue: callbacks.hue,
+            alpha: callbacks.alpha,
+            format: EditorCallback::Captured(callbacks.format),
+            hex: EditorCallback::Captured(callbacks.hex),
+            channels: callbacks.channels.map(EditorCallback::Captured),
+            copy: callbacks.copy,
+        }
+    }
+}
+
+impl<Msg> EditorCallback<usize, Msg> {
+    fn select<'a>(&self, selected: usize) -> Widget<'a, Msg> {
+        match self {
+            Self::Function(on_change) => Widget::select(
+                &ColorFormat::LABELS,
+                selected,
+                *on_change,
+                control_style(40.0),
+                "Color format",
+                "Choose a format",
+            ),
+            Self::Captured(on_change) => Widget::SelectWith {
+                id: crate::widget::AUTO_ID,
+                options: &ColorFormat::LABELS,
+                selected_index: selected,
+                on_change: on_change.clone(),
+                style: control_style(40.0),
+                label: "Color format",
+                placeholder: "Choose a format",
+            },
+        }
+    }
+}
+
 impl<'a, Msg: 'a> Widget<'a, Msg> {
     /// Creates an inline controlled Color Picker with SV plane, hue/alpha strips,
     /// color preview, format selection and editable numeric/HEX fields.
@@ -161,6 +280,26 @@ impl<'a, Msg: 'a> Widget<'a, Msg> {
         state: &'a ColorPickerState,
         ids: ColorPickerIds,
         callbacks: ColorPickerCallbacks<Msg>,
+        style: Style,
+    ) -> Self {
+        Self::color_picker_composed(state, ids, callbacks.into(), style)
+    }
+
+    /// Creates a captured-callback picker with identical IDs, drafts and layout.
+    /// See [`ColorPickerCallbacksWith`] for snapshot and ownership semantics.
+    pub fn color_picker_with(
+        state: &'a ColorPickerState,
+        ids: ColorPickerIds,
+        callbacks: ColorPickerCallbacksWith<Msg>,
+        style: Style,
+    ) -> Self {
+        Self::color_picker_composed(state, ids, callbacks.into(), style)
+    }
+
+    fn color_picker_composed(
+        state: &'a ColorPickerState,
+        ids: ColorPickerIds,
+        callbacks: PickerCallbacks<Msg>,
         mut style: Style,
     ) -> Self {
         style.flex_direction = FlexDirection::Column;
@@ -169,7 +308,7 @@ impl<'a, Msg: 'a> Widget<'a, Msg> {
             hue: state.hue(),
             saturation: state.saturation(),
             value: state.value(),
-            on_change: callbacks.saturation_value,
+            on_change: callbacks.saturation_value.clone(),
         };
         let preview = preview_and_strips(state, ids, &callbacks);
         let editors = channel_editors(state, ids, &callbacks);
@@ -181,15 +320,10 @@ impl<'a, Msg: 'a> Widget<'a, Msg> {
             children: vec![
                 Self::custom(ids.plane(), plane, control_style(190.0)),
                 preview,
-                Self::select(
-                    &ColorFormat::LABELS,
-                    state.format().index(),
-                    callbacks.format,
-                    control_style(40.0),
-                    "Color format",
-                    "Choose a format",
-                )
-                .with_id(ids.format().get()),
+                callbacks
+                    .format
+                    .select(state.format().index())
+                    .with_id(ids.format().get()),
                 editors,
             ],
             style,
@@ -207,7 +341,9 @@ fn editors_with_copy<Msg>(mut editors: Widget<'_, Msg>, on_copy: Msg) -> Widget<
     // HEX previously requested 100% width. In a row it must share the available
     // width with the fixed button, while numeric channels can continue wrapping.
     let style = match &mut editors {
-        Widget::Row { style, .. } | Widget::TextInput { style, .. } => style,
+        Widget::Row { style, .. }
+        | Widget::TextInput { style, .. }
+        | Widget::TextInputWith { style, .. } => style,
         _ => unreachable!("color editors are numeric rows or a HEX input"),
     };
     style.size.width = Dimension::length(0.0);
@@ -257,7 +393,7 @@ fn copy_button<'a, Msg>(on_copy: Msg) -> Widget<'a, Msg> {
 fn preview_and_strips<'a, Msg: 'a>(
     state: &ColorPickerState,
     ids: ColorPickerIds,
-    callbacks: &ColorPickerCallbacks<Msg>,
+    callbacks: &PickerCallbacks<Msg>,
 ) -> Widget<'a, Msg> {
     Widget::Row {
         children: vec![
@@ -276,7 +412,7 @@ fn preview_and_strips<'a, Msg: 'a>(
                         ids.hue(),
                         ColorControl::Hue {
                             hue: state.hue(),
-                            on_change: callbacks.hue,
+                            on_change: callbacks.hue.clone(),
                         },
                         control_style(24.0),
                     ),
@@ -284,7 +420,7 @@ fn preview_and_strips<'a, Msg: 'a>(
                         ids.alpha(),
                         ColorControl::Alpha {
                             color: state.color(),
-                            on_change: callbacks.alpha,
+                            on_change: callbacks.alpha.clone(),
                         },
                         control_style(24.0),
                     ),
@@ -308,12 +444,12 @@ fn preview_and_strips<'a, Msg: 'a>(
 fn channel_editors<'a, Msg>(
     state: &'a ColorPickerState,
     ids: ColorPickerIds,
-    callbacks: &ColorPickerCallbacks<Msg>,
+    callbacks: &PickerCallbacks<Msg>,
 ) -> Widget<'a, Msg> {
     if state.format() == ColorFormat::Hex {
         return draft_input(
             state.hex(),
-            callbacks.hex,
+            &callbacks.hex,
             "HEX (RRGGBB or RRGGBBAA)",
             state.hex_error(),
             ids.hex(),
@@ -326,7 +462,7 @@ fn channel_editors<'a, Msg>(
                 let label = channel_label(state.format(), index);
                 draft_input(
                     state.channel_text(index),
-                    callbacks.channels[index],
+                    &callbacks.channels[index],
                     label,
                     state.channel_error(index),
                     ids.channel(index).expect("five picker channels"),
@@ -365,28 +501,43 @@ fn channel_label(format: ColorFormat, index: usize) -> &'static str {
 
 fn draft_input<'a, Msg>(
     value: &'a str,
-    on_change: fn(String) -> Msg,
+    on_change: &EditorCallback<String, Msg>,
     label: &'a str,
     error: Option<&str>,
     id: WidgetId,
     style: Style,
 ) -> Widget<'a, Msg> {
-    Widget::controlled_text_input(
-        value,
-        on_change,
-        None,
-        style,
-        label,
-        "",
-        if error.is_some() {
-            InputState::Error
-        } else {
-            InputState::Idle
+    let state = if error.is_some() {
+        InputState::Error
+    } else {
+        InputState::Idle
+    };
+    match on_change {
+        EditorCallback::Captured(on_change) => Widget::TextInputWith {
+            model_value: Some(value),
+            on_change: on_change.clone(),
+            on_submit: None,
+            style,
+            id: id.get(),
+            label,
+            placeholder: "",
+            state,
+            error_msg: error.map(str::to_owned),
+            is_password: false,
         },
-        error.map(str::to_owned),
-        false,
-    )
-    .with_id(id.get())
+        EditorCallback::Function(on_change) => Widget::controlled_text_input(
+            value,
+            *on_change,
+            None,
+            style,
+            label,
+            "",
+            state,
+            error.map(str::to_owned),
+            false,
+        )
+        .with_id(id.get()),
+    }
 }
 
 fn control_style(height: f32) -> Style {

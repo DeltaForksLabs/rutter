@@ -134,7 +134,7 @@ fn plane() -> ColorControl<Msg> {
         hue: 0.0,
         saturation: 0.5,
         value: 0.5,
-        on_change: Msg::Sv,
+        on_change: crate::ChangeCallback::from_function(Msg::Sv),
     }
 }
 
@@ -305,11 +305,11 @@ fn plane_keyboard_controls_each_axis_and_preserves_application_shortcuts() {
 fn strips_support_pointer_keyboard_endpoints_and_accessibility_actions() {
     let hue = ColorControl::Hue {
         hue: 180.0,
-        on_change: Msg::Hue,
+        on_change: crate::ChangeCallback::from_function(Msg::Hue),
     };
     let alpha = ColorControl::Alpha {
         color: PickerColor::try_rgba(1.0, 0.0, 0.0, 0.5).unwrap(),
-        on_change: Msg::Alpha,
+        on_change: crate::ChangeCallback::from_function(Msg::Alpha),
     };
     let mut runtime = CustomWidgetState::default();
     assert_eq!(
@@ -347,7 +347,7 @@ fn strips_support_pointer_keyboard_endpoints_and_accessibility_actions() {
     );
     let endpoint = ColorControl::Alpha {
         color: PickerColor::from_rgb8(0, 0, 0),
-        on_change: Msg::Alpha,
+        on_change: crate::ChangeCallback::from_function(Msg::Alpha),
     };
     assert!(matches!(
         endpoint.keyboard_event(key(ShortcutNamedKey::End), &mut runtime),
@@ -583,7 +583,7 @@ fn raster_alpha_strip_retains_checkerboard_under_its_gradient() {
         let mut surface = painted_with_theme(
             &ColorControl::Alpha {
                 color: PickerColor::from_rgba8(255, 0, 0, 128),
-                on_change: Msg::Alpha,
+                on_change: crate::ChangeCallback::from_function(Msg::Alpha),
             },
             &theme,
         );

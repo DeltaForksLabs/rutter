@@ -485,6 +485,14 @@ pub trait AppLogic {
         None
     }
 
+    /// Captured selected-text declaration, preferred over [`Self::selected_text_drag`].
+    fn selected_text_drag_with(
+        _state: &Self::State,
+        _id: u64,
+    ) -> Option<crate::SelectedTextDragWith<Self::Message>> {
+        None
+    }
+
     /// Returns the shaping-cache budget used by the runtime.
     ///
     /// ```

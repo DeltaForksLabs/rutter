@@ -369,6 +369,14 @@ pub trait MultiWindowAppLogic {
     ) -> Option<SelectedTextDrag<Self::Message>> {
         None
     }
+    /// Captured declaration preferred over the legacy selected-text hook.
+    fn selected_text_drag_with(
+        _state: &Self::State,
+        _surface: SurfaceId,
+        _id: u64,
+    ) -> Option<crate::SelectedTextDragWith<Self::Message>> {
+        None
+    }
     /// Returns the runtime's shaping-cache budget.
     fn text_shape_cache_limits() -> TextShapeCacheLimits {
         TextShapeCacheLimits::default()

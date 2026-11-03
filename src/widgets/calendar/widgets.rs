@@ -77,6 +77,76 @@ impl<'a, Msg> Widget<'a, Msg> {
         config: CalendarConfig<'a>,
         style: Style,
     ) -> Self {
+        Self::calendar_composed(
+            visible_month,
+            selected,
+            &on_select,
+            &on_month_change,
+            config,
+            style,
+        )
+    }
+
+    /// Creates a calendar with owned `Send + Sync + 'static` captures.
+    ///
+    /// Callbacks run eagerly while composing every navigation/day button, not on
+    /// activation. Messages retain that snapshot; rebuild to refresh context and
+    /// validate identity/generation in application update.
+    ///
+    /// ```
+    /// use rutter::{CalendarMonth, Widget};
+    /// let owner = String::from("booking");
+    /// let calendar = Widget::calendar_with(
+    ///     CalendarMonth::new(2026, 7).unwrap(), None,
+    ///     move |date| (owner.clone(), date.to_string()),
+    ///     |month| (String::from("navigate"), format!("{month:?}")),
+    ///     taffy::Style::default(),
+    /// );
+    /// ```
+    pub fn calendar_with(
+        visible_month: CalendarMonth,
+        selected: Option<CalendarDate>,
+        on_select: impl Fn(CalendarDate) -> Msg + Send + Sync + 'static,
+        on_month_change: impl Fn(CalendarMonth) -> Msg + Send + Sync + 'static,
+        style: Style,
+    ) -> Self {
+        Self::calendar_with_config_with(
+            visible_month,
+            selected,
+            on_select,
+            on_month_change,
+            CalendarConfig::default(),
+            style,
+        )
+    }
+
+    /// Localized captured calendar; callbacks have [`Self::calendar_with`] snapshot semantics.
+    pub fn calendar_with_config_with(
+        visible_month: CalendarMonth,
+        selected: Option<CalendarDate>,
+        on_select: impl Fn(CalendarDate) -> Msg + Send + Sync + 'static,
+        on_month_change: impl Fn(CalendarMonth) -> Msg + Send + Sync + 'static,
+        config: CalendarConfig<'a>,
+        style: Style,
+    ) -> Self {
+        Self::calendar_composed(
+            visible_month,
+            selected,
+            &on_select,
+            &on_month_change,
+            config,
+            style,
+        )
+    }
+
+    fn calendar_composed(
+        visible_month: CalendarMonth,
+        selected: Option<CalendarDate>,
+        on_select: &dyn Fn(CalendarDate) -> Msg,
+        on_month_change: &dyn Fn(CalendarMonth) -> Msg,
+        config: CalendarConfig<'a>,
+        style: Style,
+    ) -> Self {
         let children =
             calendar_sections(visible_month, selected, on_select, on_month_change, config);
         Self::Container {
@@ -170,6 +240,101 @@ impl<'a, Msg> Widget<'a, Msg> {
         style: Style,
         popup_style: Style,
     ) -> Self {
+        Self::date_picker_composed(
+            open,
+            visible_month,
+            selected,
+            on_toggle,
+            on_dismiss,
+            &on_select,
+            &on_month_change,
+            accessibility_label,
+            placeholder,
+            config,
+            style,
+            popup_style,
+        )
+    }
+
+    /// Captured date picker with default labels and eager snapshot messages.
+    /// See [`Self::calendar_with`]; even a closed picker composes its calendar.
+    #[allow(clippy::too_many_arguments)]
+    pub fn date_picker_with(
+        open: bool,
+        visible_month: CalendarMonth,
+        selected: Option<CalendarDate>,
+        on_toggle: Msg,
+        on_dismiss: Msg,
+        on_select: impl Fn(CalendarDate) -> Msg + Send + Sync + 'static,
+        on_month_change: impl Fn(CalendarMonth) -> Msg + Send + Sync + 'static,
+        accessibility_label: &'a str,
+        placeholder: &'a str,
+        style: Style,
+        popup_style: Style,
+    ) -> Self {
+        Self::date_picker_with_config_with(
+            open,
+            visible_month,
+            selected,
+            on_toggle,
+            on_dismiss,
+            on_select,
+            on_month_change,
+            accessibility_label,
+            placeholder,
+            CalendarConfig::default(),
+            style,
+            popup_style,
+        )
+    }
+
+    /// Localized captured date picker with [`Self::calendar_with`] snapshot semantics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn date_picker_with_config_with(
+        open: bool,
+        visible_month: CalendarMonth,
+        selected: Option<CalendarDate>,
+        on_toggle: Msg,
+        on_dismiss: Msg,
+        on_select: impl Fn(CalendarDate) -> Msg + Send + Sync + 'static,
+        on_month_change: impl Fn(CalendarMonth) -> Msg + Send + Sync + 'static,
+        accessibility_label: &'a str,
+        placeholder: &'a str,
+        config: CalendarConfig<'a>,
+        style: Style,
+        popup_style: Style,
+    ) -> Self {
+        Self::date_picker_composed(
+            open,
+            visible_month,
+            selected,
+            on_toggle,
+            on_dismiss,
+            &on_select,
+            &on_month_change,
+            accessibility_label,
+            placeholder,
+            config,
+            style,
+            popup_style,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn date_picker_composed(
+        open: bool,
+        visible_month: CalendarMonth,
+        selected: Option<CalendarDate>,
+        on_toggle: Msg,
+        on_dismiss: Msg,
+        on_select: &dyn Fn(CalendarDate) -> Msg,
+        on_month_change: &dyn Fn(CalendarMonth) -> Msg,
+        accessibility_label: &'a str,
+        placeholder: &'a str,
+        config: CalendarConfig<'a>,
+        style: Style,
+        popup_style: Style,
+    ) -> Self {
         let anchor = date_picker_anchor(
             selected,
             on_toggle,
@@ -177,7 +342,7 @@ impl<'a, Msg> Widget<'a, Msg> {
             placeholder,
             style.clone(),
         );
-        let content = Self::calendar_with_config(
+        let content = Self::calendar_composed(
             visible_month,
             selected,
             on_select,
@@ -192,8 +357,8 @@ impl<'a, Msg> Widget<'a, Msg> {
 fn calendar_sections<'a, Msg>(
     visible_month: CalendarMonth,
     selected: Option<CalendarDate>,
-    on_select: fn(CalendarDate) -> Msg,
-    on_month_change: fn(CalendarMonth) -> Msg,
+    on_select: &dyn Fn(CalendarDate) -> Msg,
+    on_month_change: &dyn Fn(CalendarMonth) -> Msg,
     config: CalendarConfig<'a>,
 ) -> Vec<Widget<'a, Msg>> {
     let mut sections = Vec::with_capacity(8);
@@ -211,7 +376,7 @@ fn calendar_sections<'a, Msg>(
 
 fn calendar_header<'a, Msg>(
     visible_month: CalendarMonth,
-    on_month_change: fn(CalendarMonth) -> Msg,
+    on_month_change: &dyn Fn(CalendarMonth) -> Msg,
     config: CalendarConfig<'a>,
 ) -> Widget<'a, Msg> {
     let [previous_year, previous_month] =
@@ -231,7 +396,7 @@ fn calendar_header<'a, Msg>(
 
 fn previous_navigation<'a, Msg>(
     visible_month: CalendarMonth,
-    on_month_change: fn(CalendarMonth) -> Msg,
+    on_month_change: &dyn Fn(CalendarMonth) -> Msg,
     config: CalendarConfig<'a>,
 ) -> [Widget<'a, Msg>; 2] {
     let previous_year = visible_month.previous_year().unwrap_or(visible_month);
@@ -252,7 +417,7 @@ fn previous_navigation<'a, Msg>(
 
 fn next_navigation<'a, Msg>(
     visible_month: CalendarMonth,
-    on_month_change: fn(CalendarMonth) -> Msg,
+    on_month_change: &dyn Fn(CalendarMonth) -> Msg,
     config: CalendarConfig<'a>,
 ) -> [Widget<'a, Msg>; 2] {
     let next_month = visible_month.next().unwrap_or(visible_month);
@@ -344,8 +509,8 @@ fn calendar_weekday_heading<'a, Msg>(label: &str) -> Widget<'a, Msg> {
 fn calendar_weeks<'a, Msg>(
     visible_month: CalendarMonth,
     selected: Option<CalendarDate>,
-    on_select: fn(CalendarDate) -> Msg,
-    on_month_change: fn(CalendarMonth) -> Msg,
+    on_select: &dyn Fn(CalendarDate) -> Msg,
+    on_month_change: &dyn Fn(CalendarMonth) -> Msg,
     config: CalendarConfig<'a>,
 ) -> Vec<Widget<'a, Msg>> {
     calendar_grid(visible_month, config.week_start)
@@ -366,8 +531,8 @@ fn calendar_day_button<'a, Msg>(
     cell: CalendarGridCell,
     visible_month: CalendarMonth,
     selected: Option<CalendarDate>,
-    on_select: fn(CalendarDate) -> Msg,
-    on_month_change: fn(CalendarMonth) -> Msg,
+    on_select: &dyn Fn(CalendarDate) -> Msg,
+    on_month_change: &dyn Fn(CalendarMonth) -> Msg,
 ) -> Widget<'a, Msg> {
     let variant = if cell.date.is_some_and(|date| selected == Some(date)) {
         ButtonVariant::Primary

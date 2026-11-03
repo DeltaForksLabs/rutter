@@ -59,7 +59,15 @@ mod widget_spacing_tests;
 mod widget_spacing_review_tests;
 
 #[cfg(test)]
+mod captured_composed_tests;
+
+#[cfg(test)]
 mod captured_native_tests;
+#[cfg(test)]
+mod captured_pointer_tests;
+
+#[cfg(test)]
+mod captured_search_tests;
 #[cfg(test)]
 mod font_resource_tests;
 
@@ -116,8 +124,8 @@ use crate::theme::Theme;
 use crate::widget::{
     ButtonVariant, ContextMenuEntry, CounterConfig, CustomWidgetState, DialogAction,
     DialogPosition, InputState, KeyedVirtualItems, Orientation, ToastKind, ToastPosition,
-    VirtualSelection, Widget, is_interactive_virtual_item_path, pop_interactive_virtual_item_path,
-    push_interactive_virtual_item_path,
+    VirtualSelectionWith, Widget, is_interactive_virtual_item_path,
+    pop_interactive_virtual_item_path, push_interactive_virtual_item_path,
 };
 use crate::widgets::carousel::geometry::{CarouselItemFrame, carousel_item_frames};
 use crate::widgets::rich_text::OwnedRichTextSpec;
@@ -718,6 +726,7 @@ fn draw_popover_overlays<'w, Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. } => {
@@ -957,6 +966,7 @@ fn collect_visible_toasts<'w, Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -1040,6 +1050,7 @@ pub(crate) fn collect_open_context_menus<'w, Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ScrollView { child, .. }
         | Widget::TableOfContents { child, .. } => {
@@ -1317,7 +1328,7 @@ fn draw_widgets_impl<'w, Msg>(
                 canvas.restore();
             }
         }
-        Widget::PointerRegion { child, .. } => {
+        Widget::PointerRegion { child, .. } | Widget::PointerRegionWith { child, .. } => {
             let ids = taffy.children(node).unwrap();
             path.push(0);
             draw_widgets_impl(
@@ -1617,6 +1628,13 @@ fn draw_widgets_impl<'w, Msg>(
             state,
             error_msg,
             ..
+        }
+        | Widget::ComboBoxWith {
+            label,
+            placeholder,
+            state,
+            error_msg,
+            ..
         } => draw_combo_box(
             TextInputRenderInput {
                 canvas,
@@ -1679,45 +1697,52 @@ fn draw_widgets_impl<'w, Msg>(
             leading_text_inset: 0.0,
             direction: node_layout_direction(taffy, node),
         }),
-        Widget::SearchBar { placeholder, .. } => draw_search_bar(TextInputRenderInput {
-            canvas,
-            paragraph_renderer: image_cache.rich_text_renderer(),
-            fs,
-            swash,
-            font_cache,
-            text_cache,
-            theme,
-            scale,
-            size,
-            is_focused,
-            label: "",
-            placeholder,
-            state: InputState::Idle,
-            error_msg: None,
-            is_password: false,
-            input_state: input_states.get(&resolved_id.unwrap()),
-            cursor_visible,
-            shows_interaction_effects,
-            is_multiline: false,
-            leading_text_inset: SEARCH_BAR_LEADING_TEXT_INSET,
-            direction: node_layout_direction(taffy, node),
-        }),
-        Widget::Checkbox { checked, label, .. } => draw_checkbox(
-            *checked,
-            LabeledControlRenderInput {
+        Widget::SearchBar { placeholder, .. } | Widget::SearchBarWith { placeholder, .. } => {
+            draw_search_bar(TextInputRenderInput {
                 canvas,
-                label,
-                is_focused,
-                size,
-                mouse: local_mouse,
+                paragraph_renderer: image_cache.rich_text_renderer(),
+                fs,
+                swash,
                 font_cache,
+                text_cache,
                 theme,
-            },
-        ),
-        Widget::Switch { checked, .. } => {
+                scale,
+                size,
+                is_focused,
+                label: "",
+                placeholder,
+                state: InputState::Idle,
+                error_msg: None,
+                is_password: false,
+                input_state: input_states.get(&resolved_id.unwrap()),
+                cursor_visible,
+                shows_interaction_effects,
+                is_multiline: false,
+                leading_text_inset: SEARCH_BAR_LEADING_TEXT_INSET,
+                direction: node_layout_direction(taffy, node),
+            })
+        }
+        Widget::Checkbox { checked, label, .. } | Widget::CheckboxWith { checked, label, .. } => {
+            draw_checkbox(
+                *checked,
+                LabeledControlRenderInput {
+                    canvas,
+                    label,
+                    is_focused,
+                    size,
+                    mouse: local_mouse,
+                    font_cache,
+                    theme,
+                },
+            )
+        }
+        Widget::Switch { checked, .. } | Widget::SwitchWith { checked, .. } => {
             draw_switch(canvas, *checked, is_focused, size, local_mouse, theme)
         }
         Widget::Radio {
+            selected, label, ..
+        }
+        | Widget::RadioWith {
             selected, label, ..
         } => draw_radio(
             *selected,
@@ -1973,7 +1998,7 @@ fn draw_widgets_impl<'w, Msg>(
                 node_layout_direction(taffy, node),
             );
         }
-        Widget::TabBar { tabs, active, .. } => {
+        Widget::TabBar { tabs, active, .. } | Widget::TabBarWith { tabs, active, .. } => {
             let tab_w = size.0 / tabs.len().max(1) as f32;
             let anim_x = *active as f32 * tab_w;
             let focused_tab =
@@ -2128,6 +2153,12 @@ fn draw_widgets_impl<'w, Msg>(
             items,
             config,
             ..
+        }
+        | Widget::CarouselViewWith {
+            item_count,
+            items,
+            config,
+            ..
         } => {
             let state = widget_states
                 .get(&resolved_id.unwrap())
@@ -2159,7 +2190,8 @@ fn draw_widgets_impl<'w, Msg>(
                 path,
             );
         }
-        Widget::InteractiveCarouselView { items, config, .. } => {
+        Widget::InteractiveCarouselView { items, config, .. }
+        | Widget::InteractiveCarouselViewWith { items, config, .. } => {
             let state = widget_states
                 .get(&resolved_id.unwrap())
                 .and_then(WidgetState::as_carousel);
@@ -2272,6 +2304,9 @@ fn draw_widgets_impl<'w, Msg>(
         }
         Widget::InteractiveVirtualListContent {
             item_height, items, ..
+        }
+        | Widget::InteractiveVirtualListContentWith {
+            item_height, items, ..
         } => {
             let resolved_id = resolved_id.unwrap();
             let vstate = widget_states
@@ -2321,7 +2356,12 @@ fn draw_widgets_impl<'w, Msg>(
             item_height,
             item_count,
             items,
-            selection,
+            ..
+        }
+        | Widget::VirtualListWith {
+            item_height,
+            item_count,
+            items,
             ..
         } => {
             let resolved_id = resolved_id.unwrap();
@@ -2329,7 +2369,7 @@ fn draw_widgets_impl<'w, Msg>(
                 .get(&resolved_id)
                 .and_then(WidgetState::as_vlist);
             let selected_rows = configured_virtual_selection(
-                selection,
+                widget,
                 *item_count,
                 vstate.and_then(|state| state.selected_row),
             );
@@ -2357,7 +2397,12 @@ fn draw_widgets_impl<'w, Msg>(
             item_height,
             item_count,
             items,
-            selection,
+            ..
+        }
+        | Widget::VirtualListContentWith {
+            item_height,
+            item_count,
+            items,
             ..
         } => {
             let resolved_id = resolved_id.unwrap();
@@ -2365,7 +2410,7 @@ fn draw_widgets_impl<'w, Msg>(
                 .get(&resolved_id)
                 .and_then(WidgetState::as_vlist);
             let selected_rows = configured_virtual_selection(
-                selection,
+                widget,
                 *item_count,
                 vstate.and_then(|state| state.selected_row),
             );
@@ -2494,6 +2539,12 @@ fn draw_widgets_impl<'w, Msg>(
             item_height,
             items,
             ..
+        }
+        | Widget::InteractiveVirtualGridContentWith {
+            columns,
+            item_height,
+            items,
+            ..
         } => {
             let resolved_id = resolved_id.unwrap();
             let gstate = widget_states
@@ -2546,7 +2597,13 @@ fn draw_widgets_impl<'w, Msg>(
             item_height,
             item_count,
             items,
-            selection,
+            ..
+        }
+        | Widget::VirtualGridWith {
+            columns,
+            item_height,
+            item_count,
+            items,
             ..
         } => {
             let resolved_id = resolved_id.unwrap();
@@ -2554,7 +2611,7 @@ fn draw_widgets_impl<'w, Msg>(
                 .get(&resolved_id)
                 .and_then(WidgetState::as_vgrid);
             let selected_cells = configured_virtual_selection(
-                selection,
+                widget,
                 *item_count,
                 gstate.and_then(|state| state.selected_item),
             );
@@ -2585,7 +2642,13 @@ fn draw_widgets_impl<'w, Msg>(
             item_height,
             item_count,
             items,
-            selection,
+            ..
+        }
+        | Widget::VirtualGridContentWith {
+            columns,
+            item_height,
+            item_count,
+            items,
             ..
         } => {
             let resolved_id = resolved_id.unwrap();
@@ -2593,7 +2656,7 @@ fn draw_widgets_impl<'w, Msg>(
                 .get(&resolved_id)
                 .and_then(WidgetState::as_vgrid);
             let selected_cells = configured_virtual_selection(
-                selection,
+                widget,
                 *item_count,
                 gstate.and_then(|state| state.selected_item),
             );
@@ -3998,13 +4061,13 @@ fn legacy_virtual_selection(selected: Option<usize>) -> BTreeSet<usize> {
 }
 
 fn configured_virtual_selection<Msg>(
-    selection: &VirtualSelection<'_, Msg>,
+    widget: &Widget<'_, Msg>,
     item_count: usize,
     single_selected: Option<usize>,
 ) -> BTreeSet<usize> {
-    match selection {
-        VirtualSelection::Single(_) => legacy_virtual_selection(single_selected),
-        VirtualSelection::Multiple { selected, .. } => selected
+    match widget.virtual_selection().unwrap() {
+        VirtualSelectionWith::Single(_) => legacy_virtual_selection(single_selected),
+        VirtualSelectionWith::Multiple { selected, .. } => selected
             .iter()
             .copied()
             .filter(|index| *index < item_count)

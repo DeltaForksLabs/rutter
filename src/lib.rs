@@ -59,8 +59,9 @@ pub use multi_window::{
 };
 pub use pointer::{
     DragBadge, DragBadgeError, DragBadgeIcon, DragCancelReason, DragEvent, DragPayload,
-    DragPayloadKind, DragPhase, DragSource, DropTarget, PointerEvent, PointerModifiers,
-    PointerPhase, PointerRegionConfig, SelectedTextDrag,
+    DragPayloadKind, DragPhase, DragSource, DragSourceWith, DropTarget, DropTargetWith,
+    PointerEvent, PointerModifiers, PointerPhase, PointerRegionConfig, PointerRegionConfigWith,
+    SelectedTextDrag, SelectedTextDragWith,
 };
 pub use render::text::TextShapeCacheLimits;
 pub use rich_text::{
@@ -69,18 +70,19 @@ pub use rich_text::{
 };
 pub use search::{
     SearchConfigError, SearchLabels, SearchMatch, SearchMatcher, SearchScoreFn, SearchSuggestions,
-    filter_ranked,
+    SearchSuggestionsWith, filter_ranked,
 };
 pub use table::{
     TableAlignment, TableCell, TableColumn, TableColumnKey, TableColumnWidth, TableConfigError,
-    TableMetrics, TableModel, TableOptions, TableRow, TableRowKey, TableSelection, TableSort,
-    TableSortDirection, TableSorting,
+    TableMetrics, TableModel, TableOptions, TableRow, TableRowKey, TableSelection,
+    TableSelectionWith, TableSort, TableSortDirection, TableSorting, TableSortingWith,
 };
 pub use table_of_contents::{HeadingLevel, TableOfContentsConfigError, TableOfContentsOptions};
 pub use theme::Theme;
 pub use time::{
     ClockConfig, ClockError, ClockFormat, ClockTime, HourCycle, LocalTimeResolution, TimeOfDay,
-    TimeOfDayError, TimePickerConfig, TimePickerError, TimePickerLabels, TimeZone, TimeZoneError,
+    TimeOfDayError, TimePickerConfig, TimePickerConfigWith, TimePickerError, TimePickerLabels,
+    TimeZone, TimeZoneError,
 };
 pub use widget::id::{WidgetId, WidgetIdError, WidgetIdSnapshot};
 pub use widget::{
@@ -91,12 +93,13 @@ pub use widget::{
     CustomInteraction, CustomLayout, CustomPaintContext, CustomPoint, CustomPointerEvent,
     CustomSize, CustomWidgetState, CustomWidgetStateError, CustomWidgetV1, DialogPosition,
     InputState, KeyedVirtualItems, KeyedVirtualItemsError, MAX_CUSTOM_WIDGET_STATE_BYTES,
-    VirtualItemKey, VirtualItemKeyError, VirtualSelection, Widget, WidgetConfigError,
-    validate_counter, validate_slider, validate_virtual_grid, validate_virtual_list,
+    VirtualItemKey, VirtualItemKeyError, VirtualSelection, VirtualSelectionWith, Widget,
+    WidgetConfigError, validate_counter, validate_slider, validate_virtual_grid,
+    validate_virtual_list,
 };
 pub use widgets::color_picker::{
-    ColorError, ColorFormat, ColorPickerCallbacks, ColorPickerEvent, ColorPickerIds,
-    ColorPickerState, PickerColor,
+    ColorError, ColorFormat, ColorPickerCallbacks, ColorPickerCallbacksWith, ColorPickerEvent,
+    ColorPickerIds, ColorPickerState, PickerColor,
 };
 pub use widgets::{
     calendar, carousel, color_picker, combo_box, dropdown_menu, dynamic_island, rich_text, search,

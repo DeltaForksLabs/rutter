@@ -3,6 +3,7 @@
 
 use std::{fmt, sync::Arc};
 
+use crate::ChangeCallback;
 use crate::LogicalPointerPosition;
 use crate::render::image::{ImageDecodeError, ImageDecodeLimits, decode_rutter_image_with_limits};
 use skia_safe::{Color, Paint, surfaces};
@@ -378,6 +379,213 @@ impl<Msg> PointerRegionConfig<Msg> {
     }
 }
 
+/// A drag source whose callback can own application context.
+pub struct DragSourceWith<Msg> {
+    pub payload: DragPayload,
+    pub on_drag: ChangeCallback<DragEvent, Msg>,
+}
+
+impl<Msg> DragSourceWith<Msg> {
+    /// Owns a callback and fixes the opaque payload for each gesture.
+    pub fn new(
+        payload: DragPayload,
+        on_drag: impl Fn(DragEvent) -> Msg + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            payload,
+            on_drag: ChangeCallback::new(on_drag),
+        }
+    }
+}
+
+impl<Msg> Clone for DragSourceWith<Msg> {
+    fn clone(&self) -> Self {
+        Self {
+            payload: self.payload,
+            on_drag: self.on_drag.clone(),
+        }
+    }
+}
+
+impl<Msg> From<DragSource<Msg>> for DragSourceWith<Msg> {
+    fn from(source: DragSource<Msg>) -> Self {
+        Self {
+            payload: source.payload,
+            on_drag: ChangeCallback::from_function(source.on_drag),
+        }
+    }
+}
+
+/// A matching drop target with an owned callback.
+pub struct DropTargetWith<Msg> {
+    pub accepted_kind: DragPayloadKind,
+    pub on_drag: ChangeCallback<DragEvent, Msg>,
+}
+
+impl<Msg> DropTargetWith<Msg> {
+    /// Owns a callback accepting one payload kind.
+    pub fn new(
+        accepted_kind: DragPayloadKind,
+        on_drag: impl Fn(DragEvent) -> Msg + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            accepted_kind,
+            on_drag: ChangeCallback::new(on_drag),
+        }
+    }
+}
+
+impl<Msg> Clone for DropTargetWith<Msg> {
+    fn clone(&self) -> Self {
+        Self {
+            accepted_kind: self.accepted_kind,
+            on_drag: self.on_drag.clone(),
+        }
+    }
+}
+
+impl<Msg> From<DropTarget<Msg>> for DropTargetWith<Msg> {
+    fn from(target: DropTarget<Msg>) -> Self {
+        Self {
+            accepted_kind: target.accepted_kind,
+            on_drag: ChangeCallback::from_function(target.on_drag),
+        }
+    }
+}
+
+/// Owned callbacks for dragging a non-password input's selected text.
+pub struct SelectedTextDragWith<Msg> {
+    pub source: DragSourceWith<Msg>,
+    pub on_selected: ChangeCallback<String, Msg>,
+    pub badge: DragBadge,
+}
+
+impl<Msg> SelectedTextDragWith<Msg> {
+    /// Owns the selection callback; the delivered string is the arm-time snapshot.
+    pub fn new(
+        source: DragSourceWith<Msg>,
+        on_selected: impl Fn(String) -> Msg + Send + Sync + 'static,
+        badge: DragBadge,
+    ) -> Self {
+        Self {
+            source,
+            on_selected: ChangeCallback::new(on_selected),
+            badge,
+        }
+    }
+}
+
+impl<Msg> Clone for SelectedTextDragWith<Msg> {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            on_selected: self.on_selected.clone(),
+            badge: self.badge.clone(),
+        }
+    }
+}
+
+impl<Msg> From<SelectedTextDrag<Msg>> for SelectedTextDragWith<Msg> {
+    fn from(config: SelectedTextDrag<Msg>) -> Self {
+        Self {
+            source: config.source.into(),
+            on_selected: ChangeCallback::from_function(config.on_selected),
+            badge: config.badge,
+        }
+    }
+}
+
+/// Captured counterpart to [`PointerRegionConfig`], sharing its native identity.
+///
+/// A gesture fixes its source ID and payload. Continuations use callbacks from
+/// the latest published view; removing or replacing the source cancels it.
+/// Retired callbacks may receive terminal cancellation/exit, never a new drop.
+pub struct PointerRegionConfigWith<Msg> {
+    pub on_pointer: ChangeCallback<PointerEvent, Msg>,
+    pub on_hover: Option<ChangeCallback<bool, Msg>>,
+    pub capture_on_press: bool,
+    pub drag_source: Option<DragSourceWith<Msg>>,
+    pub drop_target: Option<DropTargetWith<Msg>>,
+    pub drag_badge: Option<DragBadge>,
+}
+
+impl<Msg> PointerRegionConfigWith<Msg> {
+    /// Creates an uncaptured region with an owned pointer callback.
+    ///
+    /// ```
+    /// use rutter::{DragPayload, DragPayloadKind, DragSourceWith, PointerRegionConfigWith};
+    /// let document = String::from("document-42");
+    /// let source = DragSourceWith::new(
+    ///     DragPayload::new(DragPayloadKind::new(1), 42),
+    ///     move |event| (document.clone(), event.phase),
+    /// );
+    /// let config = PointerRegionConfigWith::new(|_| (String::new(), rutter::DragPhase::Moved))
+    ///     .with_drag_source(source);
+    /// assert!(config.drag_source.is_some());
+    /// ```
+    pub fn new(on_pointer: impl Fn(PointerEvent) -> Msg + Send + Sync + 'static) -> Self {
+        Self {
+            on_pointer: ChangeCallback::new(on_pointer),
+            on_hover: None,
+            capture_on_press: false,
+            drag_source: None,
+            drop_target: None,
+            drag_badge: None,
+        }
+    }
+    /// Observes membership without replacing interactive children.
+    pub fn with_hover(mut self, on_hover: impl Fn(bool) -> Msg + Send + Sync + 'static) -> Self {
+        self.on_hover = Some(ChangeCallback::new(on_hover));
+        self
+    }
+    /// Captures continuation events after a primary press.
+    pub fn with_pointer_capture(mut self) -> Self {
+        self.capture_on_press = true;
+        self
+    }
+    /// Adds a captured or legacy drag source.
+    pub fn with_drag_source(mut self, source: impl Into<DragSourceWith<Msg>>) -> Self {
+        self.drag_source = Some(source.into());
+        self
+    }
+    /// Adds a captured or legacy matching target.
+    pub fn with_drop_target(mut self, target: impl Into<DropTargetWith<Msg>>) -> Self {
+        self.drop_target = Some(target.into());
+        self
+    }
+    /// Adds a non-interactive badge, with no layout or hit-test effect.
+    pub fn with_drag_badge(mut self, badge: DragBadge) -> Self {
+        self.drag_badge = Some(badge);
+        self
+    }
+}
+
+impl<Msg> Clone for PointerRegionConfigWith<Msg> {
+    fn clone(&self) -> Self {
+        Self {
+            on_pointer: self.on_pointer.clone(),
+            on_hover: self.on_hover.clone(),
+            capture_on_press: self.capture_on_press,
+            drag_source: self.drag_source.clone(),
+            drop_target: self.drop_target.clone(),
+            drag_badge: self.drag_badge.clone(),
+        }
+    }
+}
+
+impl<Msg> From<PointerRegionConfig<Msg>> for PointerRegionConfigWith<Msg> {
+    fn from(config: PointerRegionConfig<Msg>) -> Self {
+        Self {
+            on_pointer: ChangeCallback::from_function(config.on_pointer),
+            on_hover: config.on_hover.map(ChangeCallback::from_function),
+            capture_on_press: config.capture_on_press,
+            drag_source: config.drag_source.map(Into::into),
+            drop_target: config.drop_target.map(Into::into),
+            drag_badge: config.drag_badge,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +600,56 @@ mod tests {
     ];
 
     fn pointer_message(_: PointerEvent) {}
+
+    #[test]
+    fn captured_pointer_api_and_legacy_literals_do_not_require_clone_messages() {
+        struct Message;
+        fn pointer(_: PointerEvent) -> Message {
+            Message
+        }
+        fn drag(_: DragEvent) -> Message {
+            Message
+        }
+        fn selected(_: String) -> Message {
+            Message
+        }
+        fn copy<T: Copy>(value: T) -> T {
+            value
+        }
+        let source = copy(DragSource {
+            payload: DragPayload::new(DragPayloadKind::new(2), 7),
+            on_drag: drag,
+        });
+        let target = copy(DropTarget {
+            accepted_kind: source.payload.kind(),
+            on_drag: drag,
+        });
+        let legacy = PointerRegionConfig::new(pointer)
+            .with_hover(|_| Message)
+            .with_pointer_capture()
+            .with_drag_source(source)
+            .with_drop_target(target);
+        let normalized: PointerRegionConfigWith<Message> = legacy.into();
+        let _shared = normalized.clone();
+        let captured: SelectedTextDragWith<Message> = SelectedTextDrag {
+            source,
+            on_selected: selected,
+            badge: DragBadge::new(Color::RED, Color::WHITE),
+        }
+        .into();
+        captured.clone().on_selected.call("River".into());
+        let owner = Arc::new(());
+        let weak = Arc::downgrade(&owner);
+        let captured = PointerRegionConfigWith::new(move |_| {
+            let _owner = &owner;
+            Message
+        });
+        let shared = captured.clone();
+        drop(captured);
+        assert!(weak.upgrade().is_some());
+        drop(shared);
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn payload_retains_its_application_owned_identity() {

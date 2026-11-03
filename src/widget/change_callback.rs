@@ -20,6 +20,8 @@ pub struct ChangeCallback<T, Msg>(ChangeCallbackKind<T, Msg>);
 
 enum ChangeCallbackKind<T, Msg> {
     Function(fn(T) -> Msg),
+    // Native legacy radios must remain allocation-free when normalized to unit callbacks.
+    ZeroArgument(fn() -> Msg),
     Captured(Arc<dyn Fn(T) -> Msg + Send + Sync>),
 }
 
@@ -33,10 +35,15 @@ impl<T, Msg> ChangeCallback<T, Msg> {
         Self(ChangeCallbackKind::Function(on_change))
     }
 
+    pub(crate) fn from_zero_argument(on_select: fn() -> Msg) -> Self {
+        Self(ChangeCallbackKind::ZeroArgument(on_select))
+    }
+
     /// Produces a message using this callback's captured context.
     pub fn call(&self, value: T) -> Msg {
         match &self.0 {
             ChangeCallbackKind::Function(callback) => callback(value),
+            ChangeCallbackKind::ZeroArgument(callback) => callback(),
             ChangeCallbackKind::Captured(callback) => callback(value),
         }
     }
@@ -46,6 +53,7 @@ impl<T, Msg> Clone for ChangeCallback<T, Msg> {
     fn clone(&self) -> Self {
         match &self.0 {
             ChangeCallbackKind::Function(callback) => Self::from_function(*callback),
+            ChangeCallbackKind::ZeroArgument(callback) => Self::from_zero_argument(*callback),
             ChangeCallbackKind::Captured(callback) => {
                 Self(ChangeCallbackKind::Captured(Arc::clone(callback)))
             }

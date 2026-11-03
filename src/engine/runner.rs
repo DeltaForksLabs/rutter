@@ -59,7 +59,13 @@ use crate::widget::{CustomPoint, CustomPointerEvent, CustomSize};
 
 mod accessibility_actions;
 #[cfg(test)]
+mod captured_composed_tests;
+#[cfg(test)]
 mod captured_native_tests;
+
+#[cfg(test)]
+mod captured_search_tests;
+
 #[cfg(test)]
 #[path = "../../tests/unit/carousel_runner_unit_tests.rs"]
 mod carousel_regressions;
@@ -83,6 +89,8 @@ mod search;
 mod secondary_pointer;
 mod shortcut;
 mod table;
+#[cfg(test)]
+mod virtual_search_tests;
 mod virtual_selection;
 
 use self::secondary_pointer::{SecondaryPointerBlockers, has_visible_blocking_overlay};
@@ -1419,9 +1427,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                         .runtime_caches
                                         .vlists
                                         .get(&id)
-                                        .map(|v| v.on_select);
+                                        .map(|v| v.on_select.clone());
                                     if let Some(cb) = cb {
-                                        let msg = cb(index);
+                                        let msg = cb.call(index);
                                         A::update(
                                             &mut self.engine.app_state,
                                             msg,
@@ -1453,9 +1461,9 @@ impl<A: AppLogic + 'static> ApplicationHandler for RutterRunner<A> {
                                         .runtime_caches
                                         .vgrids
                                         .get(&id)
-                                        .map(|v| v.on_select);
+                                        .map(|v| v.on_select.clone());
                                     if let Some(cb) = cb {
-                                        let msg = cb(index);
+                                        let msg = cb.call(index);
                                         A::update(
                                             &mut self.engine.app_state,
                                             msg,
@@ -2044,7 +2052,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if let Some(tab) = tab {
             A::update(
                 &mut self.engine.app_state,
-                (tab.on_change)(index),
+                tab.on_change.call(index),
                 &mut self.engine.clipboard,
             );
             if let Some(ws) = self.engine.widget_states.get_mut(&parent_id) {
@@ -2504,7 +2512,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         {
             A::update(
                 &mut self.engine.app_state,
-                (toggle.on_change)(!toggle.checked),
+                toggle.on_change.call(!toggle.checked),
                 &mut self.engine.clipboard,
             );
             self.engine.layout_dirty = true;
@@ -2517,7 +2525,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         {
             A::update(
                 &mut self.engine.app_state,
-                (toggle.on_change)(!toggle.checked),
+                toggle.on_change.call(!toggle.checked),
                 &mut self.engine.clipboard,
             );
             self.engine.layout_dirty = true;
@@ -2525,12 +2533,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             return true;
         }
 
-        if let Some(on_select) = self.engine.runtime_caches.radios.get(&fid).copied()
+        if let Some(on_select) = self.engine.runtime_caches.radios.get(&fid).cloned()
             && is_activation_key(key)
         {
             A::update(
                 &mut self.engine.app_state,
-                on_select(),
+                on_select.call(()),
                 &mut self.engine.clipboard,
             );
             self.engine.layout_dirty = true;
@@ -2690,7 +2698,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                         state.scroll_to_index(next, vlist.item_height, vlist.item_count);
                         A::update(
                             &mut self.engine.app_state,
-                            (vlist.on_select)(next),
+                            vlist.on_select.call(next),
                             &mut self.engine.clipboard,
                         );
                         self.engine.layout_dirty = true;
@@ -2768,7 +2776,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 }
                 A::update(
                     &mut self.engine.app_state,
-                    (vgrid.on_select)(next_index),
+                    vgrid.on_select.call(next_index),
                     &mut self.engine.clipboard,
                 );
                 self.engine.layout_dirty = true;
@@ -2821,7 +2829,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         }
         A::update(
             &mut self.engine.app_state,
-            (runtime.on_select)(index),
+            runtime.on_select.call(index),
             &mut self.engine.clipboard,
         );
         self.engine.layout_dirty = true;
@@ -2843,6 +2851,9 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         if self.engine.focused_widget_id.is_none()
             && let Some(sid) = self.engine.active_scroll_id
         {
+            if self.handle_carousel_key(sid, key) {
+                return;
+            }
             if self
                 .engine
                 .runtime_caches
@@ -2857,13 +2868,13 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                 .runtime_caches
                 .vlists
                 .get(&sid)
-                .map(|v| (v.item_height, v.item_count, v.on_select));
+                .map(|v| (v.item_height, v.item_count, v.on_select.clone()));
             let vgrid_props = self
                 .engine
                 .runtime_caches
                 .vgrids
                 .get(&sid)
-                .map(|v| (v.item_height, v.item_count, v.columns, v.on_select));
+                .map(|v| (v.item_height, v.item_count, v.columns, v.on_select.clone()));
             match key {
                 Key::Named(NamedKey::ArrowDown) => {
                     if let Some(ws) = self.engine.widget_states.get_mut(&sid) {
@@ -2875,7 +2886,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                     s.scroll_to_index(new_sel, ih, ic);
                                     A::update(
                                         &mut self.engine.app_state,
-                                        cb(new_sel),
+                                        cb.call(new_sel),
                                         &mut self.engine.clipboard,
                                     );
                                     self.engine.layout_dirty = true;
@@ -2892,7 +2903,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                             s.scroll_to_index(new_sel, ih, ic, cols);
                             A::update(
                                 &mut self.engine.app_state,
-                                cb(new_sel),
+                                cb.call(new_sel),
                                 &mut self.engine.clipboard,
                             );
                             self.engine.layout_dirty = true;
@@ -2910,7 +2921,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                                 s.scroll_to_index(new_sel, ih, ic);
                                 A::update(
                                     &mut self.engine.app_state,
-                                    cb(new_sel),
+                                    cb.call(new_sel),
                                     &mut self.engine.clipboard,
                                 );
                                 self.engine.layout_dirty = true;
@@ -2926,7 +2937,7 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
                             s.scroll_to_index(new_sel, ih, ic, cols);
                             A::update(
                                 &mut self.engine.app_state,
-                                cb(new_sel),
+                                cb.call(new_sel),
                                 &mut self.engine.clipboard,
                             );
                             self.engine.layout_dirty = true;

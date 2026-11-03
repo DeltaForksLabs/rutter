@@ -12,8 +12,8 @@ use crate::theme::Theme;
 use crate::widgets::table::geometry::{TableRect, TableViewport};
 use crate::widgets::table::{
     TableAlignment, TableCellTarget, TableLayoutDirection, TableModel, TableOptions,
-    TableSelection, TableSortDirection, TableState, allocate_column_widths, calculate_viewport,
-    logical_cell_rect, minimum_content_width,
+    TableSortDirection, TableState, allocate_column_widths, calculate_viewport, logical_cell_rect,
+    minimum_content_width,
 };
 
 const TABLE_CELL_PADDING_X: f32 = 12.0;
@@ -160,7 +160,7 @@ fn draw_row_background<Msg>(
     rect: TableRect,
 ) {
     let hovered = input.shows_interaction_effects && hovered_row(input, row_key, rect);
-    let selected = row_is_selected(input.options.selection(), row_key);
+    let selected = row_is_selected(&input.options.effective_selection(), row_key);
     if !hovered && !selected {
         return;
     }
@@ -186,13 +186,13 @@ fn hovered_row<Msg>(
 }
 
 fn row_is_selected<Msg>(
-    selection: &TableSelection<'_, Msg>,
+    selection: &crate::TableSelectionWith<'_, Msg>,
     key: crate::widgets::table::TableRowKey,
 ) -> bool {
     match selection {
-        TableSelection::None => false,
-        TableSelection::Single { selected, .. } => *selected == Some(key),
-        TableSelection::Multiple { selected, .. } => selected.contains(&key),
+        crate::TableSelectionWith::None => false,
+        crate::TableSelectionWith::Single { selected, .. } => *selected == Some(key),
+        crate::TableSelectionWith::Multiple { selected, .. } => selected.contains(&key),
     }
 }
 
@@ -236,7 +236,10 @@ fn header_label<Msg>(
     column: crate::widgets::table::TableColumnKey,
     label: &str,
 ) -> String {
-    let Some(sort) = options.sorting().and_then(|sorting| sorting.current()) else {
+    let Some(sort) = options
+        .effective_sorting()
+        .and_then(|sorting| sorting.current())
+    else {
         return label.to_owned();
     };
     if sort.column() != column {

@@ -28,9 +28,8 @@ use crate::widget::{
 };
 use crate::widgets::carousel::geometry::carousel_item_frames;
 use crate::widgets::table::{
-    TableCellTarget, TableHit, TableLayoutDirection, TableModel, TableOptions, TableSelection,
-    TableState, allocate_column_widths, calculate_viewport, hit_test as hit_test_table,
-    minimum_content_width,
+    TableCellTarget, TableHit, TableLayoutDirection, TableModel, TableOptions, TableState,
+    allocate_column_widths, calculate_viewport, hit_test as hit_test_table, minimum_content_width,
 };
 use crate::widgets::table_of_contents::{entry_offset_y, entry_rects, layout_nodes, title_rect};
 use winit::dpi::PhysicalSize;
@@ -467,6 +466,8 @@ fn hit_test_popover_overlay_impl<Msg: Clone>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. } => {
@@ -605,7 +606,9 @@ fn hit_test_impl<Msg: Clone>(
         | Widget::TextArea { .. }
         | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
-        | Widget::ComboBox { .. } => {
+        | Widget::SearchBarWith { .. }
+        | Widget::ComboBox { .. }
+        | Widget::ComboBoxWith { .. } => {
             let body = crate::layout::field::FieldInsets::for_widget(widget)
                 .body((layout.size.width, layout.size.height));
             let local = Point::new(
@@ -639,6 +642,19 @@ fn hit_test_impl<Msg: Clone>(
         Widget::Radio { on_select, .. } => Some(HitResult::Message {
             focus_id: widget.keyboard_focus_id(path),
             msg: on_select(),
+        }),
+        Widget::CheckboxWith {
+            checked, on_change, ..
+        }
+        | Widget::SwitchWith {
+            checked, on_change, ..
+        } => Some(HitResult::Message {
+            focus_id: widget.keyboard_focus_id(path),
+            msg: on_change.call(!checked),
+        }),
+        Widget::RadioWith { on_select, .. } => Some(HitResult::Message {
+            focus_id: widget.keyboard_focus_id(path),
+            msg: on_select.call(()),
         }),
         Widget::Slider { min, max, step, .. } | Widget::SliderWith { min, max, step, .. } => {
             let resolved_id = widget.resolved_id(path).unwrap();
@@ -687,10 +703,8 @@ fn hit_test_impl<Msg: Clone>(
                 focuses_keyboard: custom.interaction().supports_keyboard(),
             })
         }
-        Widget::PointerRegion { child, config, .. }
-            if config.on_hover.is_some()
-                && !config.capture_on_press
-                && config.drag_source.is_none() =>
+        Widget::PointerRegion { child, .. } | Widget::PointerRegionWith { child, .. }
+            if widget.pointer_region_passes_to_child() =>
         {
             let child_node = taffy.children(node_id).ok()?.first().copied()?;
             path.push(0);
@@ -706,7 +720,7 @@ fn hit_test_impl<Msg: Clone>(
             path.pop();
             hit.or_else(|| Some(HitResult::PointerRegion(widget.resolved_id(path).unwrap())))
         }
-        Widget::PointerRegion { .. } => {
+        Widget::PointerRegion { .. } | Widget::PointerRegionWith { .. } => {
             Some(HitResult::PointerRegion(widget.resolved_id(path).unwrap()))
         }
         Widget::ScrollView { child, .. } => {
@@ -818,7 +832,7 @@ fn hit_test_impl<Msg: Clone>(
             }
             None
         }
-        Widget::TabBar { tabs, .. } => {
+        Widget::TabBar { tabs, .. } | Widget::TabBarWith { tabs, .. } => {
             if tabs.is_empty() {
                 return None;
             }
@@ -938,6 +952,9 @@ fn hit_test_impl<Msg: Clone>(
         }
         Widget::CarouselView {
             item_count, config, ..
+        }
+        | Widget::CarouselViewWith {
+            item_count, config, ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let direction = carousel_node_direction(taffy, node_id);
@@ -954,7 +971,8 @@ fn hit_test_impl<Msg: Clone>(
                     index,
                 })
         }
-        Widget::InteractiveCarouselView { items, config, .. } => {
+        Widget::InteractiveCarouselView { items, config, .. }
+        | Widget::InteractiveCarouselViewWith { items, config, .. } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let direction = carousel_node_direction(taffy, node_id);
             let mut fallback = crate::widgets::carousel::CarouselState::default();
@@ -1032,6 +1050,16 @@ fn hit_test_impl<Msg: Clone>(
             item_height,
             item_count,
             ..
+        }
+        | Widget::VirtualListWith {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContentWith {
+            item_height,
+            item_count,
+            ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let scroll_y = widget_states
@@ -1046,6 +1074,9 @@ fn hit_test_impl<Msg: Clone>(
                 })
         }
         Widget::InteractiveVirtualListContent {
+            item_height, items, ..
+        }
+        | Widget::InteractiveVirtualListContentWith {
             item_height, items, ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
@@ -1121,6 +1152,18 @@ fn hit_test_impl<Msg: Clone>(
             item_height,
             item_count,
             ..
+        }
+        | Widget::VirtualGridWith {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridContentWith {
+            columns,
+            item_height,
+            item_count,
+            ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let grid_state = widget_states
@@ -1140,6 +1183,12 @@ fn hit_test_impl<Msg: Clone>(
             })
         }
         Widget::InteractiveVirtualGridContent {
+            columns,
+            item_height,
+            items,
+            ..
+        }
+        | Widget::InteractiveVirtualGridContentWith {
             columns,
             item_height,
             items,
@@ -1337,7 +1386,7 @@ fn table_header_hit<Msg>(
     column: usize,
 ) -> Option<HitResult<Msg>> {
     let column = model.columns().get(column)?;
-    if options.sorting().is_none() || !column.is_sortable() {
+    if options.effective_sorting().is_none() || !column.is_sortable() {
         return Some(HitResult::ScrollFocus(widget.resolved_id(path)?));
     }
     Some(HitResult::TableActivate {
@@ -1356,7 +1405,10 @@ fn table_cell_hit<Msg>(
 ) -> Option<HitResult<Msg>> {
     let row = model.rows().get(row)?;
     let column = model.columns().get(column)?;
-    if matches!(options.selection(), TableSelection::None) {
+    if matches!(
+        options.effective_selection(),
+        crate::TableSelectionWith::None
+    ) {
         return Some(HitResult::ScrollFocus(widget.resolved_id(path)?));
     }
     Some(HitResult::TableActivate {
@@ -1589,7 +1641,9 @@ fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &
         | Widget::TextArea { .. }
         | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
-        | Widget::ComboBox { .. } => {
+        | Widget::SearchBarWith { .. }
+        | Widget::ComboBox { .. }
+        | Widget::ComboBoxWith { .. } => {
             ids.push(widget.resolved_id(path).unwrap());
         }
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
@@ -1600,6 +1654,8 @@ fn collect_input_ids_impl<Msg>(widget: &Widget<Msg>, ids: &mut Vec<u64>, path: &
             }
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -1664,7 +1720,13 @@ fn collect_stateful_ids_impl<Msg>(
             // the plain input needs none.
             out.push((widget.resolved_id(path).unwrap(), "search"))
         }
-        Widget::ComboBox { .. } => out.push((widget.resolved_id(path).unwrap(), "combo_box")),
+        Widget::SearchBarWith {
+            suggestions: Some(_),
+            ..
+        } => out.push((widget.resolved_id(path).unwrap(), "search")),
+        Widget::ComboBox { .. } | Widget::ComboBoxWith { .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "combo_box"))
+        }
         Widget::DropdownMenu { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "dropdown_menu"))
         }
@@ -1687,7 +1749,9 @@ fn collect_stateful_ids_impl<Msg>(
             indeterminate: true,
             ..
         } => out.push((widget.resolved_id(path).unwrap(), "anim")),
-        Widget::TabBar { .. } => out.push((widget.resolved_id(path).unwrap(), "tab")),
+        Widget::TabBar { .. } | Widget::TabBarWith { .. } => {
+            out.push((widget.resolved_id(path).unwrap(), "tab"))
+        }
         Widget::Toast { .. } => out.push((widget.resolved_id(path).unwrap(), "toast")),
         Widget::ContextMenu { child, .. } => {
             out.push((widget.resolved_id(path).unwrap(), "context_menu"));
@@ -1712,16 +1776,25 @@ fn collect_stateful_ids_impl<Msg>(
             }
         }
         Widget::VirtualList { .. }
+        | Widget::VirtualListWith { .. }
+        | Widget::VirtualListContentWith { .. }
+        | Widget::InteractiveVirtualListContentWith { .. }
         | Widget::VirtualListContent { .. }
         | Widget::InteractiveVirtualListContent { .. }
         | Widget::VirtualListWithSelection { .. }
         | Widget::VirtualListContentWithSelection { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "vlist"))
         }
-        Widget::CarouselView { .. } | Widget::InteractiveCarouselView { .. } => {
+        Widget::CarouselView { .. }
+        | Widget::InteractiveCarouselView { .. }
+        | Widget::CarouselViewWith { .. }
+        | Widget::InteractiveCarouselViewWith { .. } => {
             out.push((widget.resolved_id(path).unwrap(), "carousel"))
         }
         Widget::VirtualGrid { .. }
+        | Widget::VirtualGridWith { .. }
+        | Widget::VirtualGridContentWith { .. }
+        | Widget::InteractiveVirtualGridContentWith { .. }
         | Widget::VirtualGridContent { .. }
         | Widget::InteractiveVirtualGridContent { .. }
         | Widget::VirtualGridWithSelection { .. }
@@ -1739,6 +1812,7 @@ fn collect_stateful_ids_impl<Msg>(
         | Widget::ButtonContent { child, .. }
         | Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. } => {
             path.push(0);
             collect_stateful_ids_impl(child, out, path);
@@ -1818,6 +1892,12 @@ pub fn find_input_props_with<Msg: Clone>(
             on_submit,
             ..
         } => Some((on_change.clone(), on_submit.clone(), false, true)),
+        Widget::SearchBarWith {
+            on_change,
+            on_submit,
+            ..
+        } => Some((on_change.clone(), on_submit.clone(), false, false)),
+        Widget::ComboBoxWith { on_change, .. } => Some((on_change.clone(), None, false, false)),
         Widget::TextInput {
             on_change,
             on_submit,
@@ -1872,7 +1952,9 @@ fn find_input_props_impl<Msg: Clone, Properties>(
         | Widget::TextArea { .. }
         | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
+        | Widget::SearchBarWith { .. }
         | Widget::ComboBox { .. }
+        | Widget::ComboBoxWith { .. }
             if widget.resolved_id(path) == Some(target_id) =>
         {
             extract(widget)
@@ -1891,6 +1973,7 @@ fn find_input_props_impl<Msg: Clone, Properties>(
         Widget::Container { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -1980,6 +2063,7 @@ fn find_select_callback_impl<Msg: Clone, Callback>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -2068,6 +2152,7 @@ fn find_slider_callback_impl<Msg: Clone, Callback>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::ButtonContent { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
@@ -2136,6 +2221,16 @@ fn find_vlist_props_impl<Msg>(
             item_height,
             item_count,
             ..
+        }
+        | Widget::VirtualListWith {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContentWith {
+            item_height,
+            item_count,
+            ..
         } if widget.resolved_id(path) == Some(target_id) => Some((*item_height, *item_count)),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             for (index, child) in children.iter().enumerate() {
@@ -2149,6 +2244,8 @@ fn find_vlist_props_impl<Msg>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -2212,6 +2309,8 @@ fn find_toast_dismiss_msg_impl<Msg: Clone>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -2274,7 +2373,9 @@ fn find_input_geometry_impl<Msg>(
         | Widget::TextArea { .. }
         | Widget::TextAreaWith { .. }
         | Widget::SearchBar { .. }
+        | Widget::SearchBarWith { .. }
         | Widget::ComboBox { .. }
+        | Widget::ComboBoxWith { .. }
             if widget.resolved_id(path) == Some(target_id) =>
         {
             let layout = taffy.layout(node_id).ok()?;
@@ -2305,6 +2406,8 @@ fn find_input_geometry_impl<Msg>(
             result
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::ScrollView { child, .. }
@@ -2529,6 +2632,8 @@ fn find_context_menu_target_impl<Msg>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ScrollView { child, .. } => {
             let ids = taffy.children(node_id).ok()?;
@@ -2647,6 +2752,16 @@ fn find_context_menu_target_impl<Msg>(
             item_height,
             item_count,
             ..
+        }
+        | Widget::VirtualListWith {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContentWith {
+            item_height,
+            item_count,
+            ..
         } => {
             let collection_id = widget.resolved_id(path).unwrap();
             let scroll_y = widget_states
@@ -2681,6 +2796,18 @@ fn find_context_menu_target_impl<Msg>(
             ..
         }
         | Widget::VirtualGridContentWithSelection {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridWith {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridContentWith {
             columns,
             item_height,
             item_count,
@@ -2760,6 +2887,11 @@ fn find_scroll_focus_impl<Msg>(
         | Widget::VirtualGridContent { .. }
         | Widget::VirtualGridWithSelection { .. }
         | Widget::VirtualGridContentWithSelection { .. }
+        | Widget::VirtualListWith { .. }
+        | Widget::VirtualListContentWith { .. }
+        | Widget::VirtualGridWith { .. }
+        | Widget::VirtualGridContentWith { .. }
+        | Widget::CarouselViewWith { .. }
         | Widget::CarouselView { .. } => Some(widget.resolved_id(path).unwrap()),
         Widget::Column { children, .. } | Widget::Row { children, .. } => {
             let ids = taffy.children(node_id).ok()?;
@@ -2782,6 +2914,8 @@ fn find_scroll_focus_impl<Msg>(
             None
         }
         Widget::Container { child, .. }
+        | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::Accordion { child, .. }
@@ -3049,6 +3183,16 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             item_count,
             item_height,
             ..
+        }
+        | Widget::VirtualListWith {
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualListContentWith {
+            item_height,
+            item_count,
+            ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
             let s = widget_states.get(&resolved_id)?.as_vlist()?;
@@ -3093,6 +3237,18 @@ fn find_scrollbar_drag_hit_impl<Msg>(
             item_count,
             item_height,
             columns,
+            ..
+        }
+        | Widget::VirtualGridWith {
+            columns,
+            item_height,
+            item_count,
+            ..
+        }
+        | Widget::VirtualGridContentWith {
+            columns,
+            item_height,
+            item_count,
             ..
         } => {
             let resolved_id = widget.resolved_id(path).unwrap();
@@ -3139,6 +3295,7 @@ fn find_scrollbar_drag_hit_impl<Msg>(
         }
         Widget::Container { child, .. }
         | Widget::PointerRegion { child, .. }
+        | Widget::PointerRegionWith { child, .. }
         | Widget::Tooltip { child, .. }
         | Widget::ContextMenu { child, .. }
         | Widget::Accordion { child, .. }

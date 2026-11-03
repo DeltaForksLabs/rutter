@@ -200,6 +200,7 @@ impl WidgetIdVisitor {
             }
             Widget::Container { child, .. }
             | Widget::PointerRegion { child, .. }
+            | Widget::PointerRegionWith { child, .. }
             | Widget::ButtonContent { child, .. }
             | Widget::ScrollView { child, .. }
             | Widget::TableOfContents { child, .. }
@@ -295,19 +296,28 @@ impl WidgetIdVisitor {
     ) -> WidgetIdResult {
         let Some(origin) = origin else { return Ok(()) };
         match widget {
-            Widget::TabBar { tabs, .. } => self.register_tabs(widget, tabs.len(), origin),
+            Widget::TabBar { tabs, .. } | Widget::TabBarWith { tabs, .. } => {
+                self.register_tabs(widget, tabs.len(), origin)
+            }
             Widget::Dialog { .. } => {
                 self.register_dialog(widget, DialogAction::Confirm, origin)?;
                 self.register_dialog(widget, DialogAction::Cancel, origin)
             }
             Widget::DropdownMenu { .. } => self.register_dropdown_menu(widget, origin),
             Widget::SearchBar {
-                suggestions: Some(suggestions),
+                suggestions: Some(_),
                 ..
             }
-            | Widget::ComboBox { suggestions, .. } => {
-                self.register_search_suggestions(widget, suggestions.items.len(), origin)
+            | Widget::SearchBarWith {
+                suggestions: Some(_),
+                ..
             }
+            | Widget::ComboBox { .. }
+            | Widget::ComboBoxWith { .. } => self.register_search_suggestions(
+                widget,
+                widget.search_suggestions().unwrap().items.len(),
+                origin,
+            ),
             Widget::TableOfContents { child, .. } => self.register_table_of_contents_entries(
                 widget,
                 collect_entries(child).len(),

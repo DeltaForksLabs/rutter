@@ -75,4 +75,50 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn captured_search_snapshot_preserves_original_index_ownership_and_detects_collisions() {
+        let captured = Widget::search_bar_with_suggestions_with(
+            |_: String| (),
+            None,
+            None,
+            None,
+            "Search",
+            crate::SearchSuggestionsWith::new(
+                ITEMS,
+                SearchMatcher::Fuzzy,
+                1,
+                Some(crate::ChangeCallback::new(|_: usize| ())),
+            )
+            .unwrap(),
+            Style::default(),
+        )
+        .with_id(41);
+        let legacy = search_widget();
+        let captured_snapshot = WidgetIdSnapshot::capture(&captured).unwrap();
+        let legacy_snapshot = WidgetIdSnapshot::capture(&legacy).unwrap();
+        assert_eq!(captured_snapshot, legacy_snapshot);
+        // Even rows excluded by max_results reserve their original source IDs.
+        assert!(
+            captured_snapshot
+                .owners
+                .contains_key(&resolve_search_suggestion_id(41, 2))
+        );
+        let collision = Widget::Column {
+            children: vec![
+                captured,
+                Widget::search_bar_with(
+                    |_: String| (),
+                    None,
+                    None,
+                    None,
+                    "Collision",
+                    Style::default(),
+                )
+                .with_id(resolve_search_suggestion_id(41, 2)),
+            ],
+            style: Style::default(),
+        };
+        assert!(WidgetIdSnapshot::capture(&collision).is_err());
+    }
 }

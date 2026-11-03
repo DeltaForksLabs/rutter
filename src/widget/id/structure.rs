@@ -152,11 +152,11 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         } => Kind::PasswordInput,
         Widget::TextInput { .. } | Widget::TextInputWith { .. } => Kind::TextInput,
         Widget::TextArea { .. } | Widget::TextAreaWith { .. } => Kind::TextArea,
-        Widget::SearchBar { .. } => Kind::SearchBar,
-        Widget::ComboBox { .. } => Kind::ComboBox,
-        Widget::Checkbox { .. } => Kind::Checkbox,
-        Widget::Switch { .. } => Kind::Switch,
-        Widget::Radio { .. } => Kind::Radio,
+        Widget::SearchBar { .. } | Widget::SearchBarWith { .. } => Kind::SearchBar,
+        Widget::ComboBox { .. } | Widget::ComboBoxWith { .. } => Kind::ComboBox,
+        Widget::Checkbox { .. } | Widget::CheckboxWith { .. } => Kind::Checkbox,
+        Widget::Switch { .. } | Widget::SwitchWith { .. } => Kind::Switch,
+        Widget::Radio { .. } | Widget::RadioWith { .. } => Kind::Radio,
         Widget::Slider { .. } | Widget::SliderWith { .. } => Kind::Slider,
         Widget::Counter { config, .. } => match config {
             CounterConfig::Integer(_) | CounterConfig::IntegerWith(_) => Kind::Counter,
@@ -179,7 +179,7 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::Tooltip { .. } => Kind::Tooltip,
         Widget::Accordion { expanded: true, .. } => Kind::AccordionExpanded,
         Widget::Accordion { .. } => Kind::AccordionCollapsed,
-        Widget::TabBar { .. } => Kind::TabBar,
+        Widget::TabBar { .. } | Widget::TabBarWith { .. } => Kind::TabBar,
         Widget::Modal { visible: true, .. } => Kind::ModalVisible,
         Widget::Modal { .. } => Kind::ModalHidden,
         Widget::Dialog { visible: true, .. } => Kind::DialogVisible,
@@ -188,20 +188,44 @@ pub(crate) fn widget_structure_kind<Msg>(widget: &Widget<'_, Msg>) -> WidgetStru
         Widget::ContextMenu { .. } => Kind::ContextMenu,
         Widget::DropdownMenu { .. } => Kind::DropdownMenu,
         Widget::Custom { .. } => Kind::Custom,
-        Widget::PointerRegion { .. } => Kind::PointerRegion,
+        Widget::PointerRegion { .. } | Widget::PointerRegionWith { .. } => Kind::PointerRegion,
         Widget::Popover { open: true, .. } => Kind::PopoverOpen,
         Widget::Popover { .. } => Kind::PopoverClosed,
-        Widget::CarouselView { .. } => Kind::CarouselView,
-        Widget::InteractiveCarouselView { .. } => Kind::InteractiveCarouselView,
+        Widget::CarouselView { .. } | Widget::CarouselViewWith { .. } => Kind::CarouselView,
+        Widget::InteractiveCarouselView { .. } | Widget::InteractiveCarouselViewWith { .. } => {
+            Kind::InteractiveCarouselView
+        }
         Widget::VirtualList { .. } => Kind::VirtualList,
         Widget::VirtualListContent { .. } => Kind::VirtualListContent,
-        Widget::InteractiveVirtualListContent { .. } => Kind::InteractiveVirtualListContent,
+        Widget::InteractiveVirtualListContent { .. }
+        | Widget::InteractiveVirtualListContentWith { .. } => Kind::InteractiveVirtualListContent,
         Widget::VirtualListWithSelection { .. } => Kind::VirtualListWithSelection,
         Widget::VirtualListContentWithSelection { .. } => Kind::VirtualListContentWithSelection,
+        Widget::VirtualListWith { selection, .. } => match selection {
+            super::super::VirtualSelectionWith::Single(_) => Kind::VirtualList,
+            super::super::VirtualSelectionWith::Multiple { .. } => Kind::VirtualListWithSelection,
+        },
+        Widget::VirtualListContentWith { selection, .. } => match selection {
+            super::super::VirtualSelectionWith::Single(_) => Kind::VirtualListContent,
+            super::super::VirtualSelectionWith::Multiple { .. } => {
+                Kind::VirtualListContentWithSelection
+            }
+        },
         Widget::VirtualGrid { .. } => Kind::VirtualGrid,
         Widget::VirtualGridContent { .. } => Kind::VirtualGridContent,
-        Widget::InteractiveVirtualGridContent { .. } => Kind::InteractiveVirtualGridContent,
+        Widget::InteractiveVirtualGridContent { .. }
+        | Widget::InteractiveVirtualGridContentWith { .. } => Kind::InteractiveVirtualGridContent,
         Widget::VirtualGridWithSelection { .. } => Kind::VirtualGridWithSelection,
         Widget::VirtualGridContentWithSelection { .. } => Kind::VirtualGridContentWithSelection,
+        Widget::VirtualGridWith { selection, .. } => match selection {
+            super::super::VirtualSelectionWith::Single(_) => Kind::VirtualGrid,
+            super::super::VirtualSelectionWith::Multiple { .. } => Kind::VirtualGridWithSelection,
+        },
+        Widget::VirtualGridContentWith { selection, .. } => match selection {
+            super::super::VirtualSelectionWith::Single(_) => Kind::VirtualGridContent,
+            super::super::VirtualSelectionWith::Multiple { .. } => {
+                Kind::VirtualGridContentWithSelection
+            }
+        },
     }
 }

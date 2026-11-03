@@ -14,7 +14,7 @@ pub use clock::{ClockConfig, ClockError, ClockFormat, ClockTime, HourCycle, Loca
 pub use labels::TimePickerLabels;
 pub use time_of_day::{TimeOfDay, TimeOfDayError};
 pub use time_zone::{TimeZone, TimeZoneError};
-pub use widgets::{TimePickerConfig, TimePickerError};
+pub use widgets::{TimePickerConfig, TimePickerConfigWith, TimePickerError};
 
 pub(crate) use clock::{clock_layout_text, current_clock_text};
 

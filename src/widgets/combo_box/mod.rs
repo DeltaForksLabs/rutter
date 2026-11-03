@@ -21,7 +21,9 @@
 //! // On Pick(index), store index and replace the draft with items[index].
 //! ```
 
-use crate::search::{SearchConfigError, SearchLabels, SearchMatcher, SearchSuggestions};
+use crate::search::{
+    SearchConfigError, SearchLabels, SearchMatcher, SearchSuggestions, SearchSuggestionsWith,
+};
 use crate::{InputState, Widget};
 use taffy::Style;
 
@@ -116,6 +118,30 @@ impl<'a, Msg> ComboBox<'a, Msg> {
 }
 
 impl<'a, Msg> Widget<'a, Msg> {
+    /// Controlled native picker with independently owned draft and selection callbacks.
+    /// Legacy options can be adapted with `ComboBoxWith::from(options)`.
+    pub fn combo_box_with(
+        id: u64,
+        query: &'a str,
+        on_change: impl Fn(String) -> Msg + Send + Sync + 'static,
+        options: impl Into<ComboBoxWith<'a, Msg>>,
+        style: Style,
+    ) -> Self {
+        let options = options.into();
+        Self::ComboBoxWith {
+            id,
+            model_value: Some(query),
+            on_change: crate::ChangeCallback::new(on_change),
+            suggestions: options.suggestions,
+            selected_index: options.selected_index,
+            label: options.label,
+            placeholder: options.placeholder,
+            state: options.state,
+            error_msg: options.error_msg,
+            style,
+        }
+    }
+
     /// Controlled editable picker. See [`crate::combo_box`] for a complete example.
     /// Echo `on_change` into `query`; the configuration's selection callback
     /// receives the original source index. Blur and Tab never commit a draft.
@@ -138,6 +164,96 @@ impl<'a, Msg> Widget<'a, Msg> {
             state: options.state,
             error_msg: options.error_msg,
             style,
+        }
+    }
+}
+
+/// Editable picker configuration with an owned selection callback.
+#[derive(Debug, Clone)]
+pub struct ComboBoxWith<'a, Msg> {
+    suggestions: SearchSuggestionsWith<'a, Msg>,
+    label: &'a str,
+    placeholder: &'a str,
+    state: InputState,
+    error_msg: Option<String>,
+    selected_index: Option<usize>,
+}
+
+impl<'a, Msg> ComboBoxWith<'a, Msg> {
+    /// Fuzzy matching and six visible rows; selection reports the original source index.
+    pub fn new(
+        items: &'a [&'a str],
+        on_select: impl Fn(usize) -> Msg + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            suggestions: SearchSuggestionsWith::new(
+                items,
+                SearchMatcher::Fuzzy,
+                6,
+                Some(crate::ChangeCallback::new(on_select)),
+            )
+            .expect("six visible rows is valid"),
+            label: "",
+            placeholder: "",
+            state: InputState::Idle,
+            error_msg: None,
+            selected_index: None,
+        }
+    }
+    /// Sets the field label, preserving full accessible text.
+    pub fn with_label(mut self, label: &'a str) -> Self {
+        self.label = label;
+        self
+    }
+    /// Sets the empty editor hint.
+    pub fn with_placeholder(mut self, placeholder: &'a str) -> Self {
+        self.placeholder = placeholder;
+        self
+    }
+    /// Sets visual state; disable interaction with `Widget::enabled(false)`.
+    pub fn with_state(mut self, state: InputState) -> Self {
+        self.state = state;
+        self
+    }
+    /// Reserves validation feedback inside the field allocation.
+    pub fn with_error(mut self, error: impl Into<String>) -> Self {
+        self.error_msg = Some(error.into());
+        self
+    }
+    /// Sets the application-owned committed source index.
+    pub fn with_selected_index(mut self, index: Option<usize>) -> Self {
+        self.selected_index = index.filter(|index| *index < self.suggestions.items.len());
+        self
+    }
+    /// Sets the matching strategy.
+    pub fn with_matcher(mut self, matcher: SearchMatcher) -> Self {
+        self.suggestions.matcher = matcher;
+        self
+    }
+    /// Sets the visible window while retaining every match; zero is invalid.
+    pub fn with_visible_rows(mut self, rows: usize) -> Result<Self, SearchConfigError> {
+        if rows == 0 {
+            return Err(SearchConfigError::MaxResults { value: rows });
+        }
+        self.suggestions.max_results = rows;
+        Ok(self)
+    }
+    /// Localizes popup feedback.
+    pub fn with_labels(mut self, labels: SearchLabels<'a>) -> Self {
+        self.suggestions.labels = labels;
+        self
+    }
+}
+
+impl<'a, Msg> From<ComboBox<'a, Msg>> for ComboBoxWith<'a, Msg> {
+    fn from(options: ComboBox<'a, Msg>) -> Self {
+        Self {
+            suggestions: options.suggestions.into(),
+            label: options.label,
+            placeholder: options.placeholder,
+            state: options.state,
+            error_msg: options.error_msg,
+            selected_index: options.selected_index,
         }
     }
 }

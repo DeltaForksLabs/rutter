@@ -6,10 +6,16 @@ use crate::render::hit_test::{
 };
 use crate::widget::id::validate_widget_id_snapshot;
 use skia_safe::{Color, surfaces};
-use taffy::prelude::{Size, Style};
+use taffy::prelude::{LengthPercentage, Size, Style};
 use winit::dpi::PhysicalSize;
 
-fn field(captured: bool, kind: usize) -> Widget<'static, ()> {
+#[path = "captured_collection_tests.rs"]
+mod collections;
+
+#[path = "captured_table_tests.rs"]
+mod tables;
+
+fn field<'a>(captured: bool, kind: usize) -> Widget<'a, ()> {
     let style = Style {
         size: Size::from_lengths(260.0, 44.0),
         flex_shrink: 0.0,
@@ -62,8 +68,32 @@ fn field(captured: bool, kind: usize) -> Widget<'static, ()> {
             "Multiline",
             error,
         ),
-        (false, _) => Widget::slider(42.0, 0.0, 100.0, 1.0, |_| (), style, "Amount"),
-        (true, _) => Widget::slider_with(42.0, 0.0, 100.0, 1.0, |_| (), style, "Amount"),
+        (false, 3) => Widget::slider(42.0, 0.0, 100.0, 1.0, |_| (), style, "Amount"),
+        (true, 3) => Widget::slider_with(42.0, 0.0, 100.0, 1.0, |_| (), style, "Amount"),
+        (false, 4) => Widget::Checkbox {
+            checked: true,
+            on_change: |_| (),
+            label,
+            style,
+        },
+        (true, 4) => Widget::checkbox_with(true, |_| (), label, style),
+        (false, 5) => Widget::Switch {
+            checked: true,
+            on_change: |_| (),
+            style,
+        },
+        (true, 5) => Widget::switch_with(true, |_| (), style),
+        (false, 6) => Widget::Radio {
+            selected: true,
+            on_select: || (),
+            label,
+            style,
+        },
+        (true, 6) => Widget::radio_with(true, || (), label, style),
+        (false, _) => Widget::tab_bar(&["Long localized tab 東京", "القاهرة"], 1, |_| (), style),
+        (true, _) => {
+            Widget::tab_bar_with(&["Long localized tab 東京", "القاهرة"], 1, |_| (), style)
+        }
     }
 }
 
@@ -88,7 +118,7 @@ fn captured_native_fields_share_native_identity_layout_and_raster_across_viewpor
     let mut font_cache = HashMap::new();
     let mut text_cache = TextBufferCache::default();
     let measurement = RichTextRenderer::new();
-    for kind in 0..4 {
+    for kind in 0..8 {
         let legacy = field(false, kind);
         let captured = field(true, kind);
         assert_eq!(legacy.resolved_id(&[2, 1]), captured.resolved_id(&[2, 1]));
@@ -100,6 +130,23 @@ fn captured_native_fields_share_native_identity_layout_and_raster_across_viewpor
             validate_widget_id_snapshot(&legacy).unwrap(),
             validate_widget_id_snapshot(&captured).unwrap()
         );
+        if kind == 7 {
+            for index in 0..2 {
+                assert_eq!(
+                    legacy.tab_focus_id(&[2, 1], index),
+                    captured.tab_focus_id(&[2, 1], index)
+                );
+            }
+            assert_eq!(
+                legacy.with_id(42).tab_focus_id(&[], 1),
+                captured.with_id(42).tab_focus_id(&[], 1)
+            );
+        }
+        let focused_id = if kind == 7 {
+            field(true, kind).with_id(42).tab_focus_id(&[], 1)
+        } else {
+            field(true, kind).with_id(42).keyboard_focus_id(&[])
+        };
         for disabled in [false, true] {
             let widgets = [
                 field(false, kind).with_id(42).enabled(!disabled),
@@ -129,6 +176,11 @@ fn captured_native_fields_share_native_identity_layout_and_raster_across_viewpor
                             &measurement,
                         );
                         let actual = geometry(&tree, root);
+                        assert!(
+                            actual
+                                .iter()
+                                .all(|(_, _, width, height)| *width > 0.0 && *height > 0.0)
+                        );
                         if let Some(expected) = &expected_geometry {
                             assert_eq!(&actual, expected);
                         } else {
@@ -156,7 +208,7 @@ fn captured_native_fields_share_native_identity_layout_and_raster_across_viewpor
                             &mut fonts,
                             &mut swash,
                             Point::new(-1.0, -1.0),
-                            Some(42),
+                            focused_id,
                             &inputs,
                             &HashMap::new(),
                             &mut font_cache,
@@ -281,5 +333,164 @@ fn captured_native_lookups_follow_auto_paths_wrappers_disabled_and_open_popovers
         let disabled = widget.enabled(false);
         assert!(find_input_props_with(&disabled, input_id).is_none());
         assert!(find_slider_callback_with(&disabled, slider_id).is_none());
+    }
+}
+
+#[test]
+fn captured_choices_preserve_accessibility_roles_state_labels_bounds_and_disabled_actions() {
+    use crate::accessibility::{AccessibilityInputs, build_accessibility_update};
+    use accesskit::{Action, Role, Toggled};
+
+    for kind in 4..8 {
+        for disabled in [false, true] {
+            let mut expected_summary = None;
+            for captured in [false, true] {
+                let widget = field(captured, kind).enabled(!disabled);
+                let mut tree = TaffyTree::new();
+                let root = build_layout_tree(&mut tree, &widget, LayoutDirection::Rtl);
+                compute_layout_with_renderer(
+                    &mut tree,
+                    root,
+                    PhysicalSize::new(320, 96),
+                    &RichTextRenderer::new(),
+                );
+                let update = build_accessibility_update(
+                    &tree,
+                    &widget,
+                    root,
+                    AccessibilityInputs {
+                        input_states: &HashMap::new(),
+                        widget_states: &HashMap::new(),
+                        focused_widget_id: None,
+                        viewport: (320.0, 96.0),
+                        direction: LayoutDirection::Rtl,
+                    },
+                );
+                let role = match kind {
+                    4 => Role::CheckBox,
+                    5 => Role::Switch,
+                    6 => Role::RadioButton,
+                    _ => Role::TabList,
+                };
+                let (id, node) = update
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.role() == role)
+                    .unwrap();
+                assert_eq!(node.is_disabled(), disabled);
+                if kind < 7 {
+                    assert_eq!(node.supports_action(Action::Click), !disabled);
+                }
+                assert_eq!(node.supports_action(Action::Focus), kind < 7 && !disabled);
+                if kind == 7 {
+                    assert_eq!(node.children().len(), 2);
+                    let bounds = node.bounds().unwrap();
+                    let tab_width = (bounds.x1 - bounds.x0) / 2.0;
+                    for (index, &tab_id) in node.children().iter().enumerate() {
+                        assert_eq!(
+                            Some(tab_id.0),
+                            field(captured, kind).tab_focus_id(&[], index)
+                        );
+                        let (_, tab) = update.nodes.iter().find(|(id, _)| *id == tab_id).unwrap();
+                        assert_eq!(tab.role(), Role::Tab);
+                        assert_eq!(tab.is_selected(), Some(index == 1));
+                        assert_eq!(tab.is_disabled(), disabled);
+                        assert_eq!(tab.supports_action(Action::Focus), !disabled);
+                        assert_eq!(tab.supports_action(Action::Click), !disabled);
+                        let tab_bounds = tab.bounds().unwrap();
+                        assert!(
+                            (tab_bounds.x0 - bounds.x0 - index as f64 * tab_width).abs() <= 1.0
+                        );
+                        assert!((tab_bounds.x1 - tab_bounds.x0 - tab_width).abs() <= 1.0);
+                        assert_eq!((tab_bounds.y0, tab_bounds.y1), (bounds.y0, bounds.y1));
+                    }
+                }
+                if kind < 6 {
+                    assert_eq!(node.toggled(), Some(Toggled::True));
+                }
+                if kind == 6 {
+                    assert_eq!(node.is_selected(), Some(true));
+                }
+                let owned = (
+                    *id,
+                    node.role(),
+                    node.label().map(str::to_owned),
+                    node.bounds(),
+                    node.toggled(),
+                    node.is_selected(),
+                    node.is_disabled(),
+                );
+                if captured {
+                    assert_eq!(owned, expected_summary.take().unwrap());
+                } else {
+                    expected_summary = Some(owned);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn captured_choices_group_geometry_preserves_peer_insets_gaps_and_scroll_document_height() {
+    for width in [320, 800] {
+        for direction in [LayoutDirection::Ltr, LayoutDirection::Rtl] {
+            let mut expected = None;
+            for captured in [false, true] {
+                let widget = Widget::scroll_view(
+                    Widget::Column {
+                        children: (4..8).map(|kind| field(captured, kind)).collect(),
+                        style: Style {
+                            gap: Size {
+                                width: LengthPercentage::length(0.0),
+                                height: LengthPercentage::length(crate::spacing::MD),
+                            },
+                            flex_shrink: 0.0,
+                            ..Style::default()
+                        },
+                    },
+                    Style {
+                        size: Size::from_lengths(width as f32, 96.0),
+                        ..Style::default()
+                    },
+                );
+                let mut tree = TaffyTree::new();
+                let root = build_layout_tree(&mut tree, &widget, direction);
+                compute_layout_with_renderer(
+                    &mut tree,
+                    root,
+                    PhysicalSize::new(width, 96),
+                    &RichTextRenderer::new(),
+                );
+                let actual = geometry(&tree, root);
+                if let Some(expected) = &expected {
+                    assert_eq!(&actual, expected);
+                } else {
+                    expected = Some(actual);
+                }
+                let document = tree.children(root).unwrap()[0];
+                let document_layout = tree.layout(document).unwrap();
+                assert!(document_layout.size.height > 96.0);
+                let mut previous_bottom: Option<f32> = None;
+                let mut start_edge: Option<f32> = None;
+                for node in tree.children(document).unwrap() {
+                    let layout = tree.layout(node).unwrap();
+                    assert!(layout.size.width > 0.0 && layout.size.height > 0.0);
+                    if let Some(bottom) = previous_bottom {
+                        assert!((layout.location.y - bottom - crate::spacing::MD).abs() <= 1.0);
+                    }
+                    if let Some(edge) = start_edge {
+                        assert!((layout.location.x - edge).abs() <= 1.0);
+                    }
+                    let bottom = layout.location.y + layout.size.height;
+                    assert!(bottom <= document_layout.size.height + 1.0);
+                    assert!(layout.location.x >= -1.0);
+                    assert!(
+                        layout.location.x + layout.size.width <= document_layout.size.width + 1.0
+                    );
+                    previous_bottom = Some(bottom);
+                    start_edge = Some(layout.location.x);
+                }
+            }
+        }
     }
 }

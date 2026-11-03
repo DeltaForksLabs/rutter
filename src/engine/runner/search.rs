@@ -190,7 +190,12 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
         };
         let handled = match outcome {
             SearchKeyOutcome::MoveHover(row) => self.move_search_hover(id, row),
-            SearchKeyOutcome::Select(row) => self.activate_search_result(id, row),
+            SearchKeyOutcome::Select(row) if runtime.popup_exposed => {
+                self.activate_search_result(id, row)
+            }
+            // Retained hover is not permission to commit an invisible popup
+            // after clipping or a higher full-tree overlay takes ownership.
+            SearchKeyOutcome::Select(_) => false,
         };
         if handled {
             self.redraw();
@@ -264,14 +269,14 @@ impl<A: AppLogic + 'static> RutterRunner<A> {
             .runtime_caches
             .searches
             .get(&id)
-            .and_then(|runtime| runtime.on_select)
+            .and_then(|runtime| runtime.on_select.clone())
         else {
             return false;
         };
         self.dismiss_search_popup(id);
         A::update(
             &mut self.engine.app_state,
-            on_select(index),
+            on_select.call(index),
             &mut self.engine.clipboard,
         );
         self.engine.layout_dirty = true;

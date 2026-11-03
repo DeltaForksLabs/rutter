@@ -207,7 +207,8 @@ impl LayoutBlueprint {
                 path.pop();
                 Self::with_children(None, style.clone(), vec![child])
             }
-            Widget::PointerRegion { child, style, .. } => {
+            Widget::PointerRegion { child, style, .. }
+            | Widget::PointerRegionWith { child, style, .. } => {
                 path.push(0);
                 let child = Self::from_widget_with_path(child, path);
                 path.pop();
@@ -390,7 +391,8 @@ impl LayoutBlueprint {
             | Widget::TextInputWith { style, .. }
             | Widget::TextArea { style, .. }
             | Widget::TextAreaWith { style, .. }
-            | Widget::ComboBox { style, .. } => {
+            | Widget::ComboBox { style, .. }
+            | Widget::ComboBoxWith { style, .. } => {
                 let body_height = if matches!(
                     widget,
                     Widget::TextArea { .. } | Widget::TextAreaWith { .. }
@@ -457,19 +459,32 @@ impl LayoutBlueprint {
             ),
             Widget::Button { style, .. }
             | Widget::Checkbox { style, .. }
+            | Widget::CheckboxWith { style, .. }
             | Widget::Divider { style, .. }
             | Widget::Image { style, .. }
             | Widget::Radio { style, .. }
+            | Widget::RadioWith { style, .. }
             | Widget::Spacer { style, .. }
-            | Widget::Switch { style, .. } => Self::leaf(None, style.clone()),
+            | Widget::Switch { style, .. }
+            | Widget::SwitchWith { style, .. } => Self::leaf(None, style.clone()),
             Widget::ProgressBar { style, .. }
             | Widget::Spinner { style, .. }
             | Widget::TabBar { style, .. }
+            | Widget::TabBarWith { style, .. }
             | Widget::DropdownMenu { style, .. }
             | Widget::SearchBar { style, .. }
+            | Widget::SearchBarWith { style, .. }
             | Widget::Slider { style, .. }
             | Widget::SliderWith { style, .. }
             | Widget::CarouselView { style, .. }
+            | Widget::CarouselViewWith { style, .. }
+            | Widget::InteractiveCarouselViewWith { style, .. }
+            | Widget::VirtualListWith { style, .. }
+            | Widget::VirtualListContentWith { style, .. }
+            | Widget::InteractiveVirtualListContentWith { style, .. }
+            | Widget::VirtualGridWith { style, .. }
+            | Widget::VirtualGridContentWith { style, .. }
+            | Widget::InteractiveVirtualGridContentWith { style, .. }
             | Widget::InteractiveCarouselView { style, .. }
             | Widget::Table { style, .. }
             | Widget::VirtualList { style, .. }

@@ -11,7 +11,7 @@ use super::styles::{
     time_picker_label_style, time_picker_zone_style,
 };
 use super::{ClockConfig, TimeOfDay, TimePickerLabels, TimeZone, TimeZoneError};
-use crate::widget::{ButtonVariant, Widget};
+use crate::widget::{ButtonVariant, ChangeCallback, Widget};
 
 /// Reports an invalid timezone configuration for a time picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +141,7 @@ impl<'a, Msg> TimePickerConfig<'a, Msg> {
             on_second_change: self.on_second_change,
             on_time_zone_change: self.on_time_zone_change,
             labels: self.labels,
+            message: std::marker::PhantomData,
         }
     }
 
@@ -157,14 +158,172 @@ impl<'a, Msg> TimePickerConfig<'a, Msg> {
     }
 }
 
-struct TimePickerContentProps<'a, Msg> {
+struct TimePickerContentProps<'a, Msg, C = fn(i64) -> Msg, Z = fn(usize) -> Msg> {
     time_zone_names: &'a [&'a str],
     selected_time_zone: usize,
-    on_hour_change: fn(i64) -> Msg,
-    on_minute_change: fn(i64) -> Msg,
-    on_second_change: fn(i64) -> Msg,
-    on_time_zone_change: fn(usize) -> Msg,
+    on_hour_change: C,
+    on_minute_change: C,
+    on_second_change: C,
+    on_time_zone_change: Z,
     labels: TimePickerLabels<'a>,
+    message: std::marker::PhantomData<fn() -> Msg>,
+}
+
+/// Validated time-picker configuration with owned, independent callbacks.
+/// Captures are `Send + Sync + 'static`, need not be Clone, and represent view
+/// snapshots. Rebuild to refresh context; validate messages in application update.
+///
+/// ```
+/// use rutter::TimePickerConfigWith;
+/// let owner = String::from("appointment");
+/// let config = TimePickerConfigWith::new(&["UTC"], 0, String::new(), String::new(),
+///     move |v| format!("{owner}: {v}"), |v| v.to_string(), |v| v.to_string(),
+///     |v| v.to_string(), "Time").unwrap();
+/// ```
+pub struct TimePickerConfigWith<'a, Msg> {
+    properties:
+        TimePickerContentProps<'a, Msg, ChangeCallback<i64, Msg>, ChangeCallback<usize, Msg>>,
+    on_toggle: Msg,
+    on_dismiss: Msg,
+    accessibility_label: &'a str,
+}
+
+impl<'a, Msg> TimePickerConfigWith<'a, Msg> {
+    /// Validates timezone choices using the same rules as [`TimePickerConfig::new`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        time_zone_names: &'a [&'a str],
+        selected_time_zone: usize,
+        on_toggle: Msg,
+        on_dismiss: Msg,
+        on_hour_change: impl Fn(i64) -> Msg + Send + Sync + 'static,
+        on_minute_change: impl Fn(i64) -> Msg + Send + Sync + 'static,
+        on_second_change: impl Fn(i64) -> Msg + Send + Sync + 'static,
+        on_time_zone_change: impl Fn(usize) -> Msg + Send + Sync + 'static,
+        accessibility_label: &'a str,
+    ) -> Result<Self, TimePickerError> {
+        validate_time_picker_zones(time_zone_names, selected_time_zone)?;
+        Ok(Self {
+            properties: TimePickerContentProps {
+                time_zone_names,
+                selected_time_zone,
+                on_hour_change: ChangeCallback::new(on_hour_change),
+                on_minute_change: ChangeCallback::new(on_minute_change),
+                on_second_change: ChangeCallback::new(on_second_change),
+                on_time_zone_change: ChangeCallback::new(on_time_zone_change),
+                labels: TimePickerLabels::default(),
+                message: std::marker::PhantomData,
+            },
+            on_toggle,
+            on_dismiss,
+            accessibility_label,
+        })
+    }
+
+    /// Replaces the default English labels.
+    pub fn with_labels(mut self, labels: TimePickerLabels<'a>) -> Self {
+        self.properties.labels = labels;
+        self
+    }
+
+    /// Returns the validated IANA timezone identifiers.
+    pub fn time_zone_names(&self) -> &'a [&'a str] {
+        self.properties.time_zone_names
+    }
+    /// Returns the selected timezone index.
+    pub fn selected_time_zone(&self) -> usize {
+        self.properties.selected_time_zone
+    }
+    /// Returns the configured labels.
+    pub fn labels(&self) -> TimePickerLabels<'a> {
+        self.properties.labels
+    }
+}
+
+trait TimeFieldCallback<Msg>: Clone {
+    fn field<'a>(&self, value: i64, maximum: i64, label: &'a str) -> Widget<'a, Msg>;
+}
+
+impl<Msg> TimeFieldCallback<Msg> for fn(i64) -> Msg {
+    fn field<'a>(&self, value: i64, maximum: i64, label: &'a str) -> Widget<'a, Msg> {
+        Widget::counter(
+            value,
+            0,
+            maximum,
+            1,
+            *self,
+            time_picker_counter_style(),
+            label,
+        )
+    }
+}
+
+impl<Msg: 'static> TimeFieldCallback<Msg> for ChangeCallback<i64, Msg> {
+    fn field<'a>(&self, value: i64, maximum: i64, label: &'a str) -> Widget<'a, Msg> {
+        let callback = self.clone();
+        Widget::counter_with(
+            value,
+            0,
+            maximum,
+            1,
+            move |v| callback.call(v),
+            time_picker_counter_style(),
+            label,
+        )
+    }
+}
+
+trait TimeZoneCallback<Msg> {
+    fn select<'a>(&self, names: &'a [&'a str], selected: usize, label: &'a str) -> Widget<'a, Msg>;
+}
+
+impl<Msg> TimeZoneCallback<Msg> for fn(usize) -> Msg {
+    fn select<'a>(&self, names: &'a [&'a str], selected: usize, label: &'a str) -> Widget<'a, Msg> {
+        Widget::select(names, selected, *self, time_picker_zone_style(), label, "")
+    }
+}
+
+impl<Msg: 'static> TimeZoneCallback<Msg> for ChangeCallback<usize, Msg> {
+    fn select<'a>(&self, names: &'a [&'a str], selected: usize, label: &'a str) -> Widget<'a, Msg> {
+        let callback = self.clone();
+        Widget::select_with(
+            names,
+            selected,
+            move |v| callback.call(v),
+            time_picker_zone_style(),
+            label,
+            "",
+        )
+    }
+}
+
+impl<'a, Msg: 'static> Widget<'a, Msg> {
+    /// Creates a time picker with captured counter/select callbacks.
+    /// Geometry, popup behavior and granular field policy match [`Self::time_picker`].
+    pub fn time_picker_with(
+        open: bool,
+        time: TimeOfDay,
+        config: TimePickerConfigWith<'a, Msg>,
+        style: Style,
+        popup_style: Style,
+    ) -> Self {
+        let anchor = time_picker_anchor(
+            time,
+            config.properties.time_zone_names[config.properties.selected_time_zone],
+            config.on_toggle,
+            config.accessibility_label,
+            style.clone(),
+        );
+        let content = time_picker_content(time, config.properties);
+        Self::popover(
+            open,
+            anchor,
+            content,
+            Some(config.on_dismiss),
+            style,
+            popup_style,
+        )
+    }
 }
 
 impl<'a, Msg> Widget<'a, Msg> {
@@ -303,24 +462,21 @@ fn time_picker_anchor_value<'a, Msg>(display: String) -> Widget<'a, Msg> {
     }
 }
 
-fn time_picker_content<'a, Msg>(
+fn time_picker_content<'a, Msg, C: TimeFieldCallback<Msg>, Z: TimeZoneCallback<Msg>>(
     time: TimeOfDay,
-    properties: TimePickerContentProps<'a, Msg>,
+    properties: TimePickerContentProps<'a, Msg, C, Z>,
 ) -> Widget<'a, Msg> {
     time_picker_content_container(time_picker_content_children(time, &properties))
 }
 
-fn time_picker_content_children<'a, Msg>(
+fn time_picker_content_children<'a, Msg, C: TimeFieldCallback<Msg>, Z: TimeZoneCallback<Msg>>(
     time: TimeOfDay,
-    properties: &TimePickerContentProps<'a, Msg>,
+    properties: &TimePickerContentProps<'a, Msg, C, Z>,
 ) -> Vec<Widget<'a, Msg>> {
-    let time_zone = Widget::select(
+    let time_zone = properties.on_time_zone_change.select(
         properties.time_zone_names,
         properties.selected_time_zone,
-        properties.on_time_zone_change,
-        time_picker_zone_style(),
         properties.labels.time_zone,
-        "",
     );
     vec![
         time_picker_fields(time, properties),
@@ -341,28 +497,28 @@ fn time_picker_content_container<'a, Msg>(children: Vec<Widget<'a, Msg>>) -> Wid
     }
 }
 
-fn time_picker_fields<'a, Msg>(
+fn time_picker_fields<'a, Msg, C: TimeFieldCallback<Msg>, Z>(
     time: TimeOfDay,
-    properties: &TimePickerContentProps<'a, Msg>,
+    properties: &TimePickerContentProps<'a, Msg, C, Z>,
 ) -> Widget<'a, Msg> {
     let fields = [
         (
             properties.labels.hour,
             i64::from(time.hour()),
             23,
-            properties.on_hour_change,
+            properties.on_hour_change.clone(),
         ),
         (
             properties.labels.minute,
             i64::from(time.minute()),
             59,
-            properties.on_minute_change,
+            properties.on_minute_change.clone(),
         ),
         (
             properties.labels.second,
             i64::from(time.second()),
             59,
-            properties.on_second_change,
+            properties.on_second_change.clone(),
         ),
     ];
     Widget::Row {
@@ -376,24 +532,16 @@ fn time_picker_fields<'a, Msg>(
     }
 }
 
-fn time_picker_field<'a, Msg>(
+fn time_picker_field<'a, Msg, C: TimeFieldCallback<Msg>>(
     label: &'a str,
     value: i64,
     maximum: i64,
-    on_change: fn(i64) -> Msg,
+    on_change: C,
 ) -> Widget<'a, Msg> {
     Widget::Column {
         children: vec![
             time_picker_label(label),
-            Widget::counter(
-                value,
-                0,
-                maximum,
-                1,
-                on_change,
-                time_picker_counter_style(),
-                label,
-            ),
+            on_change.field(value, maximum, label),
         ],
         style: time_picker_field_style(),
     }
